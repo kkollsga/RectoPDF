@@ -960,7 +960,10 @@ fn a_stream_drawn_under_many_names_is_read_once() {
     let (page, read, resolved) = many_names_one_image(64, "");
     assert_eq!(resolved, 1);
     let draws: String = (0..64).map(|n| format!("/N{n} Do ")).collect();
-    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&expected_many_names(64, draws.as_bytes())));
+    assert_eq!(
+        hex(&read.identity.expect("an identity").digest),
+        hex(&expected_many_names(64, draws.as_bytes()))
+    );
     assert!(!page.is_empty());
 }
 
@@ -972,7 +975,10 @@ fn the_once_read_hostile_dictionary_costs_one_resolution() {
     let (_, read, resolved) = many_names_one_image(256, &junk);
     assert_eq!(resolved, 1);
     let draws: String = (0..256).map(|n| format!("/N{n} Do ")).collect();
-    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&expected_many_names(256, draws.as_bytes())));
+    assert_eq!(
+        hex(&read.identity.expect("an identity").digest),
+        hex(&expected_many_names(256, draws.as_bytes()))
+    );
 }
 
 /// Failure caught (the memo's neutrality): a stream taken again is charged to the page as it was when read, so the read cap still counts every record
@@ -989,15 +995,35 @@ fn a_stream_taken_again_is_charged_as_it_was_read() {
         );
         reads_of(&bytes, caps).remove(0)
     };
-    let exact = Caps { page_read: (draws.len() + 3 * IMAGE.len()) as u64, ..Caps::STANDARD };
+    let exact = Caps {
+        page_read: (draws.len() + 3 * IMAGE.len()) as u64,
+        ..Caps::STANDARD
+    };
     let read = page(&exact);
     assert!(read.identity.is_some());
     assert_eq!(read.bytes, page(&Caps::STANDARD).bytes);
-    assert!(page(&Caps { page_read: exact.page_read - 1, ..exact }).identity.is_none());
+    assert!(
+        page(&Caps {
+            page_read: exact.page_read - 1,
+            ..exact
+        })
+        .identity
+        .is_none()
+    );
     // And the bytes it hashed count too: three images' lengths of the page's own cap.
-    let bytes = Caps { page_bytes: (draws.len() + 3 * IMAGE.len()) as u64, ..Caps::STANDARD };
+    let bytes = Caps {
+        page_bytes: (draws.len() + 3 * IMAGE.len()) as u64,
+        ..Caps::STANDARD
+    };
     assert!(page(&bytes).identity.is_some());
-    assert!(page(&Caps { page_bytes: bytes.page_bytes - 1, ..bytes }).identity.is_none());
+    assert!(
+        page(&Caps {
+            page_bytes: bytes.page_bytes - 1,
+            ..bytes
+        })
+        .identity
+        .is_none()
+    );
 }
 
 /// Failure caught (the memo's neutrality): an image under two names and a form with one child under two names (the child is the image again) hash
@@ -1010,7 +1036,11 @@ fn an_image_and_a_form_under_two_names_each_are_hashed_as_defined() {
         "",
         "/XObject << /A 5 0 R /B 5 0 R /F 6 0 R /G 6 0 R /C 5 0 R >>",
         "4 0 R",
-        vec![stream("", draws), stream(JPEG_DICT, IMAGE), stream("/Subtype /Form /BBox [0 0 1 1]", form_content)],
+        vec![
+            stream("", draws),
+            stream(JPEG_DICT, IMAGE),
+            stream("/Subtype /Form /BBox [0 0 1 1]", form_content),
+        ],
     );
     let mut expected = b"recto-page/1\0C".to_vec();
     expected.extend_from_slice(&1u32.to_le_bytes());

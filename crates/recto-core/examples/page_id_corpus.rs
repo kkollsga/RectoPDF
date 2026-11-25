@@ -26,7 +26,10 @@ fn main() {
     files.sort();
     for file in files {
         let name = file.strip_prefix(&folder).unwrap_or(&file).display().to_string();
-        let Some(reader) = recto_platform::file_stamp(&file).ok().and_then(|stamp| page_id::open_version_for_identity(&file, stamp)) else {
+        let Some(reader) = recto_platform::file_stamp(&file)
+            .ok()
+            .and_then(|stamp| page_id::open_version_for_identity(&file, stamp))
+        else {
             println!("{name} - unopened 0");
             continue;
         };
@@ -36,7 +39,9 @@ fn main() {
         };
         for (page, entry) in map.iter().enumerate() {
             let read = page_id::read_page(&reader, entry, &Caps::STANDARD);
-            let digest = read.identity.map_or_else(|| "none".to_owned(), |id| id.digest.iter().map(|byte| format!("{byte:02x}")).collect());
+            let digest = read
+                .identity
+                .map_or_else(|| "none".to_owned(), |id| id.digest.iter().map(|byte| format!("{byte:02x}")).collect());
             println!("{name} {page} {digest} {}", read.bytes);
         }
     }

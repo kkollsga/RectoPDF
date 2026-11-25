@@ -67,8 +67,11 @@ use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
 pub use lopdf::{IndexedReader, PageMap};
 use scan::DoScan;
 use sha2::{Digest, Sha256};
+use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
+use std::rc::Rc;
 
 /// The digest's name, and the first bytes hashed.
 pub const DIGEST_NAME: &str = "recto-page/1";
@@ -309,30 +312,27 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
         .and_then(|owner| dict_at(reader, owner))
         .and_then(|owner| resolved_dict(reader, owner.get(b"Resources").ok()?));
     let page_xobjects = xobjects_in(reader, resources.as_ref());
+    let mut memo = Memo::new();
     hasher.update(b"X");
     hasher.update(count(scan.names().len()));
     for name in scan.names() {
         budget.record()?;
-        let mut children = DoScan::default();
-        let form = xobject_record(reader, page_xobjects.as_ref(), name, budget, &mut hasher, Some(&mut children))?;
-        children.end_of_stream();
-        let Some(form) = form else {
+        let Some(seen) = xobject_record(reader, page_xobjects.as_ref(), name, budget, &mut hasher, &mut memo, true)? else {
             hasher.update(count(0));
             continue;
         };
-        if children.overflowed() {
+        if seen.overflowed {
             return Err(Capped);
         }
-        let own = form
-            .get(b"Resources")
-            .ok()
-            .and_then(|own| resolved_dict(reader, own))
-            .map(|own| xobjects_in(reader, Some(&own)));
+        hasher.update(count(seen.names.len()));
+        if seen.names.is_empty() {
+            continue;
+        }
+        let own = seen.own_xobjects(reader);
         let lookup = own.as_ref().unwrap_or(&page_xobjects).as_ref();
-        hasher.update(count(children.names().len()));
-        for child in children.names() {
+        for child in &seen.names {
             budget.record()?;
-            xobject_record(reader, lookup, child, budget, &mut hasher, None)?;
+            xobject_record(reader, lookup, child, budget, &mut hasher, &mut memo, false)?;
         }
     }
     hasher.update(b"E");
@@ -405,28 +405,126 @@ fn xobjects_in(reader: &IndexedReader, resources: Option<&Dictionary>) -> Option
     resolved_dict(reader, resources?.get(b"XObject").ok()?)
 }
 
-/// One image's or form's record, found by `name` in `xobjects`. Gives the form's dictionary back when it's a form whose content decoded, its names fed
-/// to `children`.
+/// Every image and form this page has drawn, by object: what each one's record said after its name and what reading it cost, so a stream drawn under
+/// many names is read once. Per page and dropped with it, with an entry for each record the page makes at most ([`Caps::xobjects`]).
+type Memo = HashMap<ObjectId, Rc<Seen>>;
+
+/// What one read of an image or form came to.
+struct Seen {
+    /// The bytes it hashed after its name: from the kind byte through [`image_says`].
+    tail: Vec<u8>,
+    /// What the read took off [`Budget::read_left`] and [`Budget::page_left`], and added to [`Budget::cost`].
+    read: u64,
+    page: u64,
+    cost: u64,
+    /// The read gave up on a decode on the way (a kind 3, or nothing came of it): how many bytes it had pulled by then isn't known, so it is taken again
+    /// as it was only while the page has more left than any one stream may take, as it had when this was read, when no part of the page's budget could
+    /// have decided it.
+    headroom: bool,
+    is_form: bool,
+    /// The read had a scan to feed, as a form drawn by the page does. One made for a form's own children has no names to take.
+    scanned: bool,
+    /// The names a form drew, and whether the scan of them overflowed.
+    names: Vec<Vec<u8>>,
+    overflowed: bool,
+    /// The form's own `/Resources`, and its `/XObject` resolved once, however many names it's drawn under.
+    resources: Option<Object>,
+    own: OnceCell<Option<Option<Dictionary>>>,
+}
+
+impl Seen {
+    /// The form's own `/Resources`' `/XObject`; `None` where it has no `/Resources` of its own, so the page's are used. Asked for only where the form
+    /// drew something.
+    fn own_xobjects(&self, reader: &IndexedReader) -> Option<Option<Dictionary>> {
+        self.own
+            .get_or_init(|| {
+                self.resources
+                    .as_ref()
+                    .and_then(|own| resolved_dict(reader, own))
+                    .map(|own| xobjects_in(reader, Some(&own)))
+            })
+            .clone()
+    }
+}
+
+/// One image's or form's record, found by `name` in `xobjects`, hashed after the name: taken from the memo where this object was drawn already under
+/// another name (its stream isn't resolved or read again, and what the read cost is charged again), else read. Gives back what was seen where it's an
+/// object at all. `children` says the caller takes the names a form drew, so a form read without them isn't taken from the memo for it.
 fn xobject_record(
     reader: &IndexedReader,
     xobjects: Option<&Dictionary>,
     name: &[u8],
     budget: &mut Budget<'_>,
     hasher: &mut Sha256,
-    children: Option<&mut DoScan>,
-) -> Result<Option<Dictionary>, Capped> {
+    memo: &mut Memo,
+    children: bool,
+) -> Result<Option<Rc<Seen>>, Capped> {
     hasher.update(count(name.len()));
     hasher.update(name);
-    #[cfg(test)]
-    tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
-    let found = match xobjects.and_then(|xobjects| xobjects.get(name).ok()) {
-        Some(Object::Reference(id)) => reader.resolve_stream_descriptor(*id).ok().map(|descriptor| (*id, descriptor)),
-        _ => None,
-    };
-    let Some((id, descriptor)) = found else {
+    let Some(Object::Reference(id)) = xobjects.and_then(|xobjects| xobjects.get(name).ok()) else {
         hasher.update([2]);
         return Ok(None);
     };
+    let id = *id;
+    if let Some(seen) = memo.get(&id) {
+        let wanted = !(children && seen.is_form && !seen.scanned);
+        // Where it can't be taken as it was, it's read again, so a cap is reached as it always was and costs what it did.
+        let affords = seen.read <= budget.read_left && seen.page <= budget.page_left && (!seen.headroom || budget.page_left > budget.caps.xobject_bytes);
+        if wanted && affords {
+            budget.read_left -= seen.read;
+            budget.page_left -= seen.page;
+            budget.cost = budget.cost.saturating_add(seen.cost);
+            hasher.update(&seen.tail);
+            return Ok(Some(Rc::clone(seen)));
+        }
+    }
+    #[cfg(test)]
+    tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
+    let Ok(descriptor) = reader.resolve_stream_descriptor(id) else {
+        hasher.update([2]);
+        return Ok(None);
+    };
+    let before = (budget.read_left, budget.page_left, budget.cost);
+    let mut tail = Vec::new();
+    let mut scan = DoScan::default();
+    let read = read_xobject(reader, id, &descriptor, budget, &mut tail, children.then_some(&mut scan))?;
+    scan.end_of_stream();
+    let seen = Rc::new(Seen {
+        read: before.0 - budget.read_left,
+        page: before.1 - budget.page_left,
+        cost: budget.cost.saturating_sub(before.2),
+        headroom: read.gave_up,
+        is_form: read.is_form,
+        scanned: children,
+        overflowed: read.is_form && scan.overflowed(),
+        names: scan.names().to_vec(),
+        resources: read.resources,
+        own: OnceCell::new(),
+        tail,
+    });
+    hasher.update(&seen.tail);
+    memo.insert(id, Rc::clone(&seen));
+    Ok(Some(seen))
+}
+
+/// What reading one image or form told, besides its record.
+struct XRead {
+    gave_up: bool,
+    /// A form whose content was read, and the form's own `/Resources`. A form that wasn't, or anything that failed, is none of it and draws nothing
+    /// that can be known: it has no children, but it's still a form with its count.
+    is_form: bool,
+    resources: Option<Object>,
+}
+
+/// Reads one image or form for its record after the name, into `tail`, its content's names fed to `children` where it's a form.
+fn read_xobject(
+    reader: &IndexedReader,
+    id: ObjectId,
+    descriptor: &lopdf::IndexedStreamDescriptor,
+    budget: &mut Budget<'_>,
+    tail: &mut Vec<u8>,
+    children: Option<&mut DoScan>,
+) -> Result<XRead, Capped> {
     let dict = descriptor.dictionary();
     let resolve = |object: &Object| deref(reader, object);
     let subtype = dict.get(b"Subtype").ok().and_then(resolve);
@@ -435,15 +533,17 @@ fn xobject_record(
     let prefix = matches!(&subtype, Some(Object::Name(subtype)) if subtype == b"Image");
     let limit = budget.caps.xobject_bytes;
     let general = decode::filter_names(dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
-    let as_stored = |budget: &mut Budget<'_>| take_stream(reader, id, &descriptor, None, limit, budget, None, prefix);
+    let as_stored = |budget: &mut Budget<'_>| take_stream(reader, id, descriptor, None, limit, budget, None, prefix);
+    let mut gave_up = false;
     let (kind, taken, scanned) = if general {
         let mut scan = children.filter(|_| is_form);
         let scanned = scan.is_some();
         // What a form drew is what its content decoded to: if it didn't, the names its first part gave are taken back (as `content_record` does).
         let mark = scan.as_deref().map(DoScan::mark);
         match decode::chain_of(dict, &resolve) {
-            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan.as_deref_mut(), prefix)? {
+            Some(chain) => match take_stream(reader, id, descriptor, Some(&chain), limit, budget, scan.as_deref_mut(), prefix)? {
                 Taken::Failed => {
+                    gave_up = true;
                     if let (Some(scan), Some(mark)) = (scan, mark) {
                         scan.back_to(mark);
                     }
@@ -451,72 +551,79 @@ fn xobject_record(
                 }
                 taken => (0, taken, scanned),
             },
-            None => (3, as_stored(budget)?, false),
+            None => {
+                gave_up = true;
+                (3, as_stored(budget)?, false)
+            }
         }
     } else {
         (1, as_stored(budget)?, false)
     };
     match taken {
         Taken::Hashed(n, sub) => {
-            hasher.update([kind]);
-            hasher.update(n.to_le_bytes());
-            hasher.update(sub.finalize());
+            tail.push(kind);
+            tail.extend_from_slice(&n.to_le_bytes());
+            tail.extend_from_slice(&sub.finalize());
         }
         Taken::Prefix(n, sub) => {
-            hasher.update([4, kind]);
-            hasher.update(n.to_le_bytes());
-            hasher.update(sub.finalize());
-            hasher.update(descriptor.encoded_len().unwrap_or(0).to_le_bytes());
-            image_says(dict, &resolve, hasher);
+            tail.extend_from_slice(&[4, kind]);
+            tail.extend_from_slice(&n.to_le_bytes());
+            tail.extend_from_slice(&sub.finalize());
+            tail.extend_from_slice(&descriptor.encoded_len().unwrap_or(0).to_le_bytes());
+            image_says(dict, &resolve, tail);
         }
         Taken::Failed => {
-            hasher.update([2]);
-            return Ok(None);
+            tail.push(2);
+            return Ok(XRead {
+                gave_up: true,
+                is_form: false,
+                resources: None,
+            });
         }
     }
-    // A form whose content wasn't decoded draws nothing that can be known, so it has no children; but it's still a form, with its count.
-    Ok(is_form.then(|| if scanned { dict.clone() } else { Dictionary::new() }))
+    let resources = if is_form && scanned { dict.get(b"Resources").ok().cloned() } else { None };
+    Ok(XRead { gave_up, is_form, resources })
 }
 
 /// What an image past its cap says of itself, after its first cap's worth: `/Width`, `/Height`, `/BitsPerComponent`, the name of its `/ColorSpace`
 /// (an array's first name, as `/ICCBased` or `/Indexed`) and its `/Filter` names, as written. Each framed: 0 missing; 1 and an `i64le` integer; 2, a
 /// `u32le` length and a name; 3 anything else; and for the filters 4, a `u32le` count and each name with its length.
-fn image_says(dict: &Dictionary, resolve: &dyn Fn(&Object) -> Option<Object>, hasher: &mut Sha256) {
-    let name = |hasher: &mut Sha256, name: &[u8]| {
-        hasher.update([2]);
-        hasher.update(count(name.len()));
-        hasher.update(name);
+fn image_says(dict: &Dictionary, resolve: &dyn Fn(&Object) -> Option<Object>, out: &mut Vec<u8>) {
+    let name = |out: &mut Vec<u8>, name: &[u8]| {
+        out.extend_from_slice(&[2]);
+        out.extend_from_slice(&count(name.len()));
+        out.extend_from_slice(name);
     };
     for key in [&b"Width"[..], b"Height", b"BitsPerComponent"] {
         match dict.get(key).ok().map(resolve) {
-            None => hasher.update([0]),
+            None => out.extend_from_slice(&[0]),
             Some(Some(Object::Integer(value))) => {
-                hasher.update([1]);
-                hasher.update(value.to_le_bytes());
+                out.extend_from_slice(&[1]);
+                out.extend_from_slice(&value.to_le_bytes());
             }
-            Some(_) => hasher.update([3]),
+            Some(_) => out.extend_from_slice(&[3]),
         }
     }
     match dict.get(b"ColorSpace").ok().map(resolve) {
-        None => hasher.update([0]),
-        Some(Some(Object::Name(space))) => name(hasher, &space),
+        None => out.extend_from_slice(&[0]),
+        Some(Some(Object::Name(space))) => name(out, &space),
         Some(Some(Object::Array(items))) => match items.first().and_then(resolve) {
-            Some(Object::Name(space)) => name(hasher, &space),
-            _ => hasher.update([3]),
+            Some(Object::Name(space)) => name(out, &space),
+            _ => out.extend_from_slice(&[3]),
         },
-        Some(_) => hasher.update([3]),
+        Some(_) => out.extend_from_slice(&[3]),
     }
     match (dict.has(b"Filter"), decode::filter_names(dict, resolve)) {
-        (false, _) => hasher.update([0]),
+        (false, _) => out.extend_from_slice(&[0]),
         (true, Some(names)) => {
-            hasher.update([4]);
-            hasher.update(count(names.len()));
+            out.extend_from_slice(&[4]);
+            out.extend_from_slice(&count(names.len()));
             for each in names {
-                hasher.update(count(each.len()));
-                hasher.update(&each);
+                out.extend_from_slice(&count(each.len()));
+                out.extend_from_slice(&each);
             }
         }
-        (true, None) => hasher.update([3]),
+        (true, None) => out.extend_from_slice(&[3]),
     }
 }
 
