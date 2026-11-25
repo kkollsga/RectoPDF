@@ -620,3 +620,14 @@ What went wrong and what changes:
 - Heavy load (peaks 30–67) from four concurrent workers plus a long-running iOS Simulator turned slowness into failures; that surfaced real bugs, but builds were held to fewer workers when load stayed high.
 - GitHub had an outage (Internal Server Errors, a lost push event, unacquired runners); pushes were retried through `tools/push-main.sh`, never forced.
 - The footprint measure was shown to include freed memory on this macOS; the owner agreed a live-byte count where the question is what code holds (`AGENTS.md`).
+
+## 2026-11-26, night: batch F
+
+Eight branches reviewed twice each (batch F's seven plus the copy cleanup fix); ten Opus reviews or diagnoses, nine Sonnet build rounds. Every failure seen under load was diagnosed, none rerun to pass: a regression made common by the evening's own busy-draw fix (a held page never settled), a stuck Print anyway, a renderer start that could pause the index for ever, and four tests that pinned a machine's speed or read a field that moves.
+
+What went wrong and what changes:
+- **Review and seeded tests missed two wrong OS facts** (`pth_maxpriority` 63 under the clamp; `proc_pidpath` empty after an unlink). The coordinator caught the second by a probe after review had passed it. From now on a brief that relies on a kernel field asks the worker to probe it on this Mac first and quote the result (guide §6.2).
+- **A worker's scope grew past its brief twice** (search.rs beyond the hook; commands/text.rs), and the second review found a blocker in exactly that growth (Find said "Not found"). Briefs now say which callers of a changed function must be checked, not only which lines may change.
+- **Self-matching waits recurred twice** despite the rule; both were caught by the worker itself. The rule stays in the brief.
+- **Five workers ran for a while** (above three) to take a regression on main first; the queue held (load 8–23), with no stall.
+- A permission refusal was surfaced to the owner, not worked around (writing an agent level into a test folder); the owner approved it and it is recorded in `OWNER-RULES.md`.

@@ -1295,6 +1295,12 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
 
 **A process's start name is shorter than its file name.** macOS's `pbi_comm` keeps at most 15 bytes (`MAXCOMLEN - 1`), not 16: a rule comparing a start name with a file name must treat a name at the cap as a prefix, or a long-named program reads as a different one. Found by review on 2026-11-25, in a rule that let an update go past programs that can't be the app.
 
+**Measure an operating-system fact before code relies on it.** Twice in one night (2026-11-25) a fix built and reviewed on a remembered kernel fact was wrong on the machine: a thread's `pth_maxpriority` stays 63 under a utility clamp (the brief said 20), and `proc_pidpath` of a running program whose file was unlinked returns nothing (a cleanup that kept "pids still at the program's path" stopped waiting at once). Seeded tests passed both times, because the test shared the wrong belief. A ten-line probe on the real machine (copy a binary you built, run it, change the condition, read the field) settles it in a minute; put the measured fact in the code's comment, with the date.
+
+**Don't let a process's mutable fields decide a safety rule.** `pbi_name` can be rewritten by the process (`setprogname`, the `kern.procname` sysctl) and `pbi_comm` can't; a rule that let an update swap under "a program that can't be the app" read the writable one. Trust the writable field only where it agrees with the one the process can't change.
+
+**A test's patience is the product's own bound, not a round number.** A fixed 20 s or 5 s in a test kit pins the machine's speed: a print the product allows 35 s for, or a cold start under load, passes it, and the test blames the product. Derive the wait from the product's limits (start timeout, page deadline, ready wait), wait on the thing's own signal (its exit, its file's deletion, its job's end) rather than polling, and fail past the bound naming where it stopped. Found three times on 2026-11-25 (print settle, copy cleanup, helper priority), each first called "flaky" by the worker that saw it.
+
 ### 6.3 Tests that hold on slower machines
 
 - **A test waits for the condition it checks,** polling with a bound and failing with what it saw. It never sleeps and
