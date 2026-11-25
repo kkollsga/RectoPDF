@@ -193,6 +193,11 @@ pub mod helper;
 #[cfg_attr(not(target_os = "macos"), path = "local_stub.rs")]
 pub mod local;
 
+/// Which volume a file is on, by the volume's own UUID rather than the mount's device number (`docs/design/removal.md` §4, D2b).
+#[cfg_attr(target_os = "macos", path = "volume_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "volume_stub.rs")]
+pub mod volume;
+
 /// What Launch Services has registered of the app's copies, and forgetting a copy that isn't the one install: a test's, a build's, a quiet run's.
 #[cfg_attr(target_os = "macos", path = "registry_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "registry_stub.rs")]
