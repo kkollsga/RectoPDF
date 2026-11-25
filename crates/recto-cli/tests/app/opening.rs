@@ -36,7 +36,7 @@ fn wait_long(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
 }
 
 /// Failure: the native launch never binds its UI watchdog, so a startup stall is invisible even though later file-open work is watched; or the menu's
-/// build or the window's first model change loses its marks or moves (so `menu_built` after `NSApp.mainMenu =` hides the install's cost).
+/// build or the window's first model change loses its marks, puts them out of order against each other, or leaves them outside the launch bracket.
 fn assert_startup_was_watched(state: &Value) {
     let startup = &state["hangs"]["startup"];
     assert_eq!(startup["clock"].as_str(), Some("watchdog"), "startup uses another clock: {startup}");
