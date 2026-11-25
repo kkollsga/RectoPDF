@@ -15,6 +15,7 @@ pub mod local;
 pub mod log;
 pub mod quiet;
 pub mod record_store;
+pub mod removal_store;
 pub mod server;
 pub mod state;
 pub mod terminal;
