@@ -12,7 +12,7 @@ mod geometry;
 mod resolve;
 
 pub use codec::{decode, encode};
-pub use resolve::*;
+pub use resolve::{DocumentMatch, Looked, MAX_CANDIDATES, Placed, Resolution, ScanCaps, Status, TAG_PAGES, Unreferenceable, document_tags, reference, resolve};
 
 use crate::page_id::PageIdentity;
 
