@@ -272,9 +272,10 @@ pub enum OutcomeKind {
 }
 
 impl Outcome {
-    /// An outcome that isn't about any one plan (`plan` is `None`).
+    /// An outcome that isn't about any one plan (`plan` is `None`): tests only, as every installer writer has its plan.
+    #[cfg(test)]
     #[must_use]
-    pub fn new(kind: OutcomeKind, from: &str, to: &str, why: &str) -> Self {
+    pub(crate) fn new(kind: OutcomeKind, from: &str, to: &str, why: &str) -> Self {
         Self {
             kind,
             from: from.to_owned(),
