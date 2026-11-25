@@ -9,6 +9,12 @@ use std::sync::Arc;
 std::thread_local! {
     /// Bytes decrypted whole for the digest on this thread: what a file anyone may open costs ([`super::take_stream`]).
     pub(super) static DECRYPTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Streams' descriptors resolved for images and forms on this thread: how many times a page's drawn objects were read ([`super::xobject_record`]).
+    pub(super) static DESCRIPTORS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// References a read of a stream's dictionary followed on this thread, not found already followed: how many times an object it points at was parsed ([`super::Refs`]).
+    pub(super) static DEREFERENCES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Dictionaries resolved by reference (a resource dictionary, an `/XObject` table) on this thread: how many copies a page makes of what forms share.
+    pub(super) static DICTIONARIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -917,4 +923,440 @@ fn golden_vectors_of_recto_page_1() {
     // At a cap: the content's 16 MiB passed by one byte, so no identity.
     let capped = one_page("", "", "4 0 R", vec![stream("/Filter /FlateDecode", &flate(&vec![b' '; (16 << 20) + 1]))]);
     assert_eq!(reads_of(&capped, &Caps::STANDARD)[0].identity, None);
+}
+
+/// Failure caught (security, the probe's repro: a hostile page's identity cost 10.8 GB of a 3 MB file): an image drawn under many names had its stream's
+/// descriptor (its dictionary, parsed whole and charged to nothing) resolved again for each name; 256 names to one image whose dictionary holds a
+/// 100,000-element array took 1.35 s and 789 MiB for one page, with 4,902 bytes charged. A stream is read once for a page, and the identity is what the
+/// definition says and always was: every name's record, each with the same kind, length and hash.
+#[test]
+fn the_once_read_hostile_dictionary_costs_one_resolution() {
+    let names = 256;
+    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), stream(&format!("{JPEG_DICT} {junk}"), IMAGE)],
+    );
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws.as_bytes()));
+    expected.push(b'X');
+    expected.extend_from_slice(&(names as u32).to_le_bytes());
+    for n in 0..names {
+        expected.extend(xobject_bytes(format!("N{n}").as_bytes(), 1, IMAGE));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
+
+/// Failure caught (the memo's neutrality): a stream taken again is charged to the page as it was when read, so the read cap still counts every record
+/// as it did. Three names to one image cost three stored lengths of the read cap, not one: one byte less and the page has no identity.
+#[test]
+fn a_stream_taken_again_is_charged_as_it_was_read() {
+    let draws = b"/N0 Do /N1 Do /N2 Do ";
+    let page = |caps: &Caps| {
+        let bytes = one_page(
+            "",
+            "/XObject << /N0 5 0 R /N1 5 0 R /N2 5 0 R >>",
+            "4 0 R",
+            vec![stream("", draws), stream(JPEG_DICT, IMAGE)],
+        );
+        reads_of(&bytes, caps).remove(0)
+    };
+    let exact = Caps {
+        page_read: (draws.len() + 3 * IMAGE.len()) as u64,
+        ..Caps::STANDARD
+    };
+    let read = page(&exact);
+    assert!(read.identity.is_some());
+    assert_eq!(read.bytes, page(&Caps::STANDARD).bytes);
+    assert!(
+        page(&Caps {
+            page_read: exact.page_read - 1,
+            ..exact
+        })
+        .identity
+        .is_none()
+    );
+    // And the bytes it hashed count too: three images' lengths of the page's own cap.
+    let bytes = Caps {
+        page_bytes: (draws.len() + 3 * IMAGE.len()) as u64,
+        ..Caps::STANDARD
+    };
+    assert!(page(&bytes).identity.is_some());
+    assert!(
+        page(&Caps {
+            page_bytes: bytes.page_bytes - 1,
+            ..bytes
+        })
+        .identity
+        .is_none()
+    );
+}
+
+/// Failure caught (the memo's neutrality): an image under two names and a form with one child under two names (the child is the image again) hash
+/// as the definition says, each name's record whole, the form's count of children after each of its names.
+#[test]
+fn an_image_and_a_form_under_two_names_each_are_hashed_as_defined() {
+    let form_content = b"/C Do";
+    let draws = b"/A Do /B Do /F Do /G Do";
+    let page = one_page(
+        "",
+        "/XObject << /A 5 0 R /B 5 0 R /F 6 0 R /G 6 0 R /C 5 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", draws),
+            stream(JPEG_DICT, IMAGE),
+            stream("/Subtype /Form /BBox [0 0 1 1]", form_content),
+        ],
+    );
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws));
+    expected.push(b'X');
+    expected.extend_from_slice(&4u32.to_le_bytes());
+    for name in [&b"A"[..], b"B"] {
+        expected.extend(xobject_bytes(name, 1, IMAGE));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    for name in [&b"F"[..], b"G"] {
+        expected.extend(xobject_bytes(name, 0, form_content));
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend(xobject_bytes(b"C", 1, IMAGE));
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+}
+
+/// Failure caught (memory, review of the memo): each form kept its own copy of its `/Resources`' `/XObject` table for the whole page, so 100 forms that
+/// share one `/Resources 5 0 R` -> `/XObject 6 0 R` held 100 copies of a table that may be huge, where one at a time was held before. The shared
+/// resource dictionary and table are resolved once for the page, whatever the number of forms, and the identity is the one it always had.
+#[test]
+fn forms_sharing_resources_resolve_them_once() {
+    let forms = 100;
+    let draws: String = (0..forms).map(|n| format!("/F{n} Do ")).collect();
+    let table: String = (0..forms).map(|n| format!("/F{n} {} 0 R ", 8 + n)).collect();
+    let mut objects = vec![
+        stream("", draws.as_bytes()),
+        Obj::Dict("<< /XObject 6 0 R >>".into()),
+        Obj::Dict("<< /C 7 0 R >>".into()),
+        stream(JPEG_DICT, IMAGE),
+    ];
+    for _ in 0..forms {
+        objects.push(stream("/Subtype /Form /BBox [0 0 1 1] /Resources 5 0 R", b"/C Do"));
+    }
+    let page = one_page("", &format!("/XObject << {table} >>"), "4 0 R", objects);
+    DICTIONARIES.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert!(read.identity.is_some());
+    assert_eq!(DICTIONARIES.with(std::cell::Cell::get), 2, "the shared /Resources and its /XObject, once each");
+}
+
+/// Failure caught (memo neutrality): forms sharing a large `/XObject` table but not drawn in a row (A, B with another table, A again) have the shared
+/// table evicted and resolved again; a re-resolved table must give the children it always did, not B's or none. The expectation is the definition's.
+#[test]
+fn a_table_evicted_and_resolved_again_gives_the_same_children() {
+    let (other, form) = (b"another image's bytes", b"/C Do");
+    let filler: String = (0..300).map(|n| format!("/P{n} 7 0 R ")).collect();
+    let objects = vec![
+        stream("", b"/FA1 Do /FB Do /FA2 Do"),
+        Obj::Dict("<< /XObject 9 0 R >>".into()),
+        Obj::Dict("<< /XObject 10 0 R >>".into()),
+        stream(JPEG_DICT, IMAGE),
+        stream(JPEG_DICT, other),
+        Obj::Dict(format!("<< /C 7 0 R {filler}>>")),
+        Obj::Dict("<< /C 8 0 R >>".into()),
+        stream("/Subtype /Form /BBox [0 0 1 1] /Resources 5 0 R", form),
+        stream("/Subtype /Form /BBox [0 0 1 1] /Resources 6 0 R", form),
+        stream("/Subtype /Form /BBox [0 0 1 1] /Resources 5 0 R", form),
+    ];
+    let page = one_page("", "/XObject << /FA1 11 0 R /FB 12 0 R /FA2 13 0 R >>", "4 0 R", objects);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/FA1 Do /FB Do /FA2 Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&3u32.to_le_bytes());
+    for (name, image) in [(&b"FA1"[..], IMAGE), (b"FB", other), (b"FA2", IMAGE)] {
+        expected.extend(xobject_bytes(name, 0, form));
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend(xobject_bytes(b"C", 1, image));
+    }
+    expected.push(b'E');
+    DICTIONARIES.with(|count| count.set(0));
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+    assert_eq!(DICTIONARIES.with(std::cell::Cell::get), 5, "R1, T, R2, U, then T again as it was evicted");
+}
+
+/// Failure caught (security, review of the memo): a name whose object isn't a stream failed its descriptor each time, and a failure wasn't remembered,
+/// so 256 names to one `5 0 obj << /Junk [100,000 numbers] >>` parsed the dictionary 256 times, as the image repro did before the memo. A failure doesn't
+/// depend on what's left of any cap, so it's remembered with the rest, and its record is the one the definition gives: nothing by that name, kind 2.
+#[test]
+fn a_name_that_is_not_a_stream_is_resolved_once() {
+    let names = 256;
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let junk = format!("<< /Junk [{}] >>", "0 ".repeat(100_000));
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), Obj::Dict(junk)],
+    );
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws.as_bytes()));
+    expected.push(b'X');
+    expected.extend_from_slice(&(names as u32).to_le_bytes());
+    for n in 0..names {
+        let name = format!("N{n}");
+        expected.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        expected.extend_from_slice(name.as_bytes());
+        expected.push(2);
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
+
+/// Failure caught (security, review of the memo): an image whose decode failed is taken again from the memo only while the page has more left than one
+/// stream may take; with less, each name read it again, and resolved its descriptor again: the same 256 parses of a 100,000-element dictionary the memo
+/// was made to stop, by way of small streams that bring the page's budget down. Here the page's budget never exceeds a stream's, so every name is the
+/// re-read case; the descriptor is kept for it, resolved once, and each name's record is what the definition gives: kind 3, the stored bytes.
+#[test]
+fn a_gave_up_image_re_read_for_want_of_headroom_is_resolved_once() {
+    let names = 256;
+    let stored = b"not a flate stream";
+    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![
+            stream("", draws.as_bytes()),
+            stream(&format!("/Subtype /Image /Filter /FlateDecode {junk}"), stored),
+        ],
+    );
+    let caps = Caps {
+        xobject_bytes: 1 << 16,
+        page_bytes: 1 << 16,
+        ..Caps::STANDARD
+    };
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &caps).remove(0);
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws.as_bytes()));
+    expected.push(b'X');
+    expected.extend_from_slice(&(names as u32).to_le_bytes());
+    for n in 0..names {
+        expected.extend(xobject_bytes(format!("N{n}").as_bytes(), 3, stored));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
+
+/// Failure caught (security, the same class as the memo's): an image's `/Filter` array of 8 references (the most a chain takes) to one object parsed it 8 times and
+/// more in one read, whatever its size. (`deref` itself parses a non-stream twice, a stream probe and then the object, which is lopdf's API; the count here is
+/// of the misses of `Refs`, the times a read went to the reader for an object.) Each object a read points at is parsed once for that read, and the
+/// record is what the definition gives: a filter that isn't general, as stored.
+#[test]
+fn a_read_follows_each_reference_once() {
+    let refs = 8;
+    let filters: String = (0..refs).map(|_| "6 0 R ").collect();
+    let page = one_page(
+        "",
+        "/XObject << /Im1 5 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/Im1 Do"),
+            stream(&format!("/Subtype /Image /Filter [{filters}]"), IMAGE),
+            Obj::Dict("/DCTDecode".into()),
+        ],
+    );
+    DEREFERENCES.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert_eq!(DEREFERENCES.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/Im1 Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"Im1", 1, IMAGE));
+    expected.extend_from_slice(&0u32.to_le_bytes());
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
+
+/// Failure caught (the memo's untested branch): a form drawn first as another form's child (a record with no children of its own) and then by the page
+/// itself was taken from the memo as it was, so it had no children where the definition gives it the ones its content draws.
+#[test]
+fn a_form_drawn_as_a_child_and_then_directly_has_its_children() {
+    let (g_content, f_content) = (b"/F Do", b"/C Do");
+    let page = one_page(
+        "",
+        "/XObject << /G 5 0 R /F 6 0 R /C 7 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/G Do /F Do"),
+            stream("/Subtype /Form /BBox [0 0 1 1]", g_content),
+            stream("/Subtype /Form /BBox [0 0 1 1]", f_content),
+            stream(JPEG_DICT, IMAGE),
+        ],
+    );
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/G Do /F Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&2u32.to_le_bytes());
+    // G, with F as its one child (no children of its own); then F, drawn by the page, with its child C.
+    expected.extend(xobject_bytes(b"G", 0, g_content));
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"F", 0, f_content));
+    expected.extend(xobject_bytes(b"F", 0, f_content));
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"C", 1, IMAGE));
+    expected.push(b'E');
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+}
+
+/// Failure caught (the memo's untested branch): an image whose decode failed, drawn under a second name, was taken from the memo as it was even where
+/// the page had less left than a stream may take, which can end the decode in a cap where it ended in an error when it was read with more. Its stream
+/// decodes to exactly `xobject_bytes` and then fails; read after another name has taken `left` of the page, the second read is as it would be alone:
+/// the same failure and the same record with `xobject_bytes` or more left, and with one less the decode reaches its cap, so no identity.
+#[test]
+fn a_gave_up_image_is_read_again_where_the_page_has_less_left_than_a_stream_may_take() {
+    let decoded_len = 64u64;
+    // A run of 64 bytes, then a literal run cut short (an error): the 64 bytes come, then the failure. Not an image, so none is hashed as a prefix.
+    let stored = vec![0xc1, b'a', 5, b'x'];
+    let draws = b"/A Do /B Do";
+    let page = one_page(
+        "",
+        "/XObject << /A 5 0 R /B 5 0 R >>",
+        "4 0 R",
+        vec![stream("", draws), stream("/Filter /RunLengthDecode", &stored)],
+    );
+    let xobject_bytes_cap = decoded_len;
+    // What's left when the second name is read: the page's cap less the content and the first read's stored bytes.
+    let under = |left: u64| Caps {
+        xobject_bytes: xobject_bytes_cap,
+        page_bytes: left + draws.len() as u64 + stored.len() as u64,
+        ..Caps::STANDARD
+    };
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws));
+    expected.push(b'X');
+    expected.extend_from_slice(&2u32.to_le_bytes());
+    for name in [&b"A"[..], b"B"] {
+        expected.extend(xobject_bytes(name, 3, &stored));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    let expected = sha(&expected);
+    assert_eq!(
+        digest_under(&page, &under(xobject_bytes_cap + 1)),
+        Some(expected),
+        "more left than a stream may take"
+    );
+    assert_eq!(digest_under(&page, &under(xobject_bytes_cap)), Some(expected), "just what a stream may take");
+    assert_eq!(
+        digest_under(&page, &under(xobject_bytes_cap - 1)),
+        None,
+        "less: the decode that failed reaches the cap"
+    );
+}
+
+/// Failure caught (memory, review of the held objects): a `Refs` kept every value it had followed, whatever its size, so a dictionary pointing at a
+/// 100,000-element array held the whole array for the read. A small value is kept (a second look adds no parse); one past the byte bound is held by
+/// nothing, and parsed again where it's asked for again.
+#[test]
+fn a_read_keeps_a_small_value_and_holds_nothing_for_a_big_one() {
+    let big = format!("[{}]", "0 ".repeat(100_000));
+    let bytes = one_page("", "", "4 0 R", vec![stream("", b""), Obj::Dict("[1 2 3]".into()), Obj::Dict(big)]);
+    let reader = open_bytes_for_identity(Arc::from(bytes)).expect("it opens");
+    let refs = Refs::new(&reader);
+    let (small, large) = (Object::Reference((5, 0)), Object::Reference((6, 0)));
+    DEREFERENCES.with(|count| count.set(0));
+    assert!(matches!(refs.deref(&small), Some(Object::Array(items)) if items.len() == 3));
+    assert!(matches!(refs.deref(&small), Some(Object::Array(_))));
+    assert_eq!(DEREFERENCES.with(std::cell::Cell::get), 1, "a small value is followed once");
+    assert!(matches!(refs.deref(&large), Some(Object::Array(items)) if items.len() == 100_000));
+    assert!(!refs.seen.borrow().contains_key(&(6, 0)), "a big value isn't held");
+    assert_eq!(refs.seen.borrow().len(), 1);
+}
+
+/// Failure caught (memory, review of the held objects): an image past its cap with a 100 KB `/ColorSpace` name has a record whose tail is as long, and the
+/// page held it, and its descriptor, for each such image it drew. Such a record isn't kept for the page, so the image drawn under two names is read twice
+/// (two descriptors), and each name's record is what the definition gives: the byte 4, the kind it would have been, its first `n` bytes' hash, its stored
+/// length, then what it says of itself.
+#[test]
+fn a_record_with_a_long_tail_is_read_again_and_is_the_same() {
+    let space = "S".repeat(100_000);
+    let data = b"12345678";
+    let page = one_page(
+        "",
+        "/XObject << /A 5 0 R /B 5 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/A Do /B Do"),
+            stream(
+                &format!("/Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /{space} /Filter /DCTDecode"),
+                data,
+            ),
+        ],
+    );
+    let caps = Caps {
+        xobject_bytes: 4,
+        ..Caps::STANDARD
+    };
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &caps).remove(0);
+    assert_eq!(
+        DESCRIPTORS.with(std::cell::Cell::get),
+        2,
+        "its record is too long to keep, so each name reads it"
+    );
+    let mut record = vec![4, 1];
+    record.extend_from_slice(&4u64.to_le_bytes());
+    record.extend_from_slice(&sha(&data[..4]));
+    record.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    for integer in [1i64, 1, 8] {
+        record.push(1);
+        record.extend_from_slice(&integer.to_le_bytes());
+    }
+    record.push(2);
+    record.extend_from_slice(&(space.len() as u32).to_le_bytes());
+    record.extend_from_slice(space.as_bytes());
+    record.push(4);
+    record.extend_from_slice(&1u32.to_le_bytes());
+    record.extend_from_slice(&(b"DCTDecode".len() as u32).to_le_bytes());
+    record.extend_from_slice(b"DCTDecode");
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/A Do /B Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&2u32.to_le_bytes());
+    for name in [&b"A"[..], b"B"] {
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(name);
+        expected.extend_from_slice(&record);
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
 }
