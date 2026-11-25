@@ -212,7 +212,8 @@ fn retire<C: Owned>(
         }
         until(patience, &mut now, &mut pause, || child.exited())?;
     }
-    // Retry only OS-observation uncertainty, within the same deadline. Child ownership errors above are final.
+    // Retry only OS-observation uncertainty, until a deadline set now, after the child's own wait (so the two waits add
+    // up). Child ownership errors above are final.
     let deadline = now() + patience;
     let mut unknown = None;
     let observed = until_deadline(deadline, &mut now, &mut pause, || match present() {
