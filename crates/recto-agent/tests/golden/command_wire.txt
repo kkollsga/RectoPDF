@@ -1534,6 +1534,158 @@
     ok settings Settings { auto_update: Some("on") }
 {"cmd":"Settings"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"ref"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"ref","page":3}
+    ok ref Ref { page: 3, tab: "active" }
+{"cmd":"ref","page":3,"tab":"#2"}
+    ok ref Ref { page: 3, tab: "#2" }
+{"cmd":"ref","page":3,"extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"ref","page":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"ref","page":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"ref","page":3,"tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"ref","page":3,"tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["ref"]
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["ref",3,"#2"]
+    ok ref Ref { page: 3, tab: "#2" }
+{"cmd":"Ref"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+    ok resolve Resolve { reference: Locator { .. }, tab: "active" }
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":"#2"}
+    ok resolve Resolve { reference: Locator { .. }, tab: "#2" }
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","ref":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","ref":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","ref":"not-a-reference-secret-123"}
+    refused {"error":{"candidates":[],"code":"bad_reference","exit":2,"message":"That isn't a reference RectoPDF made.","next":"Use the `ref` that `recto ref` gave, whole and unchanged."},"ok":false,"v":1}
+["resolve"]
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["resolve","r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","#2"]
+    ok resolve Resolve { reference: Locator { .. }, tab: "#2" }
+{"cmd":"Resolve"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"resolve","reference":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight"}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+{"cmd":"highlight","tab":"#2","page":3,"to_page":4,"chars":"0-5","at":"10,10","to":"20,20","unit":"word"}
+    ok highlight Highlight { tab: "#2", page: Some(3), to_page: Some(4), chars: Some("0-5"), at: Some("10,10"), to: Some("20,20"), unit: Some("word") }
+{"cmd":"highlight","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","page":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","page":null}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+{"cmd":"highlight","to_page":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","to_page":null}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+{"cmd":"highlight","chars":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","chars":null}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+{"cmd":"highlight","at":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","at":null}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+{"cmd":"highlight","to":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","to":null}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+{"cmd":"highlight","unit":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight","unit":null}
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+["highlight"]
+    ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None }
+["highlight","#2",3,4,"0-5","10,10","20,20","word"]
+    ok highlight Highlight { tab: "#2", page: Some(3), to_page: Some(4), chars: Some("0-5"), at: Some("10,10"), to: Some("20,20"), unit: Some("word") }
+{"cmd":"Highlight"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove"}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","tab":"#2","page":3,"to_page":4,"chars":"0-5","to":"20,20"}
+    ok highlight_remove HighlightRemove { tab: "#2", id: None, page: Some(3), to_page: Some(4), chars: Some("0-5"), at: None, to: Some("20,20") }
+{"cmd":"highlight_remove","id":2}
+    ok highlight_remove HighlightRemove { tab: "active", id: Some(2), page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","page":3,"at":"10,10"}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: Some(3), to_page: None, chars: None, at: Some("10,10"), to: None }
+{"cmd":"highlight_remove","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","id":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","id":null}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","page":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","page":null}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","to_page":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","to_page":null}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","chars":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","chars":null}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","at":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","at":null}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+{"cmd":"highlight_remove","to":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlight_remove","to":null}
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+["highlight_remove"]
+    ok highlight_remove HighlightRemove { tab: "active", id: None, page: None, to_page: None, chars: None, at: None, to: None }
+["highlight_remove","#2",2,3,4,"0-5","10,10","20,20"]
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--id` goes alone: a highlight's number names it.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"HighlightRemove"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlights"}
+    ok highlights Highlights { tab: "active", page: None }
+{"cmd":"highlights","tab":"#2","page":3}
+    ok highlights Highlights { tab: "#2", page: Some(3) }
+{"cmd":"highlights","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlights","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlights","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlights","page":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"highlights","page":null}
+    ok highlights Highlights { tab: "active", page: None }
+["highlights"]
+    ok highlights Highlights { tab: "active", page: None }
+["highlights","#2",3]
+    ok highlights Highlights { tab: "#2", page: Some(3) }
+{"cmd":"Highlights"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"tabs","cmd":"tabs"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"tabs","cmd":"where"}

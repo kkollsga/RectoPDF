@@ -85,6 +85,7 @@ impl Run<'_> {
             from: self.plan.from.clone(),
             to: self.plan.to.clone(),
             why: why.to_owned(),
+            plan: Some(self.plan.id.clone()),
         };
         if outcome.write(&self.files.outcome()).is_err() {
             self.say("installer: the outcome couldn't be written");
@@ -213,6 +214,7 @@ impl Run<'_> {
                     from: self.plan.from.clone(),
                     to: self.plan.to.clone(),
                     why: "app_exit_unproven".into(),
+                    plan: Some(self.plan.id.clone()),
                 }
                 .write(&self.files.outcome());
                 return Ended::Stuck;

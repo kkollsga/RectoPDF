@@ -54,6 +54,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | The search command | [`search.md`](search.md) |
 | Find | [`find.md`](find.md) |
 | Highlights | [`highlight.md`](highlight.md) |
+| References: `ref` and `resolve` | [`locator.md`](locator.md) |
 | Generated contents | [`generated-contents.md`](generated-contents.md) |
 | The agent interface | [`agent-interface.md`](agent-interface.md) |
 | Slow mode | [`slow-mode.md`](slow-mode.md) |

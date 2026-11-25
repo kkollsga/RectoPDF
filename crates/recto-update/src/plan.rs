@@ -255,6 +255,9 @@ pub struct Outcome {
     pub to: String,
     /// Why, as a code of the installer's own.
     pub why: String,
+    /// The id of the plan this is about, so a retry of the same versions under a new plan isn't taken for it. Files written before this was kept read as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +272,19 @@ pub enum OutcomeKind {
 }
 
 impl Outcome {
+    /// An outcome that isn't about any one plan (`plan` is `None`): tests only, as every installer writer has its plan.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new(kind: OutcomeKind, from: &str, to: &str, why: &str) -> Self {
+        Self {
+            kind,
+            from: from.to_owned(),
+            to: to.to_owned(),
+            why: why.to_owned(),
+            plan: None,
+        }
+    }
+
     #[must_use]
     pub fn read(file: &Path) -> Option<Self> {
         let bytes = local::read_private_file(file, MAX_PLAN_BYTES).ok()??;
@@ -384,5 +400,30 @@ mod tests {
         assert!(!misread(Some(3), Some(4)), "a file opened as it came up");
         assert!(!misread(Some(3), None), "shown before the record was read");
         assert!(!misread(None, Some(0)), "an old app that didn't say");
+    }
+
+    /// Failure: someone adds `deny_unknown_fields` (or makes `plan` required) to `Outcome`, so an older app can't read the file a newer one wrote
+    /// and a newer app can't read an older file, and a refusal is lost across an update.
+    #[test]
+    fn an_outcome_reads_across_versions_of_the_app() {
+        let dir = recto_testpdf::TempDir::new("recto-outcome-");
+        local::ensure_private_dir(&dir).unwrap();
+        let file = dir.join("outcome.json");
+        let read = |json: &str| {
+            local::write_private_file(&file, json.as_bytes()).unwrap();
+            Outcome::read(&file)
+        };
+        let newer = read(r#"{"kind":"went_back","from":"0.1.0","to":"0.2.0","why":"w","plan":"p1","added_later":{"x":1}}"#);
+        assert_eq!(
+            newer.map(|o| (o.kind, o.plan)),
+            Some((OutcomeKind::WentBack, Some("p1".to_owned()))),
+            "a key it doesn't know is ignored"
+        );
+        let older = read(r#"{"kind":"not_installed","from":"0.1.0","to":"0.2.0","why":"w"}"#);
+        assert_eq!(
+            older.map(|o| (o.kind, o.plan)),
+            Some((OutcomeKind::NotInstalled, None)),
+            "a file without `plan` reads as none"
+        );
     }
 }
