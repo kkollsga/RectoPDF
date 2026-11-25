@@ -473,6 +473,9 @@ mod tests {
         let command = crate::parse(r##"{"cmd":"ref","page":3,"chars":"120-180","tab":"#2"}"##).expect("ref with chars");
         let logged = command.log_details();
         assert_eq!(logged, json!({ "tab": "#2", "page": 3 }), "the page only: {logged}");
-        assert!(crate::parse(&command.wire()).is_ok(), "what the window or a test builds prints as a line an agent could send");
+        assert!(
+            crate::parse(&command.wire()).is_ok(),
+            "what the window or a test builds prints as a line an agent could send"
+        );
     }
 }

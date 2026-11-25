@@ -100,7 +100,11 @@ fn page_text(path: &std::path::Path, file_page: u32) -> Result<String, AgentErro
 
 /// The file's resolution of a reference, and for a character target on a page that was found, whether its text is the text it was made of. The text is read
 /// with the session free, and the file's version is checked after that read as well.
-fn resolved<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator) -> Result<(TabFile, Resolution, Option<TextMatch>, recto_platform::FileStamp), AgentError> {
+fn resolved<A: SessionAccess>(
+    access: &A,
+    tab: &TabRef,
+    reference: &Locator,
+) -> Result<(TabFile, Resolution, Option<TextMatch>, recto_platform::FileStamp), AgentError> {
     let (file, opened, stamp) = readable(access, tab)?;
     let found = locator::resolve(reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
     drop(opened);
@@ -299,7 +303,9 @@ fn target_json(placed: &Placed, text: Option<TextMatch>) -> Value {
         Placed::SpotFrameChanged => json!({ "kind": "spot", "placed": false, "why": "frame_changed" }),
         Placed::SpotOutsidePage => json!({ "kind": "spot", "placed": false, "why": "outside_page" }),
         Placed::CharactersNotChecked { start, end } => match text {
-            Some(held) => json!({ "kind": "characters", "start": start, "end": end, "checked": true, "text": if held == TextMatch::Same { "same" } else { "changed" } }),
+            Some(held) => {
+                json!({ "kind": "characters", "start": start, "end": end, "checked": true, "text": if held == TextMatch::Same { "same" } else { "changed" } })
+            }
             None => json!({ "kind": "characters", "start": start, "end": end, "checked": false }),
         },
     }
@@ -348,7 +354,9 @@ fn note_of(found: &Resolution, text: Option<TextMatch>, at: Option<Option<u32>>,
         Some(Placed::SpotOutsidePage) => note.push_str(" The spot is outside the page now, so it isn't placed."),
         Some(Placed::CharactersNotChecked { .. }) => note.push_str(match text {
             Some(TextMatch::Same) => " The characters are the same as the ones the reference was made of.",
-            Some(TextMatch::Changed) => " The page is there, but its text at those characters isn't what the reference was made of, and nothing else on the page was searched for it.",
+            Some(TextMatch::Changed) => {
+                " The page is there, but its text at those characters isn't what the reference was made of, and nothing else on the page was searched for it."
+            }
             None => " The characters aren't checked against the page's text.",
         }),
         Some(Placed::Page) | None => {}

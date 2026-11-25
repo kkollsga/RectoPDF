@@ -515,13 +515,7 @@ fn a_character_reference_reads_the_same_words_after_another_program_moved_the_pa
     assert_eq!((after["status"].as_str(), after["page"].as_u64()), (Some("moved"), Some(4)), "{after}");
     assert_eq!(after["target"]["text"], "same", "{after}");
     let read = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect("text --ref");
-    let words: String = read["untrusted"]["text"]
-        .as_str()
-        .expect("text")
-        .chars()
-        .skip(start as usize)
-        .take(4)
-        .collect();
+    let words: String = read["untrusted"]["text"].as_str().expect("text").chars().skip(start as usize).take(4).collect();
     assert_eq!((words.as_str(), read["page"].as_u64()), ("page", Some(4)), "{read}");
 }
 
@@ -535,9 +529,17 @@ fn a_hostile_character_token_on_a_found_page_is_text_changed_never_found() {
     app.open(&file);
     let good = chars_reference(&app, 3, 0, 4).expect("a character reference");
     let page = reference(&app, 3);
-    for token in [hostile_chars(&good, 0, 4), hostile_chars(&good, 0, 1 << 21), hostile_chars(&good, 4_000_000 >> 2, 1 << 21)] {
+    for token in [
+        hostile_chars(&good, 0, 4),
+        hostile_chars(&good, 0, 1 << 21),
+        hostile_chars(&good, 4_000_000 >> 2, 1 << 21),
+    ] {
         let said = resolve(&app, Level::ReadOnly, &token).expect("an answer, not a refusal");
-        assert_eq!((said["status"].as_str(), said["page"].as_u64(), said["file_page"].as_u64()), (Some("text_changed"), Some(3), Some(3)), "{said}");
+        assert_eq!(
+            (said["status"].as_str(), said["page"].as_u64(), said["file_page"].as_u64()),
+            (Some("text_changed"), Some(3), Some(3)),
+            "{said}"
+        );
         assert_eq!(said["target"]["text"], "changed", "{said}");
         let (read, events) = run_saying(&app, Level::ReadOnly, &json!({ "cmd": "text", "ref": token, "tab": "#1" }));
         let read = read.expect_err("not read");
@@ -548,11 +550,15 @@ fn a_hostile_character_token_on_a_found_page_is_text_changed_never_found() {
     replace(&file, &pages_saying(&["Mine page 1", "Mine page 2", "Mine page 4", "Mine page 5"]));
     look(&app);
     let gone = app.recto(Level::ReadOnly, &["text", "--ref", &page]).expect_err("gone");
-    let changed = app.recto(Level::ReadOnly, &["text", "--ref", &hostile_chars(&good, 0, 4)]).expect_err("gone too");
+    let changed = app
+        .recto(Level::ReadOnly, &["text", "--ref", &hostile_chars(&good, 0, 4)])
+        .expect_err("gone too");
     assert_eq!(changed.code.as_str(), "reference_unresolved");
     let again = app.disk().file("again.pdf", &pdf_bytes("Mine", 5));
     app.open(&again);
-    let found_hostile = app.recto(Level::ReadOnly, &["resolve", &hostile_chars(&good, 0, 4), "--tab", "#2"]).expect("resolve");
+    let found_hostile = app
+        .recto(Level::ReadOnly, &["resolve", &hostile_chars(&good, 0, 4), "--tab", "#2"])
+        .expect("resolve");
     assert_eq!(found_hostile["status"], "text_changed", "{found_hostile}");
     let text_changed = app
         .recto(Level::ReadOnly, &["text", "--ref", &hostile_chars(&good, 0, 4), "--tab", "#2"])
@@ -595,9 +601,7 @@ fn an_agent_below_full_changes_nothing_of_the_owners_edits_by_a_character_refere
     let good = chars_reference(&app, 4, 0, 4).expect("a character reference");
     let hostile = hostile_chars(&good, 0, 4);
     for level in [Level::ReadOnly, Level::Control] {
-        let made = app
-            .agent(level, r##"{"cmd":"ref","page":4,"chars":"0-4","tab":"#1"}"##)
-            .expect("ref --chars");
+        let made = app.agent(level, r##"{"cmd":"ref","page":4,"chars":"0-4","tab":"#1"}"##).expect("ref --chars");
         assert_eq!(made["ref"], good.as_str(), "the same words give the same reference at every level");
         assert_eq!(resolve(&app, level, &good).expect("resolve")["status"], "found");
         assert_eq!(resolve(&app, level, &hostile).expect("resolve")["status"], "text_changed");
@@ -643,7 +647,11 @@ fn a_protected_document_gives_no_character_reference_and_no_check() {
     ] {
         let (answered, events) = run_saying(&app, Level::Full, &line);
         let answered = answered.expect_err("refused");
-        assert_eq!((answered.code, answered.exit, &answered.message), (text.code, text.exit, &text.message), "{line}");
+        assert_eq!(
+            (answered.code, answered.exit, &answered.message),
+            (text.code, text.exit, &text.message),
+            "{line}"
+        );
         assert!(!drew(&events), "{events:?}");
     }
 }

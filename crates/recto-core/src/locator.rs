@@ -13,8 +13,8 @@ mod resolve;
 mod text;
 
 pub use codec::{decode, encode};
-pub use text::{TextMatch, characters, check_characters, text_check};
 pub use resolve::{DocumentMatch, Looked, MAX_CANDIDATES, Placed, Resolution, ScanCaps, Status, TAG_PAGES, Unreferenceable, document_tags, reference, resolve};
+pub use text::{TextMatch, characters, check_characters, text_check};
 
 use crate::page_id::PageIdentity;
 
