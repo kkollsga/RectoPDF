@@ -60,3 +60,11 @@ pub fn the_person_scrolls(app: &HeadlessApp, view: &mut recto_reader::Viewport, 
     let ops = engine.set_viewport(*view);
     apply_batch(engine, view, &ops, began);
 }
+
+/// A view that has just been put up (a tab opened or shown) says where it is: the host starts at `scrolledTo = 0` and has applied no scroll, so it
+/// claims arrival at none, and [`report_where_the_host_is`] arrives at every scroll the session queued. Failure caught: a fresh view sent with "arrived
+/// at every scroll" cleared a jump queued but not yet drained.
+pub fn report_a_fresh_view(app: &HeadlessApp, view: &mut recto_reader::Viewport) {
+    view.scrolled_to = 0;
+    report_where_the_host_is(app, view);
+}

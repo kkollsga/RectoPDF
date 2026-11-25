@@ -154,11 +154,8 @@ fn a_tab_whose_pages_change_off_screen_sleeps_with_no_size_of_another_page() {
     let mut view = window_view();
     for doc in [&c, &a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, c) = (tab_named(&app, "a.pdf"), tab_named(&app, "c.pdf"));
@@ -198,11 +195,8 @@ fn a_tab_asleep_whose_pages_change_wakes_with_nothing_from_before() {
     let mut view = window_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let a = tab_named(&app, "a.pdf");
@@ -252,11 +246,8 @@ fn a_tab_woken_while_its_worker_outlived_its_sleep_has_its_next_sleep_file_decid
     let mut view = window_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
@@ -310,11 +301,8 @@ fn a_tab_put_to_sleep_and_woken_in_one_look_has_its_next_sleep_file_decided() {
     let mut view = window_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
@@ -369,11 +357,8 @@ fn another_tabs_job_on_a_file_leaves_its_length_to_be_said_to_the_tab_that_owns_
     let mut view = window_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     full(&app, &["page", "insert", a.to_str().expect("a path"), "--at", "3"]);
@@ -417,11 +402,8 @@ fn a_tab_left_inside_the_gap_after_a_page_was_rotated_wakes_from_its_facts() {
     let mut view = window_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
@@ -478,11 +460,8 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
     let mut view = window_view();
     for file in &docs[..2] {
         app.open(file);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
@@ -521,11 +500,8 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
     host_turns(&app, &mut view, true);
     for file in &docs[2..] {
         app.open(file);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
@@ -550,11 +526,8 @@ fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
     let mut view = retina_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..retina_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = retina_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     // Room for a tab's facts.
@@ -603,8 +576,8 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
     let mut view = small();
     for doc in &docs {
         app.open(doc);
-        view = recto_reader::Viewport { scrolled_to: 0, ..small() };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = small();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
@@ -1010,11 +983,8 @@ fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64
     let mut view = window_view();
     for doc in &docs {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
         app.advance(dwell.0);
     }
@@ -1119,11 +1089,8 @@ fn a_pushed_out_and_waiting(disk: Disk, wait_ms: u64) -> (crate::testkit::headle
     let mut view = window_view();
     for doc in &docs {
         app.open(doc);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let a = tab_named(&app, "a.pdf");
@@ -1243,11 +1210,8 @@ fn session_sleep_keeps_to_the_limits_on_writing() {
     let mut view = window_view();
     for file in [&doc, &other] {
         app.open(file);
-        view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
+        view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
@@ -1454,11 +1418,8 @@ fn every_route_that_writes_a_sleep_file_writes_no_picture() {
     let mut view = window_view();
     let open = |doc: &std::path::Path, view: &mut recto_reader::Viewport| {
         app.open(doc);
-        *view = recto_reader::Viewport {
-            scrolled_to: 0,
-            ..window_view()
-        };
-        crate::testkit::host_standin::report_where_the_host_is(&app, view);
+        *view = window_view();
+        crate::testkit::host_standin::report_a_fresh_view(&app, view);
         host_turns(&app, view, true);
     };
     for doc in &docs[..4] {
