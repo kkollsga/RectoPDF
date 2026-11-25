@@ -522,13 +522,13 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
     told.extend(look(&app, &mut watching, "separate"));
     // A draw of the plain tab's pages, ended and its word held, then an agent's goto, which keeps its place withheld (D-A), then the word.
     let (mut view, engine) = first_pane_shown(&app, plain_tab, 1.0);
-    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+    crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
     crate::testkit::headless::host_turns(&app, &mut view, true);
     engine.qa().hold_tells(true);
     told.push(format!("zoom: {:?}", control(&app, r#"{"cmd":"view","zoom":"in"}"#).map(|_| ())));
     // The host shows it zoomed, from the same place: the pages there are drawn again.
     let (mut zoomed, _) = first_pane_shown(&app, plain_tab, 2.0);
-    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(zoomed));
+    crate::testkit::host_standin::report_where_the_host_is(&app, &mut zoomed);
     assert!(engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT), "a draw's word held");
     told.push(format!(
         "goto 8: {:?}",
@@ -624,7 +624,7 @@ fn shown_by_the_host(app: &HeadlessApp, tab: u32) -> (recto_reader::Viewport, re
         live: false,
         scrolled_to: 0,
     };
-    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+    crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
     crate::testkit::headless::host_turns(app, &mut view, true);
     (view, engine)
 }
