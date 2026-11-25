@@ -318,7 +318,9 @@ mod tests {
             mut stdin,
             mut stdout,
         } = started;
-        stdin.write_all(b"i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done; /bin/sleep 30 & echo $!; read line\n").unwrap();
+        stdin
+            .write_all(b"i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done; /bin/sleep 30 & echo $!; read line\n")
+            .unwrap();
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
         while stdout.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
@@ -333,7 +335,11 @@ mod tests {
         // Its `read` fails as its input closes, so it doesn't end with success. That it ends is what matters.
         child.wait().unwrap();
         // The promise: the work ran at utility, and nowhere else. The shell has done real work by now, so its utility time is above zero.
-        assert!(shell_time.ri_cpu_time_qos_utility > 0, "the helper used no CPU time at utility: {:?}", outside_utility(&shell_time));
+        assert!(
+            shell_time.ri_cpu_time_qos_utility > 0,
+            "the helper used no CPU time at utility: {:?}",
+            outside_utility(&shell_time)
+        );
         assert_eq!(outside_utility(&shell_time), vec![], "the helper ran outside utility, by bucket in ns");
         assert_eq!(outside_utility(&sleeper_time), vec![], "what it started ran outside utility, by bucket in ns");
         // Below an ordinary process's 31 and above Darwin background's 4: the base priority the clamp holds, which nothing the process does lifts.
