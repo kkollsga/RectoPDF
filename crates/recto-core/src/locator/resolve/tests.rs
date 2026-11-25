@@ -208,8 +208,8 @@ fn a_byte_cap_equal_to_what_was_read_stops_and_one_more_byte_reads_on() {
     assert_eq!((over.status, over.looked, over.pages_read), (Status::Gone, Looked::All, 3));
 }
 
-/// Failure: someone makes a scan charge a shared image once, so the byte cap stops bounding the work (the image is still decoded and hashed on
-/// every page that draws it). One page draws an image and is scanned alone; two pages draw it and are scanned together: the two cost at least
+/// Failure: someone makes a scan charge a shared image once, so the byte cap stops bounding the work. The charge matches the work done: a shared
+/// image is decoded and hashed on each page that draws it, so it is charged on each. One page draws an image and is scanned alone; two pages draw it and are scanned together: the two cost at least
 /// twice the one, and the one cost more than the image.
 #[test]
 fn a_scan_charges_an_image_each_page_draws_it() {
