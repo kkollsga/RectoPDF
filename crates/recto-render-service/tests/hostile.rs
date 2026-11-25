@@ -130,6 +130,7 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
             version: 1,
             repaired: false,
         }),
+        "spin_in_draw" => spin_on_every_thread(),
         "silent" | "ignore_cancel" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
@@ -245,16 +246,7 @@ fn fake_worker() {
                     std::thread::sleep(Duration::from_secs(600));
                 }
                 if mode == "spin_on_open" {
-                    for _ in 0..8 {
-                        std::thread::spawn(|| {
-                            loop {
-                                std::hint::spin_loop();
-                            }
-                        });
-                    }
-                    loop {
-                        std::hint::spin_loop();
-                    }
+                    spin_on_every_thread();
                 }
                 let mut handles = frame.handles;
                 let shared = SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap();
@@ -487,6 +479,20 @@ fn asked_until_remembered(doc: &mut DocRenderer) -> (u64, u64) {
     (before, recto_platform::footprint_bytes().unwrap_or(0))
 }
 
+/// Uses the processor on 9 threads at once, for ever.
+fn spin_on_every_thread() -> ! {
+    for _ in 0..8 {
+        std::thread::spawn(|| {
+            loop {
+                std::hint::spin_loop();
+            }
+        });
+    }
+    loop {
+        std::hint::spin_loop();
+    }
+}
+
 /// Failure: a worker claims a 64 MiB frame and sends nothing, and the host allocates it up front. A claim costs nothing until bytes arrive;
 /// the deadline ends it. The stand-in sleeps, as a worker the Mac gave no processor does, so the asks go as a busy Mac's do, and the memory held across all of them stays small.
 #[test]
@@ -498,7 +504,9 @@ fn a_claimed_frame_costs_nothing_until_it_arrives() {
             ..Policy::default()
         },
     );
-    let (before, after) = asked_until_remembered(&mut doc);
+    let before = recto_platform::footprint_bytes().unwrap_or(0);
+    assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::TooBusy { page: 0 });
+    let after = recto_platform::footprint_bytes().unwrap_or(0);
     assert!(after.saturating_sub(before) < 32 * 1024 * 1024, "grew from {before} to {after}");
 }
 
@@ -957,6 +965,26 @@ fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     );
     assert_eq!(spins.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
     assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the file");
+}
+
+/// Failure: a draw that hangs while using the processor, on every thread it can, reads as a Mac too busy to run its worker, so a hostile page is asked again and again as `TooBusy` and never remembered. Using the processor, it's the page: the first ask is a failure at the deadline and nothing counts as busy. (The draw twin of the open test above; seeded by counting every deadline as busy.)
+#[test]
+fn a_draw_that_uses_the_processor_is_told_from_a_mac_too_busy_to_run_it() {
+    let (mut spins, _file) = doc(
+        "spin_in_draw",
+        Policy {
+            page_deadline: Duration::from_millis(400),
+            ..policy()
+        },
+    );
+    assert_eq!(
+        spins.render_tile(&request(), &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Deadline
+        }
+    );
+    assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the page");
 }
 
 /// Failure: a compromised worker writes to the shared cancel word and the host believes it, so every tile of the document reads as stale.
