@@ -74,7 +74,7 @@ pub(super) fn run_guarded(shared: &Shared) {
     }
 }
 
-/// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
+/// **Nothing to start:** at rest as ever (but for the wait of a page held to be tried again), or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
 /// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
 fn rest_or_wait_for_a_surface(
     planned: bool,
@@ -99,7 +99,8 @@ fn rest_or_wait_for_a_surface(
             Some(reader.work.surfaces.refused())
         } else {
             reader.work.surfaces.clear();
-            None
+            // A page held for a look or a draw to be tried again has no event coming to ask it: the thread wakes when its wait is over.
+            reader.docs.next_hold_ends(Instant::now())
         }
     };
     rest(shared, renderers, policy, resting_since, retry);

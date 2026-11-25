@@ -85,8 +85,20 @@ fn a_busy_draw_on_white_paper_isnt_settled_and_is_asked_for_again() {
     reader.finish(job, Outcome::LookLater);
     assert_eq!(reader.note(), None, "no words for a person");
     assert_eq!(reader.report().0["settled"].as_bool(), Some(false));
+    assert!(
+        reader
+            .docs
+            .next_hold_ends(Instant::now())
+            .is_some_and(|left| !left.is_zero() && left <= TRY_AGAIN_AFTER),
+        "the page view's thread is woken when the wait is over, as no event may come to ask (long session, 2026-11-25: the page stayed bare and unsettled for 30 s)"
+    );
     assert!(jobs_for(&mut reader, page).is_empty(), "not asked for while it waits");
     reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
+    assert_eq!(
+        reader.docs.next_hold_ends(Instant::now()),
+        None,
+        "a wait that's over is the plan's, and nothing to wake for"
+    );
     reader.refresh(MAX_ATTACH_PER_TURN);
     let again = jobs_for(&mut reader, page);
     assert!(
