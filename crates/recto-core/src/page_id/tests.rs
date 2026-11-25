@@ -1259,3 +1259,83 @@ fn a_gave_up_image_is_read_again_where_the_page_has_less_left_than_a_stream_may_
         "less: the decode that failed reaches the cap"
     );
 }
+
+/// Failure caught (memory, review of the held objects): a `Refs` kept every value it had followed, whatever its size, so a dictionary pointing at a
+/// 100,000-element array held the whole array for the read. A small value is kept (a second look adds no parse); one past the byte bound is held by
+/// nothing, and parsed again where it's asked for again.
+#[test]
+fn a_read_keeps_a_small_value_and_holds_nothing_for_a_big_one() {
+    let big = format!("[{}]", "0 ".repeat(100_000));
+    let bytes = one_page("", "", "4 0 R", vec![stream("", b""), Obj::Dict("[1 2 3]".into()), Obj::Dict(big)]);
+    let reader = open_bytes_for_identity(Arc::from(bytes)).expect("it opens");
+    let refs = Refs::new(&reader);
+    let (small, large) = (Object::Reference((5, 0)), Object::Reference((6, 0)));
+    DEREFERENCES.with(|count| count.set(0));
+    assert!(matches!(refs.deref(&small), Some(Object::Array(items)) if items.len() == 3));
+    assert!(matches!(refs.deref(&small), Some(Object::Array(_))));
+    assert_eq!(DEREFERENCES.with(std::cell::Cell::get), 1, "a small value is followed once");
+    assert!(matches!(refs.deref(&large), Some(Object::Array(items)) if items.len() == 100_000));
+    assert!(!refs.seen.borrow().contains_key(&(6, 0)), "a big value isn't held");
+    assert_eq!(refs.seen.borrow().len(), 1);
+}
+
+/// Failure caught (memory, review of the held objects): an image past its cap with a 100 KB `/ColorSpace` name has a record whose tail is as long, and the
+/// page held it, and its descriptor, for each such image it drew. Such a record isn't kept for the page, so the image drawn under two names is read twice
+/// (two descriptors), and each name's record is what the definition gives: the byte 4, the kind it would have been, its first `n` bytes' hash, its stored
+/// length, then what it says of itself.
+#[test]
+fn a_record_with_a_long_tail_is_read_again_and_is_the_same() {
+    let space = "S".repeat(100_000);
+    let data = b"12345678";
+    let page = one_page(
+        "",
+        "/XObject << /A 5 0 R /B 5 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/A Do /B Do"),
+            stream(
+                &format!("/Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /{space} /Filter /DCTDecode"),
+                data,
+            ),
+        ],
+    );
+    let caps = Caps {
+        xobject_bytes: 4,
+        ..Caps::STANDARD
+    };
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &caps).remove(0);
+    assert_eq!(
+        DESCRIPTORS.with(std::cell::Cell::get),
+        2,
+        "its record is too long to keep, so each name reads it"
+    );
+    let mut record = vec![4, 1];
+    record.extend_from_slice(&4u64.to_le_bytes());
+    record.extend_from_slice(&sha(&data[..4]));
+    record.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    for integer in [1i64, 1, 8] {
+        record.push(1);
+        record.extend_from_slice(&integer.to_le_bytes());
+    }
+    record.push(2);
+    record.extend_from_slice(&(space.len() as u32).to_le_bytes());
+    record.extend_from_slice(space.as_bytes());
+    record.push(4);
+    record.extend_from_slice(&1u32.to_le_bytes());
+    record.extend_from_slice(&(b"DCTDecode".len() as u32).to_le_bytes());
+    record.extend_from_slice(b"DCTDecode");
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/A Do /B Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&2u32.to_le_bytes());
+    for name in [&b"A"[..], b"B"] {
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(name);
+        expected.extend_from_slice(&record);
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
