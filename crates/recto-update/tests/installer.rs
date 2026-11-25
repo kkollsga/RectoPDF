@@ -803,9 +803,9 @@ fn going_back_by_itself_takes_only_a_copy_it_may() {
     }
 }
 
-/// Failure: **the last look isn't the last thing:** with the record copied after it, a same-user racer had 316 ms with 3,000 journal files to put something else in `new/`, which a review did, and an unsigned bundle was swapped in, run and kept. Held right after the record's copied, a racer swaps in an unsigned 9.9.9, and it's refused.
+/// Failure: **the signature look is taken before the record's copy:** with the record copied after the look, a same-user racer had 316 ms with 3,000 journal files to put something else in `new/`, which a review did, and an unsigned bundle was swapped in, run and kept. So the look comes after the copy: held right after the record's copied, a racer swaps in an unsigned 9.9.9, and it's refused.
 #[test]
-fn the_last_look_is_the_last_thing_before_the_swap() {
+fn the_signature_look_comes_after_the_records_copy() {
     let mut bed = Bed::new("racer", "ok");
     let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
     gone.wait().unwrap();
