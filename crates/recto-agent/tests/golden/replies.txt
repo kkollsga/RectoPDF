@@ -1832,6 +1832,138 @@
   words ""
 {"cmd":"Settings"}
   refused cmd=unknown code=bad_command
+{"cmd":"ref"}
+  refused cmd=unknown code=bad_command
+{"cmd":"ref","page":3}
+  reply {"cmd":"ref","error":{"candidates":[],"code":"file_unreadable","exit":1,"message":"The tab's file can't be read just now.","next":"`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"ref","page":3,"tab":"#2"}
+  reply {"cmd":"ref","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"ref","page":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"ref","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"ref","page":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"ref","page":3,"tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"ref","page":3,"tab":null}
+  refused cmd=unknown code=bad_command
+["ref"]
+  refused cmd=unknown code=bad_command
+["ref",3,"#2"]
+  reply {"cmd":"ref","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"Ref"}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve"}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  reply {"cmd":"resolve","error":{"candidates":[],"code":"file_unreadable","exit":1,"message":"The tab's file can't be read just now.","next":"`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":"#2"}
+  reply {"cmd":"resolve","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","ref":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","ref":"not-a-reference-secret-123"}
+  refused cmd=resolve code=bad_reference
+["resolve"]
+  refused cmd=unknown code=bad_command
+["resolve","r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","#2"]
+  reply {"cmd":"resolve","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"Resolve"}
+  refused cmd=unknown code=bad_command
+{"cmd":"resolve","reference":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","to_page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","chars":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","at":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","to":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","unit":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"Highlight"}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","id":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","to_page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","chars":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","at":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight_remove","to":{}}
+  refused cmd=unknown code=bad_command
+["highlight_remove","#2",2,3,4,"0-5","10,10","20,20"]
+  refused cmd=highlight_remove code=usage
+{"cmd":"HighlightRemove"}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlights"}
+  reply {"cmd":"highlights","data":{"colour":"#FFE14D","edits":[],"file":null,"note":"`rects` are x, y, width, height in points on the page as the file shows it, from its top left. `edits` are unsaved, and `recto highlight remove --id N` takes one away. `removed` are the file's own taken out, which the next save takes out of the file; `recto undo` puts one back. `file` lists the file's own on `--page`, and `recto highlight remove --page N --at X,Y` takes one out.","removed":[],"tab":4},"ok":true,"v":1}
+  events 
+  words "No unsaved highlights."
+{"cmd":"highlights","tab":"#2","page":3}
+  reply {"cmd":"highlights","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"highlights","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlights","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlights","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlights","page":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlights","page":null}
+  reply {"cmd":"highlights","data":{"colour":"#FFE14D","edits":[],"file":null,"note":"`rects` are x, y, width, height in points on the page as the file shows it, from its top left. `edits` are unsaved, and `recto highlight remove --id N` takes one away. `removed` are the file's own taken out, which the next save takes out of the file; `recto undo` puts one back. `file` lists the file's own on `--page`, and `recto highlight remove --page N --at X,Y` takes one out.","removed":[],"tab":4},"ok":true,"v":1}
+  events 
+  words "No unsaved highlights."
+["highlights"]
+  reply {"cmd":"highlights","data":{"colour":"#FFE14D","edits":[],"file":null,"note":"`rects` are x, y, width, height in points on the page as the file shows it, from its top left. `edits` are unsaved, and `recto highlight remove --id N` takes one away. `removed` are the file's own taken out, which the next save takes out of the file; `recto undo` puts one back. `file` lists the file's own on `--page`, and `recto highlight remove --page N --at X,Y` takes one out.","removed":[],"tab":4},"ok":true,"v":1}
+  events 
+  words "No unsaved highlights."
+["highlights","#2",3]
+  reply {"cmd":"highlights","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"Highlights"}
+  refused cmd=unknown code=bad_command
 {"cmd":"tabs","cmd":"tabs"}
   refused cmd=unknown code=bad_command
 {"cmd":"tabs","cmd":"where"}
