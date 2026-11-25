@@ -36,14 +36,23 @@
 //!    length and the geometry are in it: they make look-alikes as unlikely as for whole content, not impossible.
 //! 4. `E`.
 //!
+//! **2026-11-25: the records cap went from 256 to 8,192, and the forms cap and the decode-work budget are new.** No existing digest changed (0 of the
+//! 5,857 pages that had a digest, of the 5,872 of the corpus `bench100`, compared page by page), and 11 pages that had none gained one (one more
+//! refused page, the 330 MiB map's, is charged more work before its refusal); the name stays `recto-page/1`. The only cap whose value is hashed is the
+//! image's own ([`Caps::xobject_bytes`]); the others only refuse, and a page with at most 256 records drew at most 128 forms, so the forms cap can't touch
+//! an identity made before. The decode-work budget counts what a decoder gave, **a stream that then failed included** (a double-Flate chain that
+//! fails after 16 MiB costs a kilobyte stored, and 8,192 of them 128 GiB of work, which only the stored length was charged for before it).
+//!
 //! **A page that reaches a cap has no identity** ([`read_page`] gives `None`), but for an image past its own cap (kind 4, a definition of its own): so a
 //! digest never depends on where a cap fell, on how much a decoder read ahead or on how a library buffers, only on the file. The caps,
 //! [`Caps::STANDARD`], each counted exactly (one byte past is past): more than 1,024 entries of `/Contents`; more than 16 MiB hashed of the content
-//! together; more than 256 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 256 names); more than
-//! 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the streams opened (each charged its length when
-//! it's opened, before a byte is read, and again if it's read again as stored); and in a file anyone may open (encrypted with an empty password), a
+//! together; more than 8,192 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 8,192 names); more than 256
+//! forms drawn by the page whose content draws a name; more than 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored
+//! length of the streams opened (each charged its length when
+//! it's opened, before a byte is read, and again if it's read again as stored); more than 256 MiB read through a stream in all, decoded or as stored, stage by stage of a
+//! chain, a decode that failed counted as one that didn't ([`Caps::decode_work`]); and in a file anyone may open (encrypted with an empty password), a
 //! stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs at most the caps, holding a few buffers
-//! of [`decode::CHUNK`], a predictor's row and the scan's names (256 of at most 127 bytes).
+//! of [`decode::CHUNK`], a predictor's row and the scan's names (8,192 of at most 127 bytes).
 //!
 //! **What a page holds at once:** what the digest needs of what it has resolved is small facts, and a whole parsed object (a dictionary, an array: up to
 //! the reader's object limit, and an object stream's members aren't under even that) lives only in a single slot, dropped before the next is resolved,
@@ -51,7 +60,13 @@
 //! the names a form drew and, for each, the id it found in the form's lookup, never a dictionary; a `/Resources` reference is one small entry saying what
 //! its `/XObject` is; one `/XObject` table and one gave-up stream's descriptor are held, each until the next one is needed; and a read's references
 //! keep at most 16 values of at most 4 KiB. A page's own `/XObject` is the one table held for the whole page. Together a page holds a fixed number of whole
-//! objects (the page dictionary, the page's `/XObject` table, one form's table, one descriptor, and the one being parsed) plus under 0.5 MiB of facts.
+//! objects (the page dictionary, the page's `/XObject` table, one form's table, one descriptor, and the one being parsed) plus facts bounded by the
+//! caps: at most about 4.4 MiB steady, about 7 MiB for a moment. That is the content scan's names and places (about 1.45 MiB: 8,192 names of at most 127
+//! bytes with each `Vec`'s header, and 0.25 MiB of places), the memo of what was drawn (about 200 bytes a record, 8,192 records, about 1.6 MiB), the names
+//! of forms already read (up to 8,192 more, about 1.3 MiB), and, for the moment a form is read, its `DoScan` and the `names().to_vec()` copy of its
+//! names (about 2.65 MiB). Measured on the 383-page NASA report, release build, `locator_scan`, whole-process `phys_footprint`: 11.4 to 12.2 MiB at the
+//! cap of 8,192 names and 6.5 to 7.4 MiB
+//! at 256 on `main`, so about 5 MiB for what the larger caps allow, under load, two runs each.
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
 //! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), XObjects in the resources the content doesn't
@@ -69,6 +84,7 @@
 
 mod decode;
 mod scan;
+mod work;
 
 use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
 /// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_version_for_identity`]).
@@ -80,6 +96,7 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
 use std::rc::Rc;
+use work::Meter;
 
 /// The digest's name, and the first bytes hashed.
 pub const DIGEST_NAME: &str = "recto-page/1";
@@ -91,9 +108,14 @@ pub struct Caps {
     pub content_streams: usize,
     pub content_bytes: u64,
     pub xobjects: usize,
+    pub forms_drawing: usize,
     pub xobject_bytes: u64,
     pub page_bytes: u64,
     pub page_read: u64,
+    /// Bytes a page may read through a stream in all, decoded or as stored, **every stage of a chain's output counted and the failed ones too**; refusal only, never hashed and never in [`PageRead::bytes`].
+    ///
+    /// Each stage pays for what it reads from the one before, and a stage reads ahead (inflate's input buffer and the `BufReader`s take up to `decode::CHUNK` each), so near this limit whether a page has an identity can depend on up to one `CHUNK` per stage of decoded bytes past the hashed prefix, and on how flate2 reads. For the same build the result is the same and no digest changes; a flate2 upgrade could move pages that sit right at the limit.
+    pub decode_work: u64,
 }
 
 impl Caps {
@@ -101,9 +123,11 @@ impl Caps {
         content_streams: 1024,
         content_bytes: 16 << 20,
         xobjects: scan::MAX_NAMES,
+        forms_drawing: 256,
         xobject_bytes: 16 << 20,
         page_bytes: 64 << 20,
         page_read: 256 << 20,
+        decode_work: 256 << 20,
     };
 }
 
@@ -187,7 +211,9 @@ pub fn read_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> P
         page_left: caps.page_bytes,
         content_left: caps.content_bytes,
         read_left: caps.page_read,
+        work_left: caps.decode_work,
         records: 0,
+        forms: 0,
         cost: 0,
     };
     let digest = digest(reader, entry, &mut budget).ok();
@@ -280,8 +306,12 @@ struct Budget<'c> {
     page_left: u64,
     content_left: u64,
     read_left: u64,
+    /// What the page may still decode, failed or not ([`Caps::decode_work`]): refusal only, so it is not in [`Budget::cost`].
+    work_left: u64,
     /// Records of images and forms so far.
     records: usize,
+    /// Forms the page drew whose content draws a name, so far.
+    forms: usize,
     /// Stored lengths charged and bytes hashed: [`PageRead::bytes`].
     cost: u64,
 }
@@ -306,7 +336,7 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
     }
     hasher.update(b"C");
     hasher.update(count(entries.len()));
-    let mut scan = DoScan::default();
+    let mut scan = DoScan::with_cap(budget.caps.xobjects);
     for item in &entries {
         content_record(reader, item, budget, &mut hasher, &mut scan)?;
     }
@@ -333,6 +363,12 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
         };
         if seen.overflowed {
             return Err(Capped);
+        }
+        if !seen.names.is_empty() {
+            budget.forms += 1;
+            if budget.forms > budget.caps.forms_drawing {
+                return Err(Capped);
+            }
         }
         hasher.update(count(seen.names.len()));
         for (child, found) in seen.names.iter().zip(&seen.kids) {
@@ -560,6 +596,8 @@ struct Seen {
     read: u64,
     page: u64,
     cost: u64,
+    /// What it took off [`Budget::work_left`].
+    work: u64,
     /// The read gave up on a decode on the way (a kind 3 whose decode failed, or a stream that couldn't be read at all). A failed decode is exact for any
     /// limit at least the one it was read at: it ended in an error before reaching it. With a smaller limit it can end in a cap instead, which is no
     /// identity. So it's taken as it was only while the page has more left than any one stream may take (the limit is then the stream's own, as it was
@@ -588,6 +626,7 @@ impl Seen {
             read: 0,
             page: 0,
             cost: 0,
+            work: 0,
             headroom: false,
             is_form: false,
             scanned,
@@ -619,10 +658,14 @@ fn xobject_record(
     if let Some(seen) = drawn.seen.get(&id) {
         let wanted = !(children && seen.is_form && !seen.scanned);
         // Where it can't be taken as it was, it's read again, so a cap is reached as it always was and costs what it did.
-        let affords = seen.read <= budget.read_left && seen.page <= budget.page_left && (!seen.headroom || budget.page_left > budget.caps.xobject_bytes);
+        let affords = seen.read <= budget.read_left
+            && seen.page <= budget.page_left
+            && seen.work <= budget.work_left
+            && (!seen.headroom || budget.page_left > budget.caps.xobject_bytes);
         if wanted && affords {
             budget.read_left -= seen.read;
             budget.page_left -= seen.page;
+            budget.work_left -= seen.work;
             budget.cost = budget.cost.saturating_add(seen.cost);
             hasher.update(&seen.tail);
             return Ok(Some(Rc::clone(seen)));
@@ -646,9 +689,9 @@ fn xobject_record(
         drawn.seen.insert(id, Rc::clone(&seen));
         return Ok(Some(seen));
     };
-    let before = (budget.read_left, budget.page_left, budget.cost);
+    let before = (budget.read_left, budget.page_left, budget.cost, budget.work_left);
     let mut tail = Vec::new();
-    let mut scan = DoScan::default();
+    let mut scan = DoScan::with_cap(budget.caps.xobjects);
     let read = read_xobject(reader, id, &descriptor, budget, &mut tail, children.then_some(&mut scan))?;
     scan.end_of_stream();
     let overflowed = read.is_form && scan.overflowed();
@@ -662,6 +705,7 @@ fn xobject_record(
         read: before.0 - budget.read_left,
         page: before.1 - budget.page_left,
         cost: budget.cost.saturating_sub(before.2),
+        work: before.3 - budget.work_left,
         headroom: read.gave_up,
         is_form: read.is_form,
         scanned: children,
@@ -820,8 +864,28 @@ fn take_stream(
     chain: Option<&[decode::Filter]>,
     limit: u64,
     budget: &mut Budget<'_>,
+    scan: Option<&mut DoScan>,
+    prefix: bool,
+) -> Result<Taken, Capped> {
+    // Every stage's output is charged to one meter as it's read; what it has left goes back whatever the read's end.
+    let meter = Meter::new(budget.work_left);
+    let taken = take_metered(reader, id, descriptor, chain, limit, budget, scan, prefix, &meter);
+    budget.work_left = meter.left();
+    taken
+}
+
+/// [`take_stream`]'s read, its decode work charged to `meter`.
+#[allow(clippy::too_many_arguments)] // As [`take_stream`].
+fn take_metered(
+    reader: &IndexedReader,
+    id: ObjectId,
+    descriptor: &lopdf::IndexedStreamDescriptor,
+    chain: Option<&[decode::Filter]>,
+    limit: u64,
+    budget: &mut Budget<'_>,
     mut scan: Option<&mut DoScan>,
     prefix: bool,
+    meter: &Meter,
 ) -> Result<Taken, Capped> {
     let Some(length) = descriptor.encoded_len() else {
         return Ok(Taken::Failed);
@@ -852,10 +916,7 @@ fn take_stream(
             }
         }
     };
-    let mut source = match chain {
-        Some(chain) => decode::decoded(stored, chain),
-        None => stored,
-    };
+    let mut source = decode::decoded_metered(stored, chain.unwrap_or(&[]), Some(meter));
     // One byte past what may be hashed says a cap is reached. Each read asks for no more than that byte, and a decoder reads nothing past the unit
     // holding it (its group, row or run, as [`decode`] defines them), so what's in the stream after it never decides anything. A prefix is of the
     // stream's own cap only.
@@ -869,8 +930,15 @@ fn take_stream(
         let read = match source.read(&mut buf[..want]) {
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            // The work ran out in some stage, which a decoder may have turned into an error of its own: a cap reached, not a failed decode.
+            Err(_) if meter.ran_out() => return Err(Capped),
             Err(_) => return Ok(Taken::Failed),
         };
+        // A decoder that swallowed the error and went on (or ended) hashes what depends on where the work ran out.
+        // No current decoder reaches this (base-85 says its error at its next read, which the arm above catches); it stays for one that swallows and then ends.
+        if meter.ran_out() {
+            return Err(Capped);
+        }
         if read == 0 {
             break;
         }

@@ -13,16 +13,22 @@
 //!   operator) means it isn't.
 //! - An inline image (`BI`, its dictionary, `ID`, a whitespace byte and its data) is skipped to a whitespace byte, `EI` and a whitespace byte or a
 //!   delimiter.
-//! - At most [`MAX_NAMES`] different names are kept; one more says the page draws more than it (a cap: the page has no identity).
+//! - At most [`MAX_NAMES`] (8,192) different names are kept ([`super::Caps::xobjects`]); one more says the page draws more than it (a cap: the page
+//!   has no identity). It was 256 until 2026-11-25; see [`super`].
 //!
-//! It holds at most [`MAX_NAMES`] names of 127 bytes, their sorted index and a few bytes of state, whatever it's given, and never fails; each byte
-//! costs a few steps, and a name drawn a lookup of about 8 comparisons. Its promise: a mistake here can only change which images are hashed, or whether
-//! the page passes 256 names and so has no identity, never what the scan costs.
+//! It holds at most [`MAX_NAMES`] names of 127 bytes (about 1.2 MiB, each `Vec`'s header and its allocation counted), a table of their places (0.25 MiB) and
+//! a few bytes of state, whatever it's given, and never fails; each byte costs a few steps, and a name drawn a hash and a comparison. Its promise: a
+//! mistake here can only change which images are hashed, or whether
+//! the page passes the names cap and so has no identity, never what the scan costs.
 
 /// Most different names kept: the digest's cap on images and forms ([`super::Caps::xobjects`]).
-pub(super) const MAX_NAMES: usize = 256;
+pub(super) const MAX_NAMES: usize = 8192;
 /// Longest name taken, as PDF's own limit on names is.
 const MAX_NAME: usize = 127;
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::hash::{BuildHasher, RandomState};
 
 /// Where the tokenizer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,17 +85,37 @@ pub(super) struct Mark {
 #[derive(Clone, Debug)]
 pub(super) struct DoScan {
     names: Vec<Vec<u8>>,
-    /// Indexes into `names`, sorted by the name: a name drawn is looked up in about 8 comparisons, not one for each name kept (a `Do` for each few
-    /// bytes against 256 names cost about 250 comparisons a byte of input). 512 bytes at most.
-    sorted: Vec<u16>,
+    /// The place in `names` of each name kept, by a keyed hash of it (the key is random for each scan, so no input can make names collide on
+    /// purpose): looking a name up, and keeping one, costs a hash and one comparison however many are kept, where a sorted `Vec`'s insert moved up to
+    /// 16 KiB each time (64 MiB for 8,192 names, once for every failing form and every content stream put back). Holds no second copy of a name: at
+    /// most 8,192 entries of 16 bytes, about 0.25 MiB with the table's slack.
+    places: HashMap<u64, u16>,
+    /// The places of names whose hash an earlier name has (in `places`): empty but for a 64-bit coincidence, and looked through whole when not.
+    collided: Vec<u16>,
+    hasher: RandomState,
+    /// Which bits of the hash count: all, but for a test that makes every name collide.
+    hash_mask: u64,
+    /// Most different names kept ([`MAX_NAMES`] unless a test holds it small), at most `u16::MAX`, which a place fits.
+    cap: usize,
     core: Core,
 }
 
 impl Default for DoScan {
     fn default() -> Self {
+        Self::with_cap(MAX_NAMES)
+    }
+}
+
+impl DoScan {
+    /// A scan that keeps at most `cap` different names ([`super::Caps::xobjects`]), clamped to `u16::MAX`.
+    pub(super) fn with_cap(cap: usize) -> Self {
         Self {
             names: Vec::new(),
-            sorted: Vec::new(),
+            places: HashMap::new(),
+            collided: Vec::new(),
+            hasher: RandomState::new(),
+            hash_mask: u64::MAX,
+            cap: cap.min(usize::from(u16::MAX)),
             core: Core {
                 overflowed: false,
                 state: State::Normal,
@@ -143,8 +169,15 @@ impl DoScan {
 
     /// Back to `mark`: what was fed since is as if it never was.
     pub(super) fn back_to(&mut self, mark: Mark) {
+        for at in mark.names..self.names.len() {
+            let hash = self.hash_of(&self.names[at]);
+            if self.places.get(&hash).is_some_and(|place| usize::from(*place) == at) {
+                self.places.remove(&hash);
+            }
+        }
+        // A name that came after the one holding its hash came after the mark when that one did.
+        self.collided.retain(|place| usize::from(*place) < mark.names);
         self.names.truncate(mark.names);
-        self.sorted.retain(|at| usize::from(*at) < mark.names);
         self.core = mark.core;
     }
 
@@ -328,21 +361,32 @@ impl DoScan {
         self.core.name_len = self.core.name_len.saturating_add(1).min(MAX_NAME + 1);
     }
 
+    fn hash_of(&self, name: &[u8]) -> u64 {
+        self.hasher.hash_one(name) & self.hash_mask
+    }
+
     fn keep_name(&mut self) {
         let name = &self.core.name_buf[..self.core.name_len.min(MAX_NAME)];
         if self.core.overflowed {
             return;
         }
-        let names = &self.names;
-        let Err(slot) = self.sorted.binary_search_by(|at| names[usize::from(*at)].as_slice().cmp(name)) else {
+        let hash = self.hash_of(name);
+        let same = |place: &u16| self.names[usize::from(*place)].as_slice() == name;
+        if self.places.get(&hash).is_some_and(same) || self.collided.iter().any(same) {
             return;
-        };
-        if self.names.len() == MAX_NAMES {
+        }
+        if self.names.len() >= self.cap {
             self.core.overflowed = true;
             return;
         }
-        // At most MAX_NAMES (256) names, so an index always fits.
-        self.sorted.insert(slot, u16::try_from(self.names.len()).unwrap_or(u16::MAX));
+        // At most `cap` (clamped to u16::MAX) names, so a place always fits.
+        let place = u16::try_from(self.names.len()).unwrap_or(u16::MAX);
+        match self.places.entry(hash) {
+            Entry::Vacant(slot) => {
+                slot.insert(place);
+            }
+            Entry::Occupied(_) => self.collided.push(place),
+        }
         self.names.push(name.to_vec());
     }
 }
@@ -352,7 +396,11 @@ mod tests {
     use super::*;
 
     fn names_of(parts: &[&[u8]]) -> (Vec<String>, bool) {
-        let mut scan = DoScan::default();
+        names_of_capped(MAX_NAMES, parts)
+    }
+
+    fn names_of_capped(cap: usize, parts: &[&[u8]]) -> (Vec<String>, bool) {
+        let mut scan = DoScan::with_cap(cap);
         for part in parts {
             scan.feed(part);
             scan.end_of_stream();
@@ -400,16 +448,19 @@ mod tests {
     }
 
     /// Failure caught: a page drawing more different names than the cap is hashed by some of them, so its digest depends on where the cap fell, or the
-    /// scan keeps names without bound. At 256 names all kept; at 257 it says it overflowed, and keeps no more.
+    /// scan keeps names without bound. With the cap held at 4 (what's proved is the exactness at the limit, not the value): 4 names all kept; at 5 it says
+    /// it overflowed, and keeps no more. A cap past `u16::MAX` is clamped, so a name's place never wraps.
     #[test]
     fn the_names_are_capped_at_their_limit_plus_one() {
         let many = |count: usize| (0..count).map(|at| format!("/N{at} Do ")).collect::<String>();
+        assert_eq!(names_of_capped(4, &[many(4).as_bytes()]), ((0..4).map(|at| format!("N{at}")).collect(), false));
+        let (names, overflowed) = names_of_capped(4, &[many(5).as_bytes(), b"/N0 Do"]);
+        assert_eq!((names.len(), overflowed), (4, true));
         assert_eq!(
-            names_of(&[many(MAX_NAMES).as_bytes()]),
-            ((0..MAX_NAMES).map(|at| format!("N{at}")).collect(), false)
+            DoScan::with_cap(usize::MAX).cap,
+            usize::from(u16::MAX),
+            "a cap past what a place holds is clamped"
         );
-        let (names, overflowed) = names_of(&[many(MAX_NAMES + 1).as_bytes(), b"/N0 Do"]);
-        assert_eq!((names.len(), overflowed), (MAX_NAMES, true));
     }
 
     /// Failure caught: a stream that didn't decode (hashed as stored instead) leaves the names of its first part, so the digest depends on how far a
@@ -429,6 +480,33 @@ mod tests {
         scan.feed(b"/B Do /A Do /B Do");
         scan.end_of_stream();
         assert_eq!(scan.names(), [b"A".to_vec(), b"D".to_vec(), b"B".to_vec()]);
+    }
+
+    /// Failure caught: names whose hashes are equal (a coincidence of 64 bits, made here by keeping none of them) are taken for one another, so a page
+    /// drawing both images hashes one, or a name put back with its stream is still taken as seen. With every name colliding, the names, their order,
+    /// the overflow at the cap and the put-back are those of the scan with no collisions.
+    #[test]
+    fn names_that_collide_are_still_told_apart() {
+        let run = |mask: u64| {
+            let mut scan = DoScan::with_cap(6);
+            scan.hash_mask = mask;
+            scan.feed(b"/A Do /B Do /A Do ");
+            let mark = scan.mark();
+            scan.feed(b"/C Do /D Do /B Do ");
+            scan.back_to(mark);
+            scan.feed(b"/D Do /C Do /B Do /D Do /E Do /A Do /F Do /G Do /H Do ");
+            scan.end_of_stream();
+            (scan.names().to_vec(), scan.overflowed())
+        };
+        let (names, overflowed) = run(u64::MAX);
+        assert_eq!(names.len(), 6, "kept to the cap");
+        assert!(overflowed);
+        assert_eq!(run(0), (names.clone(), overflowed));
+        assert_eq!(
+            names[..4],
+            [b"A".to_vec(), b"B".to_vec(), b"D".to_vec(), b"C".to_vec()],
+            "taken back, and kept again in the order drawn"
+        );
     }
 
     /// Failure caught: hostile bytes panic the scan or make it hold more than its bound. Every byte value, deep nesting, an unclosed string and an
