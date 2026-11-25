@@ -35,14 +35,10 @@ impl Launched {
     }
 
     pub(super) fn recover(&self, root: &Path, program: &Path, patience: Duration) -> io::Result<RecordLock> {
-        self.retire(program, patience)?;
-        record_lock(root, || self.running(program))
-    }
-
-    fn retire(&self, program: &Path, patience: Duration) -> io::Result<()> {
         let mut child = self.child.borrow_mut();
-        retire(
+        let held = recover_within(
             child.as_mut(),
+            root,
             || self.running(program),
             self.pending.get(),
             patience,
@@ -50,8 +46,24 @@ impl Launched {
             std::thread::sleep,
         )?;
         *child = None;
-        Ok(())
+        Ok(held)
     }
+}
+
+/// The whole rollback wait: retire the owned launch, prove the app absent, then take the record's lock and recheck.
+/// The recheck ends at the deadline of the absence proof, so the observation has one patience in all, after the
+/// owned child's own wait.
+fn recover_within<C: Owned>(
+    child: Option<&mut C>,
+    root: &Path,
+    mut present: impl FnMut() -> io::Result<bool>,
+    pending: bool,
+    patience: Duration,
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
+) -> io::Result<RecordLock> {
+    let deadline = retire(child, &mut present, pending, patience, &mut now, &mut pause)?;
+    record_lock(root, present, deadline, now, pause)
 }
 
 #[derive(Default)]
@@ -110,9 +122,10 @@ fn known(
     mut now: impl FnMut() -> Instant,
     mut pause: impl FnMut(Duration),
 ) -> io::Result<bool> {
+    let deadline = now() + patience;
     let mut answer = None;
     let mut unknown = None;
-    until(patience, &mut now, &mut pause, || match probe() {
+    until_deadline(deadline, &mut now, &mut pause, || match probe() {
         Ok(live) => {
             answer = Some(live);
             Ok(true)
@@ -134,12 +147,39 @@ impl Drop for RecordLock {
     }
 }
 
-pub(super) fn record_lock(root: &Path, mut present: impl FnMut() -> io::Result<bool>) -> io::Result<RecordLock> {
-    let held = RecordLock(local::try_update_record_lock(root)?);
-    if present()? {
-        return Err(io::Error::other("an app appeared before rollback acquired the record"));
+/// Takes the record's lock and rechecks, until `deadline` (the one the exit wait's absence proof had), that no app is
+/// running. The lock is held only while an observation is made: on a definite absence it is kept and returned; on an
+/// unknown it is released before the pause and taken again for the next look, so the app's own short lock patience
+/// (600 ms) is never spent against rollback's long one. An unknown is "not yet known" as in `known`, so one transient
+/// unknown is not reported as "couldn't go back" (`app_exit_unproven`). A live app, a lock another writer holds, or no
+/// definite answer by the deadline, refuses.
+pub(super) fn record_lock(
+    root: &Path,
+    mut present: impl FnMut() -> io::Result<bool>,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
+) -> io::Result<RecordLock> {
+    loop {
+        let held = RecordLock(local::try_update_record_lock(root).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                io::Error::new(error.kind(), format!("the record's lock is held by another writer ({error})"))
+            } else {
+                error
+            }
+        })?);
+        let unknown = match present() {
+            Ok(false) => return Ok(held),
+            Ok(true) => return Err(io::Error::other("an app appeared before rollback acquired the record")),
+            Err(error) => error,
+        };
+        drop(held);
+        let left = deadline.saturating_duration_since(now());
+        if left.is_zero() {
+            return Err(unknown);
+        }
+        pause(left.min(Duration::from_millis(20)));
     }
-    Ok(held)
 }
 
 trait Owned {
@@ -163,7 +203,7 @@ fn retire<C: Owned>(
     patience: Duration,
     mut now: impl FnMut() -> Instant,
     mut pause: impl FnMut(Duration),
-) -> io::Result<()> {
+) -> io::Result<Instant> {
     let mut awaiting_launch = pending && child.is_none();
     if let Some(child) = child {
         // An error, including lost ownership, never authorizes a signal.
@@ -172,9 +212,11 @@ fn retire<C: Owned>(
         }
         until(patience, &mut now, &mut pause, || child.exited())?;
     }
-    // Retry only OS-observation uncertainty, within the same deadline. Child ownership errors above are final.
+    // Retry only OS-observation uncertainty, until a deadline set now, after the child's own wait (so the two waits add
+    // up). Child ownership errors above are final.
+    let deadline = now() + patience;
     let mut unknown = None;
-    let observed = until(patience, &mut now, &mut pause, || match present() {
+    let observed = until_deadline(deadline, &mut now, &mut pause, || match present() {
         Ok(true) => {
             awaiting_launch = false;
             Ok(false)
@@ -186,16 +228,20 @@ fn retire<C: Owned>(
             Ok(false)
         }
     });
-    observed.map_err(|error| unknown.unwrap_or(error))
+    observed.map(|()| deadline).map_err(|error| unknown.unwrap_or(error))
 }
 
-fn until(
-    patience: Duration,
+fn until(patience: Duration, now: &mut impl FnMut() -> Instant, pause: &mut impl FnMut(Duration), done: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
+    let deadline = now() + patience;
+    until_deadline(deadline, now, pause, done)
+}
+
+fn until_deadline(
+    deadline: Instant,
     now: &mut impl FnMut() -> Instant,
     pause: &mut impl FnMut(Duration),
     mut done: impl FnMut() -> io::Result<bool>,
 ) -> io::Result<()> {
-    let deadline = now() + patience;
     loop {
         if done()? {
             return Ok(());
@@ -415,6 +461,110 @@ mod recovery_tests {
         }
     }
 
+    /// Failure: one transient unknown observation of the app during rollback's recheck is reported as "couldn't go
+    /// back" (`app_exit_unproven`) instead of being rechecked within the patience the exit wait already has.
+    #[test]
+    fn the_record_lock_recheck_polls_past_a_transient_unknown_within_its_patience() {
+        let dir = recto_testpdf::TempDir::new("record-lock-recheck-");
+        let clock = std::cell::Cell::new(Instant::now());
+        let patience = Duration::from_millis(100);
+        let run = |mut answers: Vec<io::Result<bool>>, repeat: Option<fn() -> io::Result<bool>>| {
+            answers.reverse();
+            record_lock(
+                dir.path(),
+                || answers.pop().or_else(|| repeat.map(|again| again())).expect("probe asked past its answers"),
+                clock.get() + patience,
+                || clock.get(),
+                |step| clock.set(clock.get() + step),
+            )
+            .map(drop)
+        };
+        assert!(run(vec![Err(io::Error::other("transient unknown")), Ok(false)], None).is_ok());
+        let began = clock.get();
+        let error = run(vec![], Some(|| Err(io::Error::other("persistent unknown")))).unwrap_err();
+        assert!(error.to_string().contains("persistent unknown"), "{error}");
+        assert!(
+            clock.get().duration_since(began) <= patience,
+            "no new limit: the recheck stays within its patience"
+        );
+        let error = run(vec![Ok(true)], None).unwrap_err();
+        assert!(error.to_string().contains("appeared"), "a live app refuses: {error}");
+    }
+
+    /// Failure: the rollback wait has two windows, the exit wait's and a fresh one for the record lock's recheck, so
+    /// when absence is proven late and the recheck then finds only unknowns it waits up to twice its patience
+    /// before it says "couldn't go back".
+    #[test]
+    fn the_whole_rollback_wait_ends_within_one_patience_when_the_recheck_is_unknown() {
+        let dir = recto_testpdf::TempDir::new("rollback-one-patience-");
+        let clock = std::cell::Cell::new(Instant::now());
+        let began = clock.get();
+        let patience = Duration::from_millis(100);
+        let mut proven = false;
+        let error = recover_within::<super::tests::Fake>(
+            None,
+            dir.path(),
+            || {
+                if !proven && clock.get().duration_since(began) >= patience * 9 / 10 {
+                    proven = true;
+                    Ok(false)
+                } else {
+                    Err(io::Error::other("unknown"))
+                }
+            },
+            false,
+            patience,
+            || clock.get(),
+            |step| clock.set(clock.get() + step),
+        )
+        .map(drop)
+        .unwrap_err();
+        assert!(proven && error.to_string().contains("unknown"), "{error}");
+        let waited = clock.get().duration_since(began);
+        assert!(waited <= patience, "waited {waited:?} of {patience:?}");
+    }
+
+    /// Failure: the recheck holds `run/session.lock` for its whole patience, so a person opening RectoPDF during an
+    /// unknown observation (the app's own lock patience is 600 ms) starts with an empty record beside the saved one.
+    #[test]
+    fn the_record_lock_is_not_held_between_unknown_observations() {
+        let dir = recto_testpdf::TempDir::new("record-lock-free-between-");
+        let clock = std::cell::Cell::new(Instant::now());
+        let free = |what: &str| drop(local::try_update_record_lock(dir.path()).unwrap_or_else(|error| panic!("{what}: {error}")));
+        let mut answers = vec![Ok(false), Err(io::Error::other("unknown")), Err(io::Error::other("unknown"))];
+        let held = record_lock(
+            dir.path(),
+            || answers.pop().expect("asked past its answers"),
+            clock.get() + Duration::from_secs(1),
+            || clock.get(),
+            |step| {
+                free("the lock must be free while waiting");
+                clock.set(clock.get() + step);
+            },
+        )
+        .unwrap();
+        assert!(
+            local::try_update_record_lock(dir.path()).is_err(),
+            "on a definite absence the lock is held when it returns"
+        );
+        drop(held);
+        free("released with the guard");
+    }
+
+    /// Failure: another writer holds the record's lock on a retry and the refusal reads as a bare "Resource temporarily
+    /// unavailable", which the outcome then reports as an unproven app exit.
+    #[test]
+    fn a_record_lock_held_by_another_writer_says_so() {
+        let dir = recto_testpdf::TempDir::new("record-lock-held-");
+        let _writer = local::try_update_record_lock(dir.path()).unwrap();
+        let error = match record_lock(dir.path(), || Ok(false), Instant::now(), Instant::now, |_| panic!("no pause")) {
+            Ok(_) => panic!("took a lock another writer holds"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("held by another writer"), "{error}");
+    }
+
     fn version(app: &Path, version: &str) -> Vec<u8> {
         std::fs::create_dir_all(app.join("Contents")).unwrap();
         let bytes =
@@ -466,13 +616,20 @@ mod recovery_tests {
                     Instant::now,
                     |_| panic!("zero patience waits"),
                 )
+                .map(drop)
             }
             .and_then(|()| {
-                record_lock(&plan.root, || match case {
-                    "reopened" => Ok(true),
-                    "recheck_unknown" => Err(io::Error::other("recheck unknown")),
-                    _ => Ok(false),
-                })
+                record_lock(
+                    &plan.root,
+                    || match case {
+                        "reopened" => Ok(true),
+                        "recheck_unknown" => Err(io::Error::other("recheck unknown")),
+                        _ => Ok(false),
+                    },
+                    Instant::now(),
+                    Instant::now,
+                    |_| panic!("zero patience waits"),
+                )
             });
             assert_eq!(run.go_back_after("misread", refused), Ended::Stuck);
             if std::fs::read(files.session().join("record.a.json")).ok().as_deref() != Some(b"current owner edits".as_slice())

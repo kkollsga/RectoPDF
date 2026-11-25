@@ -158,7 +158,9 @@ pub fn wait_for_exit(root: &Path, limit: Duration) -> io::Result<()> {
     wait(limit, || present(root))
 }
 
-fn wait(limit: Duration, probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
+/// Waits until the probe says absent (`Ok(false)`). An unknown answer (an `Err`) is "not yet known", as in the
+/// product's `known`: it is polled past, and returned if the limit passes.
+pub fn wait(limit: Duration, probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
     wait_with(limit, probe, Instant::now, std::thread::sleep, Unknown::Retry)
 }
 
