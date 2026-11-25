@@ -37,14 +37,9 @@ fn not_referenceable(words: &'static str) -> AgentError {
 pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<Value, AgentError> {
     let (file, opened, stamp) = readable(access, tab)?;
     let wanted = crate::one_based(page)?;
-    let file_page = match &file.positions {
-        None => wanted,
-        // Edited: the file's page that stands at this position now. A position with none is a page added from another PDF.
-        Some(positions) => match positions.iter().position(|place| *place == wanted) {
-            Some(file_page) => file_page as u32,
-            None if wanted < file.pages => return Err(not_referenceable(ADDED_PAGE)),
-            None => return Err(crate::no_such_page()),
-        },
+    // The file's page that stands at this position now. A position with none, inside the tab, is a page added from another PDF.
+    let Some(file_page) = file.file_page_at(wanted) else {
+        return Err(if wanted < file.pages() { not_referenceable(ADDED_PAGE) } else { crate::no_such_page() });
     };
     let made = locator::reference(opened.reader(), opened.map(), file_page, &ScanCaps::STANDARD);
     unchanged(&file, stamp)?;
@@ -53,7 +48,7 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -
         Unreferenceable::NoIdentity => not_referenceable(NO_IDENTITY),
         Unreferenceable::NoDocumentTag => not_referenceable(NO_DOCUMENT_TAG),
     })?;
-    Ok(json!({ "tab": file.id, "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }))
+    Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }))
 }
 
 /// `recto resolve <ref>`: where the reference's page is in this tab now. A page that moved, is gone, can't be told from others or wasn't fully looked
@@ -62,17 +57,8 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
     let (file, opened, stamp) = readable(access, tab)?;
     let found = locator::resolve(&reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
     unchanged(&file, stamp)?;
-    // A page of the file, as the tab shows it now: its position among the unsaved edits, or none when they removed it.
-    let place = |file_page: u32| -> Option<u32> {
-        match &file.positions {
-            None => Some(file_page + 1),
-            Some(positions) => positions
-                .get(file_page as usize)
-                .copied()
-                .filter(|place| *place != u32::MAX)
-                .map(|place| place + 1),
-        }
-    };
+    // A page of the file, as the tab shows it now (from 1): its position among the unsaved edits, or none when they removed it.
+    let place = |file_page: u32| -> Option<u32> { file.place_of(file_page).map(|place| place + 1) };
     let both = |file_page: u32| json!({ "page": place(file_page), "file_page": file_page + 1 });
     let (status, at, listed) = match &found.status {
         Status::Found { page } => ("found", Some(*page), &[][..]),
@@ -83,9 +69,9 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
     };
     let was = reference.page().number();
     let target = found.target.map(|placed| target_json(&placed));
-    let note = note_of(&found, at.map(|page| (page, place(page))), was, file.positions.is_some());
+    let note = note_of(&found, at.map(|page| (page, place(page))), was, file.has_edit_list());
     Ok(json!({
-        "tab": file.id,
+        "tab": file.id(),
         "status": status,
         "page": at.and_then(place),
         "file_page": at.map(|page| page + 1),
@@ -114,18 +100,18 @@ fn readable<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<(TabFile, Open
     // Withheld, or changed under the tab's edits: refused as `contents` is. `execute`'s READS_PAGES gate only refuses edits it can't read, so a file another
     // program replaced before the app has looked is caught here.
     file.require_pages_shown()?;
-    if file.renderer_only {
+    if file.renderer_only() {
         return Err(not_referenceable(RENDERER_ONLY));
     }
     let unreadable = || AgentError::new(Code::FILE_UNREADABLE, "The tab's file can't be read just now.", exit::FAILED);
-    let stamp = recto_platform::file_stamp(&file.path).map_err(|_| unreadable())?;
-    let opened = Opened::open(&file.path, stamp).ok_or_else(unreadable)?;
+    let stamp = recto_platform::file_stamp(file.path()).map_err(|_| unreadable())?;
+    let opened = Opened::open(file.path(), stamp).ok_or_else(unreadable)?;
     Ok((file, opened, stamp))
 }
 
 /// Refuses when the file isn't the version that was read: an answer about pages of two versions is about neither.
 fn unchanged(file: &TabFile, stamp: recto_platform::FileStamp) -> Result<(), AgentError> {
-    match recto_platform::file_stamp(&file.path) {
+    match recto_platform::file_stamp(file.path()) {
         Ok(now) if now == stamp => Ok(()),
         _ => Err(AgentError::new(Code::FILE_CHANGED, CHANGED_WHILE_READ, exit::FAILED)),
     }
