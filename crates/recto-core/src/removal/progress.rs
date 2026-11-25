@@ -20,8 +20,10 @@ pub enum Outcome {
     HistoryRetiring,
     /// The point of no return passed but the sanitized file is not known to be installed.
     ReplacementInDoubt,
-    /// Installed; the session and leases still need cleaning up.
+    /// Installed; the session and leases still need cleaning up. Lasts until the last step is
+    /// acknowledged, so a failed invalidation, lease release or barrier retirement stays here.
     SanitizedCleanupPending,
+    /// Every step of the plan is acknowledged.
     Complete,
 }
 
@@ -123,7 +125,7 @@ impl Progress {
             Outcome::HistoryRetiring
         } else if self.acked <= index_of(plan, Effect::InstallTarget) {
             Outcome::ReplacementInDoubt
-        } else if self.acked <= index_of(plan, Effect::MarkComplete) {
+        } else if self.acked < self.steps {
             Outcome::SanitizedCleanupPending
         } else {
             Outcome::Complete

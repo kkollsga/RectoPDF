@@ -239,30 +239,47 @@ fn every_enumerated_store_except_library_is_in_the_step_order() {
     }
 }
 
-/// Catches a crash being described as "nothing written" or "complete" when the prefix says otherwise.
+/// Catches a crash being described as "nothing written" or "complete" when the acknowledged prefix
+/// says otherwise: the contract is stated over every prefix, not copied from the code.
 #[test]
-fn outcome_for_every_prefix_matches_contract() {
+fn outcome_for_every_prefix_keeps_the_contract() {
     let p = ok(&[art(1, Store::Journal, Owner::Target)]);
-    let barrier = position(&p, Effect::PersistBarrier) as u32;
-    let no_return = position(&p, Effect::MarkNoReturn) as u32;
-    let install = position(&p, Effect::InstallTarget) as u32;
-    let complete = position(&p, Effect::MarkComplete) as u32;
-    for acked in 0..=p.steps().len() as u32 {
+    let n = p.steps().len() as u32;
+    let acked_step = |acked: u32, effect: Effect| acked > position(&p, effect) as u32;
+    for acked in 0..=n {
         let o = progress_after(&p, acked).outcome(&p);
-        let want = if acked <= barrier {
-            Outcome::Unchanged
-        } else if acked <= no_return {
-            Outcome::HistoryRetiring
-        } else if acked <= install {
-            Outcome::ReplacementInDoubt
-        } else if acked <= complete {
-            Outcome::SanitizedCleanupPending
-        } else {
-            Outcome::Complete
-        };
-        assert_eq!(o, want, "acked {acked}");
-        assert_eq!(o.nothing_written(), acked <= barrier);
-        assert_eq!(o.may_cancel(), acked <= barrier);
+        if o.nothing_written() {
+            for effect in [Effect::PersistBarrier, Effect::InstallTarget] {
+                assert!(!acked_step(acked, effect), "{effect:?} acknowledged yet nothing written, acked {acked}");
+            }
+            assert!(
+                p.steps()[..acked as usize]
+                    .iter()
+                    .all(|s| !matches!(s.effect(), Effect::Purge(_) | Effect::Rewrite(_) | Effect::ClearFindText)),
+                "acked {acked}"
+            );
+        }
+        assert_eq!(o.nothing_written(), !acked_step(acked, Effect::PersistBarrier), "acked {acked}");
+        assert_eq!(o.may_cancel(), o.nothing_written());
+        if o == Outcome::Complete {
+            assert_eq!(acked, n, "complete with a step unacknowledged");
+        }
+    }
+}
+
+/// Catches a failed acknowledgment of one of the last three steps being told to a person as
+/// `Complete`: the sanitized file is installed, but the invalidation, the leases or the barrier
+/// are not finished, so the report may say only that cleanup is pending.
+#[test]
+fn a_failed_final_step_is_never_complete() {
+    let p = ok(&[]);
+    for effect in [Effect::PublishInvalidation, Effect::ReleaseLeases, Effect::RetireBarrier] {
+        let at = position(&p, effect) as u32;
+        let mut pr = progress_after(&p, at);
+        let o = pr.acknowledge(&p, at, Ack::Failed).unwrap();
+        assert_eq!(o, Outcome::SanitizedCleanupPending, "{effect:?}");
+        assert!(!pr.succeeded(&p));
+        assert_ne!(pr.outcome(&p), Outcome::Complete);
     }
 }
 
