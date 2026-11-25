@@ -71,20 +71,20 @@ fn pending_cap_refuses_at_limit_plus_one() {
     assert!(s.take(a, &bind(Who::Agent(1), same()), &plan, t0).is_ok());
 }
 
-/// Catches an actor at the cap evicting another actor's plan, or keeping its own stale one instead.
+/// Catches an actor at the cap evicting another actor's plan (here the oldest of all), or keeping its own stale one instead.
 #[test]
 fn at_cap_an_actor_replaces_only_its_own_oldest() {
     let (plan, t0) = (save_as_plan(), Instant::now());
     let mut s = store();
+    let others = s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).unwrap();
     let first = s.offer(bind(Who::Person, new_file("/a.pdf")), &plan, t0).unwrap();
-    let other = s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).unwrap();
     let third = s.offer(bind(Who::Person, new_file("/b.pdf")), &plan, t0).unwrap();
     assert_eq!(s.len(), 2);
     assert_eq!(
         s.take(first, &bind(Who::Person, new_file("/a.pdf")), &plan, t0).unwrap_err(),
         ConfirmRefusal::Unknown
     );
-    assert!(s.take(other, &bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).is_ok());
+    assert!(s.take(others, &bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).is_ok());
     assert!(s.take(third, &bind(Who::Person, new_file("/b.pdf")), &plan, t0).is_ok());
 }
 
