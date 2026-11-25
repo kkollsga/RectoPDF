@@ -701,7 +701,7 @@ mod tests {
     fn the_stall_record_is_fixed_in_size() {
         assert_eq!(
             Short::bytes(),
-            1224,
+            1608, // 1224 + the startup trace's growth over main, 16 points x 24 B = 384 B
             "the kept list is {KEPT} slots of {} bytes",
             std::mem::size_of::<SlowStretch>()
         );

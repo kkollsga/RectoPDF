@@ -360,6 +360,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         StartupWatch.mark(.windowOpened)
         controller.windowIsUp()
         modelChanged()
+        StartupWatch.mark(.windowModelReady)
         controller.showIfReady()
         // Past this it shows, whatever's on it: a slow page, or a file not answering, says so itself.
         DispatchQueue.main.asyncAfter(deadline: .now() + limits.showPatienceSeconds) { [weak controller] in controller?.patienceRanOut() }
@@ -414,6 +415,7 @@ final class Bridge: AppListener, @unchecked Sendable {
     private func installMenu() {
         let menus = core.menuBar()
         guard menus != shownMenus else { return }
+        StartupWatch.mark(.menuModelReady)
         shownMenus = menus
         let bar = NSMenu()
         for model in menus {
@@ -445,6 +447,7 @@ final class Bridge: AppListener, @unchecked Sendable {
                     item.submenu = services
                     item.action = nil
                     NSApp.servicesMenu = services
+                    StartupWatch.mark(.servicesMenuReady)
                 }
                 item.keyEquivalentModifierMask = entry.withControl ? [.command, .control] : [.command]
                 item.state = entry.checked ? .on : .off
@@ -456,6 +459,7 @@ final class Bridge: AppListener, @unchecked Sendable {
             holder.submenu = menu
             bar.addItem(holder)
         }
+        StartupWatch.mark(.menuBuilt)
         NSApp.mainMenu = bar
     }
 

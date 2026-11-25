@@ -160,6 +160,7 @@ codes! {
     BAD_PATH = "bad_path", Next::Says("Give the whole path. `recto` does this for you.");
     BAD_PATTERN = "bad_pattern", Next::ByExit;
     BAD_QUERY = "bad_query", Next::ByExit;
+    BAD_REFERENCE = "bad_reference", Next::Says("Use the `ref` that `recto ref` gave, whole and unchanged.");
     BAD_RECT = "bad_rect", Next::Says("Write it as `--rect 10,20,300,200`, in points from the page's top left.");
     BAD_REQUEST = "bad_request", Next::ByExit;
     BAD_ROTATION = "bad_rotation", Next::ByExit;
@@ -260,6 +261,7 @@ codes! {
     NOT_FOUND = "not_found", Next::Says("Check the path. It's read by the session, and relative paths are taken from where you ran `recto`.");
     NOT_GENERATED = "not_generated", Next::ByExit;
     NOT_HANDED_OVER = "not_handed_over", Next::ByExit;
+    NOT_REFERENCEABLE = "not_referenceable", Next::Says("Point at another page, or save the added pages first. `recto where` says how many pages there are.");
     NOT_HERE = "not_here", Next::ByExit;
     NOT_INDEXED = "not_indexed", Next::ByExit;
     NOT_PDF = "not_pdf", Next::Says("This file can't be opened. Try another file.");
@@ -314,6 +316,7 @@ codes! {
     RECORD_NEWER = "record_newer", Next::ByExit;
     RECORD_TOO_LARGE = "record_too_large", Next::ByExit;
     RECORD_UNREADABLE = "record_unreadable", Next::ByExit;
+    REFERENCE_TOO_NEW = "reference_too_new", Next::Says("Update RectoPDF, or make the reference again with `recto ref`.");
     RELEASE_COPY = "release_copy", Next::ByExit;
     RENDER_LIBRARY_MISSING = "render_library_missing", Next::Says("Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.");
     RENDER_TOOK_TOO_LONG = "render_took_too_long", Next::ByExit;

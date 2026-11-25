@@ -1291,6 +1291,10 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
 
 **Verify cancellation at the workload, not only its wrapper.** On 2026-11-19, terminating a queue wrapper left its child repetition loop running, creating more failed fixtures after the coordinator believed it stopped. Use the owned terminal/cancellation route, check the workload's actual exit and last log lines, and inventory exact retained fixture paths from the whole run. A tool session returning is not proof every descendant exited. Long workloads also need their actual launch child retained: an attached control connection can expire while work succeeds, then fail only at Quit. Preserve the requested duration through the one launcher rather than changing the server's idle policy.
 
+**A check that no test misses is not yet redundant.** On 2026-11-25 a file-changed check was removed from a new command because its seeded removal failed no test, and its comment named another gate as the holder. That gate only refused unreadable edits; the test meant to catch the case set up the state (the app having looked at the file) that hid the bug, so another program's change could still hand out a reference to the wrong page. An independent review caught it before merge. Before removing a check as redundant, name the check that holds the rule and see *that* check fail on the scenario with the masking precondition taken away; then make both callers go through one method so the pair can't be split again.
+
+**A process's start name is shorter than its file name.** macOS's `pbi_comm` keeps at most 15 bytes (`MAXCOMLEN - 1`), not 16: a rule comparing a start name with a file name must treat a name at the cap as a prefix, or a long-named program reads as a different one. Found by review on 2026-11-25, in a rule that let an update go past programs that can't be the app.
+
 ### 6.3 Tests that hold on slower machines
 
 - **A test waits for the condition it checks,** polling with a bound and failing with what it saw. It never sleeps and

@@ -66,3 +66,22 @@ fn every_command_is_the_line_it_writes() {
         assert_eq!(format!("{again:?}"), format!("{command:?}"), "{line} as {wire}");
     }
 }
+
+/// Failure: a new command whose accepted and refused requests no test pins. Every command the table knows (a row that runs in the session; those that run in `recto`
+/// itself have no command) is the `cmd` of at least one line in `golden/requests.txt`, as `{"cmd":..}` or as the first word of the array form.
+#[test]
+fn every_command_has_lines_in_the_requests() {
+    let mut named: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in REQUESTS.lines() {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+        let tag = value.get("cmd").or_else(|| value.get(0)).and_then(|tag| tag.as_str());
+        named.extend(tag.map(str::to_string));
+    }
+    let missing: std::collections::BTreeSet<&str> = recto_agent::table::TABLE
+        .iter()
+        .filter(|spec| spec.route == recto_agent::table::Route::Session && !spec.not_built)
+        .map(|spec| spec.tag)
+        .filter(|tag| !named.contains(*tag))
+        .collect();
+    assert!(missing.is_empty(), "commands with no line in golden/requests.txt: {missing:?}");
+}

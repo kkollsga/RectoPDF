@@ -592,3 +592,19 @@ The four-hour queue snapshot around12:46 had114finished jobs,37nonzero,2485job-s
 **Published 0.1.3, observed 13:38 CET.** Main merge/tag sourcea268a9b6 matched the locally checked code; the merge reused2fee691a's pass without another suite. CI 44518402229 passed on attempt 2: three jobs succeeded initially and macOS 15 got no runner; the push watcher retried only the unstarted job when the active check completed. The connector lacked Actions-write permission and an earlier CLI retry was refused while the run was active; neither changed the run. Fresh preflight 44518422614 and release44522376545 passed. All three signed draft verdicts and carry/return pairs passed;46 selected signed-helper cases passed. Anonymous feed and zip matched the signed draft before completion was reported. Temporary apps/processes/registrations were retired and the final inventory again named only/Applications/RectoPDF.app, with no Dock duplicate. Five owned merged local branches and the older managed tools worktree were removed; the protected primary backup checkout was retained and fast-forwarded to main.
 
 CI's kept longest-job time is 1351 s (22:31), 91 s above the 21-minute budget; the last-five median remains 1092 s (18:12), so the budget was not raised. Source-backed job comparison to the preceding green run: 1092→1351s(+259), full-check963→1121s(+158), cache restore101→94s, cache save skipped→101s plus4s housekeeping. Both restored the same4,362,526,068-byte older cache; this run used prefix fallback and needed a save. Combined changed/other phases346→416s, app build132→163s and app tests328→367s; the partitions changed, so individual changed-only phase deltas are misleading. Long-session89.872→93.811s and comparison cycles59.096→71.291s are observed costs, not proof of unnecessary tests or a causal product regression. Warm-run attribution is a follow-up before another feature. No new app-launch case was added.
+
+## 2026-11-25, Sonnet builds, Opus decides
+
+Owner's new way of working: Sonnet workers build from tight briefs; Opus agents settle each design and write the brief; owner questions go up in plain words with one recommendation. Measured in this run (times are wall, under shared load 5–38):
+
+| Task | Worker | Minutes to hand-back | Tokens | Sent back / call-backs |
+|---|---|---|---|---|
+| Recovery refusal plan id | Sonnet | 15 | 81k | 0; coordinator fenced a test-only constructor |
+| Removal D1a | Sonnet | 25 | 99k | 0 |
+| Locator core (a) | Sonnet | 40 | 129k | 0 |
+| Locator commands (b) | Sonnet | ~120 + 30 | 292k | 1 guard call-back; ran near its room |
+| Startup measurement | Sonnet | ~135 | 182k | 3 call-backs (trace cap, interleaved pair) |
+| Startup fix (dropped) | Sonnet | ~45 | 112k | 2 call-backs; measured, then dropped |
+| Review fixes ×3, wire pin, installer | Sonnet | 25–75 each | 68–158k | 1 permission refusal surfaced to the owner |
+
+Two independent review rounds found what reports did not: a crash tracker claiming "complete" early, a page read twice, a removed file-changed check (the coordinator's error; lesson in the guide §6.2), a start-name length bug, a lock held through a wait. One combined full check on the integrated batch passed first time; no full runs by workers. What changes: split a slice before it reaches ~150k tokens of a worker; tell workers to reply with SendMessage after their first report (duplicate and refused hand-backs cost several round trips); keep the "a check no test misses" proof rule.

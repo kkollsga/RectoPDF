@@ -17,10 +17,12 @@ pub(crate) struct TabFile {
     id: u32,
     path: PathBuf,
     name: String,
-    pub(crate) pages: u32,
+    pages: u32,
     edited: bool,
     renderer_only: bool,
-    /// For each of the file's pages, its place now. Only for an edited tab.
+    /// For each of the file's pages, its place now (`u32::MAX` when unsaved edits removed it). Only for a tab with an edit list. Each file page has at
+    /// most one place: the list's slots of the file itself are made only by the file's own pages and what undo puts back of them, and
+    /// `JournalOp::Insert` refuses source 0, so no edit makes a second slot of a file page (review 2, S3).
     positions: Option<Vec<u32>>,
     /// The pages whose entries' places mean something in the view the reader has.
     placed: recto_session::Placed,
@@ -33,16 +35,70 @@ pub(crate) struct TabFile {
 }
 
 impl TabFile {
+    pub(crate) fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// How many pages the tab has now.
+    pub(crate) fn pages(&self) -> u32 {
+        self.pages
+    }
+
+    pub(crate) fn renderer_only(&self) -> bool {
+        self.renderer_only
+    }
+
+    /// Whether the tab's pages are placed by an edit list, so `page` and `file_page` can differ.
+    pub(crate) fn has_edit_list(&self) -> bool {
+        self.positions.is_some()
+    }
+
+    /// Where the file's page `file_page` (from 0) stands in the tab now (from 0): the same number with no edit list, and `None` when unsaved edits removed
+    /// it.
+    pub(crate) fn place_of(&self, file_page: u32) -> Option<u32> {
+        place_in(self.positions.as_deref(), file_page)
+    }
+
+    /// The file's page (from 0) that stands at `position` in the tab now (from 0), the inverse of [`Self::place_of`]: `None` when no page of the file does,
+    /// as at a page added from another PDF.
+    pub(crate) fn file_page_at(&self, position: u32) -> Option<u32> {
+        match &self.positions {
+            None => Some(position),
+            Some(positions) => positions.iter().position(|place| *place == position).map(|file_page| file_page as u32),
+        }
+    }
+
     /// Refuses when page numbers here would be about a different version of the file.
-    fn require_current(&self) -> Result<(), AgentError> {
+    pub(crate) fn require_current(&self) -> Result<(), AgentError> {
         if self.changed {
             return Err(crate::source_changed(&self.path));
         }
         Ok(())
     }
+
+    /// Refuses when the tab's pages can't be read as they stand: its own pages are withheld, or the file isn't the one its edits' page numbers came from.
+    /// The one place that pair of rules is written, in the order and words `contents` has always had.
+    pub(crate) fn require_pages_shown(&self) -> Result<(), AgentError> {
+        if self.withheld {
+            return Err(crate::source_changed(&self.path));
+        }
+        self.require_current()
+    }
 }
 
-fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, AgentError> {
+/// A file page's place in a tab with these `positions` (see [`TabFile`]), `None` when the edits removed it.
+fn place_in(positions: Option<&[u32]>, file_page: u32) -> Option<u32> {
+    match positions {
+        None => Some(file_page),
+        Some(positions) => positions.get(file_page as usize).copied().filter(|place| *place != u32::MAX),
+    }
+}
+
+pub(crate) fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, AgentError> {
     access
         .with(|s| {
             let id = select(s, tab)?;
@@ -59,6 +115,16 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, Agent
                         *place = u32::try_from(position).unwrap_or(u32::MAX);
                     }
                 }
+                debug_assert!(
+                    {
+                        let mut placed: Vec<u32> = positions.iter().copied().filter(|place| *place != u32::MAX).collect();
+                        let before = placed.len();
+                        placed.sort_unstable();
+                        placed.dedup();
+                        placed.len() == before
+                    },
+                    "two pages of the file stand at one place"
+                );
                 positions
             });
             Ok(TabFile {
@@ -136,10 +202,7 @@ pub(crate) fn contents<A: SessionAccess>(
     }
     let file = tab_file(access, tab)?;
     // What the person's contents pane shows none of, by the same rule (review S2): the file's outline isn't about the list's pages.
-    if file.withheld {
-        return Err(crate::source_changed(&file.path));
-    }
-    file.require_current()?;
+    file.require_pages_shown()?;
     let unavailable = || json!({ "tab": file.id, "available": false, "note": "Only the renderer can read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": null, "next_from": null });
     if file.renderer_only {
         return Ok(unavailable());
@@ -210,10 +273,7 @@ fn listing(file: &TabFile, toc: &recto_core::Toc, from: Option<u32>, limit: Opti
         .take(limit)
         .map(|(index, entry)| {
             let page = (entry.page != recto_core::NONE)
-                .then(|| match &file.positions {
-                    Some(positions) => positions.get(entry.page as usize).copied().filter(|position| *position != u32::MAX),
-                    None => Some(entry.page),
-                })
+                .then(|| file.place_of(entry.page))
                 .flatten();
             // Its number, which `contents fold` names it by.
             json!({ "entry": index, "depth": entry.depth, "page": page.map(|page| page + 1), "place": recto_session::entry_place(entry, &file.placed), "untrusted": { "title": toc.title(entry) } })
@@ -335,7 +395,7 @@ pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<V
     if !inventory.structure_read {
         return Ok(not_read());
     }
-    let rows: Vec<Value> = inventory.entries.iter().map(|entry| signature_json(entry, file.positions.as_deref())).collect();
+    let rows: Vec<Value> = inventory.entries.iter().map(|entry| signature_json(entry, &file)).collect();
     let signed = inventory.entries.iter().filter(|entry| entry.state == SignatureState::Signed).count();
     let partial = inventory.truncated || inventory.unread > 0;
     let mut note = "These are facts from the file. RectoPDF hasn't checked any signature, and says nothing about whether one holds up.".to_string();
@@ -360,7 +420,7 @@ pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<V
     }))
 }
 
-fn signature_json(entry: &SignatureEntry, positions: Option<&[u32]>) -> Value {
+fn signature_json(entry: &SignatureEntry, file: &TabFile) -> Value {
     let (summary, status) = match entry.state {
         SignatureState::Signed => (
             SignatureFacts {
@@ -374,10 +434,7 @@ fn signature_json(entry: &SignatureEntry, positions: Option<&[u32]>) -> Value {
         SignatureState::Unread => ("Signature field that couldn't be read", "unread"),
     };
     // `page` is where it is now, like every other page number. Null if the edits removed that page.
-    let page = entry.page.and_then(|page| match positions {
-        Some(positions) => positions.get(page as usize).copied().filter(|position| *position != u32::MAX),
-        None => Some(page),
-    });
+    let page = entry.page.and_then(|page| file.place_of(page));
     json!({
         "summary": summary,
         "status": status,

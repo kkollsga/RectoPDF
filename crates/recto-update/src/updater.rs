@@ -1953,14 +1953,7 @@ mod tests {
         let come_back = |why: &str, kind: OutcomeKind| {
             std::fs::create_dir_all(files.before()).unwrap();
             std::fs::write(files.before().join(".whole"), "").unwrap();
-            Outcome {
-                kind,
-                from: "0.1.0".into(),
-                to: "0.2.0".into(),
-                why: why.into(),
-            }
-            .write(&files.outcome())
-            .unwrap();
+            Outcome::new(kind, "0.1.0", "0.2.0", why).write(&files.outcome()).unwrap();
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
             updater.launched(Facts {
                 version: "0.1.0".into(),
@@ -2225,14 +2218,7 @@ mod tests {
         let files = Files::in_state(&root);
         local::ensure_private_dir(&files.work).unwrap();
         let launch_with = |why: &str| {
-            Outcome {
-                kind: OutcomeKind::NotInstalled,
-                from: "0.1.0".into(),
-                to: "0.2.0".into(),
-                why: why.into(),
-            }
-            .write(&files.outcome())
-            .unwrap();
+            Outcome::new(OutcomeKind::NotInstalled, "0.1.0", "0.2.0", why).write(&files.outcome()).unwrap();
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
             updater.launched(Facts {
                 version: "0.1.0".into(),
@@ -2338,14 +2324,9 @@ mod tests {
             system: "15.0".into(),
         });
         assert_eq!(stage::app_version(&previous_app_in(&beside)).as_deref(), Some("0.0.5"), "moved to be kept");
-        Outcome {
-            kind: OutcomeKind::CouldntGoBack,
-            from: "0.0.5".into(),
-            to: "0.1.0".into(),
-            why: "nothing_to_go_back_to".into(),
-        }
-        .write(&files.outcome())
-        .unwrap();
+        Outcome::new(OutcomeKind::CouldntGoBack, "0.0.5", "0.1.0", "nothing_to_go_back_to")
+            .write(&files.outcome())
+            .unwrap();
         let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
         updater.launched(Facts {
             version: "0.1.0".into(),
@@ -2454,14 +2435,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(files.launch_ok()).unwrap().split_whitespace().next(), Some("0.2.0"));
 
         // A version that didn't start: said once, remembered, and not tried by itself again.
-        Outcome {
-            kind: OutcomeKind::WentBack,
-            from: "0.1.0".into(),
-            to: "0.3.0".into(),
-            why: "didnt_start".into(),
-        }
-        .write(&files.outcome())
-        .unwrap();
+        Outcome::new(OutcomeKind::WentBack, "0.1.0", "0.3.0", "didnt_start")
+            .write(&files.outcome())
+            .unwrap();
         let updater = launch("0.1.0");
         assert_eq!(
             lock(&updater.st).status,

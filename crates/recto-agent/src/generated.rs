@@ -201,7 +201,7 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState
         Err(error) if not_open_yet(&error) => return ConditionState::Waiting,
         Err(error) => return ConditionState::Failed(error),
     };
-    match not_ready(generating, &keyed, file.pages, true) {
+    match not_ready(generating, &keyed, file.pages(), true) {
         None => match crate::reading::contents(access, tab, None, None, None, true) {
             Ok(value) => ConditionState::Met(value),
             Err(error) => ConditionState::Failed(error),

@@ -160,7 +160,7 @@ Items 2–4 are questions/design inputs, not demonstrated missing APIs. Current 
 
 ## 8. Compartment and bounded-resource proposal
 
-The immediate slice is a pure `recto-core::removal` module (proposed `crates/recto-core/src/removal/{mod.rs,plan.rs,transaction.rs,tests.rs}` plus a one-line registration). It models semantic phases, fixed root/role kinds, proof completeness, bounded inventory and acknowledgments. It performs no I/O and has no arbitrary path-deletion capability. The locator worker currently owns `recto-core/src/lib.rs`; registration must wait for coordination or be integrated by the coordinator. This document is the only file currently authorized on this branch.
+The immediate slice is a pure `recto-core::removal` module (proposed `crates/recto-core/src/removal/{mod.rs,plan.rs,transaction.rs,tests.rs}` plus a one-line registration; as built, see D1a under §10: `removal.rs` with `removal/{plan,progress,tests}.rs`). It models semantic phases, fixed root/role kinds, proof completeness, bounded inventory and acknowledgments. It performs no I/O and has no arbitrary path-deletion capability. The locator worker currently owns `recto-core/src/lib.rs`; registration must wait for coordination or be integrated by the coordinator. This document is the only file currently authorized on this branch.
 
 Later adapters live in their features: `recto-agent::removal` for actor/confirmation and one save route, `recto-control::removal_store` for the private barrier and store adapters, feature-local cancel/epoch acknowledgments in index/generation/reader/sleep, and a small updater adapter. Do not put category rules or purge loops in Session, the bridge, a menu hub or the Swift window. Existing save code needs a typed retention policy extension point before adding a removal mode; registration alone cannot smuggle new logic into its already large function.
 
@@ -199,5 +199,12 @@ QA vocabulary is feature-local and uses the same command/state machine: draft/ca
 | D5 | One Save executor commit with no-backup/no-kept-history policy, confirmation, CLI and feature-local QA | D2–D4, cleanup+output verification and policy walks, reviewed interoperability matrix |
 | D6 | Window controls/confirmation/recovery presentation and existing launch QA integration | Same commands as D5, screenshots light/dark, input-to-frame/resource evidence |
 | D7 | Region redaction | Separate semantic/strategy approval and proof-producing content implementation; not included implicitly in D4 |
+
+**D1a as built.** The pure plan and the progress tracker are in `crates/recto-core/src/removal.rs` and `removal/{plan,progress,tests}.rs`, not the names §8 proposed. Departures from this design:
+- There is no Draft or Planning phase in code: a plan is built whole or refused.
+- `Progress` is tied to a plan by its length only, until the confirmation's digest binds it in D1b.
+- Find text is cleared unconditionally. It is the app's one global last query, so this may wipe another document's history, which §3 says not to do without an agreed scope. **Open owner question:** what scope does clearing Find text have?
+- The actor and epoch staleness tests belong to D1b.
+- Snapshot and clipboard offers are not yet a `Writer`; that is a follow-up.
 
 Do not proceed to real deletion because D1 passes. It proves ordering and bounds only. Missing provenance, unsupported content semantics, missing quiescence acknowledgments, inability to durably preserve the barrier, unsafe old-version restore or signed/protected-file refusal each blocks the affected operation. These blocks do not prevent locator work, copy fixes, the narrow metadata investigation or unrelated reading.
