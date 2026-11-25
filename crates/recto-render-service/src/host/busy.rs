@@ -86,3 +86,52 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     }
     read
 }
+
+/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`]; a worker that said hello ends the starts ([`started`]) and one that opened the file the opens ([`opened`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Runs {
+    pub(super) starts: u8,
+    pub(super) opens: u8,
+}
+
+/// One more busy start or open in a run: whether the run is still short of [`MAX_BUSY`].
+fn within_bound(run: &mut u8) -> bool {
+    *run = run.saturating_add(1);
+    *run < MAX_BUSY
+}
+
+/// A worker didn't say hello in time, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `Unavailable` after all.
+pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
+    // No file has reached the worker, so what kept it from saying hello isn't the file's doing.
+    doc.stats.too_busy += 1;
+    if within_bound(&mut doc.left_out.busy_runs.starts) {
+        RenderFailure::TooBusyToStart
+    } else {
+        RenderFailure::Unavailable
+    }
+}
+
+/// A worker that said hello ends the run of busy starts: it started, whatever came of the file after.
+pub(super) fn started(doc: &mut DocRenderer) {
+    doc.left_out.busy_runs.starts = 0;
+}
+
+/// A worker that opened the file ends the run of busy opens.
+pub(super) fn opened(doc: &mut DocRenderer) {
+    doc.left_out.busy_runs.opens = 0;
+}
+
+/// An open's worker was stopped for `reason`, which `failed` says. One that had no processor, `starved`, isn't the file's doing: it counts as the Mac being busy and not towards stopping the document, and is [`RenderFailure::TooBusyToStart`] until [`MAX_BUSY`] opens in a row, counted apart from starts, when it's `failed` after all, and counted as the file's.
+pub(super) fn open_stopped(doc: &mut DocRenderer, failed: RenderFailure, starved: bool) -> RenderFailure {
+    if !starved {
+        return failed;
+    }
+    if within_bound(&mut doc.left_out.busy_runs.opens) {
+        doc.left_out.busy = doc.left_out.busy.saturating_add(1);
+        doc.stats.too_busy += 1;
+        RenderFailure::TooBusyToStart
+    } else {
+        // Past the bound it's the file's, as `failed` says: it counts towards stopping the document and isn't a pause.
+        failed
+    }
+}

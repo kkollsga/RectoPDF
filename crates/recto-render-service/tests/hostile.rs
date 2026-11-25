@@ -10,7 +10,9 @@ use recto_proto::{
     TileStatus,
 };
 use recto_render_service::transport::{FrameReader, send_all};
-use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, control};
+use recto_render_service::{
+    DocRenderer, KillReason, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, control, under_page_deadline_for_test, under_start_timeout_for_test,
+};
 use recto_testpdf::TempPdf;
 use std::ffi::OsString;
 use std::sync::atomic::Ordering;
@@ -937,12 +939,20 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
             ..policy()
         },
     );
+    // No file has reached it, so a first silence is the Mac being busy and is asked again; one that keeps on is a worker that hangs, and says so.
+    for _ in 1..recto_render_service::MAX_BUSY {
+        assert_eq!(doc.page_count().unwrap_err(), RenderFailure::TooBusyToStart);
+    }
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
     assert!(!doc.worker_pid().is_some());
-    assert_eq!(doc.stats().too_busy, 1, "no file has reached it, so that's the Mac being busy");
+    assert_eq!(
+        doc.stats().too_busy,
+        u32::from(recto_render_service::MAX_BUSY),
+        "each is counted as the Mac being busy"
+    );
 }
 
-/// Failure: a worker with no time to open a file on a busy Mac reads the same as a file that takes too long to open, and the document's index is given up on. Asleep, as a starved worker is, it's the Mac. Using what it's given, it's the file.
+/// Failure (twice): a worker with no time to open a file on a busy Mac reads the same as a file that takes too long to open, and the document's index is given up on. Asleep, as a starved worker is, it's the Mac: `TooBusyToStart`, which isn't remembered (so a second ask opens it again, instead of repeating a failure at once) and isn't a kill that counts towards stopping the document (the first read after a wake is an open, 2026-11-25). Using what it's given, it's the file: `OpenFailed`.
 #[test]
 fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     // Long enough that what it used getting this far, which a loaded Mac makes more of, stays well under half.
@@ -953,8 +963,24 @@ fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
             ..policy()
         },
     );
-    assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::TooBusyToStart);
     assert_eq!(asleep.stats().too_busy, 1);
+    // Not remembered: asked again it starts a worker again (a remembered failure would answer at once, with no new worker). A starved worker uses almost no processor, so a short deadline tells it from one that works as well as a long one.
+    let short = |doc: &mut DocRenderer| under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(150), |doc| doc.page_count());
+    let spawns = asleep.stats().spawns;
+    assert_eq!(short(&mut asleep).unwrap_err(), RenderFailure::TooBusyToStart);
+    assert_eq!(asleep.stats().spawns, spawns + 1, "a new worker was started for the second ask");
+    // Opens in a row are bounded as starts are: the MAX_BUSY-th is the file's after all, and that's remembered.
+    assert_eq!(short(&mut asleep).unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    // Past the bound it's the file's: not counted as the Mac being busy, so it counts towards stopping the document and the indexer says "couldn't open", not paused (final review, 2026-11-25).
+    assert_eq!(
+        asleep.stats().too_busy,
+        u32::from(recto_render_service::MAX_BUSY) - 1,
+        "the kill judged the file's isn't a busy one"
+    );
+    let spawns = asleep.stats().spawns;
+    assert_eq!(short(&mut asleep).unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    assert_eq!(asleep.stats().spawns, spawns, "remembered: no worker for a fourth ask");
     // On every thread it can: between them they have over half of this in processor time, even on a Mac with a share of a core for each.
     let (mut spins, _file) = doc(
         "spin_on_open",
@@ -965,6 +991,60 @@ fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     );
     assert_eq!(spins.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
     assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the file");
+}
+
+/// Failure (review of the busy renderer start, 2026-11-25): busy starts and busy opens share one count, so two busy starts and then one starved open end as the file's failure (`OpenFailed`), remembered, though no start or open had been tried `MAX_BUSY` times. Each is counted by itself.
+#[test]
+fn busy_starts_and_busy_opens_are_counted_apart() {
+    let (mut doc, _file) = doc(
+        "sleep_on_open",
+        Policy {
+            page_deadline: Duration::from_millis(150),
+            ..policy()
+        },
+    );
+    let no_time = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::ZERO, |doc| doc.page_count());
+    for run in 1..recto_render_service::MAX_BUSY {
+        assert_eq!(no_time(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "start {run}");
+    }
+    assert_eq!(
+        doc.page_count().unwrap_err(),
+        RenderFailure::TooBusyToStart,
+        "the first starved open after them"
+    );
+}
+
+/// Failure (final review of the busy renderer start, 2026-11-25): a worker that said hello didn't end the run of busy starts unless it also opened the file, so two busy starts, a hello with a starved open, and one more busy start read as the third start in a row and said `Unavailable` (the renderer can't start) of a worker that had started. A hello ends the run of starts; the bound still holds, as alternating starts and opens end at the file's failure after at most twice `MAX_BUSY` tries.
+#[test]
+fn a_worker_that_said_hello_ends_the_run_of_busy_starts() {
+    let max = recto_render_service::MAX_BUSY;
+    let policy = || Policy {
+        page_deadline: Duration::from_millis(150),
+        ..policy()
+    };
+    let no_time = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::ZERO, |doc| doc.page_count());
+    let (mut doc, _file) = doc("sleep_on_open", policy());
+    for run in 1..max {
+        assert_eq!(no_time(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "start {run}");
+    }
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::TooBusyToStart, "a hello, then a starved open");
+    assert_eq!(
+        no_time(&mut doc).unwrap_err(),
+        RenderFailure::TooBusyToStart,
+        "the run of starts began again at the hello"
+    );
+    // Alternating never runs either count to its end sooner than the opens do.
+    let (mut doc, _file) = self::doc("sleep_on_open", policy());
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let failure = if tries % 2 == 1 { no_time(&mut doc) } else { doc.page_count() }.unwrap_err();
+        if failure != RenderFailure::TooBusyToStart {
+            assert_eq!(failure, RenderFailure::OpenFailed { reason: KillReason::Deadline });
+            break;
+        }
+        assert!(tries <= 2 * u32::from(max), "alternating ran on past the bound");
+    }
 }
 
 /// Failure: a draw that hangs while using the processor, on every thread it can, reads as a Mac too busy to run its worker, so a hostile page is asked again and again as `TooBusy` and never remembered. Using the processor, it's the page: the first ask is a failure at the deadline and nothing counts as busy. (The draw twin of the open test above; seeded by counting every deadline as busy.)

@@ -807,8 +807,8 @@ impl Reader {
         }
         match (kind, outcome) {
             (JobKind::Text { .. }, Outcome::Text { text, checked }) => self.take_text(tab, position, Some((text, checked))),
-            // Nobody wanted it any more. It'll be asked for again if that changes.
-            (JobKind::Text { .. }, Outcome::Cancelled) => self.counts.cancelled += 1,
+            // Nobody wanted it any more, or the Mac was too busy to run the read (bounded in the renderer, then it fails the page). Asked for again.
+            (JobKind::Text { .. }, Outcome::Cancelled | Outcome::LookLater) => self.counts.cancelled += 1,
             (JobKind::Text { .. }, _) => self.take_text(tab, position, None),
             (JobKind::Size, Outcome::Size(size)) => {
                 let Some(doc) = self.docs.views.get_mut(&tab) else { return };

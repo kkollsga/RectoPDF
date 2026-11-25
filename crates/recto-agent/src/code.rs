@@ -326,6 +326,7 @@ codes! {
     RENDER_WORKER_MISSING = "render_worker_missing", Next::Says("Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the app's `Contents/Helpers/RectoRender.app`, or in a source tree in the same folder as `recto`. There, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.");
     RENDERER_INSIDE_ANOTHER_SANDBOX = "renderer_inside_another_sandbox", Next::Says("Run `recto` outside the sandbox it's in, or ask the user to: the renderer can't start inside another sandbox. Nothing needs reinstalling.");
     RENDERER_LAUNCHD_REACHABLE = "renderer_launchd_reachable", Next::Says("Tell the user RectoPDF's renderer can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling.");
+    RENDERER_MAC_BUSY = "renderer_mac_busy", Next::Says("This Mac was too busy to start the page renderer. Ask again.");
     RENDERER_MACH_DROP_FAILED = "renderer_mach_drop_failed", Next::Says("Tell the user RectoPDF's renderer can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling.");
     RENDERER_MISBEHAVED = "renderer_misbehaved", Next::ByExit;
     RENDERER_NOT_SANDBOXED = "renderer_not_sandboxed", Next::Says("Tell the user this copy of RectoPDF is signed wrong, so its renderer refuses to read any PDF. Installing a release again fixes it. In a source tree, `app/build.sh` signs the helper as it should be.");

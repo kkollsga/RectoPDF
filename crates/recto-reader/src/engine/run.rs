@@ -227,7 +227,7 @@ fn run(shared: &Shared) {
                     }
                     outcome
                 }
-                Err(Unopened::Failed(failure)) => document_failed(failure),
+                Err(Unopened::Failed(failure)) => open_failed(failure),
                 Err(Unopened::NotWanted) => Outcome::Cancelled,
                 Err(Unopened::NotAnswering) => Outcome::PageFailed {
                     message: NOT_ANSWERING.to_string(),
@@ -626,8 +626,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                 text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)),
                 checked: check && !stopped,
             },
-            Err(_) if stopped => Outcome::Cancelled,
-            Err(_) => Outcome::TextFailed,
+            Err(failure) => text_outcome(failure, stopped),
         };
     }
     let doc = &mut open.doc;
@@ -645,13 +644,10 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             }
         }
         JobKind::Size => size_outcome(doc.page_size(job.source_page)),
-        JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
-            // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
-            Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
-            Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
-            Err(failure) if whole_file(failure) => document_failed(failure),
-            Err(_) => Outcome::Heavy(false),
-        },
+        JobKind::Traits => {
+            let read = doc.largest_image_pixels(job.source_page, job.generation);
+            traits_outcome(read, doc.is_stale(job.generation))
+        }
         JobKind::Draw {
             scale,
             rect,
@@ -717,7 +713,28 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     }
 }
 
-/// What a draw that failed is to the page view. The Mac too busy to run the worker says nothing of the page, so nothing's said and it's asked again after the wait, as a look to be tried again is ([`Outcome::LookLater`]); a page that can't be drawn for now may pass; the rest of a page's failures stay, and a failure of the file fails it.
+/// What the question of a page's largest picture gives. A stale question answers zero, which isn't an answer about the page; remembering it would draw a heavy page a tile at a time. A busy Mac is held quietly, as a draw's is; a failure of the file fails it; any other says nothing of weight, so the page isn't heavy.
+fn traits_outcome(read: Result<u64, RenderFailure>, stale: bool) -> Outcome {
+    match read {
+        Ok(_) if stale => Outcome::Cancelled,
+        Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
+        Err(failure) if too_busy(failure) => Outcome::LookLater,
+        Err(failure) if whole_file(failure) => document_failed(failure),
+        Err(_) => Outcome::Heavy(false),
+    }
+}
+
+/// What a failed read of a page's text is. Told to stop, it's as though it was never tried. A renderer the busy Mac couldn't start or open says nothing of the page's words, so there's no hold: it's asked again at once, bounded by the host's start and open counts. A text read the host bounds itself arrives as `PageReadFailed`, a failure here like any other.
+fn text_outcome(failure: RenderFailure, stopped: bool) -> Outcome {
+    if stopped {
+        Outcome::Cancelled
+    } else if too_busy(failure) {
+        Outcome::LookLater
+    } else {
+        Outcome::TextFailed
+    }
+}
+
 /// What a page-size read gives: the size, or the failure as a draw's is told (a busy Mac is held quietly).
 pub(super) fn size_outcome(read: Result<(f32, f32), RenderFailure>) -> Outcome {
     match read {
@@ -726,9 +743,10 @@ pub(super) fn size_outcome(read: Result<(f32, f32), RenderFailure>) -> Outcome {
     }
 }
 
+/// What a draw that failed is to the page view. The Mac too busy to run the worker says nothing of the page, so nothing's said and it's asked again after the wait, as a look to be tried again is ([`Outcome::LookLater`]); a page that can't be drawn for now may pass; the rest of a page's failures stay, and a failure of the file fails it.
 pub(super) fn draw_failed(failure: RenderFailure) -> Outcome {
     match failure {
-        RenderFailure::TooBusy { .. } => Outcome::LookLater,
+        failure if too_busy(failure) => Outcome::LookLater,
         failure if whole_file(failure) => document_failed(failure),
         failure => Outcome::PageFailed {
             message: failure.message(),
@@ -756,6 +774,16 @@ pub(super) fn onto_dark_paper(pixels: &mut [u8], drawn: recto_proto::TileRect, s
     }
 }
 
+/// What a renderer that couldn't be opened is to the job that asked: the Mac too busy to start it is held and asked again, anything else fails the document.
+fn open_failed(failure: RenderFailure) -> Outcome {
+    if too_busy(failure) { Outcome::LookLater } else { document_failed(failure) }
+}
+
+/// The Mac was too busy to give the worker the processor, for a page's draw or for starting or opening the renderer: it says nothing of the page or the file, so it's held and asked again, never remembered as a failure. The service bounds a run of these ([`recto_render_service::MAX_BUSY`]) and says what it was after all.
+fn too_busy(failure: RenderFailure) -> bool {
+    matches!(failure, RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart)
+}
+
 /// Failures about the file or the renderer rather than one page.
 fn whole_file(failure: RenderFailure) -> bool {
     !matches!(
@@ -767,6 +795,7 @@ fn whole_file(failure: RenderFailure) -> bool {
             | RenderFailure::PageReadFailed { .. }
             | RenderFailure::NotDrawableNow { .. }
             | RenderFailure::TooBusy { .. }
+            | RenderFailure::TooBusyToStart
             | RenderFailure::ExportRefused { .. }
     )
 }
@@ -794,6 +823,7 @@ mod tests {
     #[test]
     fn a_draw_the_mac_was_too_busy_for_is_held_quietly_and_a_failed_page_is_still_said() {
         assert!(matches!(draw_failed(RenderFailure::TooBusy { page: 3 }), Outcome::LookLater));
+        assert!(matches!(draw_failed(RenderFailure::TooBusyToStart), Outcome::LookLater));
         assert!(matches!(
             draw_failed(RenderFailure::PageFailed {
                 page: 3,
@@ -812,5 +842,55 @@ mod tests {
             draw_failed(RenderFailure::NeedsPassword),
             Outcome::DocumentFailed { needs_key: true, .. }
         ));
+    }
+
+    /// Failure: a page's text read that the Mac was too busy to start the renderer for is remembered as a failed page (no words, Find saying it couldn't be read) instead of asked again. A stopped read is cancelled, and any other failure is the page's. Seen failing with the busy arm gone back to `TextFailed`.
+    #[test]
+    fn a_busy_start_of_a_text_read_is_asked_again_and_a_stopped_read_is_cancelled() {
+        assert!(matches!(text_outcome(RenderFailure::TooBusyToStart, false), Outcome::LookLater));
+        assert!(matches!(text_outcome(RenderFailure::TooBusyToStart, true), Outcome::Cancelled));
+        assert!(matches!(
+            text_outcome(
+                RenderFailure::PageFailed {
+                    page: 1,
+                    reason: KillReason::Deadline
+                },
+                false
+            ),
+            Outcome::TextFailed
+        ));
+        assert!(matches!(text_outcome(RenderFailure::Unavailable, false), Outcome::TextFailed));
+    }
+
+    /// Failure: a picture-size question the Mac was too busy to run is remembered as a page that isn't heavy, so a heavy page is drawn whole for the session; or a stale answer is kept. Busy is held quietly, the file's failure fails the file, and any other failure of the page is a page that isn't heavy. Seen failing with `TooBusy` mapped back to `Heavy(false)`.
+    #[test]
+    fn a_busy_traits_read_is_held_and_a_stale_one_is_not_kept() {
+        assert!(matches!(traits_outcome(Err(RenderFailure::TooBusy { page: 1 }), false), Outcome::LookLater));
+        assert!(matches!(traits_outcome(Err(RenderFailure::TooBusyToStart), false), Outcome::LookLater));
+        assert!(matches!(
+            traits_outcome(
+                Err(RenderFailure::PageFailed {
+                    page: 1,
+                    reason: KillReason::Deadline
+                }),
+                false
+            ),
+            Outcome::Heavy(false)
+        ));
+        assert!(matches!(traits_outcome(Err(RenderFailure::Unavailable), false), Outcome::DocumentFailed { .. }));
+        assert!(matches!(traits_outcome(Ok(0), true), Outcome::Cancelled));
+        assert!(matches!(traits_outcome(Ok(u64::MAX), false), Outcome::Heavy(true)));
+    }
+
+    /// Failure (2026-11-25, a full check at load 37 after an update): the renderer was slow to start on a busy Mac, and the whole document was failed for the session: "The page renderer couldn't be started", no page drawn again, Find saying a page couldn't be read. A start or open the Mac was too busy for is held on every path a job takes (a draw, a size, a renderer that couldn't be had), with no document problem; a renderer that really can't start, which the service says after a run of them, still fails the document and says so.
+    #[test]
+    fn a_renderer_the_mac_was_too_busy_to_start_is_held_and_one_that_cant_start_is_said() {
+        assert!(matches!(draw_failed(RenderFailure::TooBusyToStart), Outcome::LookLater));
+        assert!(matches!(size_outcome(Err(RenderFailure::TooBusyToStart)), Outcome::LookLater));
+        assert!(!whole_file(RenderFailure::TooBusyToStart));
+        for failure in [RenderFailure::Unavailable, RenderFailure::LibraryMissing, RenderFailure::StartRefused] {
+            assert!(matches!(draw_failed(failure), Outcome::DocumentFailed { .. }), "{failure:?}");
+            assert!(matches!(open_failed(failure), Outcome::DocumentFailed { .. }), "{failure:?}");
+        }
     }
 }
