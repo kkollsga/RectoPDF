@@ -318,3 +318,16 @@ fn a_small_range_over_a_long_text_is_decided_by_what_is_before_its_end() {
         Ok(100_000 + head.len() as u32)
     );
 }
+
+/// Failure: the characters a check holds are cut from the text by bytes and not by characters (so after an accent they are other words), or are given
+/// though the text at those offsets isn't what the range was made of, or though the range reaches past the text. Only the checked words are given.
+#[test]
+fn held_characters_are_the_checked_words_by_characters_or_none() {
+    let text = "caf\u{e9} page";
+    let range = characters(text, 5, 9).unwrap();
+    assert_eq!(held_characters(range, text), Some("page"));
+    let shifted = "caf\u{e9}  page";
+    assert_eq!(held_characters(range, shifted), None, "the words moved by one");
+    let hostile = CharacterRange::new(0, MAX_CHARACTER, [0; 8]).unwrap();
+    assert_eq!(held_characters(hostile, "ten chars!!"), None, "an end at 2^21 against ten characters");
+}

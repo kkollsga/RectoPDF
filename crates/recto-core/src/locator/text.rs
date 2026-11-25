@@ -61,11 +61,14 @@ pub enum TextMatch {
     Changed,
 }
 
+/// The characters of `page_text` at the range's own offsets, when their check is the one the range was made with, and `None` when the text doesn't reach
+/// that far or holds other characters there. No other place in the text is looked at. One walk to the range's end and one hash.
+pub fn held_characters(range: CharacterRange, page_text: &str) -> Option<&str> {
+    let (start, end) = range.offsets();
+    span(page_text, start, end).filter(|held| text_check(held) == range.text_check())
+}
+
 /// Whether `page_text` holds, at the range's own offsets, the characters its check was made of. No other place in the text is looked at.
 pub fn check_characters(range: CharacterRange, page_text: &str) -> TextMatch {
-    let (start, end) = range.offsets();
-    match span(page_text, start, end) {
-        Some(held) if text_check(held) == range.text_check() => TextMatch::Same,
-        _ => TextMatch::Changed,
-    }
+    held_characters(range, page_text).map_or(TextMatch::Changed, |_| TextMatch::Same)
 }
