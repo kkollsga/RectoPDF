@@ -288,8 +288,7 @@ fn a_range_empty_past_the_text_or_past_the_cap_is_refused() {
     assert_eq!(characters(&long, 0, MAX_CHARACTER + 1).unwrap_err(), Error::OutOfRange);
 }
 
-/// Failure: a changed page's range is vouched for by finding the words elsewhere (a search), a range past a short text panics or is `Same`, or a hostile
-/// range of 2^21 over a short text walks more than the text.
+/// Failure: a changed page's range is vouched for by finding the words elsewhere (a search), or a range past a short text panics or is `Same`.
 #[test]
 fn check_is_same_only_at_the_same_offsets_and_never_searches_elsewhere() {
     let range = characters("one two three", 4, 7).unwrap();
