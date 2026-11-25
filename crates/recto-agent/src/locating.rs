@@ -84,20 +84,12 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, c
     let Some((start, end)) = chars else {
         return Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }));
     };
-    let text = page_text(file.path(), file_page)?;
+    let text = crate::render::page_text(file.path(), file_page)?;
     let range = locator::characters(&text, start, end).map_err(|_| not_referenceable(CHARS_PAST_TEXT))?;
     drop(text);
     unchanged(&file, stamp)?;
     let made = Locator::new(made.document(), made.page(), Target::Characters(range));
     Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "chars": [start, end], "ref": locator::encode(&made) }))
-}
-
-/// A page's text as `recto text` gives it in `untrusted.text`: the one reading `text` and `search` share. `file_page` counts from 0. The hidden-text check
-/// isn't asked for: it changes what is reported about the text, never the text.
-fn page_text(path: &std::path::Path, file_page: u32) -> Result<String, AgentError> {
-    let mut doc = crate::render::open_for_text(path)?;
-    let characters = doc.page_characters(file_page, true, false)?;
-    Ok(recto_index::read_page(&characters.chars, &characters.boxes, false).normalized.text)
 }
 
 /// The file's resolution of a reference, and for a character target on a page that was found, whether its text is the text it was made of. The text is read
@@ -113,7 +105,7 @@ fn resolved<A: SessionAccess>(
     unchanged(&file, stamp)?;
     let text = match (reference.target(), &found.status) {
         (Target::Characters(range), Status::Found { page } | Status::Moved { page }) => {
-            let held = locator::check_characters(range, &page_text(file.path(), *page)?);
+            let held = locator::check_characters(range, &crate::render::page_text(file.path(), *page)?);
             unchanged(&file, stamp)?;
             Some(held)
         }
