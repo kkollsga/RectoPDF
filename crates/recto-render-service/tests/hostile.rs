@@ -972,6 +972,12 @@ fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     assert_eq!(asleep.stats().spawns, spawns + 1, "a new worker was started for the second ask");
     // Opens in a row are bounded as starts are: the MAX_BUSY-th is the file's after all, and that's remembered.
     assert_eq!(short(&mut asleep).unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    // Past the bound it's the file's: not counted as the Mac being busy, so it counts towards stopping the document and the indexer says "couldn't open", not paused (final review, 2026-11-25).
+    assert_eq!(
+        asleep.stats().too_busy,
+        u32::from(recto_render_service::MAX_BUSY) - 1,
+        "the kill judged the file's isn't a busy one"
+    );
     let spawns = asleep.stats().spawns;
     assert_eq!(short(&mut asleep).unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
     assert_eq!(asleep.stats().spawns, spawns, "remembered: no worker for a fourth ask");
