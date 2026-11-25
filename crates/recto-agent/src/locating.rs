@@ -202,6 +202,15 @@ pub(crate) fn attach<A: SessionAccess>(access: &A, found: &Located, data: &mut V
     Ok(())
 }
 
+/// [`attach`] for a command that has just written a new file at `out` for the page it read. When the answer is refused, the file is of a page the file
+/// no longer has, so it is taken away: exactly `out`, which the command made (it refused an `out` that was already there before it wrote), and nothing
+/// else. An agent that is told to try again then can.
+pub(crate) fn attach_new_file<A: SessionAccess>(access: &A, found: &Located, data: &mut Value, out: &std::path::Path) -> Result<(), AgentError> {
+    attach(access, found, data).inspect_err(|_| {
+        let _ = std::fs::remove_file(out);
+    })
+}
+
 /// The refusal when the page standing where the reference was found isn't the page it was found as.
 pub(crate) fn tab_changed() -> AgentError {
     AgentError::new(Code::FILE_CHANGED, TAB_CHANGED, exit::FAILED)
@@ -367,6 +376,25 @@ mod tests {
         let mut data = json!({});
         attach(&access, &found, &mut data).expect("the tab it was found in is the one checked");
         assert_eq!(data["ref"]["file_page"], 2, "{data}");
+    }
+
+    /// Failure: `render --ref` writes its picture, and the file changed during the draw, so the agent is told `file_changed` and the picture, maybe of the
+    /// wrong page, stays at `--out`, where a retry is refused as `output_exists`. The refusal takes away the file this command made, and nothing beside it;
+    /// an answer that holds keeps it.
+    #[test]
+    fn a_refusal_after_the_file_changed_takes_away_the_picture_it_wrote_and_only_that() {
+        let (dir, path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        let (out, beside) = (dir.join("page.png"), dir.join("beside.png"));
+        std::fs::write(&out, b"picture").unwrap();
+        std::fs::write(&beside, b"another").unwrap();
+        attach_new_file(&access, &found, &mut json!({}), &out).expect("the file is as it was found");
+        assert!(out.exists(), "an answer that holds keeps its picture");
+        replace(&path, &pdf("Theirs", 4));
+        let refused = attach_new_file(&access, &found, &mut json!({}), &out).expect_err("the file changed");
+        assert_eq!((refused.code, refused.message.as_str()), (Code::FILE_CHANGED, CHANGED_WHILE_READ));
+        assert!(!out.exists(), "the picture is left at --out");
+        assert!(beside.exists(), "nothing else is touched");
     }
 
     /// Failure: a reference that is gone, matches several pages, wasn't fully looked for, or points at a page unsaved edits removed gives a page anyway (so

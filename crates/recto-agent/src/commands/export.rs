@@ -138,7 +138,7 @@ impl Cmd for Render {
             let mut data = drawn?;
             describe_source(&mut data, page, &source);
             if let Some(found) = found {
-                locating::attach(access, &found, &mut data)?;
+                locating::attach_new_file(access, &found, &mut data, out)?;
             }
             Ok(data)
         }
