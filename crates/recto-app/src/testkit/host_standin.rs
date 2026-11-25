@@ -15,29 +15,6 @@ pub fn report_where_the_host_is(app: &HeadlessApp, view: &mut recto_reader::View
     let at = |key: &str| report[key].as_f64().unwrap_or(0.0);
     view.x = at("scroll_x");
     view.y = at("scroll_y");
-    // A batch is applied as the host's `apply` does: arrive at its last scroll, release its surfaces, send the viewport (which hands back a batch of its
-    // own, applied the same way), and only then say it's applied; for a moment before that everything would look settled on the old view.
-    fn apply_batch(engine: &recto_reader::Engine, view: &mut recto_reader::Viewport, ops: &[recto_reader::Op], began: std::time::Instant) {
-        if ops.is_empty() {
-            return;
-        }
-        let last = ops.iter().rev().find_map(|op| {
-            if let recto_reader::Op::ScrollTo { y, seq } = op {
-                Some((*y, *seq))
-            } else {
-                None
-            }
-        });
-        if let Some((y, seq)) = last {
-            view.y = y;
-            view.scrolled_to = seq;
-        }
-        applied_as_the_host(ops);
-        assert!(began.elapsed() < WAIT_LIMIT, "the view kept being sent to a new place: {}", engine.report().0);
-        let next = engine.set_viewport(*view);
-        apply_batch(engine, view, &next, began);
-        engine.applied();
-    }
     let began = std::time::Instant::now();
     let queued = engine.drain();
     if queued.is_empty() {
@@ -46,4 +23,40 @@ pub fn report_where_the_host_is(app: &HeadlessApp, view: &mut recto_reader::View
     } else {
         apply_batch(engine, view, &queued, began);
     }
+}
+
+// A batch is applied as the host's `apply` does: arrive at its last scroll, release its surfaces, send the viewport (which hands back a batch of its
+// own, applied the same way), and only then say it's applied; for a moment before that everything would look settled on the old view.
+fn apply_batch(engine: &recto_reader::Engine, view: &mut recto_reader::Viewport, ops: &[recto_reader::Op], began: std::time::Instant) {
+    if ops.is_empty() {
+        return;
+    }
+    let last = ops.iter().rev().find_map(|op| {
+        if let recto_reader::Op::ScrollTo { y, seq } = op {
+            Some((*y, *seq))
+        } else {
+            None
+        }
+    });
+    if let Some((y, seq)) = last {
+        view.y = y;
+        view.scrolled_to = seq;
+    }
+    applied_as_the_host(ops);
+    assert!(began.elapsed() < WAIT_LIMIT, "the view kept being sent to a new place: {}", engine.report().0);
+    let next = engine.set_viewport(*view);
+    apply_batch(engine, view, &next, began);
+    engine.applied();
+}
+
+/// Scrolls the view by `dy` as the person's hand does and says where it is, the same way: the host first arrives at every scroll it was sent (a jump the
+/// session pass queued included, [`report_where_the_host_is`]), and only then moves from where it is. Failure caught: a test that added to the view's old
+/// `y` and sent it with "arrived at every scroll" before a queued jump was drained moved the view from the wrong place, or cleared the jump unapplied.
+pub fn the_person_scrolls(app: &HeadlessApp, view: &mut recto_reader::Viewport, dy: f64) {
+    report_where_the_host_is(app, view);
+    view.y += dy;
+    let began = std::time::Instant::now();
+    let engine = &app.core().engine;
+    let ops = engine.set_viewport(*view);
+    apply_batch(engine, view, &ops, began);
 }
