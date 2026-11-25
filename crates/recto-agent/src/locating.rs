@@ -15,18 +15,27 @@ const NO_IDENTITY: &str = "That page can't be told apart from the others, so it 
 const NO_DOCUMENT_TAG: &str = "This document has nothing to say which document it is, so a reference to it would mean nothing.";
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet. Save first, or point at a page of the file.";
 
+const BAD_REFERENCE: &str = "That isn't a reference RectoPDF made.";
+const REFERENCE_TOO_NEW: &str = "That reference was made by a newer RectoPDF than this one.";
+const USE_REFERENCE_WHOLE: &str = "Use the `ref` that `recto ref` gave, whole.";
+
 /// The words for a reference that can't be read, never the reference itself.
 pub(crate) fn bad_reference() -> AgentError {
-    AgentError::new(Code::BAD_REFERENCE, "That isn't a reference RectoPDF made.", exit::USAGE)
+    AgentError::new(Code::BAD_REFERENCE, BAD_REFERENCE, exit::USAGE)
 }
 
 /// The words for a reference made by a newer RectoPDF.
 pub(crate) fn reference_too_new() -> AgentError {
-    AgentError::new(
-        Code::REFERENCE_TOO_NEW,
-        "That reference was made by a newer RectoPDF than this one.",
-        exit::USAGE,
-    )
+    AgentError::new(Code::REFERENCE_TOO_NEW, REFERENCE_TOO_NEW, exit::USAGE)
+}
+
+/// A reference as typed after `recto resolve` or in `--ref`, read, or the words for why it can't be. Constant words: the token is hostile and may be long,
+/// so it is never repeated. What the table checks a value of `Kind::Reference` by.
+pub(crate) fn read_reference(token: &str) -> Result<Locator, String> {
+    locator::decode(token).map_err(|error| match error {
+        locator::Error::UnsupportedVersion => REFERENCE_TOO_NEW.to_string(),
+        _ => format!("{BAD_REFERENCE} {USE_REFERENCE_WHOLE}"),
+    })
 }
 
 fn not_referenceable(words: &'static str) -> AgentError {

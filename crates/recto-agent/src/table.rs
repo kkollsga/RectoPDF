@@ -1218,12 +1218,7 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
                 _ => Err(bad()),
             }
         }
-        // Constant words: the input is never repeated, since it is hostile and may be long.
-        Kind::Reference => match recto_core::locator::decode(value) {
-            Ok(_) => Ok(json!(value)),
-            Err(recto_core::locator::Error::UnsupportedVersion) => Err("That reference was made by a newer RectoPDF than this one.".to_string()),
-            Err(_) => Err("That isn't a reference RectoPDF made. Use the `ref` that `recto ref` gave, whole.".to_string()),
-        },
+        Kind::Reference => crate::locating::read_reference(value).map(|_| json!(value)),
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
 }
