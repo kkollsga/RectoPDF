@@ -133,18 +133,13 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
         "silent" | "ignore_cancel" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
-        // A hang that burns its processor time, as a page stuck in a loop does: unlike "silent" it isn't a worker the Mac was too busy to run, so a kill at the deadline is the page's.
-        "spinning" => spin(),
-        "huge_text_claim" | "huge_text_claim_spinning" => {
+        "huge_text_claim" => {
             let header = Header {
                 kind: Kind::Text,
                 len: proto::MAX_FRAME,
             }
             .encode();
             let _ = send_all(channel, &header, &[]);
-            if mode == "huge_text_claim_spinning" {
-                spin();
-            }
             loop {
                 std::thread::sleep(Duration::from_secs(60));
             }
@@ -168,14 +163,6 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
         _ => good.encode(),
     };
     let _ = send_all(channel, &reply, &[]);
-}
-
-/// Burns processor time until it's killed.
-fn spin() -> ! {
-    let mut n = 0u64;
-    loop {
-        n = std::hint::black_box(n.wrapping_add(1));
-    }
 }
 
 fn answer_text(mode: &str, job: &TextJob) -> Vec<u8> {
@@ -473,40 +460,16 @@ fn bad_text_is_rejected() {
     }
 }
 
-/// Failure: a worker claims a 64 MiB frame and sends nothing, and the host allocates it up front. A claim costs nothing until bytes arrive;
-/// the deadline ends it. The stand-in spins after the claim: one that sleeps gets no processor time, which the host takes for a Mac too busy to run it (`TooBusy`, not remembered), and this is about a worker that hangs.
-#[test]
-fn a_claimed_frame_costs_nothing_until_it_arrives() {
-    let (mut doc, _file) = doc(
-        "huge_text_claim_spinning",
-        Policy {
-            page_deadline: Duration::from_millis(300),
-            ..Policy::default()
-        },
-    );
+/// Asks for the page in `doc` as many times as a busy Mac is told of, and the one after: a worker that gets no processor time looks like a busy Mac to the host, so each of the first asks is told so and not remembered, and the ask that makes `MAX_BUSY` in a row is remembered as failed at the deadline. One more ask is answered from memory with no worker started. Returns the footprint before and after.
+fn asked_until_remembered(doc: &mut DocRenderer) -> (u64, u64) {
     let before = recto_platform::footprint_bytes().unwrap_or(0);
-    let failure = doc.render_tile(&request(), &surface()).unwrap_err();
-    assert_eq!(
-        failure,
-        RenderFailure::PageFailed {
-            page: 0,
-            reason: KillReason::Deadline
-        }
-    );
-    let after = recto_platform::footprint_bytes().unwrap_or(0);
-    assert!(after.saturating_sub(before) < 32 * 1024 * 1024, "grew from {before} to {after}");
-}
-
-/// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked. The stand-in spins: one that sleeps gets no processor time, which the host takes for a Mac too busy to run it (`TooBusy`, not remembered).
-#[test]
-fn a_page_that_never_finishes_is_killed_at_the_deadline() {
-    let (mut doc, _file) = doc(
-        "spinning",
-        Policy {
-            page_deadline: Duration::from_millis(100),
-            ..Policy::default()
-        },
-    );
+    for ask in 1..recto_render_service::MAX_BUSY {
+        assert_eq!(
+            doc.render_tile(&request(), &surface()).unwrap_err(),
+            RenderFailure::TooBusy { page: 0 },
+            "ask {ask}"
+        );
+    }
     assert_eq!(
         doc.render_tile(&request(), &surface()).unwrap_err(),
         RenderFailure::PageFailed {
@@ -514,7 +477,42 @@ fn a_page_that_never_finishes_is_killed_at_the_deadline() {
             reason: KillReason::Deadline
         }
     );
-    assert_eq!(doc.stats().deadline_kills, 1);
+    assert_eq!(doc.stats().deadline_kills, u32::from(recto_render_service::MAX_BUSY));
+    let spawns = doc.stats().spawns;
+    assert!(matches!(
+        doc.render_tile(&request(), &surface()),
+        Err(RenderFailure::PageFailed { page: 0, .. })
+    ));
+    assert_eq!(doc.stats().spawns, spawns, "remembered, with no worker started to learn it again");
+    (before, recto_platform::footprint_bytes().unwrap_or(0))
+}
+
+/// Failure: a worker claims a 64 MiB frame and sends nothing, and the host allocates it up front. A claim costs nothing until bytes arrive;
+/// the deadline ends it. The stand-in sleeps, as a worker the Mac gave no processor does, so the asks go as a busy Mac's do, and the memory held across all of them stays small.
+#[test]
+fn a_claimed_frame_costs_nothing_until_it_arrives() {
+    let (mut doc, _file) = doc(
+        "huge_text_claim",
+        Policy {
+            page_deadline: Duration::from_millis(300),
+            ..Policy::default()
+        },
+    );
+    let (before, after) = asked_until_remembered(&mut doc);
+    assert!(after.saturating_sub(before) < 32 * 1024 * 1024, "grew from {before} to {after}");
+}
+
+/// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked. The stand-in sleeps and so gets no processor time, which the host takes for a Mac too busy to run it: that isn't remembered until [`recto_render_service::MAX_BUSY`] asks in a row, each a deadline, and then it is.
+#[test]
+fn a_page_that_never_finishes_is_killed_at_the_deadline() {
+    let (mut doc, _file) = doc(
+        "silent",
+        Policy {
+            page_deadline: Duration::from_millis(100),
+            ..Policy::default()
+        },
+    );
+    asked_until_remembered(&mut doc);
     assert!(!doc.worker_pid().is_some());
 }
 

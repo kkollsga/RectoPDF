@@ -1,6 +1,8 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
 mod busy;
+#[doc(hidden)]
+pub use busy::MAX_BUSY;
 pub mod contents;
 pub mod hidden;
 pub mod images;

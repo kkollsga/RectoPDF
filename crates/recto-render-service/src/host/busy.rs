@@ -3,7 +3,7 @@
 use super::{DocRenderer, JobFailure, KillReason, RenderFailure, TileResult, other_result};
 
 /// Busy reads, or busy draws, of a page in a row past which it's remembered as failed after all: a worker that hangs looks starved too, and this bounds what a hostile page can cost to that many deadlines.
-pub(super) const MAX_BUSY: u8 = 3;
+pub const MAX_BUSY: u8 = 3;
 
 /// What `too_busy` was before a job was asked of the worker. Taken with [`before`], and the only thing [`draw_stopped`] and [`size_stopped`] take to know a kill was a starved one, so a caller can't leave it out: a stopped worker is told from a starved one by the count moving past it.
 #[derive(Clone, Copy)]
