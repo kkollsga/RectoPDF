@@ -1,7 +1,7 @@
 //! Which files are one document's history: a pure decision over a ledger of what the app has seen of the document
 //! (`docs/design/removal.md` §3, the original backup row).
 //!
-//! A version is (inode, size, mtime_ns); the device is ignored, and inode 0 joins nothing by version. Joined into one document: `At` links
+//! A version is (device, inode, size, mtime_ns): a block-level clone or a restored image keeps the last three on another volume, so without the device two independent copies would join (`docs/design/removal.md` §4). A volume that comes back under another device number then splits the document: its old path lands on both sides (Unknown, the plan refuses) or only on Other (kept), both safe. Inode 0 joins nothing by version. Joined into one document: `At` links
 //! with the same version (a rename or a hard link), the two ends of a `Saved`, and the current (stamp, path), which counts as an `At`. A path
 //! alone never joins. The target is everything joined to the current file; the rest is `Other`. Nothing here opens a file.
 
@@ -119,7 +119,7 @@ pub fn lineage<'a>(links: &'a [Link], stamp: FileStamp, path: &'a Path, limits: 
 #[derive(Default)]
 struct Joined {
     parent: Vec<usize>,
-    by_version: HashMap<(u64, u64, i64), usize>,
+    by_version: HashMap<(u64, u64, u64, i64), usize>,
 }
 
 impl Joined {
@@ -129,7 +129,7 @@ impl Joined {
             self.parent.push(fresh);
             return fresh;
         }
-        let node = *self.by_version.entry((stamp.inode, stamp.size, stamp.mtime_ns)).or_insert(fresh);
+        let node = *self.by_version.entry((stamp.device, stamp.inode, stamp.size, stamp.mtime_ns)).or_insert(fresh);
         if node == fresh {
             self.parent.push(fresh);
         }

@@ -107,3 +107,21 @@ fn ledger_caps_refuse_at_limit_plus_one() {
     assert_eq!(run(&[link("abcd"), link("abcd")], "ab"), Ok(()));
     assert_eq!(run(&[link("abcd"), link("abcd")], "abc"), Err(Refusal::TooLarge));
 }
+
+/// Failure: a block-level clone or a restored image keeps inode, size and time, so an independent copy on another volume joins this document
+/// and its original backup is purged (`docs/design/removal.md` §4: never equate files by inode, size and time across volumes).
+#[test]
+fn a_clone_on_another_volume_is_another_document() {
+    let here = stamp(7, 100, 1);
+    let there = FileStamp { device: 2, ..here };
+    let links = [
+        at(there, "/clone.pdf"),
+        Link::Saved {
+            from: there,
+            to: FileStamp { size: 120, ..there },
+        },
+    ];
+    let l = lineage(&links, here, Path::new("/doc.pdf"), &LEDGER_LIMITS).unwrap();
+    assert_eq!(sides_of(&l), [("/doc.pdf".into(), Side::Target), ("/clone.pdf".into(), Side::Other)]);
+    assert!(l.stamps().all(|(_, side)| side == Side::Other));
+}
