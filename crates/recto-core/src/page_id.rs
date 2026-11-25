@@ -61,10 +61,11 @@
 //! its `/XObject` is; one `/XObject` table and one gave-up stream's descriptor are held, each until the next one is needed; and a read's references
 //! keep at most 16 values of at most 4 KiB. A page's own `/XObject` is the one table held for the whole page. Together a page holds a fixed number of whole
 //! objects (the page dictionary, the page's `/XObject` table, one form's table, one descriptor, and the one being parsed) plus facts bounded by the
-//! caps: at most about 4 MiB, 6 MiB for a moment. That is the content scan's names (8,192 of at most 127 bytes, about 1.2 MiB with each `Vec`'s header, and
-//! 0.25 MiB of places), the memo of what was drawn (up to 8,192 records of about 170 bytes, 1.4 MiB) and the names and found ids of the forms being read (two
-//! forms' at once at most, the one read and the one kept, 2.4 MiB), and, while a form's read is kept, a copy of its scan's names (1.2 MiB). Measured on
-//! the 383-page NASA report, release build, `locator_scan`, whole-process `phys_footprint`: 11.4 to 12.2 MiB at the cap of 8,192 names and 6.5 to 7.4 MiB
+//! caps: at most about 4.4 MiB steady, about 7 MiB for a moment. That is the content scan's names and places (about 1.45 MiB: 8,192 names of at most 127
+//! bytes with each `Vec`'s header, and 0.25 MiB of places), the memo of what was drawn (about 200 bytes a record, 8,192 records, about 1.6 MiB), the names
+//! of forms already read (up to 8,192 more, about 1.3 MiB), and, for the moment a form is read, its `DoScan` and the `names().to_vec()` copy of its
+//! names (about 2.65 MiB). Measured on the 383-page NASA report, release build, `locator_scan`, whole-process `phys_footprint`: 11.4 to 12.2 MiB at the
+//! cap of 8,192 names and 6.5 to 7.4 MiB
 //! at 256 on `main`, so about 5 MiB for what the larger caps allow, under load, two runs each.
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
