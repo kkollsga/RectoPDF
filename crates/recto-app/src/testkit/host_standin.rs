@@ -1,6 +1,6 @@
 //! The stand-in host's report of where the view is: one implementation for every test that sends the page view a viewport.
 
-use super::headless::{applied_as_the_host, HeadlessApp, WAIT_LIMIT};
+use super::headless::{HeadlessApp, WAIT_LIMIT, applied_as_the_host};
 
 /// Says where the view is, as the real host does (`PageArea.swift`): it arrives at every scroll it was sent before it says where it is, and never claims
 /// to have arrived at a scroll it didn't apply. Failure caught: a stand-in that read the view's old place, sent it with "arrived at every scroll", and
@@ -16,7 +16,13 @@ pub fn report_where_the_host_is(app: &HeadlessApp, view: &mut recto_reader::View
     view.x = at("scroll_x");
     view.y = at("scroll_y");
     let arrive = |view: &mut recto_reader::Viewport, ops: &[recto_reader::Op]| {
-        let last = ops.iter().rev().find_map(|op| if let recto_reader::Op::ScrollTo { y, seq } = op { Some((*y, *seq)) } else { None });
+        let last = ops.iter().rev().find_map(|op| {
+            if let recto_reader::Op::ScrollTo { y, seq } = op {
+                Some((*y, *seq))
+            } else {
+                None
+            }
+        });
         if let Some((y, seq)) = last {
             view.y = y;
             view.scrolled_to = seq;
