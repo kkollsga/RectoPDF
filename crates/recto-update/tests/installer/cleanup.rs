@@ -158,6 +158,16 @@ pub fn wait_for_exit(root: &Path, limit: Duration) -> io::Result<()> {
     wait(limit, || present(root))
 }
 
+/// Waits until the fixture's executable is observed absent. An unknown answer (an `Err`) is "not yet known", as in
+/// the product's `known` and the fixture's own cleanup: it is kept, polled past, and returned if the limit passes.
+pub fn wait_absent(limit: Duration, probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
+    wait_absent_with(limit, probe, Instant::now, std::thread::sleep)
+}
+
+fn wait_absent_with(limit: Duration, probe: impl FnMut() -> io::Result<bool>, now: impl FnMut() -> Instant, pause: impl FnMut(Duration)) -> io::Result<()> {
+    wait_with(limit, probe, now, pause, Unknown::Retry)
+}
+
 fn wait(limit: Duration, probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
     wait_with(limit, probe, Instant::now, std::thread::sleep, Unknown::Retry)
 }
@@ -331,4 +341,26 @@ fn a_post_kill_ownership_error_is_latched_without_another_probe() {
     drop(fixture);
     assert!(path.exists());
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+/// Failure: a stand-in's end is declared unproven (the test panics) because one process of the same user, whose
+/// executable was deleted, answered the scan with an unknown instead of the scan settling on a definite answer.
+fn waiting_for_absence_polls_past_an_unknown_to_a_definite_answer() {
+    let clock = std::cell::Cell::new(Instant::now());
+    let run = |limit: Duration, mut answers: Vec<io::Result<bool>>, repeat: Option<fn() -> io::Result<bool>>| {
+        answers.reverse();
+        wait_absent_with(
+            limit,
+            || answers.pop().or_else(|| repeat.map(|again| again())).expect("probe asked past its answers"),
+            || clock.get(),
+            |step| clock.set(clock.get() + step),
+        )
+    };
+    let limit = Duration::from_secs(5);
+    assert!(run(limit, vec![Err(io::Error::other("unknown")), Ok(false)], None).is_ok());
+    let error = run(limit, vec![], Some(|| Err(io::Error::other("still unknown")))).unwrap_err();
+    assert!(error.to_string().contains("still unknown"), "the deadline carries the last unknown: {error}");
+    let error = run(limit, vec![], Some(|| Ok(true))).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 }
