@@ -423,15 +423,18 @@ fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job, 
 
 fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
     let mut walled = 0;
+    let mut starved = (0u32, 0u32);
     let by_file: Vec<(PathBuf, u32)> = renderers
         .iter_mut()
         .filter_map(|(path, open)| {
+            let stats = open.doc.stats();
+            starved = (starved.0.saturating_add(stats.too_busy), starved.1.saturating_add(stats.deadline_kills));
             let pid = open.doc.worker_pid()?;
             walled += u32::from(open.doc.worker_walled() == Some(true));
             Some((path.clone(), pid))
         })
         .collect();
-    shared.workers.publish(by_file, walled);
+    shared.workers.publish(by_file, walled, starved);
 }
 
 /// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while the tab it was given for holds it as its own
@@ -714,17 +717,21 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     Outcome::Drawn { kind, low_res }
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
-                Err(failure) if whole_file(failure) => document_failed(failure),
-                Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed {
-                    message: failure.message(),
-                    may_pass: true,
-                },
-                Err(failure) => Outcome::PageFailed {
-                    message: failure.message(),
-                    may_pass: false,
-                },
+                Err(failure) => draw_failed(failure),
             }
         }
+    }
+}
+
+/// What a draw that failed is to the page view. The Mac too busy to run the worker says nothing of the page, so nothing's said and it's asked again after the wait, as a look to be tried again is ([`Outcome::LookLater`]); a page that can't be drawn for now may pass; the rest of a page's failures stay, and a failure of the file fails it.
+pub(super) fn draw_failed(failure: RenderFailure) -> Outcome {
+    match failure {
+        RenderFailure::TooBusy { .. } => Outcome::LookLater,
+        failure if whole_file(failure) => document_failed(failure),
+        failure => Outcome::PageFailed {
+            message: failure.message(),
+            may_pass: matches!(failure, RenderFailure::NotDrawableNow { .. }),
+        },
     }
 }
 
@@ -757,6 +764,37 @@ fn whole_file(failure: RenderFailure) -> bool {
             | RenderFailure::PageFailed { .. }
             | RenderFailure::PageReadFailed { .. }
             | RenderFailure::NotDrawableNow { .. }
+            | RenderFailure::TooBusy { .. }
             | RenderFailure::ExportRefused { .. }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recto_render_service::KillReason;
+
+    /// Failure (the long session, 2026-11-25): a draw the Mac was too busy to run the worker for is told to the person as a page that took too long, for good: the page stays bare and the wake never gets a first frame. It ends as [`Outcome::LookLater`], with no words and a try after the wait, and a page that really can't be drawn is still said, as it was. Seen failing with `TooBusy` mapped to a failure that can't pass.
+    #[test]
+    fn a_draw_the_mac_was_too_busy_for_is_held_quietly_and_a_failed_page_is_still_said() {
+        assert!(matches!(draw_failed(RenderFailure::TooBusy { page: 3 }), Outcome::LookLater));
+        assert!(matches!(
+            draw_failed(RenderFailure::PageFailed {
+                page: 3,
+                reason: KillReason::Deadline
+            }),
+            Outcome::PageFailed { may_pass: false, .. }
+        ));
+        assert!(matches!(
+            draw_failed(RenderFailure::NotDrawableNow {
+                page: 3,
+                why: recto_render_service::LowResWhy::HeavyBusy
+            }),
+            Outcome::PageFailed { may_pass: true, .. }
+        ));
+        assert!(matches!(
+            draw_failed(RenderFailure::NeedsPassword),
+            Outcome::DocumentFailed { needs_key: true, .. }
+        ));
+    }
 }

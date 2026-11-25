@@ -647,6 +647,9 @@ impl QaBridge {
                 "heap_bytes": mine.heap,
                 "workers": workers,
                 "workers_walled": self.walled_workers(),
+                // Whether a page that failed was a starved worker's: runs out of time with the Mac too busy to run it, and kills at the deadline, of the renderers held.
+                "workers_too_busy": self.engines().iter().map(|engine| engine.workers().starved().0).sum::<u32>(),
+                "workers_deadline_kills": self.engines().iter().map(|engine| engine.workers().starved().1).sum::<u32>(),
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,

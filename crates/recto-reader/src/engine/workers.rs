@@ -18,6 +18,9 @@ pub(super) struct Seen {
     lists: Mutex<SeenLists>,
     /// Of the workers running, those that said their walls were up.
     walled: AtomicU32,
+    /// Of the renderers held, the times a worker ran out of time it hadn't been given (the Mac too busy to run it), and the times one was killed at its deadline. So a page that failed says whether its worker was starved.
+    too_busy: AtomicU32,
+    deadline_kills: AtomicU32,
     /// The system's asked for memory back: workers with nothing to do go the next time the thread comes round.
     kill_idle: AtomicBool,
 }
@@ -31,8 +34,10 @@ struct SeenLists {
 
 impl Seen {
     /// The workers running now, by the file each has open, and how many of them said their walls were up.
-    pub(super) fn publish(&self, by_file: Vec<(PathBuf, u32)>, walled: u32) {
+    pub(super) fn publish(&self, by_file: Vec<(PathBuf, u32)>, walled: u32, starved: (u32, u32)) {
         self.walled.store(walled, Ordering::Relaxed);
+        self.too_busy.store(starved.0, Ordering::Relaxed);
+        self.deadline_kills.store(starved.1, Ordering::Relaxed);
         // Built before the lock is taken, as the pids always were: the lock is held for two moves.
         let pids = by_file.iter().map(|(_, pid)| *pid).collect();
         let mut lists = lock(&self.lists);
@@ -99,6 +104,12 @@ impl WorkerFigures<'_> {
     /// How many of the workers running now said their walls were up: the App Sandbox on and their Mach rights dropped.
     pub fn walled(&self) -> u32 {
         self.engine.shared.workers.walled.load(Ordering::Relaxed)
+    }
+
+    /// What the renderers held have counted: workers that ran out of time with the Mac too busy to run them, and workers killed at their deadline.
+    pub fn starved(&self) -> (u32, u32) {
+        let workers = &self.engine.shared.workers;
+        (workers.too_busy.load(Ordering::Relaxed), workers.deadline_kills.load(Ordering::Relaxed))
     }
 
     /// The footprint of every worker running now, from outside.

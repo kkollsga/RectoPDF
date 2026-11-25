@@ -289,6 +289,7 @@ codes! {
     OWNER_GONE = "owner_gone", Next::ByExit;
     PAGE_CRASHED_RENDERER = "page_crashed_renderer", Next::ByExit;
     PAGE_FAILED = "page_failed", Next::ByExit;
+    PAGE_MAC_BUSY = "page_mac_busy", Next::Says("This Mac was too busy to draw the page. Ask again.");
     PAGE_NOT_DRAWABLE_NOW = "page_not_drawable_now", Next::ByExit;
     PAGE_OUT_OF_RANGE = "page_out_of_range", Next::Says("`recto where` gives the tab's length. Pages count from 1.");
     PAGE_TOO_HEAVY = "page_too_heavy", Next::ByExit;

@@ -1,5 +1,6 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
+mod busy;
 pub mod contents;
 pub mod hidden;
 pub mod images;
@@ -307,6 +308,10 @@ pub enum RenderFailure {
     DocumentStopped,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
     TookTooLong,
+    /// The page's draw ran out of time with the Mac too busy to give its worker the processor, so nothing is known of the page and nothing is remembered: asking again draws it. After [`busy::MAX_BUSY`] of them in a row it's remembered as [`Self::PageFailed`].
+    TooBusy {
+        page: u32,
+    },
 }
 
 /// Why a worker's walls weren't up. Only the first says the app is signed wrong.
@@ -445,6 +450,7 @@ impl RenderFailure {
             Self::NotDrawableNow { .. } => "page_not_drawable_now",
             Self::DocumentStopped => "document_stopped",
             Self::TookTooLong => "render_took_too_long",
+            Self::TooBusy { .. } => "page_mac_busy",
         }
     }
 
@@ -503,6 +509,7 @@ impl RenderFailure {
             Self::NotDrawableNow { page, .. } => format!("Page {} can't be drawn right now: this Mac is short of the memory it needs. It may draw when more is free.", page + 1),
             Self::DocumentStopped => "This document has used too much memory too many times, so RectoPDF has stopped drawing it. It may be malicious.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
+            Self::TooBusy { page } => format!("This Mac was too busy to draw page {}. It will be tried again.", page + 1),
         }
     }
 }
@@ -685,10 +692,9 @@ struct PageMemory {
     check_stopped: bool,
     /// Reads of its text in a row that ran out of time with the Mac too busy to say anything about the page.
     busy_reads: u8,
+    /// Draws of it in a row that ran out of time with the Mac too busy to say anything about the page. A draw that lands sets it to 0.
+    busy_draws: u8,
 }
-
-/// Busy reads of a page in a row past which it's remembered as unreadable after all: a worker that hangs looks starved too, and this bounds what a hostile page can cost to that many deadlines.
-const MAX_BUSY_READS: u8 = 3;
 
 /// Workers the hidden-text check may have killed in one document, past which pages go unchecked, and the same for the walk for where a page's images are, past which pages go unasked and are judged whole. They don't count towards `max_kills_per_document`, so a copy of a file of slow pages can't stop it drawing, and this keeps them from costing a respawn each for ever.
 const MAX_ASKING_KILLS: u32 = 16;
@@ -1061,7 +1067,7 @@ impl DocRenderer {
             if self.control.is_stale(request.generation) {
                 return Ok(TileResult::Cancelled { worker_killed: false });
             }
-            let state = self.page_draw_state_at(page, scale);
+            let (state, busy) = (self.page_draw_state_at(page, scale), self.stats.too_busy);
             if !matches!(state, PageDrawState::Failed(_)) && self.stopped() {
                 return Err(RenderFailure::DocumentStopped);
             }
@@ -1082,8 +1088,8 @@ impl DocRenderer {
                 },
                 PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal, tile_edge) {
                     Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::NeedsHeavy),
-                    Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
-                    other => return other_result(other),
+                    Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy)),
+                    other => return busy::drew(self, page, other),
                 },
                 PageDrawState::NeedsHeavy => {
                     let retries = self.stats.heavy_pages - self.counted_from.heavy_pages;
@@ -1138,8 +1144,8 @@ impl DocRenderer {
                             DrawPurpose::Export => {}
                         },
                         Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::LowResOnly),
-                        Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
-                        other => return other_result(other),
+                        Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy)),
+                        other => return busy::drew(self, page, other),
                     }
                 }
             }
@@ -1202,6 +1208,7 @@ impl DocRenderer {
             height: bottom - y,
         };
         let smaller = TileRequest { rect, scale, ..*request };
+        let busy = self.stats.too_busy;
         match self.draw_once(&smaller, surface, WorkerClass::Normal, 0) {
             Ok(TileResult::Done(tile)) => {
                 self.stats.low_res_tiles += 1;
@@ -1215,8 +1222,8 @@ impl DocRenderer {
                 Err(RenderFailure::NotDrawableNow { page, why })
             }
             Err(JobFailure::Stopped(KillReason::MemoryLimit)) => Err(self.give_up_drawing(page, scale, KillReason::MemoryLimit)),
-            Err(JobFailure::Stopped(reason)) => Err(self.give_up_drawing(page, 0.0, reason)),
-            other => other_result(other),
+            Err(JobFailure::Stopped(reason)) => Err(busy::draw_stopped(self, page, 0.0, reason, busy)),
+            other => busy::drew(self, page, other),
         }
     }
 
@@ -1331,25 +1338,13 @@ impl DocRenderer {
         }
         let busy = self.stats.too_busy;
         match self.text_job(page, boxes, false, generation) {
-            // The Mac was too busy for the read to get its time: nothing's known about the page, so it isn't remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long. A worker that hangs looks the same, so after [`MAX_BUSY_READS`] of them in a row the page is remembered after all, and a hostile page costs a deadline at most that many times.
-            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy => {
-                let memory = self.remember(page);
-                memory.busy_reads = memory.busy_reads.saturating_add(1);
-                if memory.busy_reads >= MAX_BUSY_READS {
-                    memory.text = Some(reason);
-                }
-                Err(RenderFailure::PageReadFailed { page, reason })
-            }
+            // The Mac was too busy for the read to get its time: nothing's known about the page, so it isn't remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long. A worker that hangs looks the same, so after [`MAX_BUSY`] of them in a row the page is remembered after all, and a hostile page costs a deadline at most that many times.
+            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy => Err(busy::read_stopped(self, page, reason)),
             Err(JobFailure::Stopped(reason)) => {
                 self.remember(page).text = Some(reason);
                 Err(RenderFailure::PageReadFailed { page, reason })
             }
-            Ok(read) => {
-                if let Some(memory) = self.remembered.iter_mut().find(|memory| memory.page == page) {
-                    memory.busy_reads = 0;
-                }
-                Ok(read)
-            }
+            Ok(read) => Ok(busy::read_landed(self, page, read)),
             other => other.map_err(RenderFailure::from),
         }
     }
@@ -1403,6 +1398,7 @@ impl DocRenderer {
                     size: None,
                     check_stopped: false,
                     busy_reads: 0,
+                    busy_draws: 0,
                 });
                 self.remembered.len() - 1
             }

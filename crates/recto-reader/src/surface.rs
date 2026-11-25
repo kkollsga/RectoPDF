@@ -940,6 +940,7 @@ WorkerFigures (pub struct, derives Clone, Copy)
 WorkerFigures::pub fn bytes(&self, tab: u32) -> u64
 WorkerFigures::pub fn footprint(&self) -> (u64, u64)
 WorkerFigures::pub fn pids(&self) -> Vec<u32>
+WorkerFigures::pub fn starved(&self) -> (u32, u32)
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub(crate)) pub(crate) fn finding(reader: &Reader) -> bool
