@@ -10,8 +10,10 @@
 mod codec;
 mod geometry;
 mod resolve;
+mod text;
 
 pub use codec::{decode, encode};
+pub use text::{TextMatch, characters, check_characters, text_check};
 pub use resolve::{DocumentMatch, Looked, MAX_CANDIDATES, Placed, Resolution, ScanCaps, Status, TAG_PAGES, Unreferenceable, document_tags, reference, resolve};
 
 use crate::page_id::PageIdentity;
