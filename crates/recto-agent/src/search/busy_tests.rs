@@ -107,3 +107,70 @@ fn a_page_the_index_marked_failed_stays_failed_when_the_worker_is_short_of_time(
     drop(stopped);
     assert_eq!(said, "failed: read_deadline");
 }
+
+/// Failure: a worker that never says hello (the third busy start in a row is `Unavailable`, and remembered for a moment) made every page asked in that moment "couldn't be read", so Find called a whole file unreadable on a busy Mac, against the rule that a busy page is never "couldn't be read". Now it stops that file for this search: no more pages are asked of it, none is counted as failed, and the file is said once with the reader's own sentence.
+#[test]
+fn a_renderer_that_wont_start_stops_the_file_and_fails_no_page() {
+    let pdf = recto_testpdf::pages(
+        &(0..4)
+            .map(|n| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("page {n}")])))
+            .collect::<Vec<_>>(),
+    );
+    let folder = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-search-unstarted-");
+    let path = folder.join("doc.pdf");
+    std::fs::write(&path, &pdf).unwrap();
+    let plan = Plan {
+        files: vec![PlanFile {
+            path,
+            expected: None,
+            added: false,
+        }],
+        pages: (0..4).map(|page| (page, 0, page)).collect(),
+        tab: 1,
+        keys: None,
+    };
+    let far = far_future();
+    let settings = Settings {
+        limit: 20,
+        context: 0,
+        deadline: far,
+        draw_until: far,
+        second_pass_until: far,
+        live_budget: Duration::from_secs(5),
+        indexing: None,
+        force_scan: false,
+    };
+    let mut reader = Reader::new(&plan, &settings);
+    let mut slot = Slot::default();
+    assert!(matches!(reader.read(0, 0, &mut slot).unwrap(), Got::Page(_)), "a page reads on its own");
+    reader.current.as_mut().unwrap().1.kill_worker();
+    let said = recto_render_service::under_start_timeout_for_test(
+        &mut reader,
+        |reader| &mut reader.current.as_mut().unwrap().1,
+        Duration::ZERO,
+        |reader| {
+            (1..=3)
+                .map(|page| match reader.read(0, page, &mut slot) {
+                    Ok(Got::Busy) => "busy",
+                    Ok(Got::Nothing) => "nothing",
+                    Ok(Got::Failed(_)) => "failed",
+                    _ => "other",
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    assert_eq!(
+        said,
+        ["busy", "busy", "nothing"],
+        "two busy starts, then the one that ends the run stops the file without failing a page"
+    );
+    // Asked again after the renderer is let try, it would read: it isn't asked, because the file is stopped for this search.
+    reader.current.as_mut().unwrap().1.forget_failures();
+    assert!(matches!(reader.read(0, 3, &mut slot), Ok(Got::Nothing)), "no later page of the file is asked");
+    let coverage = Found::default().coverage(&plan, &reader);
+    assert_eq!(coverage["failed_pages"], json!([]), "{coverage}");
+    let files = coverage["files_not_read"].as_array().expect("the file is listed");
+    assert_eq!(files.len(), 1, "said once: {coverage}");
+    assert_eq!(files[0]["why"], RenderFailure::Unavailable.message(), "the reader's own sentence");
+    assert_eq!(files[0]["code"], "render_unavailable");
+}

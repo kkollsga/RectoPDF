@@ -529,6 +529,7 @@ impl Found {
             "pages_too_long_for_a_pattern": self.too_long,
             "pages_a_pattern_ran_out_of_time_on": self.out_of_time,
             "failed_pages_not_read_again": reader.not_read_again,
+            "files_not_read": reader.unstarted_files(plan),
         })
     }
 }
@@ -600,6 +601,8 @@ pub(crate) struct Reader<'a> {
     /// How much of that's gone.
     live_spent: Duration,
     not_read_again: u32,
+    /// Files whose renderer wouldn't start (`Unavailable` after the busy starts): no more of their pages are asked in this search, and each is said once, in `coverage`.
+    unstarted: Vec<u16>,
     deadline: Instant,
     /// Each file's password, once looked up: `None` not yet looked.
     file_keys: Vec<Option<Option<std::sync::Arc<recto_core::Password>>>>,
@@ -622,6 +625,7 @@ impl<'a> Reader<'a> {
             live_budget: settings.live_budget,
             live_spent: Duration::ZERO,
             not_read_again: 0,
+            unstarted: Vec::new(),
             deadline: settings.deadline,
             file_keys: vec![None; plan.files.len()],
         }
@@ -747,8 +751,20 @@ impl<'a> Reader<'a> {
         got
     }
 
+    /// The files this search stopped asking about because their renderer wouldn't start: the reader's own sentence, never counted as failed pages.
+    fn unstarted_files(&self, plan: &Plan) -> Vec<Value> {
+        let why = RenderFailure::Unavailable;
+        self.unstarted
+            .iter()
+            .map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() }, "why": why.message(), "code": why.code() }))
+            .collect()
+    }
+
     /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
     fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
+        if self.unstarted.contains(&file) {
+            return Ok(Got::Nothing);
+        }
         let key = self.key_of(file);
         // **A PDF added from a file that needs a password is a page that couldn't be read,** as the page view draws it (`added_needs_password` in
         // `recto-reader`): skipped and counted, and the search goes on. Never the document's want of a password, which the document doesn't have.
@@ -773,6 +789,11 @@ impl<'a> Reader<'a> {
             // This arm precedes the whole-search `Err` arms below, so a file that vanishes during a busy deadline is reported busy, not as ending the search (accepted; rare).
             // A page the index marked failed stays failed, but a worker the Mac gave no processor to says nothing about a page.
             Err(_) if renderer.stats().too_busy > busy => return Ok(Got::Busy),
+            // A renderer that wouldn't start after the busy starts: not this page's doing, so no page of the file fails; it stops the file for this search.
+            Err(RenderFailure::Unavailable) => {
+                self.unstarted.push(file);
+                return Ok(Got::Nothing);
+            }
             Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
             Err(
                 failure @ (RenderFailure::NeedsPassword
