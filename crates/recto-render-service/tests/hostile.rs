@@ -133,13 +133,18 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
         "silent" | "ignore_cancel" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
-        "huge_text_claim" => {
+        // A hang that burns its processor time, as a page stuck in a loop does: unlike "silent" it isn't a worker the Mac was too busy to run, so a kill at the deadline is the page's.
+        "spinning" => spin(),
+        "huge_text_claim" | "huge_text_claim_spinning" => {
             let header = Header {
                 kind: Kind::Text,
                 len: proto::MAX_FRAME,
             }
             .encode();
             let _ = send_all(channel, &header, &[]);
+            if mode == "huge_text_claim_spinning" {
+                spin();
+            }
             loop {
                 std::thread::sleep(Duration::from_secs(60));
             }
@@ -163,6 +168,14 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
         _ => good.encode(),
     };
     let _ = send_all(channel, &reply, &[]);
+}
+
+/// Burns processor time until it's killed.
+fn spin() -> ! {
+    let mut n = 0u64;
+    loop {
+        n = std::hint::black_box(n.wrapping_add(1));
+    }
 }
 
 fn answer_text(mode: &str, job: &TextJob) -> Vec<u8> {
@@ -461,11 +474,11 @@ fn bad_text_is_rejected() {
 }
 
 /// Failure: a worker claims a 64 MiB frame and sends nothing, and the host allocates it up front. A claim costs nothing until bytes arrive;
-/// the deadline ends it.
+/// the deadline ends it. The stand-in spins after the claim: one that sleeps gets no processor time, which the host takes for a Mac too busy to run it (`TooBusy`, not remembered), and this is about a worker that hangs.
 #[test]
 fn a_claimed_frame_costs_nothing_until_it_arrives() {
     let (mut doc, _file) = doc(
-        "huge_text_claim",
+        "huge_text_claim_spinning",
         Policy {
             page_deadline: Duration::from_millis(300),
             ..Policy::default()
@@ -484,11 +497,11 @@ fn a_claimed_frame_costs_nothing_until_it_arrives() {
     assert!(after.saturating_sub(before) < 32 * 1024 * 1024, "grew from {before} to {after}");
 }
 
-/// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked.
+/// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked. The stand-in spins: one that sleeps gets no processor time, which the host takes for a Mac too busy to run it (`TooBusy`, not remembered).
 #[test]
 fn a_page_that_never_finishes_is_killed_at_the_deadline() {
     let (mut doc, _file) = doc(
-        "silent",
+        "spinning",
         Policy {
             page_deadline: Duration::from_millis(100),
             ..Policy::default()
