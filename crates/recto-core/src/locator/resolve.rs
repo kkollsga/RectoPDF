@@ -202,11 +202,18 @@ impl<'a> Reads<'a> {
     /// The tags this document has now: the `/ID` tag, and the content tag from the first of the first [`TAG_PAGES`] pages with an identity.
     fn tags(&mut self) -> (Option<[u8; 8]>, Option<[u8; 8]>) {
         let id = page_id::document_ids(self.reader).map(|ids| first_eight(&ids.first));
-        let content = (0..TAG_PAGES as u32).find_map(|index| match self.get(index) {
-            Got::Read(PageRead { identity: Some(identity), .. }) => Some(content_tag(&identity)),
-            Got::Read(_) => None,
-            Got::Absent | Got::Capped => None,
-        });
+        // The first of the tag pages with an identity, stopping at the first page refused for a cap: a later page read already would give another page's tag.
+        let mut content = None;
+        for index in 0..TAG_PAGES as u32 {
+            match self.get(index) {
+                Got::Read(PageRead { identity: Some(identity), .. }) => {
+                    content = Some(content_tag(&identity));
+                    break;
+                }
+                Got::Read(_) => {}
+                Got::Absent | Got::Capped => break,
+            }
+        }
         (id, content)
     }
 }

@@ -413,3 +413,22 @@ fn a_referrers_byte_cap_equal_to_what_was_read_is_capped_and_one_more_byte_reads
         assert_eq!(referrer.page(20).map(|_| ()), expected, "cap {bytes}");
     }
 }
+
+/// Failure: a referrer whose page cap is spent by the hit's page itself (the tag page can't be read) says the document has no tag (`NoDocumentTag`), which
+/// is a claim about the document, where it only ran out of room: it must say `Capped`.
+#[test]
+fn a_referrer_that_cant_read_the_tag_page_for_want_of_pages_is_capped_not_untagged() {
+    let (reader, map) = open(&numbered(25));
+    let caps = ScanCaps { pages: 1, ..STANDARD };
+    assert_eq!(Referrer::new(&reader, &map, &caps).page(20), Err(Unreferenceable::Capped));
+}
+
+/// Failure: a tag page refused for the byte cap is skipped, and the content tag is taken from a later page that was read already (the hit's own page 5), so
+/// the token carries another page's tag and doesn't match the one `recto ref` makes. Page 5 takes all the bytes, page 0 is refused: `Capped`, never a token.
+#[test]
+fn a_tag_page_refused_by_the_byte_cap_is_never_replaced_by_a_later_page_already_read() {
+    let (reader, map) = open(&numbered(25));
+    let one_page = page_id::read_page(&reader, map.get(5).expect("page"), &STANDARD.page).bytes;
+    let caps = ScanCaps { bytes: one_page, ..STANDARD };
+    assert_eq!(Referrer::new(&reader, &map, &caps).page(5), Err(Unreferenceable::Capped));
+}
