@@ -205,12 +205,15 @@ impl Bed {
         self.start(old, die_at).wait().unwrap()
     }
 
+    /// The harness's tolerance of an unknown answer while the stand-in ends is the cleanup policy's `wait`, and is
+    /// tested only there (`uncertain_observation_retries_without_weakening_exit_proof`), not through this method.
+    ///
     /// A new installer has no child handle for a prior launch; end the fixture cooperatively before retrying rollback.
     fn end_stand_in(&self) {
         let stop = self.files.work.join("test-app-stop");
         local::write_private_file(&stop, b"").unwrap();
         let executable = self.plan.executable();
-        cleanup::wait_absent(Duration::from_secs(5), || local::update_app_is_running(&executable))
+        cleanup::wait(Duration::from_secs(5), || local::update_app_is_running(&executable))
             .unwrap_or_else(|error| panic!("the prior stand-in did not end within its limit: {error}"));
         std::fs::remove_file(stop).unwrap();
     }
