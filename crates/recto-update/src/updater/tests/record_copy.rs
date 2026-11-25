@@ -107,16 +107,23 @@ fn the_record_copy_goes_after_its_week_while_a_refusal_stands() {
             test: None,
         };
         plan.write(&files.plan()).unwrap();
-        Outcome::new(OutcomeKind::CouldntGoBack, "0.2.0", "0.1.0", "app_exit_unproven")
-            .write(&files.outcome())
-            .unwrap();
+        // As the installer writes it from the going-back plan: the kept version to the running one, naming the plan.
+        Outcome {
+            kind: OutcomeKind::CouldntGoBack,
+            from: plan.from.clone(),
+            to: plan.to.clone(),
+            why: "app_exit_unproven".into(),
+            plan: Some(plan.id.clone()),
+        }
+        .write(&files.outcome())
+        .unwrap();
         let seams = Seams {
             wall: Arc::new(StandingClock(NOW_MS)),
             ..Seams::default()
         };
         let updater = Updater::with_seams(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>, seams);
         updater.launched(Facts {
-            version: "0.1.0".into(),
+            version: "0.2.0".into(),
             app: bed.app.clone(),
             system: "15.0".into(),
         });
