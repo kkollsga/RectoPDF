@@ -80,7 +80,7 @@ pub(super) fn store_code(store: Store) -> u8 {
     }
 }
 
-/// The writer's code, 0..=5 in declaration order, as an explicit table.
+/// The writer's code, 0..=6 in declaration order, as an explicit table.
 pub(super) fn writer_code(writer: Writer) -> u8 {
     match writer {
         Writer::Journals => 0,
@@ -89,6 +89,7 @@ pub(super) fn writer_code(writer: Writer) -> u8 {
         Writer::HeadingJobs => 3,
         Writer::AgentExports => 4,
         Writer::Renders => 5,
+        Writer::ClipboardOffers => 6,
     }
 }
 

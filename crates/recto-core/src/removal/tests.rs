@@ -1,7 +1,7 @@
 use super::*;
 
 const PROGRESS_SIZE: usize = 40;
-const GOLDEN_DIGEST: &str = "8adff43494897c09867061f7a565383f78496f77f6ac304a28b80261a229876b";
+const GOLDEN_DIGEST: &str = "8b62bf83e330589cabad272329a1331ecd4f87f028e94d2f67e2ffba585e991b";
 
 const LIMITS: Limits = Limits {
     max_artifacts: 4,

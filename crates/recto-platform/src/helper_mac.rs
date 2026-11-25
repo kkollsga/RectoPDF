@@ -9,8 +9,11 @@
 //! SSD, 40 ms on another disk), so it's never starved. `docs/engineering/search-index.md` has the numbers.
 //!
 //! `posix_spawnattr_set_qos_class_np` clamps the whole process at that level, every thread, including any thread pool a library starts, and
-//! whatever it starts in turn inherits the clamp: `ps -M` shows the helper's threads and its render worker's at priority 20, against 31 for an
-//! ordinary process and 4 at Darwin background.
+//! whatever it starts in turn inherits the clamp: the helper's threads' and its render worker's base priority (`pth_priority`) is 20, against
+//! 31 for an ordinary process and 4 at Darwin background, and the CPU time they use is charged to the utility bucket (`ri_cpu_time_qos_utility`)
+//! and no other. A thread's current priority is not ours to promise: the kernel raises it for a moment past the clamp while it holds a contended lock.
+//! The base priority isn't moved by that, but a user-space push from a higher-QoS thread of the same process can raise it (a thread at user-interactive
+//! waiting on a lock a utility thread holds lifted it from 20 to 31, measured 2026-11-25), which the task clamp doesn't apply to.
 
 use std::ffi::{CString, OsStr, c_int};
 use std::fs::File;
@@ -242,18 +245,136 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// `pid`'s threads' scheduling priorities, by `ps -M`: 20 is utility, 31 an ordinary process's default, 4 Darwin background. `ps -M` prints its own
-    /// columns, and a priority is the one that's a number with its policy's letter after it, `20T`.
-    fn priorities(pid: u32) -> Vec<u32> {
-        let out = std::process::Command::new("/bin/ps").args(["-M", "-p", &pid.to_string()]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .filter_map(|word| word.strip_suffix(['T', 'R', 'F'])?.parse().ok())
-            .collect()
+    /// One thread's scheduling numbers, from `proc_threadinfo`: where it is now (`pth_curpri`, which the kernel raises for a moment when the thread
+    /// holds a contended lock), its base (`pth_priority`, which the task's QoS clamp holds down) and `pth_maxpriority` (63 even under the clamp).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Level {
+        current: i32,
+        base: i32,
+        ceiling: i32,
     }
 
-    /// Failure: the helper runs at Darwin background or at the default priority instead of utility, or a child it starts escapes the level. A shell
+    /// Every thread of `pid`, read one after another by `proc_pidinfo` (a thread that ends meanwhile is left out), as `thread_names` does. An error
+    /// names the pid and the system's reason, for a process that is gone or isn't ours.
+    fn thread_levels(pid: u32) -> io::Result<Vec<Level>> {
+        // <sys/proc_info.h>: not in the libc crate.
+        const PROC_PIDLISTTHREADS: c_int = 6;
+        let raw_pid = c_int::try_from(pid).unwrap();
+        let mut handles = vec![0u64; 512];
+        let room = c_int::try_from(handles.len() * size_of::<u64>()).unwrap();
+        // SAFETY: the buffer and its size in bytes describe `handles`; what's written is a count of bytes within it.
+        let written = unsafe { libc::proc_pidinfo(raw_pid, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), room) };
+        let written = usize::try_from(written).ok().filter(|&bytes| bytes > 0);
+        let Some(written) = written else {
+            return Err(io::Error::other(format!("listing the threads of {pid}: {}", io::Error::last_os_error())));
+        };
+        handles.truncate(written / size_of::<u64>());
+        let size = c_int::try_from(size_of::<libc::proc_threadinfo>()).unwrap();
+        Ok(handles
+            .iter()
+            .filter_map(|&handle| {
+                let mut info = std::mem::MaybeUninit::<libc::proc_threadinfo>::uninit();
+                // SAFETY: the buffer and its size describe `info`.
+                let got = unsafe { libc::proc_pidinfo(raw_pid, libc::PROC_PIDTHREADINFO, handle, info.as_mut_ptr().cast(), size) };
+                if got != size {
+                    return None;
+                }
+                // SAFETY: a return of `size` means it was filled.
+                let info = unsafe { info.assume_init() };
+                Some(Level {
+                    current: info.pth_curpri,
+                    base: info.pth_priority,
+                    ceiling: info.pth_maxpriority,
+                })
+            })
+            .collect())
+    }
+
+    /// The CPU time `pid` has used, by the QoS bucket it ran in, as `proc_pid_rusage` keeps it.
+    fn qos_time(pid: u32) -> io::Result<libc::rusage_info_v4> {
+        let raw_pid = c_int::try_from(pid).unwrap();
+        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
+        // SAFETY: the buffer is a `rusage_info_v4`, which flavor 4 fills; a return of 0 means it was.
+        let rc = unsafe { libc::proc_pid_rusage(raw_pid, libc::RUSAGE_INFO_V4, info.as_mut_ptr().cast()) };
+        if rc != 0 {
+            return Err(io::Error::other(format!("proc_pid_rusage of {pid}: {}", io::Error::last_os_error())));
+        }
+        // SAFETY: filled, as checked.
+        Ok(unsafe { info.assume_init() })
+    }
+
+    /// A process id read from a line a child printed: positive and within `pid_t`, or `None`. `0` and `-1` would make `kill` signal this test's own
+    /// process group or every process the user owns.
+    fn parse_pid(line: &str) -> Option<libc::pid_t> {
+        line.trim().parse::<libc::pid_t>().ok().filter(|&pid| pid > 0)
+    }
+
+    /// Failure: a line the stand-in prints that isn't a process id becomes a `kill` of this test's own group or of everything the user owns.
+    #[test]
+    fn only_a_positive_pid_is_taken_from_a_helpers_line() {
+        for bad in ["0", "-1", "4294967295", "x", "", "12 13"] {
+            assert_eq!(parse_pid(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_pid(" 4242\n"), Some(4242));
+    }
+
+    /// What one reading of the stand-in shell and of what it started gave.
+    struct Seen {
+        shell: Vec<Level>,
+        sleeper: Vec<Level>,
+        shell_time: libc::rusage_info_v4,
+        sleeper_time: libc::rusage_info_v4,
+    }
+
+    /// Reads the sleeper's pid, which its shell prints once it has done its work, then both processes. Every failure is a value, so the caller can
+    /// kill and wait before it asserts.
+    fn observe(shell: u32, stdout: &mut File) -> (Option<libc::pid_t>, io::Result<Seen>) {
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        while matches!(io::Read::read(stdout, &mut byte), Ok(1)) && byte[0] != b'\n' {
+            line.push(byte[0]);
+        }
+        let Some(sleeper) = parse_pid(&String::from_utf8_lossy(&line)) else {
+            return (
+                None,
+                Err(io::Error::other(format!(
+                    "no pid line from the stand-in shell, got {:?}",
+                    String::from_utf8_lossy(&line)
+                ))),
+            );
+        };
+        let sleeper_id = u32::try_from(sleeper).expect("a positive pid");
+        let seen = (|| {
+            Ok(Seen {
+                shell: thread_levels(shell)?,
+                sleeper: thread_levels(sleeper_id)?,
+                shell_time: qos_time(shell)?,
+                sleeper_time: qos_time(sleeper_id)?,
+            })
+        })();
+        (Some(sleeper), seen)
+    }
+
+    /// The buckets that mean "not utility", as `(name, ns)`, for a message and a check.
+    fn outside_utility(info: &libc::rusage_info_v4) -> Vec<(&'static str, u64)> {
+        [
+            ("default", info.ri_cpu_time_qos_default),
+            ("maintenance", info.ri_cpu_time_qos_maintenance),
+            ("background", info.ri_cpu_time_qos_background),
+            ("legacy", info.ri_cpu_time_qos_legacy),
+            ("user_initiated", info.ri_cpu_time_qos_user_initiated),
+            ("user_interactive", info.ri_cpu_time_qos_user_interactive),
+        ]
+        .into_iter()
+        .filter(|&(_, ns)| ns > 0)
+        .collect()
+    }
+
+    /// Failure: the helper runs at Darwin background (also with the clamp kept and background set on top) or at the default priority instead of utility, or a child it starts escapes the level. A shell
     /// that starts a `sleep` stands in for the helper and its render worker. On CI's virtual Macs, Darwin background starved both helpers for minutes.
+    /// It doesn't assert a thread's current priority: the kernel lifts it above the clamp for a moment while the thread holds a contended lock, by
+    /// design (`ps` read 46 once at load 12, a stand-in shell with a clamp of 20). The QoS bucket the CPU time was charged to doesn't move with that,
+    /// so the time is what's asserted, and the threads' numbers are shown on failure.
     #[test]
     fn a_utility_helper_and_what_it_starts_run_at_utility() {
         let started = spawn(Path::new("/bin/sh"), &[], Priority::Utility).unwrap();
@@ -262,23 +383,51 @@ mod tests {
             mut stdin,
             mut stdout,
         } = started;
-        stdin.write_all(b"/bin/sleep 30 & echo $!; read line\n").unwrap();
-        let mut line = Vec::new();
-        let mut byte = [0u8; 1];
-        while stdout.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
-            line.push(byte[0]);
+        // The stand-in shell works a little, then starts a child that works a little too, and only that child's report (its pid, once it has run and
+        // before it becomes a `sleep`) lets this test read it: a reading of a child that hasn't run yet would pass for nothing. The outer shell closes its
+        // own stdout, so only that child holds the pipe and its death ends the read instead of hanging it, and the outer shell kills it when its input
+        // closes, so a failed run leaves no `sleep`.
+        stdin
+            .write_all(
+                b"i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; \
+                  /bin/sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; echo $$; exec /bin/sleep 600' & job=$!; \
+                  exec >&-; read line; kill $job\n",
+            )
+            .unwrap();
+        let (sleeper_pid, seen) = observe(child.id(), &mut stdout);
+        if let Some(pid) = sleeper_pid {
+            // SAFETY: a signal to the `sleep` this test started.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
         }
-        let grandchild: u32 = String::from_utf8(line).unwrap().trim().parse().unwrap();
-        let (shell, sleeper) = (priorities(child.id()), priorities(grandchild));
-        // SAFETY: a signal to the `sleep` this test started.
-        unsafe { libc::kill(grandchild as libc::pid_t, libc::SIGKILL) };
         drop(stdin);
         // Its `read` fails as its input closes, so it doesn't end with success. That it ends is what matters.
         child.wait().unwrap();
-        // Below an ordinary process's 31 and above Darwin background's 4, the property, rather than utility's 20 on this kernel.
-        let utility = |pris: &[u32]| !pris.is_empty() && pris.iter().all(|&pri| pri > 4 && pri < 31);
-        assert!(utility(&shell), "the helper's threads: {shell:?}");
-        assert!(utility(&sleeper), "what it started: {sleeper:?}");
+        let Seen {
+            shell,
+            sleeper,
+            shell_time,
+            sleeper_time,
+        } = seen.unwrap();
+        // The promise: the work ran at utility, and nowhere else. Both have done real work by now, so each has utility time. The threads' scheduling
+        // numbers are in the message only: with the clamp kept and Darwin background set on top (the old regression), the buckets fail as well, so a
+        // base-priority assert would only repeat them. A kernel lock promotion moves `current`, and a push from a higher-QoS thread of the same
+        // process moves `base`, so neither is a promise.
+        for (who, time, levels) in [("the helper", &shell_time, &shell), ("what it started", &sleeper_time, &sleeper)] {
+            let threads: Vec<String> = levels
+                .iter()
+                .map(|l| format!("current {} base {} ceiling {}", l.current, l.base, l.ceiling))
+                .collect();
+            assert!(
+                time.ri_cpu_time_qos_utility > 0,
+                "{who} used no CPU time at utility: outside it {:?}; threads {threads:?}",
+                outside_utility(time)
+            );
+            assert!(
+                outside_utility(time).is_empty(),
+                "{who} ran outside utility, by bucket in ns: {:?}; threads {threads:?}",
+                outside_utility(time)
+            );
+        }
     }
 
     /// Failure: the helper sees more than it's given: an environment variable of this process, or a descriptor beyond its three. A file's name or a

@@ -11,13 +11,17 @@
 
 mod confirm;
 mod digest;
+mod lineage;
 mod plan;
 mod progress;
+mod survey;
 
 pub use confirm::{Binding, CONFIRM_LIMITS, ConfirmLimits, ConfirmRefusal, Confirmations, Confirmed, PlanId, TargetKey, Version};
 pub use digest::PlanDigest;
+pub use lineage::{LEDGER_LIMITS, LedgerLimits, Lineage, Link, Side, Sides, lineage};
 pub use plan::plan;
 pub use progress::{Ack, OrderError, Outcome, Progress};
+pub use survey::{ArtifactKey, Found, Survey, Surveyed};
 
 use std::num::NonZeroU16;
 
@@ -180,7 +184,7 @@ pub struct Inventory<'a> {
 }
 
 impl<'a> Inventory<'a> {
-    pub const fn new(complete: StoreSet, artifacts: &'a [Artifact]) -> Self {
+    pub(crate) const fn new(complete: StoreSet, artifacts: &'a [Artifact]) -> Self {
         Self { complete, artifacts }
     }
 
@@ -295,16 +299,20 @@ pub enum Writer {
     HeadingJobs,
     AgentExports,
     Renders,
+    /// The snapshot tool's and text copy's offers (`recto-app/src/core/snapshot_tool.rs`). A snapshot of the old version still being made must
+    /// not publish after the clear. What happens to an offer already held is undecided (an owner question), and its adapter waits.
+    ClipboardOffers,
 }
 
 impl Writer {
-    const ALL: [Writer; 6] = [
+    const ALL: [Writer; 7] = [
         Writer::Journals,
         Writer::SleepFiles,
         Writer::IndexJobs,
         Writer::HeadingJobs,
         Writer::AgentExports,
         Writer::Renders,
+        Writer::ClipboardOffers,
     ];
 }
 

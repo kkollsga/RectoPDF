@@ -95,15 +95,152 @@ fn a_busy_draw_on_white_paper_isnt_settled_and_is_asked_for_again() {
     );
     assert!(jobs_for(&mut reader, page).is_empty(), "not asked for while it waits");
     reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
-    assert_eq!(
-        reader.docs.next_hold_ends(Instant::now()),
-        None,
-        "a wait that's over is the plan's, and nothing to wake for"
-    );
+    // A wait that's over is not "nothing to wake for": the plan takes it, and the thread goes round at once to do so (see the test of that, below).
     reader.refresh(MAX_ATTACH_PER_TURN);
     let again = jobs_for(&mut reader, page);
     assert!(
         again.iter().any(|job| matches!(&job.kind, JobKind::Draw { rect: asked, .. } if *asked == rect)),
         "asked for again at its time: {again:?}"
     );
+}
+
+/// The first job of the kind `wanted` says, the others finished as done.
+fn a_job_of(reader: &mut Reader, wanted: impl Fn(&JobKind) -> bool) -> Job {
+    loop {
+        let job = reader.next_job().expect("a job");
+        if wanted(&job.kind) {
+            return job;
+        }
+        match &job.kind {
+            JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+            JobKind::Links => reader.finish(job, Outcome::Links(None)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
+            JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
+            _ => reader.finish(
+                job,
+                Outcome::Drawn {
+                    kind: TileKind::Colour,
+                    low_res: None,
+                },
+            ),
+        }
+    }
+}
+
+/// Failure (the long session of 2026-11-25): a busy kill's hold outlived its retry. The page was drawn at its time and attached, but the hold, which nothing cleared, kept `settled` false for good: the thread at rest with no wake, `wait-settled` hung, a window shown for the tab waited out its whole patience. A draw's and a traits read's hold, on white and dark paper, are settled, and not counted held, once their time is over and the page is drawn again.
+#[test]
+fn a_held_page_retried_at_its_time_settles() {
+    for paper in [PaperKind::White, PaperKind::Dark] {
+        for traits in [false, true] {
+            let mut reader = reader_on(10);
+            reader.set_paper(paper);
+            let job = if traits {
+                a_job_of(&mut reader, |kind| matches!(kind, JobKind::Traits))
+            } else {
+                a_draw_job(&mut reader, DrawKind::Tile)
+            };
+            let page = job.position;
+            reader.work.note_started(&job, None);
+            reader.finish(job, Outcome::LookLater);
+            let issue = reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held");
+            issue.try_again_at = Some(Instant::now() - Duration::from_millis(1));
+            reader.refresh(MAX_ATTACH_PER_TURN);
+            settle(&mut reader);
+            let report = reader.report().0;
+            assert!(
+                reader.is_settled() && report["looks_held"].as_u64() == Some(0),
+                "{paper:?}, traits job {traits}: settled {}, report {report}",
+                reader.is_settled()
+            );
+        }
+    }
+}
+
+/// Failure (the long session of 2026-11-25): the hold's time was over by the time the thread came to rest (the plan is made first, the rest after the lock is let go and the workers are seen to), so nothing was left to wake it and it parked for good with a page undrawn. A hold that is over says "go round now"; the next plan takes it, and then there's nothing to wake for.
+#[test]
+fn a_hold_over_before_the_rest_wakes_the_thread_at_once() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    let page = job.position;
+    reader.work.note_started(&job, None);
+    reader.finish(job, Outcome::LookLater);
+    reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
+    assert_eq!(
+        reader.docs.next_hold_ends(Instant::now()),
+        Some(Duration::ZERO),
+        "a hold that is over, not yet taken by a plan, wakes the thread now"
+    );
+    let plan = reader.next_plan().expect("the held page is planned again");
+    assert_eq!(plan.position, page, "the page that was held");
+    assert_eq!(reader.docs.next_hold_ends(Instant::now()), None, "taken by the plan: nothing to wake for");
+}
+
+/// Failure (found with the long session of 2026-11-25, same root): a page that failed with words but may pass (`NotDrawableNow`) kept its issue after its retry drew, so the person was told, while the page showed, that it couldn't be drawn, and the page never settled. Once its time is over and it's drawn, the words go and the page is settled with its tiles on.
+#[test]
+fn a_page_that_may_pass_loses_its_words_once_its_retry_draws() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    let page = job.position;
+    reader.work.note_started(&job, None);
+    reader.finish(
+        job,
+        Outcome::PageFailed {
+            message: "Page 1 can't be drawn just now.".into(),
+            may_pass: true,
+        },
+    );
+    assert!(reader.note().is_some(), "told while it waits");
+    reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
+    reader.refresh(MAX_ATTACH_PER_TURN);
+    settle(&mut reader);
+    assert_eq!(reader.note(), None, "drawn, so nothing to tell");
+    assert!(reader.is_settled(), "settled: {}", reader.report().0);
+    assert!(
+        reader.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
+        "the page's tiles are attached"
+    );
+}
+
+/// Failure (review of `build/held-look-wake`): the drop of ended holds moved below `next_plan`'s early return for a closed window leaves a hold that is over reported as `ZERO` every turn, and nothing takes it, so the engine thread goes round at once for ever (100% CPU). With the window closed, the hold is dropped, no plan is made and nothing is left to wake for.
+#[test]
+fn a_hold_over_in_a_closed_window_is_dropped_and_wakes_nothing() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    let page = job.position;
+    reader.work.note_started(&job, None);
+    reader.finish(job, Outcome::LookLater);
+    reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
+    reader.window_closed();
+    assert!(reader.next_plan().is_none(), "no plan for a closed window");
+    assert_eq!(reader.docs.next_hold_ends(Instant::now()), None, "nothing to wake for: the thread would spin");
+}
+
+/// Failure (review of `build/held-look-wake`): a page that failed and won't pass (`may_pass: false`) lost its words when another tile of it drew, so the person was no longer told why the rest of it is blank. Only a failure with a time to try again goes when its retry draws.
+#[test]
+fn a_failure_that_wont_pass_keeps_its_words_when_another_tile_draws() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    // A second draw of the same page is asked while the first is out: its issue is made after the second was planned.
+    let other_tile = reader.next_job().expect("a second job");
+    assert!(
+        matches!(other_tile.kind, JobKind::Draw { .. }) && other_tile.position == job.position,
+        "{other_tile:?}"
+    );
+    reader.work.note_started(&job, None);
+    reader.finish(
+        job,
+        Outcome::PageFailed {
+            message: "Page 1 can't be drawn.".into(),
+            may_pass: false,
+        },
+    );
+    assert!(reader.note().is_some(), "told");
+    reader.finish(
+        other_tile,
+        Outcome::Drawn {
+            kind: TileKind::Colour,
+            low_res: None,
+        },
+    );
+    assert!(reader.note().is_some(), "still told: the page's failure won't pass");
 }

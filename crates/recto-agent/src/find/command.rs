@@ -333,7 +333,7 @@ fn answer<A: crate::SessionAccess>(access: &A, actor: Actor, finding: &dyn Findi
 
 /// The page counts of a Find answer. `busy_pages` is its own count beside `failed_pages`: a page the Mac was too busy to read isn't one that failed, and Find again reads it.
 fn coverage_counts(p: &Progress) -> Value {
-    json!({ "pages_searched": p.pages_done, "pages_in_scope": p.pages, "failed_pages": p.failed, "busy_pages": p.busy, "no_text_pages": p.no_text })
+    json!({ "pages_searched": p.pages_done, "pages_in_scope": p.pages, "failed_pages": p.failed, "busy_pages": p.busy, "files_not_read": p.unstarted, "no_text_pages": p.no_text })
 }
 
 #[cfg(test)]

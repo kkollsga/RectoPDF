@@ -220,8 +220,7 @@ impl Inner {
                     return Acted::NOT_UNDERSTOOD;
                 };
                 self.core.push(super::CoreCall::Reconcile);
-                if !super::person::submit(self, print) {
-                    self.tools.printing().not_asked();
+                if !self.tools.printing().taken(super::person::submit(self, print)) {
                     return Acted::NOT_UNDERSTOOD;
                 }
                 return Acted::DONE;

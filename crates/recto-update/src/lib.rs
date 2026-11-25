@@ -42,6 +42,22 @@ pub const APP_NAME: &str = "RectoPDF";
 pub const APP_BUNDLE: &str = "RectoPDF.app";
 /// The app's executable in the bundle.
 pub const APP_EXECUTABLE: &str = "Contents/MacOS/RectoPDF";
+
+/// Failure it stops at compile time: the executable renamed to 15 bytes or more. The update's scan of
+/// deleted-file programs (`recto_platform::update_processes`) reads a start name that macOS cuts at 15
+/// bytes (`pbi_comm`, MAXCOMLEN - 1), and a name that long could then be judged another program and
+/// swapped under while RectoPDF runs. Growing the name means looking at that rule again first.
+const _: () = {
+    let path = APP_EXECUTABLE.as_bytes();
+    let mut start = path.len();
+    while start > 0 && path[start - 1] != b'/' {
+        start -= 1;
+    }
+    assert!(
+        path.len() - start < 15,
+        "the app's executable name must stay under 15 bytes: see update_processes' start-name rule"
+    );
+};
 /// The installer in the bundle.
 pub const HELPER: &str = "Contents/MacOS/recto-updater";
 
