@@ -1,9 +1,7 @@
 //! The adapter lists a temp folder and decides by name and metadata only; the plan made from it is what a person would be shown.
 
 use super::*;
-use recto_core::removal::{
-    DESIGN_LIMITS, Disposition, Effect, Kinds, LEDGER_LIMITS, Limits, Link, Plan, Request, Surveyed, lineage, plan,
-};
+use recto_core::removal::{DESIGN_LIMITS, Disposition, Effect, Kinds, LEDGER_LIMITS, Limits, Link, Plan, Request, Surveyed, lineage, plan};
 use recto_platform::FileStamp;
 use recto_testpdf::TempDir;
 use std::num::NonZeroU16;
@@ -62,7 +60,11 @@ fn plan_of(s: &Surveyed, mode: TargetMode) -> Result<Plan, Refusal> {
 }
 
 fn purges(p: &Plan) -> usize {
-    p.steps().iter().filter(|s| s.effect() == Effect::Purge(Store::Backup)).map(|s| p.artifacts(s).len()).sum()
+    p.steps()
+        .iter()
+        .filter(|s| s.effect() == Effect::Purge(Store::Backup))
+        .map(|s| p.artifacts(s).len())
+        .sum()
 }
 
 fn backup(folder: &Path, of: &str) -> PathBuf {
