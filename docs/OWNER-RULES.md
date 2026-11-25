@@ -15,6 +15,8 @@ The owner's product rules and one-off decisions, in their words, with the date. 
 
 - **Timing with an agent level in a test folder** (2026-11-25). Asked how to time search on the NASA report when building the index needs Control, which only the person can set from a real terminal: the worker writes the level file into its own throwaway test state folder only, exactly as the CLI tests stand in for the person, and deletes the folder after. Owner: "Test folder, like CLI tests (Recommended)". The person's real level and state are never touched this way.
 
+- **A search index whose renderer can't start** (2026-11-25). After three failed starts of its page renderer in a row (about 30 s), the index says it couldn't be built just now and tries again a minute later, instead of waiting quietly for ever (which also hid a truly stuck renderer). Nothing is saved as failed; Find reads pages directly meanwhile; the same three-in-a-row rule as the reader's. Owner: "Accept (Recommended)".
+
 ## Starting the next four work items (2026-11-17)
 - Given the 2026-11-17 review's four recommendations (bounded CI diagnosis plus no-wait SVG paste; locator 8.1 then reference-bearing retrieval 8.2; redaction/Remove Hidden Data retention design then guarded implementation alongside it; focused copy/highlight/recovery fixes), owner: "I agree, can you get started on the 4 items?". This authorizes work on those tracks under the existing writer, privacy, access and review rules. The recommendation keeps the sidebar after the locator and safe-removal work; external releases and other-repository changes still follow their existing authorization rules.
 
