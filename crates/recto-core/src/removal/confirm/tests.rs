@@ -9,11 +9,16 @@ enum Who {
     Agent(u8),
 }
 
-const SMALL: ConfirmLimits = ConfirmLimits {
-    max_pending: match NonZeroU8::new(2) {
+const fn n(v: u8) -> NonZeroU8 {
+    match NonZeroU8::new(v) {
         Some(n) => n,
         None => unreachable!(),
-    },
+    }
+}
+
+const SMALL: ConfirmLimits = ConfirmLimits {
+    max_pending: n(2),
+    per_actor: n(1),
     ttl: Duration::from_secs(10),
 };
 
@@ -86,6 +91,50 @@ fn at_cap_an_actor_replaces_only_its_own_oldest() {
     );
     assert!(s.take(others, &bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).is_ok());
     assert!(s.take(third, &bind(Who::Person, new_file("/b.pdf")), &plan, t0).is_ok());
+}
+
+/// Catches an actor holding more than its share: one actor at its share offering again must replace only its own oldest,
+/// never another actor's plan, and never grow.
+#[test]
+fn an_actor_at_its_share_evicts_only_its_own_oldest() {
+    let (plan, t0) = (save_as_plan(), Instant::now());
+    let mut s = Confirmations::new(ConfirmLimits { max_pending: n(4), per_actor: n(2), ttl: SMALL.ttl });
+    let x = s.offer(bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap();
+    let y = s.offer(bind(Who::Agent(1), new_file("/y.pdf")), &plan, t0).unwrap();
+    let z = s.offer(bind(Who::Person, new_file("/z.pdf")), &plan, t0).unwrap();
+    let w = s.offer(bind(Who::Agent(1), new_file("/w.pdf")), &plan, t0).unwrap();
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.take(x, &bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
+    assert!(s.take(y, &bind(Who::Agent(1), new_file("/y.pdf")), &plan, t0).is_ok());
+    assert!(s.take(z, &bind(Who::Person, new_file("/z.pdf")), &plan, t0).is_ok());
+    assert!(s.take(w, &bind(Who::Agent(1), new_file("/w.pdf")), &plan, t0).is_ok());
+}
+
+/// Catches one agent filling every slot and locking the person out of confirming anything: with the real limits an agent offering
+/// 8 targets holds only its share, and the person's offer still succeeds.
+#[test]
+fn one_actor_cannot_fill_the_store_and_lock_out_the_person() {
+    let (plan, t0) = (save_as_plan(), Instant::now());
+    let mut s = Confirmations::new(CONFIRM_LIMITS);
+    for i in 0..8 {
+        s.offer(bind(Who::Agent(1), new_file(&format!("/t{i}.pdf"))), &plan, t0).unwrap();
+    }
+    assert_eq!(s.len(), usize::from(CONFIRM_LIMITS.per_actor.get()));
+    assert!(s.offer(bind(Who::Person, new_file("/mine.pdf")), &plan, t0).is_ok());
+}
+
+/// Catches a share that is not enforced at the limit plus one: with a share of 1 and room for 2, a second target replaces the
+/// actor's own plan (never `Full`, never a third entry), while an actor holding nothing is `Full` and pushes nobody out.
+#[test]
+fn the_share_holds_at_the_limit_plus_one() {
+    let (plan, t0) = (save_as_plan(), Instant::now());
+    let mut s = store();
+    s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).unwrap();
+    s.offer(bind(Who::Agent(2), new_file("/a.pdf")), &plan, t0).unwrap();
+    s.offer(bind(Who::Agent(1), new_file("/b.pdf")), &plan, t0).unwrap();
+    assert_eq!(s.len(), 2);
+    assert_eq!(s.offer(bind(Who::Person, new_file("/a.pdf")), &plan, t0), Err(ConfirmRefusal::Full));
+    assert_eq!(s.len(), 2);
 }
 
 /// Catches two live confirmations for one actor and target: the person could confirm a plan older than the one on screen.

@@ -14,12 +14,18 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConfirmLimits {
     pub max_pending: NonZeroU8,
+    /// How many one actor may hold; at its share an actor's new plan replaces its own oldest.
+    pub per_actor: NonZeroU8,
     pub ttl: Duration,
 }
 
-/// Design limits, not measurements: 8 pending plans, 10 minutes.
+/// Design limits, not measurements: 8 pending plans, 2 for any one actor, 10 minutes.
 pub const CONFIRM_LIMITS: ConfirmLimits = ConfirmLimits {
     max_pending: match NonZeroU8::new(8) {
+        Some(n) => n,
+        None => unreachable!(),
+    },
+    per_actor: match NonZeroU8::new(2) {
         Some(n) => n,
         None => unreachable!(),
     },
@@ -144,8 +150,10 @@ impl<A: Copy + Eq> Confirmations<A> {
         now.saturating_duration_since(p.created) >= self.limits.ttl
     }
 
-    /// Keeps `plan` for `binding.actor`. A new plan for the same actor and target replaces the old one. When full, the asker's own
-    /// oldest plan goes; if the asker has none, nobody else's is pushed out and this is `Full`.
+    /// Keeps `plan` for `binding.actor`. A new plan for the same actor and target replaces the old one. An actor at its share
+    /// (`per_actor`), or any asker when the store is full, replaces its own oldest plan; if the asker has none, nobody else's is
+    /// pushed out and this is `Full`. So no actor holds more than its share, and a person is locked out only when every slot is held
+    /// by other actors at their shares: with the real limits (2 each, 8 in all) that takes four other actors holding two each.
     pub fn offer(&mut self, binding: Binding<A>, plan: &Plan, now: Instant) -> Result<PlanId, ConfirmRefusal> {
         if binding.target.mode() != plan.request().mode() {
             return Err(ConfirmRefusal::Mismatched);
@@ -157,7 +165,9 @@ impl<A: Copy + Eq> Confirmations<A> {
         self.pending.retain(|p| now.saturating_duration_since(p.created) < ttl);
         self.pending
             .retain(|p| !(p.binding.actor == binding.actor && p.binding.target == binding.target));
-        if self.pending.len() >= usize::from(self.limits.max_pending.get()) {
+        let mine = self.pending.iter().filter(|p| p.binding.actor == binding.actor).count();
+        let at_share = mine >= usize::from(self.limits.per_actor.get());
+        if at_share || self.pending.len() >= usize::from(self.limits.max_pending.get()) {
             let own = self.pending.iter().position(|p| p.binding.actor == binding.actor);
             self.pending.remove(own.ok_or(ConfirmRefusal::Full)?);
         }
