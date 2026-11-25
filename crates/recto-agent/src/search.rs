@@ -208,6 +208,8 @@ enum FileRoute {
     NotLookedAt,
     Index(CorpusKey),
     Scan,
+    /// Its renderer wouldn't start (`Unavailable` after the busy starts): no more of its pages are asked in this search, and it's said once in `coverage`.
+    Unstarted,
 }
 
 /// Why a corpus can't be used for this search.
@@ -527,12 +529,13 @@ impl Found {
             "pages_with_tag_chars": self.tag_pages,
             "changed_files": reader.changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
             "next_page": self.next_page,
-            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty()).then_some(self.total),
+            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty() && !reader.any_unstarted()).then_some(self.total),
             "hits_at_least": self.total,
             "uncounted_pages": self.uncounted,
             "pages_too_long_for_a_pattern": self.too_long,
             "pages_a_pattern_ran_out_of_time_on": self.out_of_time,
             "failed_pages_not_read_again": reader.not_read_again,
+            "files_not_read": reader.unstarted_files(plan),
         })
     }
 }
@@ -568,6 +571,10 @@ pub(crate) enum Got<'a> {
     Failed(&'static str),
     /// The Mac was too busy to give the worker the processor in time: nothing is known of the page, and a search again may read it.
     Busy,
+    /// The file's renderer wouldn't start (`Unavailable` after the busy starts). Said once per file, by the first page asked of it; later pages of it are [`Got::Nothing`]. A caller that has pages to count says it: the page's file isn't searched and isn't empty. `own_file` is whether it's the document's own, whose every page this is.
+    Unstarted {
+        own_file: bool,
+    },
     /// There's nothing to be said about it.
     Nothing,
 }
@@ -751,8 +758,26 @@ impl<'a> Reader<'a> {
         got
     }
 
+    fn any_unstarted(&self) -> bool {
+        self.routes.iter().any(|route| matches!(route, FileRoute::Unstarted))
+    }
+
+    /// The files this search stopped asking about because their renderer wouldn't start: the reader's own sentence, never counted as failed pages.
+    fn unstarted_files(&self, plan: &Plan) -> Vec<Value> {
+        let why = RenderFailure::Unavailable;
+        self.routes
+            .iter()
+            .zip(&plan.files)
+            .filter(|(route, _)| matches!(route, FileRoute::Unstarted))
+            .map(|(_, file)| json!({ "untrusted": { "file": file.label() }, "why": why.message(), "code": why.code() }))
+            .collect()
+    }
+
     /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
     fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
+        if matches!(self.routes[usize::from(file)], FileRoute::Unstarted) {
+            return Ok(Got::Nothing);
+        }
         let key = self.key_of(file);
         // **A PDF added from a file that needs a password is a page that couldn't be read,** as the page view draws it (`added_needs_password` in
         // `recto-reader`): skipped and counted, and the search goes on. Never the document's want of a password, which the document doesn't have.
@@ -777,6 +802,11 @@ impl<'a> Reader<'a> {
             // This arm precedes the whole-search `Err` arms below, so a file that vanishes during a busy deadline is reported busy, not as ending the search (accepted; rare).
             // A page the index marked failed stays failed, but a worker the Mac gave no processor to says nothing about a page.
             Err(_) if renderer.stats().too_busy > busy => return Ok(Got::Busy),
+            // A renderer that wouldn't start after the busy starts: not this page's doing, so no page of the file fails; it stops the file for this search.
+            Err(RenderFailure::Unavailable) => {
+                self.routes[usize::from(file)] = FileRoute::Unstarted;
+                return Ok(Got::Unstarted { own_file: !added });
+            }
             Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
             Err(
                 failure @ (RenderFailure::NeedsPassword
@@ -902,6 +932,35 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// For tests: the start timeout of the renderers this thread's searches make, so a worker with no time to say hello is made without a real one.
+    pub(crate) static START_TIMEOUT_FOR_TEST: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// For tests: a plan over these files (the first is the document's own, the rest are added) and these `(file, page)`s.
+#[cfg(test)]
+pub(crate) fn plan_for_test(paths: &[PathBuf], pages: &[(u16, u32)]) -> Plan {
+    Plan {
+        files: paths
+            .iter()
+            .enumerate()
+            .map(|(at, path)| PlanFile {
+                path: path.clone(),
+                expected: None,
+                added: at > 0,
+            })
+            .collect(),
+        pages: pages
+            .iter()
+            .enumerate()
+            .map(|(position, (file, page))| (position as u32, *file, *page))
+            .collect(),
+        tab: 1,
+        keys: None,
+    }
+}
+
 /// Opens this page's worker if it isn't the one already open. One at a time, whichever file it's for: a document with a thousand added files must not mean a thousand processes. `None` if the file isn't what its page numbers were recorded from, or can't be found.
 fn worker_for<'a>(
     current: &'a mut Option<(u16, DocRenderer)>,
@@ -915,7 +974,13 @@ fn worker_for<'a>(
         if !source.is_current() {
             return Ok(None);
         }
-        *current = Some((file, DocRenderer::new(&source.path, key, ServiceConfig::discover()?, Policy::default())?));
+        #[allow(unused_mut)]
+        let mut policy = Policy::default();
+        #[cfg(test)]
+        if let Some(timeout) = START_TIMEOUT_FOR_TEST.with(std::cell::Cell::get) {
+            policy.start_timeout = timeout;
+        }
+        *current = Some((file, DocRenderer::new(&source.path, key, ServiceConfig::discover()?, policy)?));
     }
     Ok(current.as_mut().map(|(_, renderer)| renderer))
 }
@@ -930,6 +995,10 @@ pub(crate) fn log_how_it_went(details: &mut Value, command: &crate::Command, res
     let busy = coverage["busy_pages"].as_array().map_or(0, Vec::len);
     if busy > 0 {
         details["busy_pages"] = json!(busy);
+    }
+    let unstarted = coverage["files_not_read"].as_array().map_or(0, Vec::len);
+    if unstarted > 0 {
+        details["render_unavailable_files"] = json!(unstarted);
     }
 }
 
@@ -974,7 +1043,8 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
             Got::Failed(why) => found.fail(position, why),
             Got::Busy => found.busy.push(position + 1),
             Got::NoText => found.no_text(position),
-            Got::Nothing => {}
+            // Said in `coverage` as a file, by the route.
+            Got::Nothing | Got::Unstarted { .. } => {}
             Got::Page(view) if query.too_long_for(view.text) => {
                 found.fail(position, "too_long");
                 found.too_long += 1;
@@ -1030,7 +1100,8 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             Got::Failed(why) => found.fail(position, why),
             Got::Busy => found.busy.push(position + 1),
             Got::NoText => found.no_text(position),
-            Got::Nothing => {}
+            // Said in `coverage` as a file, by the route.
+            Got::Nothing | Got::Unstarted { .. } => {}
             Got::Page(view) => {
                 found.searched += 1;
                 counts.fill(0);
@@ -1089,7 +1160,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
                 found.fail(position, why);
                 continue;
             }
-            Got::NoText | Got::Nothing => {
+            Got::NoText | Got::Nothing | Got::Unstarted { .. } => {
                 found.not_read_the_same_again(position);
                 continue;
             }
@@ -1704,11 +1775,13 @@ mod tests {
             rank: false,
             context: None,
         });
-        let answer = json!({ "hits": [{ "untrusted": { "snippet": "hunter2" } }], "coverage": { "failed_page_reasons": { "needs_password": 1 }, "busy_pages": [4, 5] } });
+        let answer = json!({ "hits": [{ "untrusted": { "snippet": "hunter2" } }], "coverage": { "failed_page_reasons": { "needs_password": 1 }, "busy_pages": [4, 5], "files_not_read": [{ "untrusted": { "file": "a.pdf" }, "code": "render_unavailable" }] } });
         let mut details = command.log_details();
         log_how_it_went(&mut details, &command, &Ok(answer));
         assert_eq!(details["failed_page_reasons"], json!({ "needs_password": 1 }), "{details}");
         assert_eq!(details["busy_pages"], 2, "{details}");
+        assert_eq!(details["render_unavailable_files"], 1, "{details}");
+        assert!(!details.to_string().contains("a.pdf"), "a file's name isn't logged: {details}");
         assert!(!details.to_string().contains("hunter2"), "{details}");
     }
 

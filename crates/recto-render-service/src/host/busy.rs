@@ -1,4 +1,6 @@
-//! **A draw the Mac was too busy to run the worker for.** Like a read of a page's text, it says nothing about the page, so it isn't remembered and the one who asked asks again; a worker that hangs looks the same, so a page's busy draws, or busy reads, in a row are bounded by one number.
+//! **A start or an open the Mac was too busy for.** Like a draw it says nothing about the page or the file, so it isn't remembered and whoever asked asks again; a worker that hangs looks the same, so each kind is bounded by one number, [`MAX_BUSY`] in a row. Starts (a worker that doesn't say hello) and opens (one that does, but doesn't open the file) have a run each, and past it the failure is real: a start becomes `Unavailable`, which is remembered for `open_retry_pause` (so asks inside it fail at once instead of each waiting out another start) and isn't counted as the Mac being busy, so nobody who watches the count takes it for a busy Mac; an open is the file's own failure. A run ends when a worker says hello (starts) or opens the file (opens), and the starts' run also when the remembered `Unavailable` runs out or `forget_failures` is asked.
+//!
+//! A draw or a read of a page the Mac was too busy to run the worker for is held apart the same way, and a page's busy draws, or busy reads, in a row are bounded by [`MAX_BUSY`] too.
 
 use super::{DocRenderer, JobFailure, KillReason, RenderFailure, TileResult, other_result};
 
@@ -87,11 +89,13 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     read
 }
 
-/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`]; a worker that said hello ends the starts ([`started`]) and one that opened the file the opens ([`opened`]).
+/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`]. A worker that said hello ends the starts ([`started`]), and so does the next start after the remembered start failure has run out, or `forget_failures`; one that opened the file ends the opens ([`opened`]). At the bound a start is `Unavailable`, remembered for a moment and not counted as busy; an open is its own failure, counted as the file's.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Runs {
     pub(super) starts: u8,
     pub(super) opens: u8,
+    /// When the remembered start failure runs out: the next start is asked of the Mac afresh, with its busy grace again.
+    remembered_until: Option<std::time::Instant>,
 }
 
 /// One more busy start or open in a run: whether the run is still short of [`MAX_BUSY`].
@@ -100,13 +104,19 @@ fn within_bound(run: &mut u8) -> bool {
     *run < MAX_BUSY
 }
 
-/// A worker didn't say hello in time, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `Unavailable` after all.
+/// A worker didn't say hello in time, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], counted as the Mac being busy and not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `Unavailable` after all: not counted as busy (so nobody who watches the count takes it for a busy Mac) and remembered for a moment, as an open past the bound is, so asks within `open_retry_pause` fail at once instead of each waiting out another start.
 pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
     // No file has reached the worker, so what kept it from saying hello isn't the file's doing.
-    doc.stats.too_busy += 1;
+    let runs = &mut doc.left_out.busy_runs;
+    if runs.remembered_until.take_if(|at| std::time::Instant::now() >= *at).is_some() {
+        runs.starts = 0;
+    }
     if within_bound(&mut doc.left_out.busy_runs.starts) {
+        doc.stats.too_busy += 1;
         RenderFailure::TooBusyToStart
     } else {
+        doc.note_open_failure(RenderFailure::Unavailable);
+        doc.left_out.busy_runs.remembered_until = Some(std::time::Instant::now() + doc.policy.open_retry_pause);
         RenderFailure::Unavailable
     }
 }
