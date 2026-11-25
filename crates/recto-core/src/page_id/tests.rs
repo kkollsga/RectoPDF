@@ -11,6 +11,8 @@ std::thread_local! {
     pub(super) static DECRYPTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Streams' descriptors resolved for images and forms on this thread: how many times a page's drawn objects were read ([`super::xobject_record`]).
     pub(super) static DESCRIPTORS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Dictionaries resolved by reference (a resource dictionary, an `/XObject` table) on this thread: how many copies a page makes of what forms share.
+    pub(super) static DICTIONARIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1058,4 +1060,28 @@ fn an_image_and_a_form_under_two_names_each_are_hashed_as_defined() {
     }
     expected.push(b'E');
     assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+}
+
+/// Failure caught (memory, review of the memo): each form kept its own copy of its `/Resources`' `/XObject` table for the whole page, so 128 forms that
+/// share one `/Resources 5 0 R` -> `/XObject 6 0 R` held 128 copies of a table that may be huge, where one at a time was held before. The shared
+/// resource dictionary and table are resolved once for the page, whatever the number of forms, and the identity is the one it always had.
+#[test]
+fn forms_sharing_resources_resolve_them_once() {
+    let forms = 100;
+    let draws: String = (0..forms).map(|n| format!("/F{n} Do ")).collect();
+    let table: String = (0..forms).map(|n| format!("/F{n} {} 0 R ", 8 + n)).collect();
+    let mut objects = vec![
+        stream("", draws.as_bytes()),
+        Obj::Dict("<< /XObject 6 0 R >>".into()),
+        Obj::Dict("<< /C 7 0 R >>".into()),
+        stream(JPEG_DICT, IMAGE),
+    ];
+    for _ in 0..forms {
+        objects.push(stream("/Subtype /Form /BBox [0 0 1 1] /Resources 5 0 R", b"/C Do"));
+    }
+    let page = one_page("", &format!("/XObject << {table} >>"), "4 0 R", objects);
+    DICTIONARIES.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert!(read.identity.is_some());
+    assert_eq!(DICTIONARIES.with(std::cell::Cell::get), 2, "the shared /Resources and its /XObject, once each");
 }

@@ -756,6 +756,10 @@ fn dict_at(reader: &IndexedReader, id: ObjectId) -> Option<Dictionary> {
 }
 
 fn resolved_dict(reader: &IndexedReader, object: &Object) -> Option<Dictionary> {
+    #[cfg(test)]
+    if matches!(object, Object::Reference(_)) {
+        tests::DICTIONARIES.with(|count| count.set(count.get() + 1));
+    }
     match deref(reader, object)? {
         Object::Dictionary(dict) => Some(dict),
         _ => None,
