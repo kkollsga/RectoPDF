@@ -339,10 +339,10 @@ RowParts::pub fn mark_update_menu(&self) -> bool
 RowParts::pub fn open(&self, path: PathBuf)
 RowParts::pub fn open_palette(&self)
 RowParts::pub fn person(&self) -> Person<'a>
+RowParts::pub fn print_anyway(&self, serial: u64)
 RowParts::pub fn published<R>(&self, read: impl FnOnce(&Published) -> R) -> R
 RowParts::pub fn reading_tab(&self) -> Option<TabId>
 RowParts::pub fn reconcile(&self)
-RowParts::pub fn refused_print_anyway(&self, serial: u64) -> Option<recto_agent::Command>
 RowParts::pub fn select_all(&self)
 RowParts::pub fn selected(&self) -> Option<(u32, Option<recto_index::select::Range>)>
 RowParts::pub fn tell_host(&self)

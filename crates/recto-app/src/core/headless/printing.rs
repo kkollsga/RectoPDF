@@ -769,3 +769,29 @@ fn a_look_at_the_descriptors_that_fails_says_so() {
         assert!(said.contains(os_error), "{what}: the panic names the OS error, got {said:?}");
     }
 }
+
+/// Failure (found while diagnosing `[] then []`, 2026-11-25): "Print anyway" pressed in the moment between the menu's look at a hand-off (not frozen) and
+/// the person's lane's (frozen) was refused by the lane, but the row ignored that and left the print counted as under way: the window said "Preparing...",
+/// the app's settle never returned and every later print was refused as one being prepared, until the app restarted. The row is run past the menu's look,
+/// as that moment would: nothing's being prepared, and once it's not frozen the next print prints.
+#[test]
+fn a_print_anyway_refused_in_a_hand_off_leaves_printing_free() {
+    let disk = Disk::new();
+    let restricted = disk.file("restricted.pdf", &locked_allowing("", 2, lopdf::encryption::Permissions::PRINTABLE));
+    let app = disk.start();
+    app.open(&restricted);
+    app.settle();
+    answer(&app, Panel { to_file: true, ..ALL });
+    app.settle();
+    let anyway = app.reader().selection_notice.and_then(|notice| notice.action_id).expect("Print anyway");
+    app.core().core.frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+    let parts = crate::core::row_parts::RowParts::of(app.core());
+    let row = crate::core::menu_rows::row_in(&parts, &anyway).expect("the row");
+    crate::core::menu_rows::by_person(&parts, row);
+    let printing = app.core().tools.printing();
+    assert!(!printing.preparing(), "nothing's being prepared: the command wasn't taken");
+    app.core().core.frozen.store(false, std::sync::atomic::Ordering::SeqCst);
+    answer(&app, ALL);
+    app.settle();
+    assert_eq!(printed(&app), "[612,612]", "the next print isn't refused");
+}

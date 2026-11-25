@@ -386,8 +386,8 @@ pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows:
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
-            if let Some(command) = serial.parse().ok().and_then(|serial| parts.refused_print_anyway(serial)) {
-                parts.person().submit(command);
+            if let Ok(serial) = serial.parse() {
+                parts.print_anyway(serial);
             }
             parts.reconcile();
             HostAction::None

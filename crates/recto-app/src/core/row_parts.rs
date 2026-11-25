@@ -164,9 +164,14 @@ impl<'a> RowParts<'a> {
     }
 
     /// Printing's own: what a notice's Print anyway asks again as the person's `print --anyway`, once, if that notice is still the one refused and no
-    /// other print is asked for ([`super::printing::Printing::anyway`]).
-    pub fn refused_print_anyway(&self, serial: u64) -> Option<recto_agent::Command> {
-        self.tools.printing().anyway(serial)
+    /// other print is asked for ([`super::printing::Printing::anyway`]). A command not taken (a hand-off froze the app since the menu looked) leaves the
+    /// print asked for not running, so it isn't left counted as under way.
+    pub fn print_anyway(&self, serial: u64) {
+        if let Some(command) = self.tools.printing().anyway(serial) {
+            if !self.person.submit(command) {
+                self.tools.printing().not_asked();
+            }
+        }
     }
 
     /// What the person may start on a thread of its own.
