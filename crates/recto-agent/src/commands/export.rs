@@ -1,7 +1,7 @@
 //! Pages and pictures written out: `render`, `export svg`, `images`, `image`, `snapshot` and `print`.
 
 #![allow(unused_imports)]
-use super::locating::{PAGE_OR_REF, PageOrRef, REF, RENDER_REF_EXAMPLE};
+use super::locating::{PAGE_OR_REF, PageOrRef, REF, RENDER_BOTH, RENDER_NEITHER, RENDER_REF_EXAMPLE};
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
 use crate::table::*;
@@ -66,7 +66,7 @@ impl TryFrom<line::Render> for Render {
         } = line;
         Ok(Self {
             tab,
-            at: PageOrRef::of(Self::TAG, page, reference.as_deref())?,
+            at: PageOrRef::of((RENDER_BOTH, RENDER_NEITHER), page, reference.as_deref())?,
             scale,
             out,
             anyway,

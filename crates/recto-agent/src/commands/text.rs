@@ -1,7 +1,7 @@
 //! A page's text, and finding words: `search`, `index`, `index status`, `index clear`, `text`, `select` and `copy`.
 
 #![allow(unused_imports)]
-use super::locating::{PAGE_OR_REF, PageOrRef, REF, TEXT_REF_EXAMPLE};
+use super::locating::{PAGE_OR_REF, PageOrRef, REF, TEXT_BOTH, TEXT_NEITHER, TEXT_REF_EXAMPLE};
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
 use crate::table::*;
@@ -279,7 +279,7 @@ impl TryFrom<line::Text> for Text {
         let line::Text { tab, page, reference } = line;
         Ok(Self {
             tab,
-            at: PageOrRef::of(Self::TAG, page, reference.as_deref())?,
+            at: PageOrRef::of((TEXT_BOTH, TEXT_NEITHER), page, reference.as_deref())?,
         })
     }
 }

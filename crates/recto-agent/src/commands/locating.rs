@@ -50,13 +50,9 @@ pub enum PageOrRef {
 
 impl PageOrRef {
     /// Reads the two wire fields of a command that takes either: a token that can't be a reference is refused with its constant words, and a line with both
-    /// or neither with the command's own. `command` is the word the person typed.
-    pub(crate) fn of(command: &str, page: Option<u32>, reference: Option<&str>) -> Result<Self, AgentError> {
-        let (both, neither) = if command == "text" {
-            (TEXT_BOTH, TEXT_NEITHER)
-        } else {
-            (RENDER_BOTH, RENDER_NEITHER)
-        };
+    /// or neither with the command's own: `words` is the command's (both, neither).
+    pub(crate) fn of(words: (&'static str, &'static str), page: Option<u32>, reference: Option<&str>) -> Result<Self, AgentError> {
+        let (both, neither) = words;
         let usage = |words: &'static str| AgentError::new(Code::USAGE, words, exit::USAGE);
         let decoded = |token: &str| {
             locator::decode(token).map_err(|error| match error {
