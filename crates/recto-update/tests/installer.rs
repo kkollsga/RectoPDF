@@ -1232,7 +1232,7 @@ fn an_app_opened_after_the_first_look_is_not_replaced() {
     drop(second);
 }
 
-/// Failure: going back swaps the old app over a copy of the new one that someone opened after the rollback's recheck, while it runs. Held once the record's put back, a second app comes up; the last look sees it, nothing's swapped, and both bundles and the plan are kept for the next launch.
+/// Failure: going back swaps the old app over a copy of the new one that someone opened after the rollback's recheck, while it runs. Held once the record's put back, a second app comes up; the last look sees it, nothing's swapped, and both bundles and the plan are kept for the next launch. And a rollback refused after the record was put back leaves the next launches to put `before/` back again, over what the person did in the copy that kept running: later launches change nothing and begin no second going back.
 #[test]
 fn an_app_opened_while_going_back_is_not_replaced() {
     let mut bed = Bed::new("opened-going-back", "misreads");
@@ -1254,7 +1254,7 @@ fn an_app_opened_while_going_back_is_not_replaced() {
     wait_until("the installer to put the record back", Duration::from_secs(30), || {
         bed.files.work.join("paused").exists()
     });
-    let second = bed.dir.own(
+    let mut second = bed.dir.own(
         Command::new(bed.plan.executable())
             .args([
                 "test-app",
@@ -1277,53 +1277,6 @@ fn an_app_opened_while_going_back_is_not_replaced() {
     let outcome = Outcome::read(&bed.files.outcome()).unwrap();
     assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::CouldntGoBack, "app_exit_unproven"), "{log}");
     assert!(bed.files.plan().exists(), "the plan is kept for the next launch");
-    assert!(bed.files.before().join(".whole").exists(), "{log}");
-    drop(second);
-}
-
-/// Failure: a rollback refused after the record was put back leaves the next launches to put `before/` back again, over what the person did in the copy that kept running.
-#[test]
-fn edits_after_a_refused_going_back_survive_later_launches() {
-    let mut bed = Bed::new("edits-after-refused", "misreads");
-    bed.plan.handed_off_tabs = Some(2);
-    let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
-    gone.wait().unwrap();
-    bed.plan.pid = gone.id();
-    bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = bed.dir.own(
-        Command::new(installer_in(&bed.app))
-            .arg("install")
-            .arg(bed.files.plan())
-            .env(recto_update::install::PAUSE_AT_ENV, "record_restored")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    wait_until("the installer to put the record back", Duration::from_secs(30), || {
-        bed.files.work.join("paused").exists()
-    });
-    assert_eq!(bed.record(), "the state", "the record is put back before the pause");
-    let mut second = bed.dir.own(
-        Command::new(bed.plan.executable())
-            .args([
-                "test-app",
-                "0.2.0",
-                "hangs",
-                bed.files.work.to_str().unwrap(),
-                bed.dir.join("nowhere").to_str().unwrap(),
-            ])
-            .spawn()
-            .unwrap(),
-    );
-    wait_until("the second app", Duration::from_secs(5), || {
-        !local::processes_running(&bed.plan.executable()).is_empty()
-    });
-    std::fs::write(bed.files.work.join("go-on"), "").unwrap();
-    assert!(!installer.wait().unwrap().success());
-    let log = std::fs::read_to_string(&bed.files.log).unwrap();
-    let outcome = Outcome::read(&bed.files.outcome()).unwrap();
-    assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::CouldntGoBack, "app_exit_unproven"), "{log}");
     assert_eq!(Plan::read(&bed.files.plan()).unwrap().id, "first", "{log}");
     assert!(bed.files.before().join(".whole").exists(), "{log}");
 
