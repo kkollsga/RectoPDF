@@ -307,6 +307,10 @@ fn scan(reads: &mut Reads, wanted: &[u8; 16]) -> (Status, Looked, Option<(u32, P
                 }
             }
         }
+        // The answer can only be `Incomplete` now and it already holds its one candidate: further reads cannot change it.
+        if !complete && !matches.is_empty() {
+            break;
+        }
     }
     // A map longer than a reference can name is never read to its end: the pages past it are unlooked at.
     complete &= reads.map.len() <= MAX_PAGE as usize;

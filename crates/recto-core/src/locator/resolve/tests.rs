@@ -112,6 +112,22 @@ fn a_hint_past_the_tag_pages_is_read_once_by_the_scan() {
     assert_eq!(now.pages_read, 20, "every page, each once, the hinted one included");
 }
 
+/// Failure: a scan keeps reading after a page with no identity made the answer `Incomplete` with a candidate already held, spending reads that can
+/// no longer change the status.
+#[test]
+fn a_scan_stops_once_the_answer_can_only_be_incomplete_and_holds_a_candidate() {
+    let locator = reference_of(&["A", "B", "C"], 0);
+    let mut big = letter("Z");
+    big.content.extend(std::iter::repeat_n(b' ', 400));
+    let bytes = recto_testpdf::pages(&[letter("X"), letter("A"), big, letter("D"), letter("E"), letter("F")]);
+    let mut caps = STANDARD;
+    caps.page.content_bytes = 200;
+    let now = resolve_in(&locator, &bytes, &caps);
+    assert_eq!(now.status, Status::Incomplete { pages: vec![1] });
+    assert_eq!(now.looked, Looked::Part);
+    assert_eq!(now.pages_read, 3, "X, the candidate A, and the page without identity; the last three are not read");
+}
+
 /// Failure: pages that reached a cap (no identity) count as "no match", and a page is called gone that was never read.
 #[test]
 fn a_page_with_no_identity_makes_a_scan_incomplete_never_gone() {
