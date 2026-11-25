@@ -63,7 +63,7 @@ fn recover_within<C: Owned>(
     mut pause: impl FnMut(Duration),
 ) -> io::Result<RecordLock> {
     let deadline = retire(child, &mut present, pending, patience, &mut now, &mut pause)?;
-    record_lock(root, present, deadline, now, pause)
+    record_lock(root, present, deadline, now, pause).map_err(LookRefusal::into_io)
 }
 
 #[derive(Default)]
@@ -159,26 +159,46 @@ pub(super) fn record_lock(
     deadline: Instant,
     mut now: impl FnMut() -> Instant,
     mut pause: impl FnMut(Duration),
-) -> io::Result<RecordLock> {
+) -> Result<RecordLock, LookRefusal> {
     loop {
         let held = RecordLock(local::try_update_record_lock(root).map_err(|error| {
             if error.kind() == io::ErrorKind::WouldBlock {
-                io::Error::new(error.kind(), format!("the record's lock is held by another writer ({error})"))
+                LookRefusal::LockHeld(io::Error::new(error.kind(), format!("the record's lock is held by another writer ({error})")))
             } else {
-                error
+                LookRefusal::Unknown(error)
             }
         })?);
-        let unknown = match present() {
-            Ok(false) => return Ok(held),
-            Ok(true) => return Err(io::Error::other("an app appeared before rollback acquired the record")),
-            Err(error) => error,
+        let unknown = match still_absent(&mut present) {
+            Ok(()) => return Ok(held),
+            Err(LookRefusal::Unknown(error)) => error,
+            Err(refusal) => return Err(refusal),
         };
         drop(held);
         let left = deadline.saturating_duration_since(now());
         if left.is_zero() {
-            return Err(unknown);
+            return Err(LookRefusal::Unknown(unknown));
         }
         pause(left.min(Duration::from_millis(20)));
+    }
+}
+
+/// Why a look at the app's absence didn't prove it. Callers choose their words by the variant, never by the text.
+#[derive(Debug)]
+pub(super) enum LookRefusal {
+    /// An app was running at the look.
+    Live,
+    /// Another writer holds the record's lock.
+    LockHeld(io::Error),
+    /// No definite answer (the observation failed, or the lock couldn't be taken for another reason).
+    Unknown(io::Error),
+}
+
+impl LookRefusal {
+    pub(super) fn into_io(self) -> io::Error {
+        match self {
+            Self::Live => io::Error::other("an app is running at the look"),
+            Self::LockHeld(error) | Self::Unknown(error) => error,
+        }
     }
 }
 
@@ -187,17 +207,17 @@ pub(super) fn record_lock(
 /// look nothing slow comes after, so it must not retry: a retry would give a same-user racer its whole patience to
 /// replace `new/` after the signature check. A live app, an unknown answer or a lock another writer holds refuses; on
 /// a definite absence the lock is held, so the app's own launch (which takes it) waits for the swap.
-pub(super) fn last_look(root: &Path, present: impl FnMut() -> io::Result<bool>) -> io::Result<RecordLock> {
+pub(super) fn last_look(root: &Path, present: impl FnMut() -> io::Result<bool>) -> Result<RecordLock, LookRefusal> {
     record_lock(root, present, Instant::now(), Instant::now, |_| {})
 }
 
 /// The same single look when the record's lock is already held (a rollback takes it earlier, and keeps it until it
 /// returns): `Ok` only on a definite absence, so a live or unknown app is never read as absent.
-pub(super) fn still_absent(mut present: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
+pub(super) fn still_absent(mut present: impl FnMut() -> io::Result<bool>) -> Result<(), LookRefusal> {
     match present() {
         Ok(false) => Ok(()),
-        Ok(true) => Err(io::Error::other("an app appeared before the swap")),
-        Err(error) => Err(error),
+        Ok(true) => Err(LookRefusal::Live),
+        Err(error) => Err(LookRefusal::Unknown(error)),
     }
 }
 
@@ -501,13 +521,16 @@ mod recovery_tests {
         assert!(run(vec![Err(io::Error::other("transient unknown")), Ok(false)], None).is_ok());
         let began = clock.get();
         let error = run(vec![], Some(|| Err(io::Error::other("persistent unknown")))).unwrap_err();
-        assert!(error.to_string().contains("persistent unknown"), "{error}");
+        assert!(
+            matches!(&error, LookRefusal::Unknown(e) if e.to_string().contains("persistent unknown")),
+            "{error:?}"
+        );
         assert!(
             clock.get().duration_since(began) <= patience,
             "no new limit: the recheck stays within its patience"
         );
         let error = run(vec![Ok(true)], None).unwrap_err();
-        assert!(error.to_string().contains("appeared"), "a live app refuses: {error}");
+        assert!(matches!(error, LookRefusal::Live), "a live app refuses: {error:?}");
     }
 
     /// Failure: the rollback wait has two windows, the exit wait's and a fresh one for the record lock's recheck, so
@@ -578,7 +601,7 @@ mod recovery_tests {
         let _writer = local::try_update_record_lock(dir.path()).unwrap();
         let error = match record_lock(dir.path(), || Ok(false), Instant::now(), Instant::now, |_| panic!("no pause")) {
             Ok(_) => panic!("took a lock another writer holds"),
-            Err(error) => error,
+            Err(error) => error.into_io(),
         };
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(error.to_string().contains("held by another writer"), "{error}");
@@ -598,7 +621,7 @@ mod recovery_tests {
         drop(held);
         free("released with the guard");
         let error = last_look(dir.path(), || Ok(true)).map(drop).unwrap_err();
-        assert!(error.to_string().contains("appeared"), "{error}");
+        assert!(matches!(error, LookRefusal::Live), "{error:?}");
         free("a live app leaves the lock free");
         let mut calls = 0;
         let error = last_look(dir.path(), || {
@@ -607,20 +630,23 @@ mod recovery_tests {
         })
         .map(drop)
         .unwrap_err();
-        assert_eq!((calls, error.to_string().as_str()), (1, "unknown"));
+        assert_eq!((calls, error.into_io().to_string().as_str()), (1, "unknown"));
         free("an unknown answer leaves the lock free");
         let _writer = local::try_update_record_lock(dir.path()).unwrap();
         let error = last_look(dir.path(), || panic!("looked without the lock")).map(drop).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            matches!(error, LookRefusal::LockHeld(ref e) if e.kind() == io::ErrorKind::WouldBlock),
+            "{error:?}"
+        );
     }
 
-    /// Failure: a rollback swaps the old app back over an app that opened after its recheck, because a live or
-    /// unknown answer to the last look reads as absent.
+    /// Failure: a live or unknown answer to a look reads as absent. (That a rollback makes the look right before
+    /// swapping back is caught by the installer integration test, not here.)
     #[test]
-    fn a_rollback_looks_again_right_before_swapping_back() {
+    fn still_absent_never_reads_live_or_unknown_as_absent() {
         assert!(still_absent(|| Ok(false)).is_ok());
-        assert!(still_absent(|| Ok(true)).unwrap_err().to_string().contains("appeared"));
-        assert_eq!(still_absent(|| Err(io::Error::other("unknown"))).unwrap_err().to_string(), "unknown");
+        assert!(matches!(still_absent(|| Ok(true)), Err(LookRefusal::Live)));
+        assert!(matches!(still_absent(|| Err(io::Error::other("unknown"))), Err(LookRefusal::Unknown(e)) if e.to_string() == "unknown"));
     }
 
     fn version(app: &Path, version: &str) -> Vec<u8> {
@@ -688,6 +714,7 @@ mod recovery_tests {
                     Instant::now,
                     |_| panic!("zero patience waits"),
                 )
+                .map_err(LookRefusal::into_io)
             });
             assert_eq!(run.go_back_after("misread", refused), Ended::Stuck);
             if std::fs::read(files.session().join("record.a.json")).ok().as_deref() != Some(b"current owner edits".as_slice())

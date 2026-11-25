@@ -7,7 +7,7 @@
 //! 4. Swaps, after one last look under the record's lock, the new app and the running one's bundle in a single step. There's never a moment with no app or half of one.
 //! 5. Moves the old app to be kept.
 //! 6. Opens the new app, and waits for it to say it's come up: see [`crate::updater::Updater::first_frame`] for what that means.
-//! 7. If it doesn't, or it comes up with fewer tabs than were handed off, having misread the record, stops it, puts the record back, swaps the old app back, and opens that.
+//! 7. If it doesn't, or it comes up with fewer tabs than were handed off, having misread the record, stops it, puts the record back, looks once more for the app under the record's lock, swaps the old app back, and opens that.
 //!
 //! The installer quits nothing: quitting was the app's own hand-off. What's left if this is killed is put right at the next launch ([`crate::updater`]). It writes a log to the state folder, with words of its own.
 
@@ -205,19 +205,23 @@ impl Run<'_> {
     /// The last look before the swap, under the record's lock. If it finds the app running, can't tell, or can't take the lock, nothing's replaced, and what's staged stays as the early refusal leaves it.
     fn last_look(&self) -> Result<retirement::RecordLock, Ended> {
         let executable = self.plan.executable();
-        let error = match retirement::last_look(&self.plan.root, || local::update_app_is_running(&executable)) {
+        let refusal = match retirement::last_look(&self.plan.root, || local::update_app_is_running(&executable)) {
             Ok(held) => return Ok(held),
-            Err(error) => error,
+            Err(refusal) => refusal,
         };
-        let why = if error.kind() == std::io::ErrorKind::WouldBlock || error.to_string().contains("appeared") {
-            "app_reopened"
-        } else {
-            "observation_unknown"
+        let why = match refusal {
+            retirement::LookRefusal::Live | retirement::LookRefusal::LockHeld(_) => "app_reopened",
+            retirement::LookRefusal::Unknown(_) => "observation_unknown",
         };
-        self.say(&format!("installer: app absence isn't established ({why}: {error}), so nothing was replaced"));
+        Err(self.absence_unproven(why, &format!("{refusal:?}")))
+    }
+
+    /// The app's absence isn't established, so nothing's replaced. The one place that says so and ends the run (a no-op for `before/` before the record was copied).
+    fn absence_unproven(&self, why: &str, detail: &str) -> Ended {
+        self.say(&format!("installer: app absence isn't established ({why}: {detail}), so nothing was replaced"));
         self.finish_with(OutcomeKind::NotInstalled, why);
         let _ = std::fs::remove_dir_all(self.files.before());
-        Err(Ended::NotInstalled)
+        Ended::NotInstalled
     }
 
     /// The swap failed: nothing's replaced, and the old app is opened again.
@@ -267,7 +271,7 @@ impl Run<'_> {
         };
         // An app opened since the recheck isn't the installer's to replace: the lock is still held, so this is the last look.
         if let Err(error) = retirement::still_absent(|| self.launched.running(&self.plan.executable())) {
-            return self.rollback_unproven(&error);
+            return self.rollback_unproven(&error.into_io());
         }
         if local::swap_paths(&old, &self.plan.app).is_err() {
             self.say("installer: the kept app couldn't be put back");
@@ -407,11 +411,7 @@ pub fn run(plan: &Plan) -> Ended {
         Ok(false) => {}
         observed => {
             let why = if observed.is_ok() { "app_reopened" } else { "observation_unknown" };
-            run.say(&format!(
-                "installer: app absence isn't established ({why}: {observed:?}), so nothing was replaced"
-            ));
-            run.finish_with(OutcomeKind::NotInstalled, why);
-            return Ended::NotInstalled;
+            return run.absence_unproven(why, &format!("{observed:?}"));
         }
     }
     if !plan.new_app().is_dir() {
@@ -477,7 +477,7 @@ pub fn run(plan: &Plan) -> Ended {
         return run.go_back(why);
     }
     run.say(&format!(
-        "installer: {} started. Old app gone {} ms after the quit, the record's copy and the last look {} ms, swapped {} ms after that, up {} ms after that",
+        "installer: {} started. Old app gone {} ms after the quit, the record's copy and the signature look {} ms, swapped {} ms after that, up {} ms after that",
         plan.to,
         old_gone.saturating_sub(plan.quit_at_ms),
         verified.saturating_sub(old_gone),
