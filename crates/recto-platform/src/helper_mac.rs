@@ -9,8 +9,9 @@
 //! SSD, 40 ms on another disk), so it's never starved. `docs/engineering/search-index.md` has the numbers.
 //!
 //! `posix_spawnattr_set_qos_class_np` clamps the whole process at that level, every thread, including any thread pool a library starts, and
-//! whatever it starts in turn inherits the clamp: `ps -M` shows the helper's threads and its render worker's at priority 20, against 31 for an
-//! ordinary process and 4 at Darwin background.
+//! whatever it starts in turn inherits the clamp: the helper's threads' and its render worker's priority ceiling (`pth_maxpriority`) is 20, against
+//! 63 for an ordinary process and 4 at Darwin background. Only the ceiling is ours to promise: a thread's current priority is raised by the kernel
+//! for a moment past it while it holds a contended lock.
 
 use std::ffi::{CString, OsStr, c_int};
 use std::fs::File;
@@ -242,18 +243,142 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// `pid`'s threads' scheduling priorities, by `ps -M`: 20 is utility, 31 an ordinary process's default, 4 Darwin background. `ps -M` prints its own
-    /// columns, and a priority is the one that's a number with its policy's letter after it, `20T`.
-    fn priorities(pid: u32) -> Vec<u32> {
-        let out = std::process::Command::new("/bin/ps").args(["-M", "-p", &pid.to_string()]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .filter_map(|word| word.strip_suffix(['T', 'R', 'F'])?.parse().ok())
+    /// One thread's three scheduling numbers, from `proc_threadinfo`: where it is now (`pth_curpri`, XNU's `sched_pri`, which the kernel raises for a
+    /// moment when the thread holds a lock another waits on), what it was given (`pth_priority`, the base) and the most it may be raised to
+    /// (`pth_maxpriority`, which a QoS clamp lowers and nothing the process or its children do can raise).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Level {
+        current: i32,
+        base: i32,
+        ceiling: i32,
+        run_state: i32,
+    }
+
+    /// `pth_run_state` of a thread that is waiting (`TH_STATE_WAITING`, from `<mach/thread_info.h>`; the brief said 5, which is halted).
+    const RUN_STATE_WAITING: i32 = 3;
+
+    fn level_of(info: &libc::proc_threadinfo) -> Level {
+        Level {
+            current: info.pth_curpri,
+            base: info.pth_priority,
+            ceiling: info.pth_maxpriority,
+            run_state: info.pth_run_state,
+        }
+    }
+
+    /// The level the tests below assert on: the ceiling, which is what the helper's clamp sets. The current priority is not it: see
+    /// `a_pushed_threads_level_reading_does_not_move`.
+    fn level(l: Level) -> i32 {
+        l.current
+    }
+
+    /// Every thread of `pid`, read one after another by `proc_pidinfo` (a thread that ends meanwhile is left out), as `thread_names` does.
+    fn thread_levels(pid: u32) -> Vec<Level> {
+        // <sys/proc_info.h>: not in the libc crate.
+        const PROC_PIDLISTTHREADS: c_int = 6;
+        let pid = c_int::try_from(pid).unwrap();
+        let mut handles = vec![0u64; 512];
+        let room = c_int::try_from(handles.len() * size_of::<u64>()).unwrap();
+        // SAFETY: the buffer and its size in bytes describe `handles`; what's written is a count of bytes within it.
+        let written = unsafe { libc::proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), room) };
+        handles.truncate(usize::try_from(written).unwrap_or(0) / size_of::<u64>());
+        let size = c_int::try_from(size_of::<libc::proc_threadinfo>()).unwrap();
+        handles
+            .iter()
+            .filter_map(|&handle| {
+                let mut info = std::mem::MaybeUninit::<libc::proc_threadinfo>::uninit();
+                // SAFETY: the buffer and its size describe `info`, and a return of `size` means it was filled.
+                let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTHREADINFO, handle, info.as_mut_ptr().cast(), size) };
+                // SAFETY: filled, as checked.
+                (got == size).then(|| level_of(&unsafe { info.assume_init() }))
+            })
             .collect()
+    }
+
+    /// One thread of this process by its id (`pthread_threadid_np`), `None` if it has ended.
+    fn thread_level(tid: u64) -> Option<Level> {
+        // <sys/proc_info.h>: not in the libc crate.
+        const PROC_PIDTHREADID64INFO: c_int = 15;
+        let size = c_int::try_from(size_of::<libc::proc_threadinfo>()).unwrap();
+        let mut info = std::mem::MaybeUninit::<libc::proc_threadinfo>::uninit();
+        // SAFETY: the buffer and its size describe `info`, and a return of `size` means it was filled.
+        let got = unsafe { libc::proc_pidinfo(std::process::id() as c_int, PROC_PIDTHREADID64INFO, tid, info.as_mut_ptr().cast(), size) };
+        // SAFETY: filled, as checked.
+        (got == size).then(|| level_of(&unsafe { info.assume_init() }))
+    }
+
+    /// Failure: the test of the helper's level reads a number the kernel moves (2026-11-25: a shell stand-in read 46, `MINPRI_RWLOCK`, because it held a
+    /// contended kernel lock at that instant, while its clamp was 20 all along). A thread at utility is pushed by one at user-interactive waiting on a
+    /// lock it holds; the level the tests assert on must not move with that, and the precondition proves the push happened.
+    #[test]
+    fn a_pushed_threads_level_reading_does_not_move() {
+        use std::sync::mpsc::channel;
+        use std::time::{Duration, Instant};
+        let lock = Box::new(std::cell::UnsafeCell::new(libc::OS_UNFAIR_LOCK_INIT));
+        let lock_address = lock.get() as usize;
+        let (tid_tx, tid_rx) = channel::<u64>();
+        let (release_tx, release_rx) = channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let lock = lock_address as libc::os_unfair_lock_t;
+            // SAFETY: setting this thread's QoS; the lock outlives both threads (the test joins them before dropping it).
+            unsafe {
+                assert_eq!(libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0), 0);
+                libc::os_unfair_lock_lock(lock);
+            }
+            let mut tid = 0u64;
+            // SAFETY: the current thread, and a place for its id.
+            assert_eq!(unsafe { libc::pthread_threadid_np(0, &mut tid) }, 0);
+            tid_tx.send(tid).unwrap();
+            release_rx.recv().ok();
+            // SAFETY: taken above, by this thread.
+            unsafe { libc::os_unfair_lock_unlock(lock) };
+        });
+        let tid = tid_rx.recv().unwrap();
+        let before = thread_level(tid).expect("the holder thread");
+        let (started_tx, started_rx) = channel::<u64>();
+        let pusher = std::thread::spawn(move || {
+            let lock = lock_address as libc::os_unfair_lock_t;
+            let mut own = 0u64;
+            // SAFETY: as above; this thread blocks on the lock the holder has, and takes it once released.
+            unsafe {
+                assert_eq!(libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0), 0);
+                assert_eq!(libc::pthread_threadid_np(0, &mut own), 0);
+                started_tx.send(own).unwrap();
+                libc::os_unfair_lock_lock(lock);
+                libc::os_unfair_lock_unlock(lock);
+            }
+        });
+        let pusher_tid = started_rx.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pushed = loop {
+            let (holder_now, pusher_now) = (thread_level(tid), thread_level(pusher_tid));
+            if let (Some(h), Some(p)) = (holder_now, pusher_now)
+                && p.run_state == RUN_STATE_WAITING
+                && h.current > before.current
+            {
+                break h;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the push never showed: before {before:?}, holder now {holder_now:?}, pusher now {pusher_now:?}"
+            );
+            std::thread::yield_now();
+        };
+        let (before_level, pushed_level) = (level(before), level(pushed));
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        pusher.join().unwrap();
+        drop(lock);
+        assert_eq!(
+            before_level, pushed_level,
+            "the level moved with the push: before {before:?}, under the push {pushed:?}"
+        );
     }
 
     /// Failure: the helper runs at Darwin background or at the default priority instead of utility, or a child it starts escapes the level. A shell
     /// that starts a `sleep` stands in for the helper and its render worker. On CI's virtual Macs, Darwin background starved both helpers for minutes.
+    /// It asserts the ceiling, not the current priority: the kernel lifts a thread above its clamp for a moment while it holds a contended lock, by
+    /// design (it read 46 once), and what we set is the ceiling, which nothing the helper or its children do can raise.
     #[test]
     fn a_utility_helper_and_what_it_starts_run_at_utility() {
         let started = spawn(Path::new("/bin/sh"), &[], Priority::Utility).unwrap();
@@ -269,16 +394,16 @@ mod tests {
             line.push(byte[0]);
         }
         let grandchild: u32 = String::from_utf8(line).unwrap().trim().parse().unwrap();
-        let (shell, sleeper) = (priorities(child.id()), priorities(grandchild));
+        let (shell, sleeper) = (thread_levels(child.id()), thread_levels(grandchild));
         // SAFETY: a signal to the `sleep` this test started.
         unsafe { libc::kill(grandchild as libc::pid_t, libc::SIGKILL) };
         drop(stdin);
         // Its `read` fails as its input closes, so it doesn't end with success. That it ends is what matters.
         child.wait().unwrap();
         // Below an ordinary process's 31 and above Darwin background's 4, the property, rather than utility's 20 on this kernel.
-        let utility = |pris: &[u32]| !pris.is_empty() && pris.iter().all(|&pri| pri > 4 && pri < 31);
-        assert!(utility(&shell), "the helper's threads: {shell:?}");
-        assert!(utility(&sleeper), "what it started: {sleeper:?}");
+        let utility = |levels: &[Level]| !levels.is_empty() && levels.iter().all(|&l| level(l) > 4 && level(l) < 31);
+        assert!(utility(&shell), "the helper's threads (current, base, ceiling): {shell:?}");
+        assert!(utility(&sleeper), "what it started (current, base, ceiling): {sleeper:?}");
     }
 
     /// Failure: the helper sees more than it's given: an environment variable of this process, or a descriptor beyond its three. A file's name or a
