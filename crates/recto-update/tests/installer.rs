@@ -811,14 +811,16 @@ fn the_last_look_is_the_last_thing_before_the_swap() {
     gone.wait().unwrap();
     bed.plan.pid = gone.id();
     bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = Command::new(installer_in(&bed.app))
-        .arg("install")
-        .arg(bed.files.plan())
-        .env(recto_update::install::PAUSE_AT_ENV, "record_copied")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut installer = bed.dir.own(
+        Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .env(recto_update::install::PAUSE_AT_ENV, "record_copied")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     wait_until("the installer to reach the copy of the record", Duration::from_secs(20), || {
         bed.files.work.join("paused").exists()
     });
@@ -1190,14 +1192,16 @@ fn an_app_opened_after_the_first_look_is_not_replaced() {
     gone.wait().unwrap();
     bed.plan.pid = gone.id();
     bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = Command::new(installer_in(&bed.app))
-        .arg("install")
-        .arg(bed.files.plan())
-        .env(recto_update::install::PAUSE_AT_ENV, "still_verified")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut installer = bed.dir.own(
+        Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .env(recto_update::install::PAUSE_AT_ENV, "still_verified")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     wait_until("the installer to finish checking the signature", Duration::from_secs(20), || {
         bed.files.work.join("paused").exists()
     });
@@ -1237,14 +1241,16 @@ fn an_app_opened_while_going_back_is_not_replaced() {
     gone.wait().unwrap();
     bed.plan.pid = gone.id();
     bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = Command::new(installer_in(&bed.app))
-        .arg("install")
-        .arg(bed.files.plan())
-        .env(recto_update::install::PAUSE_AT_ENV, "record_restored")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut installer = bed.dir.own(
+        Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .env(recto_update::install::PAUSE_AT_ENV, "record_restored")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     wait_until("the installer to put the record back", Duration::from_secs(30), || {
         bed.files.work.join("paused").exists()
     });
