@@ -312,7 +312,7 @@ pub enum RenderFailure {
     TooBusy {
         page: u32,
     },
-    /// The worker, started or asked to open the file, didn't answer in time and had no processor to answer with, so nothing is known of the file or the page and nothing is remembered: asking again starts it again. After [`busy::MAX_BUSY`] of them in a row, a start that never answered is [`Self::Unavailable`] and an open is [`Self::OpenFailed`], as they were.
+    /// The worker, in starting or in opening the file, had no processor to answer with: nothing is remembered and asking again tries again. [`busy::MAX_BUSY`] in a row end as [`Self::Unavailable`] (start) or [`Self::OpenFailed`] (open).
     TooBusyToStart,
 }
 
@@ -714,7 +714,7 @@ struct LeftOut {
     prefetch: u32,
     /// Deadlines the Mac was too busy for the worker to meet.
     busy: u32,
-    /// Starts and opens in a row that the Mac was too busy for the worker to answer: [`busy::start_stopped`]. A worker that opens ends the run.
+    /// Busy starts or opens in a row ([`busy::start_stopped`]).
     busy_starts: u8,
 }
 
@@ -1657,10 +1657,6 @@ impl DocRenderer {
             (self.policy.memory_limit_bytes, self.policy.idle_exit)
         };
         let started = Worker::start(&self.config, &self.policy, limit, idle_exit);
-        // No file has reached it yet, so whatever kept it from saying hello isn't the file's doing.
-        if matches!(started, Err(StartFailure::TimedOut)) {
-            self.stats.too_busy += 1;
-        }
         let (mut worker, ready) = started.map_err(|failure| match failure {
             StartFailure::NoLibrary => RenderFailure::LibraryMissing,
             StartFailure::Walls(why) => RenderFailure::WallsDown(why),
@@ -1786,19 +1782,10 @@ impl DocRenderer {
                 worker.child.kill_now();
                 worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
                 self.note_peak(&worker);
-                let starved = matches!(reason, KillReason::Deadline)
-                    && job_cpu.starved(
-                        worker.child.memory().map(|memory| (worker.child.pid(), memory.cpu_ns)),
-                        self.policy.page_deadline,
-                    ) == Some(true);
+                let cpu = worker.child.memory().map(|memory| (worker.child.pid(), memory.cpu_ns));
+                let starved = matches!(reason, KillReason::Deadline) && job_cpu.starved(cpu, self.policy.page_deadline) == Some(true);
                 let failed = killed(&mut self.stats, reason);
-                if !starved {
-                    return Err(failed.into());
-                }
-                // Not the file's doing, so it neither counts towards stopping the document nor is remembered.
-                self.stats.too_busy += 1;
-                self.left_out.busy = self.left_out.busy.saturating_add(1);
-                return Err(busy::start_stopped(self, failed).into());
+                return Err(busy::open_stopped(self, failed, starved).into());
             }
             // A stale job has no use for the document open. Nothing is wrong with it, so nothing is remembered.
             Err(Stop::StaleKilled) => {
