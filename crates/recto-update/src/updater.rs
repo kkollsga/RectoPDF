@@ -406,10 +406,8 @@ impl Updater {
             if settled.plan_gone {
                 self.clear_leftovers(&app, &current, offered.is_some());
             }
-            // The week is PRIVACY.md's, so it holds while a rollback refusal stands too. Not in the launch that offers the copy to fall back on: that one's still needed, and the next launch drops it.
-            if settled.fall_back.is_none() {
-                self.drop_an_old_record_copy(now);
-            }
+            // The week is PRIVACY.md's, so it holds while a rollback refusal stands too. A copy offered to fall back on stays until the next launch.
+            self.drop_an_old_record_copy(now, settled.fall_back.is_some());
         }
         let status = settled.status.unwrap_or_else(|| match &offered {
             Some(offered) if may_replace => Status::Available(offered.clone()),
@@ -482,14 +480,14 @@ impl Updater {
     }
 
     /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time.
-    fn drop_an_old_record_copy(&self, now_ms: u64) {
+    fn drop_an_old_record_copy(&self, now_ms: u64, offered_to_fall_back_on: bool) {
         let whole = self.files.before().join(".whole");
         let made_ms = std::fs::metadata(&whole)
             .ok()
             .and_then(|meta| meta.modified().ok())
             .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|since| since.as_millis());
-        if made_ms.is_some_and(|made| u128::from(now_ms).saturating_sub(made) > u128::from(KEEP_RECORD_COPY_MS)) {
+        if !offered_to_fall_back_on && made_ms.is_some_and(|made| u128::from(now_ms).saturating_sub(made) > u128::from(KEEP_RECORD_COPY_MS)) {
             let _ = std::fs::remove_dir_all(self.files.before());
         }
     }
