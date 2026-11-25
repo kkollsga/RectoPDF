@@ -303,6 +303,21 @@ mod tests {
         Ok(unsafe { info.assume_init() })
     }
 
+    /// A process id read from a line a child printed: positive and within `pid_t`, or `None`. `0` and `-1` would make `kill` signal this test's own
+    /// process group or every process the user owns.
+    fn parse_pid(line: &str) -> Option<libc::pid_t> {
+        line.trim().parse::<libc::pid_t>().ok().filter(|&pid| pid > 0)
+    }
+
+    /// Failure: a line the stand-in prints that isn't a process id becomes a `kill` of this test's own group or of everything the user owns.
+    #[test]
+    fn only_a_positive_pid_is_taken_from_a_helpers_line() {
+        for bad in ["0", "-1", "4294967295", "x", "", "12 13"] {
+            assert_eq!(parse_pid(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_pid(" 4242\n"), Some(4242));
+    }
+
     /// What one reading of the stand-in shell and of what it started gave.
     struct Seen {
         shell: Vec<Level>,
@@ -313,13 +328,13 @@ mod tests {
 
     /// Reads the sleeper's pid, which its shell prints once it has done its work, then both processes. Every failure is a value, so the caller can
     /// kill and wait before it asserts.
-    fn observe(shell: u32, stdout: &mut File) -> (Option<u32>, io::Result<Seen>) {
+    fn observe(shell: u32, stdout: &mut File) -> (Option<libc::pid_t>, io::Result<Seen>) {
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
         while matches!(io::Read::read(stdout, &mut byte), Ok(1)) && byte[0] != b'\n' {
             line.push(byte[0]);
         }
-        let Some(sleeper) = String::from_utf8_lossy(&line).trim().parse::<u32>().ok() else {
+        let Some(sleeper) = parse_pid(&String::from_utf8_lossy(&line)) else {
             return (
                 None,
                 Err(io::Error::other(format!(
@@ -328,12 +343,13 @@ mod tests {
                 ))),
             );
         };
+        let sleeper_id = u32::try_from(sleeper).expect("a positive pid");
         let seen = (|| {
             Ok(Seen {
                 shell: thread_levels(shell)?,
-                sleeper: thread_levels(sleeper)?,
+                sleeper: thread_levels(sleeper_id)?,
                 shell_time: qos_time(shell)?,
-                sleeper_time: qos_time(sleeper)?,
+                sleeper_time: qos_time(sleeper_id)?,
             })
         })();
         (Some(sleeper), seen)
@@ -368,17 +384,20 @@ mod tests {
             mut stdout,
         } = started;
         // The stand-in shell works a little, then starts a child that works a little too, and only that child's report (its pid, once it has run and
-        // before it becomes a `sleep`) lets this test read it: a reading of a child that hasn't run yet would pass for nothing.
+        // before it becomes a `sleep`) lets this test read it: a reading of a child that hasn't run yet would pass for nothing. The outer shell closes its
+        // own stdout, so only that child holds the pipe and its death ends the read instead of hanging it, and the outer shell kills it when its input
+        // closes, so a failed run leaves no `sleep`.
         stdin
             .write_all(
                 b"i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; \
-                  /bin/sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; echo $$; exec /bin/sleep 600' & read line\n",
+                  /bin/sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; echo $$; exec /bin/sleep 600' & job=$!; \
+                  exec >&-; read line; kill $job\n",
             )
             .unwrap();
         let (sleeper_pid, seen) = observe(child.id(), &mut stdout);
         if let Some(pid) = sleeper_pid {
             // SAFETY: a signal to the `sleep` this test started.
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            unsafe { libc::kill(pid, libc::SIGKILL) };
         }
         drop(stdin);
         // Its `read` fails as its input closes, so it doesn't end with success. That it ends is what matters.
