@@ -174,3 +174,29 @@ fn a_hold_over_before_the_rest_wakes_the_thread_at_once() {
     assert_eq!(plan.position, page, "the page that was held");
     assert_eq!(reader.docs.next_hold_ends(Instant::now()), None, "taken by the plan: nothing to wake for");
 }
+
+/// Failure (found with the long session of 2026-11-25, same root): a page that failed with words but may pass (`NotDrawableNow`) kept its issue after its retry drew, so the person was told, while the page showed, that it couldn't be drawn, and the page never settled. Once its time is over and it's drawn, the words go and the page is settled with its tiles on.
+#[test]
+fn a_page_that_may_pass_loses_its_words_once_its_retry_draws() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    let page = job.position;
+    reader.work.note_started(&job, None);
+    reader.finish(
+        job,
+        Outcome::PageFailed {
+            message: "Page 1 can't be drawn just now.".into(),
+            may_pass: true,
+        },
+    );
+    assert!(reader.note().is_some(), "told while it waits");
+    reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
+    reader.refresh(MAX_ATTACH_PER_TURN);
+    settle(&mut reader);
+    assert_eq!(reader.note(), None, "drawn, so nothing to tell");
+    assert!(reader.is_settled(), "settled: {}", reader.report().0);
+    assert!(
+        reader.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty()),
+        "the page's tiles are attached"
+    );
+}

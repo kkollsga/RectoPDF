@@ -836,6 +836,7 @@ impl Reader {
                 Outcome::Drawn { kind, low_res },
             ) => {
                 self.counts.drawn += 1;
+                self.docs.drop_issue_retried(tab, position, Instant::now());
                 if self.docs.views.contains_key(&tab) && self.window_open {
                     kept = Some(self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res));
                 }

@@ -39,6 +39,19 @@ impl Docs {
             .min()
     }
 
+    /// A page that has just been drawn loses its issue if the issue's time to try again is over: the retry passed, and its words (a failure that may pass) would tell the person, while the page shows, that it can't be drawn.
+    pub(super) fn drop_issue_retried(&mut self, tab: u32, page: u32, now: Instant) {
+        if let Some(doc) = self.views.get_mut(&tab)
+            && doc
+                .drawing
+                .issues
+                .get(&page)
+                .is_some_and(|issue| issue.try_again_at.is_some_and(|at| now >= at))
+        {
+            doc.drawing.issues.remove(&page);
+        }
+    }
+
     /// Drops, from the tab showing, the holds without words whose time is over: the plan has been ignoring them since their time, so the page is asked for again and drawn, and a hold left on it would keep it from being settled for good ([`Reader::is_settled`] counts a hold as a page that will change). If the tries fail again the page is held again.
     pub(super) fn drop_ended_holds(&mut self, now: Instant) {
         let Some(doc) = self.hot.and_then(|tab| self.views.get_mut(&tab)) else {
