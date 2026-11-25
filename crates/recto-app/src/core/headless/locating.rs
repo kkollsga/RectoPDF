@@ -771,7 +771,15 @@ fn an_agent_below_full_changes_nothing_of_the_owners_edits_by_search_refs() {
         let hits = ranked["hits"].as_array().expect("hits").len();
         assert_eq!(ranked["references"]["made"], hits, "{ranked}");
         let token = ranked["hits"][0]["ref"].as_str().expect("a reference");
-        assert_eq!(resolve(&app, level, token).expect("resolve")["status"], "found");
+        // A ranked hit's reference names the file's page that the hit is of, not the page's position in the edited tab: the one word `page` is on every page, so
+        // only the pages it resolves to tell the two apart.
+        let resolved = resolve(&app, level, token).expect("resolve");
+        let hit = &ranked["hits"][0];
+        assert_eq!(
+            (resolved["status"].as_str(), &resolved["page"], &resolved["file_page"]),
+            (Some("found"), &hit["page"], &hit["source_page"]),
+            "{hit} {resolved}"
+        );
         assert_eq!(app.recto(level, &["text", "--ref", token]).expect("text --ref")["ref"]["text"], "same");
     }
     assert_eq!(owners_tab(&app, &file), before, "nothing of the owner's tab or file changed");
