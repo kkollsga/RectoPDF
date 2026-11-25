@@ -49,6 +49,37 @@ fn resolves(read: &Locator) {
     }
 }
 
+/// A character range over text the input itself gives, as the executor does over a page's text: no panic whatever the text and the offsets; a range
+/// made over the text is the same over it again, and any range ending past the text's characters is `Changed`.
+fn characters_over(range: CharacterRange, bytes: &[u8]) {
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
+    let count = text.chars().count() as u64;
+    let (start, end) = range.offsets();
+    let held = locator::check_characters(range, &text);
+    if u64::from(end) > count {
+        assert_eq!(held, locator::TextMatch::Changed, "a range past the text is never the same");
+    }
+    // Offsets taken from the range, and from the input's own first bytes, as a hostile `--chars` would be.
+    let wild = [
+        (start, end),
+        (end, start),
+        (0, count as u32),
+        (count as u32, count as u32 + 1),
+        (u32::from(bytes.first().copied().unwrap_or(0)), end),
+    ];
+    for (from, to) in wild {
+        if let Ok(made) = locator::characters(&text, from, to) {
+            assert_eq!(made.offsets(), (from, to));
+            assert_eq!(
+                locator::check_characters(made, &text),
+                locator::TextMatch::Same,
+                "a range made over a text holds over it"
+            );
+            assert!(u64::from(to) <= count);
+        }
+    }
+}
+
 /// Reads at most the parser bound plus one, even when a campaign hands it a much larger or invalid-UTF-8 input.
 pub fn check(bytes: &[u8]) {
     let bounded = &bytes[..bytes.len().min(locator::MAX_TOKEN_BYTES + 1)];
@@ -63,6 +94,9 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(canonical, token, "a token has exactly one spelling, with no ignored suffix or padding");
         assert_eq!(locator::decode(&canonical), Ok(read));
         resolves(&read);
+        if let Target::Characters(range) = read.target() {
+            characters_over(range, bytes);
+        }
     }
 }
 
