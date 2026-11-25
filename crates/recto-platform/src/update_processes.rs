@@ -9,7 +9,12 @@ const MAX_PATH: usize = 4096;
 trait Scan {
     fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize>;
     fn path(&mut self, pid: i32, buffer: &mut [u8]) -> io::Result<usize>;
+    /// The name the process was started under (at most `MAXCOMLEN` bytes), written into `buffer`.
+    fn name(&mut self, pid: i32, buffer: &mut [u8; MAXCOMLEN]) -> io::Result<usize>;
 }
+
+/// Darwin's `MAXCOMLEN`: the longest start name the OS keeps.
+const MAXCOMLEN: usize = 16;
 
 struct Mac;
 
@@ -27,6 +32,23 @@ impl Scan for Mac {
         // SAFETY: observation only, with a live fixed buffer and its exact size.
         let bytes = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
         if bytes <= 0 { Err(io::Error::last_os_error()) } else { Ok(bytes as usize) }
+    }
+
+    fn name(&mut self, pid: i32, buffer: &mut [u8; MAXCOMLEN]) -> io::Result<usize> {
+        // SAFETY: observation only; `info` is a zeroed plain struct and its exact size is passed.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<libc::proc_bsdinfo>() as i32;
+        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+        if got != size {
+            return Err(if got <= 0 {
+                io::Error::last_os_error()
+            } else {
+                io::Error::other("short process info")
+            });
+        }
+        let name: Vec<u8> = info.pbi_comm.iter().map(|byte| *byte as u8).take_while(|byte| *byte != 0).collect();
+        buffer[..name.len()].copy_from_slice(&name);
+        Ok(name.len())
     }
 }
 
@@ -54,6 +76,11 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
         let count = match scan.path(pid, &mut path) {
             Ok(count) => count,
             Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
+            // A live program whose file was deleted answers ENOENT. Owner, 2026-11-25 (`docs/OWNER-RULES.md`,
+            // "Decisions of 2026-11-25"): ignore it when the name it was started under shows it can't be the
+            // app. The same name, or a name that can't be read, stays unknown, so the app is never replaced
+            // while it might be open.
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) && started_as_another_program(wanted, scan, pid) => continue,
             Err(error) => return Err(error),
         };
         if count == 0 || count >= path.len() {
@@ -69,6 +96,17 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
     Ok(live)
 }
 
+/// True only when the start name is read and differs from the wanted file's name (both cut to `MAXCOMLEN`).
+fn started_as_another_program(wanted: &Path, scan: &mut impl Scan, pid: i32) -> bool {
+    let Some(wanted) = wanted.file_name() else { return false };
+    let wanted = &wanted.as_bytes()[..wanted.len().min(MAXCOMLEN)];
+    let mut name = [0u8; MAXCOMLEN];
+    match scan.name(pid, &mut name) {
+        Ok(count) if count > 0 && count <= MAXCOMLEN => &name[..count] != wanted,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +115,7 @@ mod tests {
         list_bytes: usize,
         path: &'static [u8],
         error: Option<i32>,
+        started_as: Option<&'static [u8]>,
     }
     impl Scan for Fake {
         fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize> {
@@ -90,6 +129,11 @@ mod tests {
             buffer[..self.path.len()].copy_from_slice(self.path);
             Ok(self.path.len())
         }
+        fn name(&mut self, _: i32, buffer: &mut [u8; MAXCOMLEN]) -> io::Result<usize> {
+            let name = self.started_as.ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))?;
+            buffer[..name.len()].copy_from_slice(name);
+            Ok(name.len())
+        }
     }
 
     /// Failure: a failed/truncated process scan is mistaken for no writer,
@@ -101,6 +145,7 @@ mod tests {
             list_bytes: 4,
             path: b"/private/app/RectoPDF\0",
             error: None,
+            started_as: None,
         };
         assert!(observe(wanted, &mut fake).unwrap());
         fake.path = b"/private/other/RectoPDF\0";
@@ -114,6 +159,17 @@ mod tests {
             fake.error = Some(error);
             assert!(observe(wanted, &mut fake).is_err());
         }
+        // ENOENT is a live program whose file was deleted: skipped only when its start name can't be the app's.
+        fake.error = Some(libc::ENOENT);
+        fake.started_as = Some(b"sleep");
+        assert!(!observe(wanted, &mut fake).unwrap());
+        fake.started_as = Some(b"RectoPDF");
+        assert!(observe(wanted, &mut fake).is_err(), "the app's own name stays unknown");
+        let long = Path::new("/private/app/A-very-long-program-name");
+        fake.started_as = Some(b"A-very-long-prog");
+        assert!(observe(long, &mut fake).is_err(), "names compare cut to MAXCOMLEN");
+        fake.started_as = None;
+        assert!(observe(wanted, &mut fake).is_err(), "an unreadable name stays unknown");
         fake.error = Some(libc::ESRCH);
         assert!(!observe(wanted, &mut fake).unwrap());
     }
