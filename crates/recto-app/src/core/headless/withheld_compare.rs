@@ -527,7 +527,8 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
     engine.qa().hold_tells(true);
     told.push(format!("zoom: {:?}", control(&app, r#"{"cmd":"view","zoom":"in"}"#).map(|_| ())));
     // The host shows it zoomed, from the same place: the pages there are drawn again.
-    let (mut zoomed, _) = first_pane_shown(&app, plain_tab, 2.0);
+    let (zoomed_shape, _) = first_pane_shown(&app, plain_tab, 2.0);
+    let mut zoomed = crate::testkit::host_standin::shown_again(&view, zoomed_shape);
     crate::testkit::host_standin::report_where_the_host_is(&app, &mut zoomed);
     assert!(engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT), "a draw's word held");
     told.push(format!(
