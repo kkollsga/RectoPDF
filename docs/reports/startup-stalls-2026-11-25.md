@@ -223,6 +223,19 @@ sidebar_cell_layout max per run (us): [5471, 7030, 6597, 5866, 5298, 5548, 6704,
 
 `input_to_frame` (release, headless, at 1, 100 and 1,000 tabs), before on main (`f86bc16c`) and after on commit A, in the same hour and under load 5 to 8 (the machine was never quiet). The p50 of every case is within the bound after <= 1.1 x before + 200 us in both after runs. **The tail quantiles are not**: after run 1 has 19 of 216 quantiles over the bound, run 2 has 11, never the same cases (run 1: pane focus, open new file, find typed at 1,000 tabs; run 2: open its tab, find step, scroll crossing an entry, open new file at 100 and 1,000 tabs), all p95 and p99 (`open new file` at 1,000 tabs p99 426.5 before, 1,050 and 1,292 after). The headless harness does not call the startup trace (the checkpoint needs the window's thread binding), and no code on the hot path changed, so this reads as load noise on tails, but it is a miss of the stated bound and is reported as one, not as a pass (call-back item 7). Files: `startup-stalls-itf-before.txt`, `startup-stalls-itf-after.txt`, `startup-stalls-itf-after2.txt` in the scratchpad.
 
+### Interleaved before/after, release harness binaries side by side (one hour, load 7.2 to 8.5)
+
+Step 1: the harness cannot reach the changed code. It builds one `Watchdog` per app (`core/start.rs:79`), which on commit A is 384 B bigger, and nothing calls `startup::checkpoint` (only the host's `hostStartupPhase` FFI does); the window's thread binding is never set in it. Both binaries (main `f86bc16c` and commit A) were built once, kept side by side and run in the order main, after, main, after, then after, main, main, after (8 runs, 5 s each), each pair compared on 216 quantiles (54 cases x ui p99, p50, p95, p99) against after <= 1.1 x before + 200 us:
+
+| pair (before, after) | quantiles over the bound | same-binary spread in the same hour |
+|---|---|---|
+| 1 | 10 of 216 | main 1 vs main 2: 14 of 216 over the same bound |
+| 2 | 34 of 216 | after 1 vs after 2: 46 of 216 |
+| 3 (after first) | 0 of 216 | |
+| 4 | 0 of 216 | main 3 vs main 4: 0; after 3 vs after 4: 0 |
+
+No p50 is over the bound except two in pair 2 (`open new file` and `open its tab` at 1 and 100 tabs, where the same pair's tails are also over). Misses are in the first two pairs only, the after binary varies against itself by more than any of its misses (after 1 vs after 2, 46 quantiles), and the two later pairs, including one with the order reversed, have none; so this is not a change that moves with the code. It is reported as what it is: **2 of 4 pairs missed the bound, 2 met it**, and the median of the four runs misses on 5 of 216 quantiles (`open new file` 1 tab p95 309 to 856 us and p99 329 to 1,250 us; `tap row` 1,000 tabs p95 200 to 451 and p99 208 to 541; `compare click` 1,000 tabs p99 393 to 695), all tails of cases where the after runs 1 and 2 had the multi-ms outliers. Not relabelled as a pass: the harness measured on a machine other workers were using, and the verdict that this is noise rests on the same-binary spread and on pairs 3 and 4, not on a quiet machine.
+
 ## Seed proofs
 
 - `only_the_first_real_begin_can_start_a_trace` with `decode` on `<=`: fails (startup.rs:59).
