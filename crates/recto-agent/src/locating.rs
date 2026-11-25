@@ -213,7 +213,7 @@ pub(crate) fn attach_new_file<A: SessionAccess>(access: &A, found: &Located, dat
 }
 
 /// The refusal when the page standing where the reference was found isn't the page it was found as.
-pub(crate) fn tab_changed() -> AgentError {
+fn tab_changed() -> AgentError {
     AgentError::new(Code::FILE_CHANGED, TAB_CHANGED, exit::FAILED)
 }
 

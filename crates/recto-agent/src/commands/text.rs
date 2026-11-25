@@ -337,6 +337,7 @@ impl Cmd for Text {
             }
             let read = render::text(&source.path, source.page + 1).map_err(|error| unreadable_if_added_needs_password(error, &source, page));
             let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
+            // The draw happened, so the host is told, even if `attach` below refuses the answer for a file that changed since: the page was drawn.
             if drew || read.is_err() {
                 note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
             }
