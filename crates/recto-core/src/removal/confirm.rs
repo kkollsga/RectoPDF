@@ -113,7 +113,7 @@ pub enum ConfirmRefusal {
 /// Proof that a person confirmed exactly one plan. Not `Clone`, and made only here: `Progress::start` consumes it.
 #[derive(Debug)]
 pub struct Confirmed {
-    pub(super) digest: PlanDigest,
+    digest: PlanDigest,
 }
 
 impl Confirmed {

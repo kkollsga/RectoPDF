@@ -53,8 +53,9 @@ pub enum OrderError {
 }
 
 /// How many steps are acknowledged, as the only record of where the transaction is, bound to one plan by its digest. It starts only
-/// from a `Confirmed`, which a confirmation of exactly that plan makes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// from a `Confirmed`, which a confirmation of exactly that plan makes. Not `Clone`: one confirmation is one walk, and a copy could
+/// be walked twice.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Progress {
     digest: PlanDigest,
     acked: u32,
@@ -69,7 +70,7 @@ fn index_of(plan: &Plan, effect: Effect) -> u32 {
 impl Progress {
     /// Begins the walk of `plan`, consuming the confirmation of it. A confirmation of another plan is `WrongPlan`.
     pub fn start(plan: &Plan, confirmed: Confirmed) -> Result<Self, OrderError> {
-        if confirmed.digest != plan.digest {
+        if confirmed.digest() != plan.digest {
             return Err(OrderError::WrongPlan);
         }
         Ok(Self {
