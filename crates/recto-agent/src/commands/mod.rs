@@ -24,6 +24,7 @@ pub mod export;
 pub mod finding;
 pub mod highlight;
 pub mod linking;
+pub mod locating; // new-feature: locating
 pub mod measure;
 pub mod qa;
 pub mod reading;
