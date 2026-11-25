@@ -448,6 +448,23 @@ struct Seen {
 }
 
 impl Seen {
+    /// What a read that cost nothing and drew nothing came to: its record's bytes, and that it's no form with children.
+    fn of(tail: Vec<u8>, scanned: bool) -> Self {
+        Self {
+            tail,
+            read: 0,
+            page: 0,
+            cost: 0,
+            headroom: false,
+            is_form: false,
+            scanned,
+            names: Vec::new(),
+            overflowed: false,
+            resources: None,
+            own: OnceCell::new(),
+        }
+    }
+
     /// The form's own `/Resources`' `/XObject`; `None` where it has no `/Resources` of its own, so the page's are used. Asked for only where the form
     /// drew something.
     fn own_xobjects(&self, reader: &IndexedReader, dicts: &mut Dicts) -> Option<Option<Rc<Dictionary>>> {
@@ -496,8 +513,11 @@ fn xobject_record(
     #[cfg(test)]
     tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
     let Ok(descriptor) = reader.resolve_stream_descriptor(id) else {
-        hasher.update([2]);
-        return Ok(None);
+        // Resolving it parsed its whole dictionary, and what it comes to doesn't depend on what's left of any cap: it's kept like any other record.
+        let seen = Rc::new(Seen::of(vec![2], children));
+        hasher.update(&seen.tail);
+        memo.insert(id, Rc::clone(&seen));
+        return Ok(Some(seen));
     };
     let before = (budget.read_left, budget.page_left, budget.cost);
     let mut tail = Vec::new();
