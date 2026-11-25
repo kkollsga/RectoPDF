@@ -271,27 +271,66 @@ mod tests {
         }
     }
 
-    /// A copy of `/bin/sleep` named `name`, started with its executable then deleted: a live process whose
-    /// image is gone, which the OS answers a path query for with ENOENT.
-    fn deleted_sleeper(name: &str) -> (recto_testpdf::TempDir, Children) {
+    /// The stand-in process of `deleted_stand_in`: a copy of this test binary runs this test with `RECTO_STAND_IN`
+    /// set, says it is ready and then blocks until its stdin closes. Run on its own it returns at once, and it is
+    /// ignored so no suite run starts it.
+    #[test]
+    #[ignore = "a stand-in process for the deleted-program test, started by it"]
+    fn stand_in_program() {
+        if std::env::var_os("RECTO_STAND_IN").is_none() {
+            return;
+        }
+        println!("stand-in ready");
+        let _ = io::Write::flush(&mut io::stdout());
+        let _ = io::copy(&mut io::stdin(), &mut io::sink());
+    }
+
+    /// A copy of this test binary named `name`, started as the stand-in and then deleted once it has said it is
+    /// ready: a live process whose image is gone, which the OS answers a path query for with ENOENT. What the rest
+    /// of the test relies on is checked here through the real scan, each with its own message, so a stand-in that
+    /// never ran, ended, or whose path the OS still answers fails by saying so, not through the rule under test.
+    fn deleted_stand_in(name: &str) -> (recto_testpdf::TempDir, Children) {
         let dir = recto_testpdf::TempDir::new("update-processes-deleted-");
         let copy = dir.path().join(name);
-        std::fs::copy("/bin/sleep", &copy).unwrap();
-        // A plain copy of a system binary is killed at exec; an ad-hoc signature lets it run.
-        let signed = std::process::Command::new("/usr/bin/codesign")
-            .args(["-s", "-", "-f"])
-            .arg(&copy)
-            .output()
-            .unwrap_or_else(|error| panic!("codesign could not be run: {error}"));
-        assert!(
-            signed.status.success(),
-            "codesign failed ({}): {}",
-            signed.status,
-            String::from_utf8_lossy(&signed.stderr)
-        );
-        let mut children = Children(Vec::new());
-        children.0.push(std::process::Command::new(&copy).arg("10").spawn().unwrap());
+        std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+        let mut child = std::process::Command::new(&copy)
+            .args(["local::update_processes::tests::stand_in_program", "--exact", "--ignored", "--nocapture"])
+            .arg("--test-threads=1")
+            .env("RECTO_STAND_IN", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut ready = false;
+        let mut lines = std::io::BufReader::new(child.stdout.as_mut().unwrap());
+        let mut line = String::new();
+        while !ready && io::BufRead::read_line(&mut lines, &mut line).unwrap() > 0 {
+            // libtest prints "test <name> ... " before the test body writes, on the same line.
+            ready = line.trim_end().ends_with("stand-in ready");
+            line.clear();
+        }
+        let pid = child.id() as i32;
+        if !ready {
+            let status = child.wait();
+            panic!("the stand-in never ran: {status:?}");
+        }
+        let mut children = Children(vec![child]);
         std::fs::remove_file(&copy).unwrap();
+        let status = children.0[0].try_wait().unwrap();
+        assert!(status.is_none(), "the stand-in ended: {status:?}");
+        let mut buffer = [0u8; MAX_PATH];
+        let result = Mac.path(pid, &mut buffer);
+        assert!(
+            result.as_ref().is_err_and(|error| error.raw_os_error() == Some(libc::ENOENT)),
+            "the OS doesn't answer ENOENT for a live program whose file was deleted here: {:?}",
+            result.map(|count| String::from_utf8_lossy(&buffer[..count]).into_owned())
+        );
+        let mut started = [0u8; COMM_LEN];
+        let count = Mac
+            .name(pid, &mut started)
+            .unwrap_or_else(|error| panic!("the stand-in's name can't be read: {error}"));
+        assert_eq!(&started[..count], name.as_bytes(), "the OS keeps another start name than the copy's");
         (dir, children)
     }
 
@@ -302,7 +341,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_deleted_program_started_under_another_name_is_skipped_but_one_named_like_the_app_is_not() {
-        let (_other, _children) = deleted_sleeper("sleep");
+        // A name that isn't the app's, short enough for the kernel to keep whole.
+        let other = format!("rpdf-o-{}", std::process::id());
+        assert!(other.len() < COMM_LEN);
+        let (_other, _children) = deleted_stand_in(&other);
         assert!(update_app_is_running(&std::env::current_exe().unwrap()).unwrap());
 
         let dir = recto_testpdf::TempDir::new("update-processes-wanted-");
@@ -311,8 +353,8 @@ mod tests {
         let unique = format!("rpdf-{}", std::process::id());
         assert!(unique.len() < COMM_LEN);
         let wanted = dir.path().join(&unique);
-        std::fs::copy("/bin/sleep", &wanted).unwrap();
-        let (_same_name, _more) = deleted_sleeper(&unique);
+        std::fs::File::create(&wanted).unwrap();
+        let (_same_name, _more) = deleted_stand_in(&unique);
         let error = update_app_is_running(&wanted).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
         assert!(
