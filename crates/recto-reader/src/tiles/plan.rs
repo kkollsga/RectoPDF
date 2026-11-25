@@ -75,6 +75,8 @@ impl Reader {
 
     /// The next thing to do, most wanted first, or `None`, when the engine parks. Only what's visible is drawn: drawing ahead comes in a later phase.
     pub fn next_plan(&mut self) -> Option<JobPlan> {
+        // First, before any early return: a hold that has ended is the plan's to take, and gone, or the page is drawn and never settled.
+        self.docs.drop_ended_holds(Instant::now());
         if !self.window_open || self.work.hold_drawing {
             return None;
         }

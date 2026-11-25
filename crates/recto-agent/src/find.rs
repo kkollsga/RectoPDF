@@ -9,6 +9,7 @@ use crate::index::Indexing;
 pub use crate::search::KeyLookup;
 use crate::search::{self, Got, Plan, Reader, Settings, Slot};
 use crate::{AgentError, exit};
+use recto_render_service::RenderFailure;
 use recto_session::{DocLoader, Session, TabId};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -129,6 +130,8 @@ pub struct Progress {
     pub failed: u32,
     /// Pages the Mac was too busy to read: not failed, and not searched. Find again reads them.
     pub busy: u32,
+    /// Added files whose renderer wouldn't start: none of their pages was asked, and none is failed. Find again tries them. (The document's own file ends the query as [`End::Failed`].)
+    pub unstarted: u32,
     pub no_text: u32,
     /// Every hit, kept or not.
     pub total: u64,
@@ -183,12 +186,17 @@ pub fn run(plan: &FindPlan, needle: &str, indexing: Option<&dyn Indexing>, stop:
             Ok(got) => got,
             Err(error) => return (End::Failed(error.message), progress),
         };
+        // The document's own file, whose renderer wouldn't start, can't be searched at all: never "Not found".
+        if matches!(got, Got::Unstarted { own_file: true }) {
+            return (End::Failed(RenderFailure::Unavailable.message()), progress);
+        }
         progress.pages_done += 1;
         let mut hits = Vec::new();
         match got {
             Got::Failed(_) => progress.failed += 1,
             Got::Busy => progress.busy += 1,
             Got::NoText => progress.no_text += 1,
+            Got::Unstarted { .. } => progress.unstarted += 1,
             Got::Nothing => {}
             Got::Page(view) => {
                 search::fold_into(view.text, &mut folded);
@@ -542,6 +550,12 @@ impl Results {
             format!(". {} couldn't be read", pages(p.failed))
         } else {
             String::new()
+        };
+        let unread = if p.unstarted > 0 {
+            // The reader's own sentence, for files added to this one: not read, and not empty.
+            format!("{unread}. {}", RenderFailure::Unavailable.message().trim_end_matches('.'))
+        } else {
+            unread
         };
         let unread = if p.busy > 0 {
             let (count, verb) = if p.busy == 1 {
@@ -1264,6 +1278,76 @@ mod tests {
         );
         assert_eq!(results.hits.len(), MAX_HITS);
         assert_eq!(results.status(), "1,800 matches on 3 pages, first 1,000 listed");
+    }
+
+    fn two_pdfs(name: &str, pages: usize) -> (recto_testpdf::TempDir, Vec<std::path::PathBuf>) {
+        let pdf = recto_testpdf::pages(
+            &(0..pages)
+                .map(|n| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("page {n}")])))
+                .collect::<Vec<_>>(),
+        );
+        let folder = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), name);
+        let paths: Vec<_> = ["own.pdf", "added.pdf"].iter().map(|file| folder.join(file)).collect();
+        for path in &paths {
+            std::fs::write(path, &pdf).unwrap();
+        }
+        (folder, paths)
+    }
+
+    /// Runs a Find over `pages` of these files with a worker that has no time to say hello, so the renderer is busy twice and then won't start, without waiting on a real start.
+    fn run_with_no_time_to_start(paths: &[std::path::PathBuf], pages: &[(u16, u32)]) -> (End, Progress) {
+        search::START_TIMEOUT_FOR_TEST.with(|timeout| timeout.set(Some(Duration::ZERO)));
+        let plan = FindPlan {
+            plan: search::plan_for_test(paths, pages),
+            basis: Basis {
+                tab: 1,
+                pages: pages.len() as u32,
+                stamp: None,
+                changes: 0,
+                fit: recto_session::EditsFit::Fit,
+            },
+        };
+        let stop = AtomicBool::new(false);
+        let done = run(&plan, "page", None, &stop, &mut |_, _| {});
+        search::START_TIMEOUT_FOR_TEST.with(|timeout| timeout.set(None));
+        done
+    }
+
+    /// Failure: Find on a document whose renderer won't start (a worker that never says hello, after two busy starts) counted every page as done and said "Not found", so a person and `recto find` were told a word isn't in a file nothing read.
+    #[test]
+    fn a_document_whose_renderer_wont_start_is_never_not_found() {
+        let (_folder, paths) = two_pdfs("recto-find-unstarted-own-", 6);
+        // Two pages are busy; the third ask is the one the bound ends.
+        let (end, progress) = run_with_no_time_to_start(&paths[..1], &[(0, 0), (0, 1), (0, 2), (0, 3)]);
+        let End::Failed(words) = &end else { panic!("{end:?} {progress:?}") };
+        assert_eq!(words, "The page renderer couldn't be started.");
+        assert_eq!(progress.failed, 0, "no page of it is counted as failed: {progress:?}");
+        let mut results = Results::default();
+        let generation = results.begin(1, "page", 4);
+        results.finish(generation, end, progress);
+        assert!(!results.status().contains("Not found"), "{}", results.status());
+    }
+
+    /// Failure: the same for a PDF added to the document: its pages counted as read and empty, so "Not found" was said of the whole thing. The pages of the document's own file still read and find their words (not under the same timeout, so here every page is of the added file); the status says the sentence and the count is its own, not failed.
+    #[test]
+    fn an_added_file_whose_renderer_wont_start_is_said_and_not_not_found() {
+        let (_folder, paths) = two_pdfs("recto-find-unstarted-added-", 6);
+        let (end, progress) = run_with_no_time_to_start(&paths, &[(1, 0), (1, 1), (1, 2), (1, 3), (1, 4)]);
+        assert_eq!(end, End::Finished, "{progress:?}");
+        assert_eq!(
+            (progress.unstarted, progress.failed, progress.total),
+            (1, 0, 0),
+            "said once, not failed: {progress:?}"
+        );
+        let mut results = Results::default();
+        let generation = results.begin(1, "page", 5);
+        results.finish(generation, end, progress);
+        let status = results.status();
+        assert!(status.contains("The page renderer couldn't be started"), "{status}");
+        assert!(
+            status.starts_with("Not found. ") && !status.contains(".."),
+            "the sentence follows what's said of a search that found nothing: {status}"
+        );
     }
 
     /// Failure: the line under the field says nothing was found when pages couldn't be read, or before it's looked.

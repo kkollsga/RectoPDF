@@ -6,7 +6,7 @@
 //! for every session and actor; this is what it must hold in the app.
 
 use super::print_protected::deadlines_met;
-use super::printing::{ALL, answer, hold_at, printed, unnamed_file};
+use super::printing::{ALL, answer, hold_at, printed, unnamed_descriptors_in, unnamed_file};
 use super::withheld_events::{person_unlocks, protected};
 use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 use recto_agent::{AgentError, Code, Level, exit};
@@ -14,19 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// **The descriptors this process holds on regular files with no link**, by number: where the person's print is while it's anywhere.
 fn unnamed_descriptors() -> Vec<u32> {
-    use std::os::unix::fs::MetadataExt;
-    let mut held: Vec<u32> = std::fs::read_dir("/dev/fd")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let number = entry.file_name().to_str()?.parse().ok()?;
-            let meta = std::fs::metadata(entry.path()).ok()?;
-            (meta.is_file() && meta.nlink() == 0).then_some(number)
-        })
-        .collect();
-    held.sort_unstable();
-    held
+    unnamed_descriptors_in(Path::new("/dev/fd")).into_iter().map(|held| held.fd).collect()
 }
 
 /// What an answer was, in a line: a refusal's code and exit, or what the agent got, with page 1 of the tab it names drawn by an agent at Full.

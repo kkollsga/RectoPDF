@@ -301,6 +301,7 @@ Printing::pub fn dismiss_notice(&self)
 Printing::pub fn has_ready(&self) -> bool
 Printing::pub fn notice(&self) -> Option<String>
 Printing::pub fn preparing(&self) -> bool
+Printing::pub fn progress(&self) -> (u32, u32)
 Printing::pub fn publishing(&self) -> bool
 Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
@@ -309,6 +310,7 @@ Printing::pub fn take_ready(&self) -> Option<(PathBuf, u64)>
 Printing::pub(crate) fn anyway(&self, serial: u64) -> Option<Command>
 Printing::pub(crate) fn completion_due(&self, now: u64) -> Option<Duration>
 Printing::pub(crate) fn not_asked(&self)
+Printing::pub(crate) fn taken(&self, taken: bool) -> bool
 Prompts (pub struct, derives Debug, Default)
 Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
 Prompts.pub(crate) passwords: Mutex<Asks>
@@ -339,10 +341,10 @@ RowParts::pub fn mark_update_menu(&self) -> bool
 RowParts::pub fn open(&self, path: PathBuf)
 RowParts::pub fn open_palette(&self)
 RowParts::pub fn person(&self) -> Person<'a>
+RowParts::pub fn print_anyway(&self, serial: u64)
 RowParts::pub fn published<R>(&self, read: impl FnOnce(&Published) -> R) -> R
 RowParts::pub fn reading_tab(&self) -> Option<TabId>
 RowParts::pub fn reconcile(&self)
-RowParts::pub fn refused_print_anyway(&self, serial: u64) -> Option<recto_agent::Command>
 RowParts::pub fn select_all(&self)
 RowParts::pub fn selected(&self) -> Option<(u32, Option<recto_index::select::Range>)>
 RowParts::pub fn tell_host(&self)
