@@ -9,12 +9,13 @@ const MAX_PATH: usize = 4096;
 trait Scan {
     fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize>;
     fn path(&mut self, pid: i32, buffer: &mut [u8]) -> io::Result<usize>;
-    /// The name the process was started under (at most `MAXCOMLEN` bytes), written into `buffer`.
-    fn name(&mut self, pid: i32, buffer: &mut [u8; MAXCOMLEN]) -> io::Result<usize>;
+    /// The name the process was started under, written into `buffer`: at most `COMM_LEN` bytes, the kernel's cut.
+    fn name(&mut self, pid: i32, buffer: &mut [u8; COMM_LEN]) -> io::Result<usize>;
 }
 
-/// Darwin's `MAXCOMLEN`: the longest start name the OS keeps.
-const MAXCOMLEN: usize = 16;
+/// The longest start name the kernel keeps: `pbi_comm` holds `MAXCOMLEN` bytes and xnu ends it with a NUL at the
+/// last one, so the usable length is `MAXCOMLEN - 1` (`universalaccessd` reads `universalaccess`).
+const COMM_LEN: usize = libc::MAXCOMLEN - 1;
 
 struct Mac;
 
@@ -34,7 +35,7 @@ impl Scan for Mac {
         if bytes <= 0 { Err(io::Error::last_os_error()) } else { Ok(bytes as usize) }
     }
 
-    fn name(&mut self, pid: i32, buffer: &mut [u8; MAXCOMLEN]) -> io::Result<usize> {
+    fn name(&mut self, pid: i32, buffer: &mut [u8; COMM_LEN]) -> io::Result<usize> {
         // SAFETY: observation only; `info` is a zeroed plain struct and its exact size is passed.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = size_of::<libc::proc_bsdinfo>() as i32;
@@ -46,9 +47,15 @@ impl Scan for Mac {
                 io::Error::other("short process info")
             });
         }
-        let name: Vec<u8> = info.pbi_comm.iter().map(|byte| *byte as u8).take_while(|byte| *byte != 0).collect();
-        buffer[..name.len()].copy_from_slice(&name);
-        Ok(name.len())
+        let mut count = 0;
+        for (slot, byte) in buffer.iter_mut().zip(info.pbi_comm.iter().map(|byte| *byte as u8)) {
+            if byte == 0 {
+                break;
+            }
+            *slot = byte;
+            count += 1;
+        }
+        Ok(count)
     }
 }
 
@@ -96,16 +103,21 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
     Ok(live)
 }
 
-/// True only when the start name is read and differs from the wanted file's name (both cut to `MAXCOMLEN`).
+/// True only when the start name shows the process can't be the wanted program. The kernel cuts the name at
+/// `COMM_LEN` bytes: a shorter name must differ from the wanted file name in full; a name of exactly `COMM_LEN` may be
+/// a cut, so it is skipped only when it is not a prefix of the wanted name. A name that can't be read stays unknown,
+/// except that a process that vanished (`ESRCH`) is skipped as `path` skips it.
 /// Known limit: the start name is the last part of the path the program was started through, so the app's own executable
 /// run through a link of another name, and then deleted while running, would be skipped. The app as launched normally
 /// runs under its own name, so a running copy of it stays unknown.
 fn started_as_another_program(wanted: &Path, scan: &mut impl Scan, pid: i32) -> bool {
     let Some(wanted) = wanted.file_name() else { return false };
-    let wanted = &wanted.as_bytes()[..wanted.len().min(MAXCOMLEN)];
-    let mut name = [0u8; MAXCOMLEN];
+    let wanted = wanted.as_bytes();
+    let mut name = [0u8; COMM_LEN];
     match scan.name(pid, &mut name) {
-        Ok(count) if count > 0 && count <= MAXCOMLEN => &name[..count] != wanted,
+        Ok(count) if count == COMM_LEN => !wanted.starts_with(&name),
+        Ok(count) if count > 0 && count < COMM_LEN => &name[..count] != wanted,
+        Err(error) => error.raw_os_error() == Some(libc::ESRCH),
         _ => false,
     }
 }
@@ -119,6 +131,7 @@ mod tests {
         path: &'static [u8],
         error: Option<i32>,
         started_as: Option<&'static [u8]>,
+        name_error: Option<i32>,
     }
     impl Scan for Fake {
         fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize> {
@@ -132,8 +145,10 @@ mod tests {
             buffer[..self.path.len()].copy_from_slice(self.path);
             Ok(self.path.len())
         }
-        fn name(&mut self, _: i32, buffer: &mut [u8; MAXCOMLEN]) -> io::Result<usize> {
-            let name = self.started_as.ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))?;
+        fn name(&mut self, _: i32, buffer: &mut [u8; COMM_LEN]) -> io::Result<usize> {
+            let name = self
+                .started_as
+                .ok_or_else(|| io::Error::from_raw_os_error(self.name_error.unwrap_or(libc::EPERM)))?;
             buffer[..name.len()].copy_from_slice(name);
             Ok(name.len())
         }
@@ -149,6 +164,7 @@ mod tests {
             path: b"/private/app/RectoPDF\0",
             error: None,
             started_as: None,
+            name_error: None,
         };
         assert!(observe(wanted, &mut fake).unwrap());
         fake.path = b"/private/other/RectoPDF\0";
@@ -168,13 +184,53 @@ mod tests {
         assert!(!observe(wanted, &mut fake).unwrap());
         fake.started_as = Some(b"RectoPDF");
         assert!(observe(wanted, &mut fake).is_err(), "the app's own name stays unknown");
-        let long = Path::new("/private/app/A-very-long-program-name");
-        fake.started_as = Some(b"A-very-long-prog");
-        assert!(observe(long, &mut fake).is_err(), "names compare cut to MAXCOMLEN");
         fake.started_as = None;
         assert!(observe(wanted, &mut fake).is_err(), "an unreadable name stays unknown");
         fake.error = Some(libc::ESRCH);
         assert!(!observe(wanted, &mut fake).unwrap());
+    }
+
+    /// Failure: the kernel keeps at most 15 bytes of a start name (`universalaccessd` reads `universalaccess`), so a
+    /// running, deleted copy of an app with a longer executable name is skipped as "another program" and the installer
+    /// replaces a running app. A cut name that is a prefix of the wanted name stays unknown.
+    #[test]
+    fn a_start_name_cut_by_the_kernel_is_compared_as_a_prefix() {
+        let long = Path::new("/private/app/A-very-long-program-name");
+        let mut fake = Fake {
+            list_bytes: 4,
+            path: b"",
+            error: Some(libc::ENOENT),
+            started_as: Some(b"A-very-long-pro"),
+            name_error: None,
+        };
+        assert_eq!(fake.started_as.unwrap().len(), COMM_LEN);
+        assert!(
+            observe(long, &mut fake).is_err(),
+            "a 15-byte cut that is a prefix of the wanted name is unknown"
+        );
+        fake.started_as = Some(b"Another-long-pr");
+        assert!(!observe(long, &mut fake).unwrap(), "a 15-byte cut that is not a prefix is another program");
+        let exactly = Path::new("/private/app/Exactly-15-byte");
+        fake.started_as = Some(b"Exactly-15-byte");
+        assert!(
+            observe(exactly, &mut fake).is_err(),
+            "a name of exactly the cap that is the whole wanted name is unknown"
+        );
+        let short = Path::new("/private/app/Short");
+        fake.started_as = Some(b"Shor");
+        assert!(!observe(short, &mut fake).unwrap(), "a short name below the cap is compared in full");
+        fake.started_as = Some(b"Short");
+        assert!(observe(short, &mut fake).is_err(), "the same short name is unknown");
+        fake.started_as = Some(b"A-very-long-pro");
+        assert!(!observe(short, &mut fake).unwrap(), "a 15-byte name can't be a prefix of a shorter wanted name");
+        fake.started_as = None;
+        fake.name_error = Some(libc::ESRCH);
+        assert!(
+            !observe(short, &mut fake).unwrap(),
+            "a process that vanished between its path and its name is gone"
+        );
+        fake.name_error = Some(libc::EPERM);
+        assert!(observe(short, &mut fake).is_err(), "any other name error is unknown");
     }
 
     struct Children(Vec<std::process::Child>);
