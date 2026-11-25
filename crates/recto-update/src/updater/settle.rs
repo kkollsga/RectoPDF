@@ -209,6 +209,32 @@ mod tests {
         }
     }
 
+    /// The plan these tests settle: only its id and versions differ between them, and `app` and `root` are the test's own folders.
+    fn plan_for(id: &str, from: &str, to: &str, app: &Path, root: &Path) -> Plan {
+        Plan {
+            id: id.into(),
+            cdhash: String::new(),
+            team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
+            from: from.into(),
+            to: to.into(),
+            pid: 0,
+            app: app.to_owned(),
+            beside: beside_app(app).unwrap(),
+            root: root.to_owned(),
+            quit_at_ms: 0,
+            background: true,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            handed_off_tabs: None,
+            open: Vec::new(),
+            keep_record: false,
+            test: None,
+        }
+    }
+
     /// Failure: an earlier refused rollback masks a valid later plan, so its healthy first frame has no arrival to acknowledge.
     #[test]
     fn an_old_refusal_does_not_mask_a_new_matching_arrival() {
@@ -223,28 +249,7 @@ mod tests {
             std::fs::write(files.before().join(".whole"), b"earlier record").unwrap();
             std::fs::create_dir(&app).unwrap();
             std::fs::write(app.join("untouched"), b"new bundle").unwrap();
-            let plan = Plan {
-                id: "later".into(),
-                cdhash: String::new(),
-                team_required: false,
-                any_version: false,
-                development_build: false,
-                team_signed: false,
-                from: "0.2.0".into(),
-                to: "0.3.0".into(),
-                pid: 0,
-                app: app.clone(),
-                beside: beside_app(&app).unwrap(),
-                root: root.clone(),
-                quit_at_ms: 0,
-                background: true,
-                quit_limit_ms: 1,
-                start_limit_ms: 1,
-                handed_off_tabs: None,
-                open: Vec::new(),
-                keep_record: false,
-                test: None,
-            };
+            let plan = plan_for("later", "0.2.0", "0.3.0", &app, &root);
             plan.write(&files.plan()).unwrap();
             let old = Outcome {
                 kind: OutcomeKind::CouldntGoBack,
@@ -285,28 +290,7 @@ mod tests {
         std::fs::write(files.before().join(".whole"), b"earlier record").unwrap();
         std::fs::create_dir(&app).unwrap();
         std::fs::write(app.join("untouched"), b"new bundle").unwrap();
-        let plan = Plan {
-            id: "retry".into(),
-            cdhash: String::new(),
-            team_required: false,
-            any_version: false,
-            development_build: false,
-            team_signed: false,
-            from: "0.1.0".into(),
-            to: "0.2.0".into(),
-            pid: 0,
-            app: app.clone(),
-            beside: beside_app(&app).unwrap(),
-            root: root.clone(),
-            quit_at_ms: 0,
-            background: true,
-            quit_limit_ms: 1,
-            start_limit_ms: 1,
-            handed_off_tabs: None,
-            open: Vec::new(),
-            keep_record: false,
-            test: None,
-        };
+        let plan = plan_for("retry", "0.1.0", "0.2.0", &app, &root);
         plan.write(&files.plan()).unwrap();
         let old = Outcome {
             kind: OutcomeKind::CouldntGoBack,
