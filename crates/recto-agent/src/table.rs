@@ -66,6 +66,9 @@ pub enum Kind {
     /// There or not.
     Switch,
     Text,
+    /// A reference token `recto ref` gave. Not free text: the CLI itself refuses what the command would (as `Choice` does), so a word that is no
+    /// reference never becomes a line the socket refuses, and no guard has to invent a value for it.
+    Reference,
     /// One of these words.
     Choice(&'static [&'static str]),
     /// Some of these words, with commas between.
@@ -1215,6 +1218,7 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
                 _ => Err(bad()),
             }
         }
+        Kind::Reference => crate::locating::read_reference(value).map(|_| json!(value)),
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
 }
@@ -1412,6 +1416,7 @@ mod tests {
             Kind::Degrees => "90",
             Kind::Level => "read_only",
             Kind::Text => "words",
+            Kind::Reference => crate::commands::locating::EXAMPLE_REF,
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",

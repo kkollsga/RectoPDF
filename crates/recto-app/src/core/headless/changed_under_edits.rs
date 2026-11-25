@@ -10,7 +10,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// A PDF of `pages` pages whose text says `who` and the page.
-fn pdf_bytes(who: &str, pages: usize) -> Vec<u8> {
+pub(super) fn pdf_bytes(who: &str, pages: usize) -> Vec<u8> {
     let pages: Vec<recto_testpdf::Page> = (1..=pages)
         .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{who} page {page}")])))
         .collect();
@@ -18,7 +18,7 @@ fn pdf_bytes(who: &str, pages: usize) -> Vec<u8> {
 }
 
 /// Another program's save: a new file renamed over the old one.
-fn replace(path: &Path, bytes: &[u8]) {
+pub(super) fn replace(path: &Path, bytes: &[u8]) {
     let new = path.with_extension("incoming");
     std::fs::write(&new, bytes).expect("the new version");
     std::fs::rename(&new, path).expect("put in place");
@@ -37,7 +37,7 @@ fn put_back(path: &Path, bytes: &[u8], modified: std::time::SystemTime) {
 }
 
 /// The app comes back to the front, so each file showing is looked at.
-fn look(app: &HeadlessApp) {
+pub(super) fn look(app: &HeadlessApp) {
     app.send(CoreCall::LookAtShown);
     app.settle();
 }

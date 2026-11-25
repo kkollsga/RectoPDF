@@ -24,6 +24,7 @@ pub mod export;
 pub mod finding;
 pub mod highlight;
 pub mod linking;
+pub mod locating;
 pub mod measure;
 pub mod qa;
 pub mod reading;
@@ -54,7 +55,7 @@ pub trait Cmd {
     const TAG: &'static str;
     /// Its rows in the command table: the CLI's grammar, the help and the level. Rows sharing a tag are faces of one command.
     const ROWS: &'static [Spec];
-    /// It draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes: one that forgot would skip the server's draw cap.
+    /// It draws pages, or reads pages' contents through a worker or in this process (as `ref` and `resolve` scan every page). These run at most a few at a time, because each can use hundreds of megabytes or seconds of a core: one that forgot would skip the server's draw cap.
     const DRAWS: bool;
     /// It reads what's on a tab's pages, which the tab's edits say: refused while they can't be read.
     const READS_PAGES: bool;
@@ -339,6 +340,9 @@ family! {
         Facts(reading::Facts),
         Contents(reading::Contents),
         Search(text::Search),
+        Ref(locating::Ref),
+        #[line(locating::line::Resolve)]
+        Resolve(locating::Resolve),
         Index(text::Index),
         IndexStatus(text::IndexStatus),
         IndexClear(text::IndexClear),
