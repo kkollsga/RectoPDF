@@ -25,6 +25,9 @@ pub(super) const MAX_NAMES: usize = 8192;
 /// Longest name taken, as PDF's own limit on names is.
 const MAX_NAME: usize = 127;
 
+use std::collections::HashMap;
+use std::hash::{BuildHasher, RandomState};
+
 /// Where the tokenizer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -80,10 +83,17 @@ pub(super) struct Mark {
 #[derive(Clone, Debug)]
 pub(super) struct DoScan {
     names: Vec<Vec<u8>>,
-    /// Indexes into `names`, sorted by the name: a name drawn is looked up in about 8 comparisons, not one for each name kept (a `Do` for each few
-    /// bytes against 8,192 names would cost thousands of comparisons a byte of input). at most 16 KiB (8,192 names).
-    sorted: Vec<u16>,
-    /// Most different names kept ([`MAX_NAMES`] unless a test holds it small), at most `u16::MAX`, which `sorted`'s indexes fit.
+    /// The place in `names` of each name kept, by a keyed hash of it (the key is random for each scan, so no input can make names collide on
+    /// purpose): looking a name up, and keeping one, costs a hash and one comparison however many are kept, where a sorted `Vec`'s insert moved up to
+    /// 16 KiB each time (64 MiB for 8,192 names, once for every failing form and every content stream put back). Holds no second copy of a name: at
+    /// most 8,192 entries of 16 bytes, about 0.25 MiB with the table's slack.
+    places: HashMap<u64, u16>,
+    /// The places of names whose hash an earlier name has (in `places`): empty but for a 64-bit coincidence, and looked through whole when not.
+    collided: Vec<u16>,
+    hasher: RandomState,
+    /// Which bits of the hash count: all, but for a test that makes every name collide.
+    hash_mask: u64,
+    /// Most different names kept ([`MAX_NAMES`] unless a test holds it small), at most `u16::MAX`, which a place fits.
     cap: usize,
     core: Core,
 }
@@ -99,7 +109,10 @@ impl DoScan {
     pub(super) fn with_cap(cap: usize) -> Self {
         Self {
             names: Vec::new(),
-            sorted: Vec::new(),
+            places: HashMap::new(),
+            collided: Vec::new(),
+            hasher: RandomState::new(),
+            hash_mask: u64::MAX,
             cap: cap.min(usize::from(u16::MAX)),
             core: Core {
                 overflowed: false,
@@ -154,8 +167,15 @@ impl DoScan {
 
     /// Back to `mark`: what was fed since is as if it never was.
     pub(super) fn back_to(&mut self, mark: Mark) {
+        for at in mark.names..self.names.len() {
+            let hash = self.hash_of(&self.names[at]);
+            if self.places.get(&hash).is_some_and(|place| usize::from(*place) == at) {
+                self.places.remove(&hash);
+            }
+        }
+        // A name that came after the one holding its hash came after the mark when that one did.
+        self.collided.retain(|place| usize::from(*place) < mark.names);
         self.names.truncate(mark.names);
-        self.sorted.retain(|at| usize::from(*at) < mark.names);
         self.core = mark.core;
     }
 
@@ -339,21 +359,31 @@ impl DoScan {
         self.core.name_len = self.core.name_len.saturating_add(1).min(MAX_NAME + 1);
     }
 
+    fn hash_of(&self, name: &[u8]) -> u64 {
+        self.hasher.hash_one(name) & self.hash_mask
+    }
+
     fn keep_name(&mut self) {
         let name = &self.core.name_buf[..self.core.name_len.min(MAX_NAME)];
         if self.core.overflowed {
             return;
         }
-        let names = &self.names;
-        let Err(slot) = self.sorted.binary_search_by(|at| names[usize::from(*at)].as_slice().cmp(name)) else {
+        let hash = self.hash_of(name);
+        let same = |place: &u16| self.names[usize::from(*place)].as_slice() == name;
+        if self.places.get(&hash).is_some_and(same) || self.collided.iter().any(same) {
             return;
-        };
+        }
         if self.names.len() >= self.cap {
             self.core.overflowed = true;
             return;
         }
-        // At most `cap` (clamped to u16::MAX) names, so an index always fits.
-        self.sorted.insert(slot, u16::try_from(self.names.len()).unwrap_or(u16::MAX));
+        // At most `cap` (clamped to u16::MAX) names, so a place always fits.
+        let place = u16::try_from(self.names.len()).unwrap_or(u16::MAX);
+        if self.places.contains_key(&hash) {
+            self.collided.push(place);
+        } else {
+            self.places.insert(hash, place);
+        }
         self.names.push(name.to_vec());
     }
 }
@@ -444,6 +474,33 @@ mod tests {
         scan.feed(b"/B Do /A Do /B Do");
         scan.end_of_stream();
         assert_eq!(scan.names(), [b"A".to_vec(), b"D".to_vec(), b"B".to_vec()]);
+    }
+
+    /// Failure caught: names whose hashes are equal (a coincidence of 64 bits, made here by keeping none of them) are taken for one another, so a page
+    /// drawing both images hashes one, or a name put back with its stream is still taken as seen. With every name colliding, the names, their order,
+    /// the overflow at the cap and the put-back are those of the scan with no collisions.
+    #[test]
+    fn names_that_collide_are_still_told_apart() {
+        let run = |mask: u64| {
+            let mut scan = DoScan::with_cap(6);
+            scan.hash_mask = mask;
+            scan.feed(b"/A Do /B Do /A Do ");
+            let mark = scan.mark();
+            scan.feed(b"/C Do /D Do /B Do ");
+            scan.back_to(mark);
+            scan.feed(b"/D Do /C Do /B Do /D Do /E Do /A Do /F Do /G Do /H Do ");
+            scan.end_of_stream();
+            (scan.names().to_vec(), scan.overflowed())
+        };
+        let (names, overflowed) = run(u64::MAX);
+        assert_eq!(names.len(), 6, "kept to the cap");
+        assert!(overflowed);
+        assert_eq!(run(0), (names.clone(), overflowed));
+        assert_eq!(
+            names[..4],
+            [b"A".to_vec(), b"B".to_vec(), b"D".to_vec(), b"C".to_vec()],
+            "taken back, and kept again in the order drawn"
+        );
     }
 
     /// Failure caught: hostile bytes panic the scan or make it hold more than its bound. Every byte value, deep nesting, an unclosed string and an
