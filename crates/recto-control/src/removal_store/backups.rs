@@ -39,6 +39,8 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
         }
         let owner = match names.get(name) {
             _ if !meta.is_file() => Owner::Unknown,
+            // Only a hard-linked one gets here: a plain `.DS_Store` was skipped above.
+            _ if name == b".DS_Store" => Owner::Shared,
             None => Owner::Unknown,
             Some(_) if links(&meta) != 1 => Owner::Shared,
             Some(sides) => sides.owner(mode),
