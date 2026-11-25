@@ -142,29 +142,29 @@ fn a_renderer_that_wont_start_stops_the_file_and_fails_no_page() {
     };
     let mut reader = Reader::new(&plan, &settings);
     let mut slot = Slot::default();
-    assert!(matches!(reader.read(0, 0, &mut slot).unwrap(), Got::Page(_)), "a page reads on its own");
-    reader.current.as_mut().unwrap().1.kill_worker();
-    let said = recto_render_service::under_start_timeout_for_test(
-        &mut reader,
-        |reader| &mut reader.current.as_mut().unwrap().1,
-        Duration::ZERO,
-        |reader| {
-            (1..=3)
-                .map(|page| match reader.read(0, page, &mut slot) {
-                    Ok(Got::Busy) => "busy",
-                    Ok(Got::Nothing) => "nothing",
-                    Ok(Got::Failed(_)) => "failed",
-                    _ => "other",
-                })
-                .collect::<Vec<_>>()
-        },
-    );
+    // A renderer whose worker has no time to say hello: a start timeout of nothing, for every ask, so nothing here waits on a real start.
+    let policy = Policy {
+        start_timeout: Duration::ZERO,
+        ..Policy::default()
+    };
+    reader.current = Some((
+        0,
+        DocRenderer::new(&plan.files[0].path, None, ServiceConfig::discover().unwrap(), policy).unwrap(),
+    ));
+    let said: Vec<&str> = (1..=3)
+        .map(|page| match reader.read(0, page, &mut slot) {
+            Ok(Got::Busy) => "busy",
+            Ok(Got::Nothing) => "nothing",
+            Ok(Got::Failed(_)) => "failed",
+            _ => "other",
+        })
+        .collect();
     assert_eq!(
         said,
         ["busy", "busy", "nothing"],
         "two busy starts, then the one that ends the run stops the file without failing a page"
     );
-    // Asked again after the renderer is let try, it would read: it isn't asked, because the file is stopped for this search.
+    // Were the file asked again it would be busy again (a fresh run, once the failure is forgotten); it isn't asked, because the file is stopped for this search.
     reader.current.as_mut().unwrap().1.forget_failures();
     assert!(matches!(reader.read(0, 3, &mut slot), Ok(Got::Nothing)), "no later page of the file is asked");
     let coverage = Found::default().coverage(&plan, &reader);
