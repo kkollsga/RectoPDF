@@ -343,7 +343,7 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
         // Let go just now: the loop says so before it rests again.
         (Some(left), None) if left.is_zero() => {}
         (Some(left), None) => std::thread::park_timeout(left),
-        // Waiting for a surface: told here, as the loop would only find the surface refused again, and the wait isn't cut short.
+        // Waiting for a surface, or for a held page's wait to end: told here, as the loop would only find the same again, and the wait isn't cut short.
         (Some(left), Some(retry)) if left.is_zero() => {
             publish_workers(shared, renderers);
             std::thread::park_timeout(retry);

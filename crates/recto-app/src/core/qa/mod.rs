@@ -620,6 +620,11 @@ impl QaBridge {
     fn state(&self) -> Result<Value, AgentError> {
         let app = self.ask("state", "")?;
         let (worker_bytes, worker_peak, workers) = self.workers_footprint();
+        let starved = self
+            .engines()
+            .iter()
+            .map(|engine| engine.workers().starved())
+            .fold((0, 0), |sum, one| (sum.0 + one.0, sum.1 + one.1));
         let comparison = self.inner().map_or(Value::Null, |inner| {
             let engines = inner.panes.engines(&inner.engine);
             let panes: Vec<Value> = engines.iter().map(|engine| {
@@ -647,9 +652,9 @@ impl QaBridge {
                 "heap_bytes": mine.heap,
                 "workers": workers,
                 "workers_walled": self.walled_workers(),
-                // Whether a page that failed was a starved worker's: runs out of time with the Mac too busy to run it, and kills at the deadline, of the renderers held.
-                "workers_too_busy": self.engines().iter().map(|engine| engine.workers().starved().0).sum::<u32>(),
-                "workers_deadline_kills": self.engines().iter().map(|engine| engine.workers().starved().1).sum::<u32>(),
+                // Whether a page that failed was a starved worker's: runs out of time with the Mac too busy to run it, and kills at the deadline. Counts of the renderers held, so they go to 0 when a tab goes cold.
+                "workers_too_busy": starved.0,
+                "workers_deadline_kills": starved.1,
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,

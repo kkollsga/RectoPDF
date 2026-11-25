@@ -28,7 +28,7 @@ impl Docs {
         self.hot.and_then(|tab| self.views.get(&tab))
     }
 
-    /// How long till the soonest page of the tab showing that's held without words (a look or a draw to be tried again, [`Outcome::LookLater`]) may be asked again, if one waits: the page view's thread wakes by then, as no event may come to ask. Only a time still to come: one gone by is for the plan to take if the page is in view, and for nothing to wake for if it isn't. Held pages are bounded in their tries, which is why a failure that has words, and may pass for ever, isn't woken for.
+    /// How long till the soonest page of the tab showing that's held without words, in view or not (a look or a draw to be tried again, [`Outcome::LookLater`]) may be asked again, if one waits: the page view's thread wakes by then, as no event may come to ask. Only a time still to come: one gone by is for the plan to take if the page is in view, and for nothing to wake for if it isn't. Held pages are bounded in their tries, which is why a failure that has words, and may pass for ever, isn't woken for.
     pub(crate) fn next_hold_ends(&self, now: Instant) -> Option<std::time::Duration> {
         let doc = self.shown()?;
         doc.drawing
