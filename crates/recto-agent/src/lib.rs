@@ -1584,14 +1584,17 @@ mod tests {
     /// call, which must refuse before any worker starts.
     #[test]
     fn reading_page_text_needs_more_than_off() {
-        let text = Command::from(crate::commands::text::Text { tab: "#1".into(), page: 1 });
+        let text = Command::from(crate::commands::text::Text {
+            tab: "#1".into(),
+            at: crate::commands::locating::PageOrRef::Page(1),
+        });
         assert_eq!(text.access(), Access::At(Level::ReadOnly));
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
         assert_eq!((refused.code.as_str(), refused.exit), ("permission_denied", exit::PERMISSION));
         let render = Command::from(crate::commands::export::Render {
             tab: "#1".into(),
-            page: 1,
+            at: crate::commands::locating::PageOrRef::Page(1),
             scale: 2.0,
             out: "/tmp/x.png".into(),
             anyway: false,
@@ -1642,7 +1645,10 @@ mod tests {
     fn render_commands_parse_strictly() {
         assert!(matches!(
             parse(r##"{"cmd":"text","tab":"#1","page":2}"##),
-            Ok(Command::Read(crate::commands::Read::Text(crate::commands::text::Text { page: 2, .. })))
+            Ok(Command::Read(crate::commands::Read::Text(crate::commands::text::Text {
+                at: crate::commands::locating::PageOrRef::Page(2),
+                ..
+            })))
         ));
         assert!(parse(r##"{"cmd":"text","tab":"#1"}"##).is_err(), "the page is required");
         assert!(parse(r##"{"cmd":"text","tab":"#1","page":1,"extra":1}"##).is_err());
@@ -3015,7 +3021,10 @@ mod tests {
         let details = with_acted_tab(by_name.log_details(), acted, &Ok(json!({})), &by_name);
         assert_eq!(details["tab"], "#1");
         assert!(!details.to_string().contains("secret"), "{details}");
-        let active = Command::from(crate::commands::text::Text { tab: "active".into(), page: 1 });
+        let active = Command::from(crate::commands::text::Text {
+            tab: "active".into(),
+            at: crate::commands::locating::PageOrRef::Page(1),
+        });
         assert_eq!(acted_tab(&s, &active), s.tabs().active());
         let nothing = Command::from(crate::commands::reading::Facts { tab: "nothing like it".into() });
         let details = with_acted_tab(nothing.log_details(), acted_tab(&s, &nothing), &Ok(json!({})), &nothing);
@@ -3308,7 +3317,11 @@ mod tests {
         .to_string();
         assert!(!search.contains("secret"), "{search}");
         assert_eq!(
-            Command::from(crate::commands::text::Text { tab: "#4".into(), page: 2 }).log_details()["tab"],
+            Command::from(crate::commands::text::Text {
+                tab: "#4".into(),
+                at: crate::commands::locating::PageOrRef::Page(2)
+            })
+            .log_details()["tab"],
             "#4"
         );
         assert_eq!(
@@ -3516,7 +3529,10 @@ mod protected_tests {
                     rank: false,
                     context: None,
                 }),
-                Command::from(crate::commands::text::Text { tab: tab.clone(), page: 1 }),
+                Command::from(crate::commands::text::Text {
+                    tab: tab.clone(),
+                    at: crate::commands::locating::PageOrRef::Page(1),
+                }),
                 Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
                     page: Some(2),
@@ -3596,7 +3612,10 @@ mod protected_tests {
                         depth: None,
                         generated: false,
                     }),
-                    Command::from(crate::commands::text::Text { tab: tab.clone(), page: 1 }),
+                    Command::from(crate::commands::text::Text {
+                        tab: tab.clone(),
+                        at: crate::commands::locating::PageOrRef::Page(1),
+                    }),
                     Command::from(crate::commands::reading::Where { tab: tab.clone() }),
                 ] {
                     let result = run(&mut session, level, &command);

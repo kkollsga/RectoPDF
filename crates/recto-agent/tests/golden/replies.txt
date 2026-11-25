@@ -561,9 +561,9 @@
 {"cmd":"render","page":{},"out":"/d/x.pdf"}
   refused cmd=unknown code=bad_command
 {"cmd":"render","page":null,"out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=render code=usage
 {"cmd":"render","out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=render code=usage
 {"cmd":"render","page":3,"out":"/d/x.pdf","scale":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"render","page":3,"out":"/d/x.pdf","scale":null}
@@ -579,6 +579,16 @@
 {"cmd":"render","page":3,"out":"/d/x.pdf","anyway":null}
   refused cmd=unknown code=bad_command
 ["render"]
+  refused cmd=unknown code=bad_command
+{"cmd":"render","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","out":"/d/x.pdf"}
+  refused cmd=render code=usage
+{"cmd":"render","ref":null,"out":"/d/x.pdf"}
+  refused cmd=render code=usage
+{"cmd":"render","ref":{},"out":"/d/x.pdf"}
+  refused cmd=unknown code=bad_command
+{"cmd":"render","ref":"nonsense","out":"/d/x.pdf"}
+  refused cmd=render code=bad_reference
+{"cmd":"render","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","out":"/d/x.pdf","extra":1}
   refused cmd=unknown code=bad_command
 {"cmd":"Render"}
   refused cmd=unknown code=bad_command
@@ -737,10 +747,20 @@
 {"cmd":"text","page":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"text","page":null}
-  refused cmd=unknown code=bad_command
+  refused cmd=text code=usage
 {"cmd":"text"}
-  refused cmd=unknown code=bad_command
+  refused cmd=text code=usage
 ["text"]
+  refused cmd=text code=usage
+{"cmd":"text","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=text code=usage
+{"cmd":"text","ref":null}
+  refused cmd=text code=usage
+{"cmd":"text","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"text","ref":"nonsense"}
+  refused cmd=text code=bad_reference
+{"cmd":"text","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","extra":1}
   refused cmd=unknown code=bad_command
 {"cmd":"Text"}
   refused cmd=unknown code=bad_command
