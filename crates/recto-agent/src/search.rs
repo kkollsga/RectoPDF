@@ -567,6 +567,10 @@ pub(crate) enum Got<'a> {
     Failed(&'static str),
     /// The Mac was too busy to give the worker the processor in time: nothing is known of the page, and a search again may read it.
     Busy,
+    /// The file's renderer wouldn't start (`Unavailable` after the busy starts). Said once per file, by the first page asked of it; later pages of it are [`Got::Nothing`]. A caller that has pages to count says it: the page's file isn't searched and isn't empty. `own_file` is whether it's the document's own, whose every page this is.
+    Unstarted {
+        own_file: bool,
+    },
     /// There's nothing to be said about it.
     Nothing,
 }
@@ -797,7 +801,7 @@ impl<'a> Reader<'a> {
             // A renderer that wouldn't start after the busy starts: not this page's doing, so no page of the file fails; it stops the file for this search.
             Err(RenderFailure::Unavailable) => {
                 self.routes[usize::from(file)] = FileRoute::Unstarted;
-                return Ok(Got::Nothing);
+                return Ok(Got::Unstarted { own_file: !added });
             }
             Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
             Err(
@@ -924,6 +928,35 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// For tests: the start timeout of the renderers this thread's searches make, so a worker with no time to say hello is made without a real one.
+    pub(crate) static START_TIMEOUT_FOR_TEST: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// For tests: a plan over these files (the first is the document's own, the rest are added) and these `(file, page)`s.
+#[cfg(test)]
+pub(crate) fn plan_for_test(paths: &[PathBuf], pages: &[(u16, u32)]) -> Plan {
+    Plan {
+        files: paths
+            .iter()
+            .enumerate()
+            .map(|(at, path)| PlanFile {
+                path: path.clone(),
+                expected: None,
+                added: at > 0,
+            })
+            .collect(),
+        pages: pages
+            .iter()
+            .enumerate()
+            .map(|(position, (file, page))| (position as u32, *file, *page))
+            .collect(),
+        tab: 1,
+        keys: None,
+    }
+}
+
 /// Opens this page's worker if it isn't the one already open. One at a time, whichever file it's for: a document with a thousand added files must not mean a thousand processes. `None` if the file isn't what its page numbers were recorded from, or can't be found.
 fn worker_for<'a>(
     current: &'a mut Option<(u16, DocRenderer)>,
@@ -937,7 +970,13 @@ fn worker_for<'a>(
         if !source.is_current() {
             return Ok(None);
         }
-        *current = Some((file, DocRenderer::new(&source.path, key, ServiceConfig::discover()?, Policy::default())?));
+        #[allow(unused_mut)]
+        let mut policy = Policy::default();
+        #[cfg(test)]
+        if let Some(timeout) = START_TIMEOUT_FOR_TEST.with(std::cell::Cell::get) {
+            policy.start_timeout = timeout;
+        }
+        *current = Some((file, DocRenderer::new(&source.path, key, ServiceConfig::discover()?, policy)?));
     }
     Ok(current.as_mut().map(|(_, renderer)| renderer))
 }
@@ -952,6 +991,10 @@ pub(crate) fn log_how_it_went(details: &mut Value, command: &crate::Command, res
     let busy = coverage["busy_pages"].as_array().map_or(0, Vec::len);
     if busy > 0 {
         details["busy_pages"] = json!(busy);
+    }
+    let unstarted = coverage["files_not_read"].as_array().map_or(0, Vec::len);
+    if unstarted > 0 {
+        details["render_unavailable_files"] = json!(unstarted);
     }
 }
 
@@ -994,7 +1037,8 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
             Got::Failed(why) => found.fail(position, why),
             Got::Busy => found.busy.push(position + 1),
             Got::NoText => found.no_text(position),
-            Got::Nothing => {}
+            // Said in `coverage` as a file, by the route.
+            Got::Nothing | Got::Unstarted { .. } => {}
             Got::Page(view) if query.too_long_for(view.text) => {
                 found.fail(position, "too_long");
                 found.too_long += 1;
@@ -1049,7 +1093,8 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             Got::Failed(why) => found.fail(position, why),
             Got::Busy => found.busy.push(position + 1),
             Got::NoText => found.no_text(position),
-            Got::Nothing => {}
+            // Said in `coverage` as a file, by the route.
+            Got::Nothing | Got::Unstarted { .. } => {}
             Got::Page(view) => {
                 found.searched += 1;
                 counts.fill(0);
@@ -1108,7 +1153,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
                 found.fail(position, why);
                 continue;
             }
-            Got::NoText | Got::Nothing => {
+            Got::NoText | Got::Nothing | Got::Unstarted { .. } => {
                 found.not_read_the_same_again(position);
                 continue;
             }
@@ -1723,11 +1768,13 @@ mod tests {
             rank: false,
             context: None,
         });
-        let answer = json!({ "hits": [{ "untrusted": { "snippet": "hunter2" } }], "coverage": { "failed_page_reasons": { "needs_password": 1 }, "busy_pages": [4, 5] } });
+        let answer = json!({ "hits": [{ "untrusted": { "snippet": "hunter2" } }], "coverage": { "failed_page_reasons": { "needs_password": 1 }, "busy_pages": [4, 5], "files_not_read": [{ "untrusted": { "file": "a.pdf" }, "code": "render_unavailable" }] } });
         let mut details = command.log_details();
         log_how_it_went(&mut details, &command, &Ok(answer));
         assert_eq!(details["failed_page_reasons"], json!({ "needs_password": 1 }), "{details}");
         assert_eq!(details["busy_pages"], 2, "{details}");
+        assert_eq!(details["render_unavailable_files"], 1, "{details}");
+        assert!(!details.to_string().contains("a.pdf"), "a file's name isn't logged: {details}");
         assert!(!details.to_string().contains("hunter2"), "{details}");
     }
 
