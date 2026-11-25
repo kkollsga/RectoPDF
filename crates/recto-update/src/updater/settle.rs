@@ -251,13 +251,7 @@ mod tests {
             std::fs::write(app.join("untouched"), b"new bundle").unwrap();
             let plan = plan_for("later", "0.2.0", "0.3.0", &app, &root);
             plan.write(&files.plan()).unwrap();
-            let old = Outcome {
-                kind: OutcomeKind::CouldntGoBack,
-                from: "0.1.0".into(),
-                to: "0.2.0".into(),
-                why: "app_exit_unproven".into(),
-                plan: None,
-            };
+            let old = Outcome::new(OutcomeKind::CouldntGoBack, "0.1.0", "0.2.0", "app_exit_unproven");
             old.write(&files.outcome()).unwrap();
             let archive = files.work.join("outcome.refused.json");
             if archive_fails {
