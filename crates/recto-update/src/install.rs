@@ -202,6 +202,38 @@ impl Run<'_> {
         self.go_back_after(why, self.launched.recover(&self.plan.root, &self.plan.executable(), STOP_PATIENCE))
     }
 
+    /// The last look before the swap, under the record's lock. If it finds the app running, can't tell, or can't take the lock, nothing's replaced, and what's staged stays as the early refusal leaves it.
+    fn last_look(&self) -> Result<retirement::RecordLock, Ended> {
+        let executable = self.plan.executable();
+        let error = match retirement::last_look(&self.plan.root, || local::update_app_is_running(&executable)) {
+            Ok(held) => return Ok(held),
+            Err(error) => error,
+        };
+        let why = if error.kind() == std::io::ErrorKind::WouldBlock || error.to_string().contains("appeared") {
+            "app_reopened"
+        } else {
+            "observation_unknown"
+        };
+        self.say(&format!("installer: app absence isn't established ({why}: {error}), so nothing was replaced"));
+        self.finish_with(OutcomeKind::NotInstalled, why);
+        let _ = std::fs::remove_dir_all(self.files.before());
+        Err(Ended::NotInstalled)
+    }
+
+    /// The swap failed: nothing's replaced, and the old app is opened again.
+    fn swap_refused(&self, error: &std::io::Error) -> Ended {
+        // macOS's App Management can refuse a change to an app in /Applications the first time, until the owner allows it: that's said so, apart from a swap that can't work.
+        let why = if error.raw_os_error() == Some(libc_eperm()) {
+            "not_permitted"
+        } else {
+            "swap_failed"
+        };
+        self.say(&format!("installer: the swap failed ({why}), so nothing was replaced"));
+        self.finish_with(OutcomeKind::NotInstalled, why);
+        let _ = self.open_app();
+        Ended::NotInstalled
+    }
+
     /// Going back can't go on because the app's absence isn't proven: both bundles and the recovery record stay as they are.
     fn rollback_unproven(&self, error: &std::io::Error) -> Ended {
         self.say(&format!(
@@ -421,33 +453,14 @@ pub fn run(plan: &Plan) -> Ended {
     let verified = crate::wall_ms();
     run.step("still_verified");
     // The signature look above is the last slow step, and this scan is the last thing before the swap. It isn't retried: see `retirement::last_look`.
-    let held = match retirement::last_look(&plan.root, || local::update_app_is_running(&plan.executable())) {
+    let held = match run.last_look() {
         Ok(held) => held,
-        Err(error) => {
-            let why = if error.kind() == std::io::ErrorKind::WouldBlock || error.to_string().contains("appeared") {
-                "app_reopened"
-            } else {
-                "observation_unknown"
-            };
-            run.say(&format!("installer: app absence isn't established ({why}: {error}), so nothing was replaced"));
-            run.finish_with(OutcomeKind::NotInstalled, why);
-            let _ = std::fs::remove_dir_all(files.before());
-            return Ended::NotInstalled;
-        }
+        Err(ended) => return ended,
     };
     let swapped_in = swap_in(plan);
     drop(held); // So the app opened on the swap-failed path can take the record.
     if let Err(error) = swapped_in {
-        // macOS's App Management can refuse a change to an app in /Applications the first time, until the owner allows it: that's said so, apart from a swap that can't work.
-        let why = if error.raw_os_error() == Some(libc_eperm()) {
-            "not_permitted"
-        } else {
-            "swap_failed"
-        };
-        run.say(&format!("installer: the swap failed ({why}), so nothing was replaced"));
-        run.finish_with(OutcomeKind::NotInstalled, why);
-        let _ = run.open_app();
-        return Ended::NotInstalled;
+        return run.swap_refused(&error);
     }
     let swapped = crate::wall_ms();
     run.step("swapped");
