@@ -1,6 +1,6 @@
 //! Hostile locator bytes: no path lookup, unchecked count allocation or partial/noncanonical acceptance.
 
-use recto_core::locator::{self, CharacterRange, DocumentTags, Error, Locator, PageRef, Placed, ScanCaps, Spot, Status, Target};
+use recto_core::locator::{self, CharacterRange, DocumentTags, Error, Locator, Looked, PageRef, Placed, ScanCaps, Spot, Status, Target};
 use recto_core::page_id::{IndexedReader, PageMap};
 use std::sync::OnceLock;
 
@@ -18,15 +18,23 @@ fn fixture() -> &'static (IndexedReader, PageMap) {
     })
 }
 
-/// A resolve against the fixture under small caps: what any decoded token may be asked, and what an answer may never say.
+/// A resolve against the fixture under small caps: what any decoded token may be asked, and what an answer may never say. One bit of the token
+/// (the lowest of its page check) holds the page cap at two, under the three pages of the fixture, so that `Incomplete` is reached too.
 fn resolves(read: &Locator) {
     let (reader, map) = fixture();
     let caps = ScanCaps {
         bytes: 1 << 20,
-        pages: 8,
+        pages: if read.page().page_check()[0] & 1 == 1 { 2 } else { 8 },
         ..ScanCaps::STANDARD
     };
     let now = locator::resolve(read, reader, map, &caps);
+    assert!(now.pages_read <= caps.pages, "a cap on pages read holds");
+    let hint = read.page().number() - 1;
+    match now.status {
+        Status::Found { page } => assert!(now.looked == Looked::Hint && page == hint, "found only where the hint holds the page"),
+        Status::Moved { .. } | Status::Ambiguous { .. } | Status::Gone => assert_eq!(now.looked, Looked::All, "only every page read says more or less"),
+        Status::Incomplete { .. } => assert_eq!(now.looked, Looked::Part),
+    }
     match &now.status {
         Status::Found { page } | Status::Moved { page } => assert!((*page as usize) < map.len()),
         Status::Ambiguous { pages, .. } => assert!((2..=locator::MAX_CANDIDATES).contains(&pages.len())),
