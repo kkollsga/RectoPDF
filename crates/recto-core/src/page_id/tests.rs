@@ -956,23 +956,10 @@ fn expected_many_names(names: usize, draws: &[u8]) -> [u8; 32] {
     sha(&expected)
 }
 
-/// Failure caught (security: a hostile page's identity cost 10.8 GB of a 3 MB file): an image drawn under many names had its stream's descriptor
-/// (its dictionary, parsed whole and charged to nothing) resolved again for each name. A stream is read once for a page, and what it said is what every
-/// name's record hashes, as the definition says: the digest is of the bytes, and the same as when each was read.
-#[test]
-fn a_stream_drawn_under_many_names_is_read_once() {
-    let (page, read, resolved) = many_names_one_image(64, "");
-    assert_eq!(resolved, 1);
-    let draws: String = (0..64).map(|n| format!("/N{n} Do ")).collect();
-    assert_eq!(
-        hex(&read.identity.expect("an identity").digest),
-        hex(&expected_many_names(64, draws.as_bytes()))
-    );
-    assert!(!page.is_empty());
-}
-
-/// Failure caught (security, the probe's repro): 256 names to one image whose dictionary holds a 100,000-element array took 1.35 s and 789 MiB for
-/// one page, with 4,902 bytes charged: the dictionary was parsed again for each name. It's resolved once, and the identity is the one it always had.
+/// Failure caught (security, the probe's repro: a hostile page's identity cost 10.8 GB of a 3 MB file): an image drawn under many names had its stream's
+/// descriptor (its dictionary, parsed whole and charged to nothing) resolved again for each name; 256 names to one image whose dictionary holds a
+/// 100,000-element array took 1.35 s and 789 MiB for one page, with 4,902 bytes charged. A stream is read once for a page, and the identity is what the
+/// definition says and always was: every name's record, each with the same kind, length and hash.
 #[test]
 fn the_once_read_hostile_dictionary_costs_one_resolution() {
     let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
