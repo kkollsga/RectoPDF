@@ -158,6 +158,10 @@ fn deleted_executable(pid: i32, name: &str, cause: &io::Error) -> io::Error {
 /// runs under its own name, so a running copy of it stays unknown. A second limit: a program that renames itself
 /// (`setprogname`) while keeping the first 15 bytes of its start name, or all of it when it is shorter, reads as the
 /// start name or its extension; one that renames itself to anything else is still read by `pbi_comm`.
+/// Constraint: the second limit is safe only while the wanted executable name is shorter than `COMM_LEN` (15) bytes
+/// (`RectoPDF`, 8: `recto-update`'s `APP_EXECUTABLE`, which depends on this crate, so no test here can read it): with a
+/// longer name, a renamed copy would be read by a cut `pbi_comm` that is a prefix, the unknown stays, but a rename that
+/// keeps the first 15 bytes could no longer be told from the app. Growing that name needs this rule looked at again.
 fn started_as(wanted: &Path, scan: &mut impl Scan, pid: i32) -> Start {
     let mut name = [0u8; NAME_LEN];
     let Name { len: count, cut } = match scan.name(pid, &mut name) {
@@ -441,7 +445,12 @@ mod tests {
                     new.as_bytes().len(),
                 )
             };
-            assert_eq!(set, 0, "the stand-in couldn't rename itself: {}", io::Error::last_os_error());
+            if set != 0 {
+                // The parent reads stdout only: say why here, with the errno, before the panic ends the process.
+                println!("stand-in failed: couldn't rename itself: {}", io::Error::last_os_error());
+                let _ = io::Write::flush(&mut io::stdout());
+                panic!("the stand-in couldn't rename itself");
+            }
         }
         println!("stand-in ready");
         let _ = io::Write::flush(&mut io::stdout());
@@ -474,15 +483,17 @@ mod tests {
         let mut ready = false;
         let mut lines = std::io::BufReader::new(child.stdout.as_mut().unwrap());
         let mut line = String::new();
+        let mut said = String::new();
         while !ready && io::BufRead::read_line(&mut lines, &mut line).unwrap() > 0 {
             // libtest prints "test <name> ... " before the test body writes, on the same line.
             ready = line.trim_end().ends_with("stand-in ready");
+            said.push_str(&line);
             line.clear();
         }
         let pid = child.id() as i32;
         if !ready {
             let status = child.wait();
-            panic!("the stand-in never ran: {status:?}");
+            panic!("the stand-in never ran: {status:?}; it said: {said}");
         }
         let mut children = Children(vec![child]);
         std::fs::remove_file(&copy).unwrap();
@@ -577,14 +588,16 @@ mod tests {
         let name = format!("rpdf-over-31-bytes-name-for-pbi-name-{}", std::process::id());
         assert!(name.len() > NAME_LEN);
         // `deleted_stand_in` asserts pbi_name = the first 31 bytes, pbi_comm = the first 15 and the scan's Name.
-        let (dir, _children) = deleted_stand_in(&name);
+        let (dir, children) = deleted_stand_in(&name);
         let mut buffer = [0u8; NAME_LEN];
-        let read = Mac.name(_children.0[0].id() as i32, &mut buffer).unwrap();
+        let read = Mac.name(children.0[0].id() as i32, &mut buffer).unwrap();
         assert_eq!(read, Name { len: NAME_LEN, cut: NAME_LEN });
         // The wanted file shares the 31 bytes the OS keeps: it may be the same program. One that differs inside them isn't.
         let same = dir.path().join(format!("{name}-and-more"));
         std::fs::File::create(&same).unwrap();
-        assert!(update_app_is_running(&same).is_err(), "the 31 bytes kept are a prefix of the wanted name");
+        let error = update_app_is_running(&same).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+        assert!(error.to_string().contains(&name[..NAME_LEN]), "the unknown names the 31 bytes kept: {error}");
         let other = dir.path().join(format!("rpdf-over-31-bytes-name-for-pbX-{}", std::process::id()));
         std::fs::File::create(&other).unwrap();
         assert!(!update_app_is_running(&other).unwrap());
