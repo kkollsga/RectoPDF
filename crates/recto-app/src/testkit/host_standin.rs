@@ -50,11 +50,11 @@ fn apply_batch(engine: &recto_reader::Engine, view: &mut recto_reader::Viewport,
 }
 
 /// Scrolls the view by `dy` as the person's hand does and says where it is, the same way: the host first arrives at every scroll it was sent (a jump the
-/// session pass queued included, [`report_where_the_host_is`]), and only then moves from where it is. Failure caught: a test that added to the view's old
+/// session pass queued included, [`report_where_the_host_is`]), and only then moves from where it is, never above the top. Failure caught: a test that added to the view's old
 /// `y` and sent it with "arrived at every scroll" before a queued jump was drained moved the view from the wrong place, or cleared the jump unapplied.
 pub fn the_person_scrolls(app: &HeadlessApp, view: &mut recto_reader::Viewport, dy: f64) {
     report_where_the_host_is(app, view);
-    view.y += dy;
+    view.y = (view.y + dy).max(0.0);
     let began = std::time::Instant::now();
     let engine = &app.core().engine;
     let ops = engine.set_viewport(*view);

@@ -47,16 +47,18 @@ pub(super) fn person_unlocks(app: &HeadlessApp, file: &Path) {
 /// **The person reads the protected document showing:** it's drawn in their window, they go to page 2 and to page 4 by typing it, scroll, and Find
 /// "Locked" and go to its first hit, each step settled with its drawing done. Find is left open.
 fn person_reads(app: &HeadlessApp) {
-    let engine = app.core().engine.clone();
-    let mut view = window_view();
-    applied_as_the_host(&engine.set_viewport(view));
+    // A fresh view has applied no scroll: the host starts at `scrolledTo = 0` and only sends a number it has applied.
+    let mut view = recto_reader::Viewport {
+        scrolled_to: 0,
+        ..window_view()
+    };
+    crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
     host_turns(app, &mut view, true);
     for page in ["2", "4"] {
         app.act(UiAction::PageTyped { text: page.into() });
         host_turns(app, &mut view, true);
     }
-    view.y = (view.y - 100.0).max(0.0);
-    applied_as_the_host(&engine.set_viewport(view));
+    crate::testkit::host_standin::the_person_scrolls(app, &mut view, -100.0);
     host_turns(app, &mut view, true);
     app.act(UiAction::FindTyped { text: "Locked".into() });
     app.settle();
