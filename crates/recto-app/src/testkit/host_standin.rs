@@ -1,4 +1,4 @@
-//! The stand-in host's report of where the view is: one implementation for every test that sends the page view a viewport.
+//! The stand-in host's report of where the view is: the shared step for a host reporting where it is. `host_turns` (`headless.rs`) and the other tests' own stand-ins still carry their own copies; moving them onto this is a tracked follow-up.
 
 use super::headless::{HeadlessApp, WAIT_LIMIT, applied_as_the_host};
 
