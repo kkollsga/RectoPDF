@@ -687,6 +687,11 @@ fn a_search_hits_ref_resolves_found_with_the_same_words_text_reads() {
     let words: String = page.chars().skip(start).take(end - start).collect();
     assert_eq!(words.to_lowercase(), "page 3", "the hit's characters are those of `text`'s text: {hit}");
     let token = hit["ref"].as_str().expect("a reference");
+    let by_hand = chars_reference(&app, 3, start as u32, end as u32).expect("`ref --chars` for the hit's range");
+    assert_eq!(
+        by_hand, token,
+        "one way of making a character reference: the hit's is the command's, byte for byte"
+    );
     let resolved = resolve(&app, Level::ReadOnly, token).expect("resolve");
     assert_eq!((resolved["status"].as_str(), resolved["page"].as_u64()), (Some("found"), Some(3)), "{resolved}");
     assert_eq!(resolved["target"]["text"], "same", "{resolved}");
