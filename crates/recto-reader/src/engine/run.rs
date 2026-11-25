@@ -644,14 +644,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                 Outcome::ImageUnder(crate::image_pick::under(places.as_ref(), *at))
             }
         }
-        JobKind::Size => match doc.page_size(job.source_page) {
-            Ok((width, height)) => Outcome::Size(PageBox { width, height }),
-            Err(failure) if whole_file(failure) => document_failed(failure),
-            Err(failure) => Outcome::PageFailed {
-                message: failure.message(),
-                may_pass: false,
-            },
-        },
+        JobKind::Size => size_outcome(doc.page_size(job.source_page)),
         JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
@@ -725,6 +718,14 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
 }
 
 /// What a draw that failed is to the page view. The Mac too busy to run the worker says nothing of the page, so nothing's said and it's asked again after the wait, as a look to be tried again is ([`Outcome::LookLater`]); a page that can't be drawn for now may pass; the rest of a page's failures stay, and a failure of the file fails it.
+/// What a page-size read gives: the size, or the failure as a draw's is told (a busy Mac is held quietly).
+pub(super) fn size_outcome(read: Result<(f32, f32), RenderFailure>) -> Outcome {
+    match read {
+        Ok((width, height)) => Outcome::Size(PageBox { width, height }),
+        Err(failure) => draw_failed(failure),
+    }
+}
+
 pub(super) fn draw_failed(failure: RenderFailure) -> Outcome {
     match failure {
         RenderFailure::TooBusy { .. } => Outcome::LookLater,
@@ -774,6 +775,17 @@ fn whole_file(failure: RenderFailure) -> bool {
 mod tests {
     use super::*;
     use recto_render_service::KillReason;
+
+    /// Failure (long session review): a page size the Mac was too busy to read became a page that can never pass, bare for good though it said it would be tried again. Held quietly, as a draw is.
+    #[test]
+    fn a_size_the_mac_was_too_busy_to_read_is_held_quietly() {
+        assert!(matches!(size_outcome(Err(RenderFailure::TooBusy { page: 2 })), Outcome::LookLater));
+        assert!(matches!(size_outcome(Ok((10.0, 20.0))), Outcome::Size(_)));
+        assert!(matches!(
+            size_outcome(Err(RenderFailure::PageReadFailed { page: 2, reason: KillReason::Deadline })),
+            Outcome::PageFailed { may_pass: false, .. }
+        ));
+    }
 
     /// Failure (the long session, 2026-11-25): a draw the Mac was too busy to run the worker for is told to the person as a page that took too long, for good: the page stays bare and the wake never gets a first frame. It ends as [`Outcome::LookLater`], with no words and a try after the wait, and a page that really can't be drawn is still said, as it was. Seen failing with `TooBusy` mapped to a failure that can't pass.
     #[test]
