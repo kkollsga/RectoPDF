@@ -39,6 +39,15 @@ pub(crate) fn read_reference(token: &str) -> Result<Locator, String> {
     })
 }
 
+/// How a resolution says whether the file is the document the reference was made in.
+fn document_word(document: DocumentMatch) -> &'static str {
+    match document {
+        DocumentMatch::Same => "same",
+        DocumentMatch::Different => "different",
+        DocumentMatch::Unknown => "unknown",
+    }
+}
+
 fn not_referenceable(words: &'static str) -> AgentError {
     AgentError::new(Code::NOT_REFERENCEABLE, words, exit::FAILED)
 }
@@ -92,11 +101,7 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
         "file_page": at.map(|page| page + 1),
         "was_page": was,
         "candidates": listed.iter().map(|page| both(*page)).collect::<Vec<_>>(),
-        "document": match found.document {
-            DocumentMatch::Same => "same",
-            DocumentMatch::Different => "different",
-            DocumentMatch::Unknown => "unknown",
-        },
+        "document": document_word(found.document),
         "frame": found.frame_same.map(|same| if same { "same" } else { "changed" }),
         "target": target,
         "looked_at": match found.looked {
@@ -145,11 +150,7 @@ pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Lo
         "status": status,
         "was_page": reference.page().number(),
         "file_page": file_page + 1,
-        "document": match found.document {
-            DocumentMatch::Same => "same",
-            DocumentMatch::Different => "different",
-            DocumentMatch::Unknown => "unknown",
-        },
+        "document": document_word(found.document),
     });
     Ok(Located {
         tab: recto_session::TabId(file.id()),
