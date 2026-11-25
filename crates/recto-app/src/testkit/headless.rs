@@ -35,6 +35,18 @@ use std::time::{Duration, Instant};
 /// that a hang fails the test rather than the run.
 pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
 
+/// **How long a print of `pages` pages may take, by the renderer's own bounds, and the kit's wait besides:** a fresh worker starts within its start timeout, then
+/// the open and each page get a page deadline. A wait for a print has patience for that, as a rule of the product's, not one machine's speed
+/// ([`WAIT_LIMIT`] alone was passed by a four-page print under a load of 14, 2026-11-25).
+///
+/// Only as far as the test files go: the bound follows the page count of the print being prepared now (Print anyway asks with 0 until the worker begins). It
+/// leaves out the heavy slot's wait (`export_slot_wait`, 60 s), one `start_timeout` for each further source file, and strip jobs, so nobody relies on it beyond them.
+#[must_use]
+pub fn print_patience(pages: u32) -> Duration {
+    let policy = recto_render_service::Policy::default();
+    policy.start_timeout + policy.page_deadline * (pages + 1) + WAIT_LIMIT
+}
+
 /// How often a bounded wait looks again.
 const LOOK_EVERY: Duration = Duration::from_millis(2);
 
@@ -562,12 +574,27 @@ impl HeadlessApp {
     ///
     /// # Panics
     ///
-    /// Past [`WAIT_LIMIT`], naming what was still under way.
+    /// Past [`WAIT_LIMIT`], naming what was still under way; while a print is being prepared, past [`print_patience`] of its pages (as far as that goes, see
+    /// there), counted from the start, and no later.
+    #[track_caller]
     pub fn settle(&self) {
-        if let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, WAIT_LIMIT, || {
-            self.take_ops()
-        }) {
-            panic!("settle: still under way after {WAIT_LIMIT:?}: {busy:?}");
+        let began = Instant::now();
+        let mut limit = WAIT_LIMIT;
+        loop {
+            let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, limit, || {
+                self.take_ops()
+            }) else {
+                return;
+            };
+            // A print starts a worker and draws page by page, each within the renderer's own bound: waited for on the same wait, up to the sum of them.
+            let printing = self.core().tools.printing();
+            let (done, of) = printing.progress();
+            if printing.preparing() && began.elapsed() < print_patience(of) {
+                // The next round ends at the bound, not a full wait past it.
+                limit = WAIT_LIMIT.min(print_patience(of).saturating_sub(began.elapsed()));
+                continue;
+            }
+            panic!("settle: still under way after {:?} (a print at page {done} of {of}): {busy:?}", began.elapsed());
         }
     }
 
@@ -703,6 +730,7 @@ impl HeadlessApp {
     /// # Panics
     ///
     /// Past [`WAIT_LIMIT`], naming `what` and what's still under way.
+    #[track_caller]
     pub fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
         self.wait_for(what, || if done() { Ok(()) } else { Err(String::new()) });
     }
@@ -712,6 +740,7 @@ impl HeadlessApp {
     /// # Panics
     ///
     /// Past [`WAIT_LIMIT`], naming `what`, what was still missing at the last look, and what's still under way.
+    #[track_caller]
     pub fn wait_for(&self, what: &str, done: impl Fn() -> Result<(), String>) {
         let began = Instant::now();
         loop {

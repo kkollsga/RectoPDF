@@ -120,6 +120,15 @@ impl Printing {
         self.running.store(false, Ordering::SeqCst);
     }
 
+    /// **What came of sending the print asked for:** `taken` is whether the person's lane took its command. If not (a hand-off froze the app), the print
+    /// asked for won't run, so it isn't left counted as under way ([`Self::not_asked`]). Says `taken`. The one place that rule is.
+    pub(crate) fn taken(&self, taken: bool) -> bool {
+        if !taken {
+            self.not_asked();
+        }
+        taken
+    }
+
     /// A print asked for, from the answer to what came of it being said: Rust's part, which the app's settled waits for ([`crate::settled`]). The host's
     /// part, the file handed to the system, is in [`Self::busy`].
     pub fn preparing(&self) -> bool {
@@ -133,6 +142,11 @@ impl Printing {
     /// The line by the page while pages are being prepared, or what went wrong.
     pub fn notice(&self) -> Option<String> {
         self.selection_notice().map(|notice| notice.text)
+    }
+
+    /// How far the print being prepared has got: pages done, of how many.
+    pub fn progress(&self) -> (u32, u32) {
+        (self.done.load(Ordering::SeqCst), self.of.load(Ordering::SeqCst))
     }
 
     /// The notice as the window shows it: Stop while preparing, "Print anyway" naming the notice that offered it.
@@ -386,8 +400,8 @@ pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows:
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
-            if let Some(command) = serial.parse().ok().and_then(|serial| parts.refused_print_anyway(serial)) {
-                parts.person().submit(command);
+            if let Ok(serial) = serial.parse() {
+                parts.print_anyway(serial);
             }
             parts.reconcile();
             HostAction::None

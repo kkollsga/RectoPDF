@@ -6,7 +6,8 @@ use super::files::locked_allowing;
 use crate::core::controls::UiAction;
 use crate::core::printing::{AFTER_END, AT_PAGE};
 use crate::lock;
-use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
+use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT, print_patience};
+use std::path::Path;
 
 /// What the print panel answered: all the pages or a range from 1, the selection's pages, and whether it prints to a file (a PDF saved or previewed).
 #[derive(Clone, Copy)]
@@ -59,7 +60,6 @@ pub(super) fn notice(app: &HeadlessApp) -> String {
 /// which pages of the document it holds, as each page of the test files has its own width. Its file has no name and is the user's alone while it's there,
 /// and it goes with its descriptor when it's let go. "none" if there's no file for the host.
 pub(super) fn printed(app: &HeadlessApp) -> String {
-    let before = unnamed_files_held();
     let Some((path, _)) = app.core().tools.printing().take_ready() else {
         return "none".into();
     };
@@ -69,10 +69,10 @@ pub(super) fn printed(app: &HeadlessApp) -> String {
         .match_indices("/MediaBox [0 0 ")
         .filter_map(|(at, found)| text[at + found.len()..].split(' ').next())
         .collect();
-    let (links, mode, owner) = {
+    let (links, mode, owner, identity) = {
         use std::os::unix::fs::MetadataExt;
         let file = std::fs::metadata(&path).expect("the file");
-        (file.nlink(), file.mode() & 0o777, file.uid())
+        (file.nlink(), file.mode() & 0o777, file.uid(), (file.dev(), file.ino()))
     };
     assert_eq!(
         (links, mode, owner),
@@ -81,10 +81,24 @@ pub(super) fn printed(app: &HeadlessApp) -> String {
         path.display()
     );
     app.core().tools.printing().finished(path.to_str().expect("a path"));
-    let after = unnamed_files_held();
+    // Only the print's own file is looked for, by its identity, so what other threads or tests open or close meanwhile can't change the answer: the
+    // number it had is gone or another file's now, and no descriptor of ours is still on it.
+    if let Ok(now) = std::fs::metadata(&path) {
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            (now.dev(), now.ino()),
+            identity,
+            "the print's file goes with its descriptor once the system's printing is done with it: {} still is it",
+            path.display()
+        );
+    }
+    let still: Vec<Unnamed> = unnamed_descriptors_in(Path::new("/dev/fd"))
+        .into_iter()
+        .filter(|held| (held.dev, held.ino) == identity)
+        .collect();
     assert!(
-        after.len() < before.len() || before.iter().any(|held| !after.contains(held)),
-        "the print's file goes with its descriptor once the system's printing is done with it: {before:?} then {after:?}"
+        still.is_empty(),
+        "the print's file goes with its descriptor once the system's printing is done with it: still held as {still:?}"
     );
     format!("[{}]", widths.join(","))
 }
@@ -120,19 +134,60 @@ fn is_print_file_of(name: &str, pid: u32) -> bool {
 /// **The files with no name this process holds a descriptor of,** by inode, with each one's permissions, sorted: where the person's print's file is while
 /// it's anywhere, as nothing else can reach it. Counted before and after a step, the difference is what the step made or let go.
 pub(crate) fn unnamed_files_held() -> Vec<(u64, u32)> {
-    use std::os::unix::fs::MetadataExt;
-    let mut held: Vec<(u64, u32)> = std::fs::read_dir("/dev/fd")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| std::fs::metadata(entry.path()).ok())
-        .filter(|meta| meta.is_file() && meta.nlink() == 0)
-        .map(|meta| (meta.ino(), meta.mode() & 0o777))
-        .collect();
+    unnamed_files_held_in(Path::new("/dev/fd"))
+}
+
+/// [`unnamed_files_held`] of the descriptors listed in `folder` (`/dev/fd`, or another to test the look itself).
+pub(crate) fn unnamed_files_held_in(folder: &Path) -> Vec<(u64, u32)> {
+    let mut held: Vec<(u64, u32)> = unnamed_descriptors_in(folder).into_iter().map(|held| (held.ino, held.mode)).collect();
     held.sort_unstable();
     held.dedup();
     held
 }
+
+/// One descriptor of this process on a regular file with no link.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Unnamed {
+    pub(crate) fd: u32,
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+    pub(crate) mode: u32,
+}
+
+/// **The descriptors listed in `folder` that are regular files with no link, strictly:** a folder that can't be listed, or an entry that can't be read,
+/// panics with the OS error, as a look that quietly saw nothing read as "nothing's held" (2026-11-25, `[] then []`). A descriptor that closed between
+/// the listing and the look (ENOENT, EBADF) is skipped, as it's legitimately gone; any other error on it panics with its errno. Sorted by number.
+/// The skip of a descriptor that closed is not exercised by a test: it needs a close in the instant between the listing and the look.
+pub(crate) fn unnamed_descriptors_in(folder: &Path) -> Vec<Unnamed> {
+    use std::os::unix::fs::MetadataExt;
+    let mut held = Vec::new();
+    for entry in std::fs::read_dir(folder).unwrap_or_else(|error| panic!("the descriptors in {} can't be listed: {error}", folder.display())) {
+        let entry = entry.unwrap_or_else(|error| panic!("an entry of {} can't be read: {error}", folder.display()));
+        let Some(fd) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let meta = match std::fs::metadata(entry.path()) {
+            Ok(meta) => meta,
+            // Closed between the listing and the look.
+            Err(error) if matches!(error.raw_os_error(), Some(ENOENT | EBADF)) => continue,
+            Err(error) => panic!("descriptor {fd} in {} can't be looked at: {error}", folder.display()),
+        };
+        if meta.is_file() && meta.nlink() == 0 {
+            held.push(Unnamed {
+                fd,
+                dev: meta.dev(),
+                ino: meta.ino(),
+                mode: meta.mode() & 0o777,
+            });
+        }
+    }
+    held.sort_unstable_by_key(|held| held.fd);
+    held
+}
+
+/// errno values on this platform (macOS and Linux agree), so no `libc` dependency is needed for two numbers.
+const ENOENT: i32 = 2;
+const EBADF: i32 = 9;
 
 /// A file with no name holding `bytes`, as a print's is, for a test of what holds it.
 pub(crate) fn unnamed_file(bytes: &[u8]) -> std::fs::File {
@@ -223,7 +278,7 @@ fn a_persons_print_does_what_it_did() {
     // Stop, once a page is done.
     let (held, go) = hold_at(1);
     answer(&app, ALL);
-    held.recv_timeout(WAIT_LIMIT).expect("the print held at its first page");
+    held.recv_timeout(print_patience(1)).expect("the print held at its first page");
     app.wait_until("the notice says it's preparing", || notice(&app).contains("2 of 4"));
     let preparing = notice(&app);
     let stop = app.reader().selection_notice.and_then(|notice| notice.action_id).expect("Stop");
@@ -241,7 +296,7 @@ fn a_persons_print_does_what_it_did() {
     // A second print asked while one's prepared.
     let (held, go) = hold_at(1);
     answer(&app, ALL);
-    held.recv_timeout(WAIT_LIMIT).expect("the print held at its first page");
+    held.recv_timeout(print_patience(1)).expect("the print held at its first page");
     app.wait_until("the notice says it's preparing", || notice(&app).contains("2 of 4"));
     answer(&app, ALL);
     app.wait_until("the window looked again", || app.core().core.flush(WAIT_LIMIT));
@@ -694,4 +749,50 @@ fn another_processs_print_file_isnt_counted_as_this_ones() {
         is_print_file_of(&format!(".recto-unnamed-{pid}-{:016x}", recto_platform::local::random_u64()), pid),
         "this process's own print file wasn't seen"
     );
+}
+
+/// Failure (2026-11-25, `[] then []` in `a_persons_print_does_what_it_did` on a loaded machine): the look at this process's descriptors swallowed every
+/// error (a folder that couldn't be listed, an entry that couldn't be read), so one transient failure gave an empty list that the print's check read as
+/// "the print's file never was there". A look that fails panics and names the OS error.
+#[test]
+fn a_look_at_the_descriptors_that_fails_says_so() {
+    let folder = recto_testpdf::TempDir::new("fd-look-");
+    let missing = folder.join("nothing-here");
+    let regular = folder.join("a-file");
+    std::fs::write(&regular, b"x").expect("a file");
+    for (what, path, os_error) in [("missing", missing, "No such file"), ("a regular file", regular, "Not a directory")] {
+        let said = std::panic::catch_unwind(|| unnamed_files_held_in(&path)).expect_err(&format!("{what}: the look panics"));
+        let said = said
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| said.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default();
+        assert!(said.contains(os_error), "{what}: the panic names the OS error, got {said:?}");
+    }
+}
+
+/// Failure (found while diagnosing `[] then []`, 2026-11-25): "Print anyway" pressed in the moment between the menu's look at a hand-off (not frozen) and
+/// the person's lane's (frozen) was refused by the lane, but the row ignored that and left the print counted as under way: the window said "Preparing...",
+/// the app's settle never returned and every later print was refused as one being prepared, until the app restarted. The row is run past the menu's look,
+/// as that moment would: nothing's being prepared, and once it's not frozen the next print prints.
+#[test]
+fn a_print_anyway_refused_in_a_hand_off_leaves_printing_free() {
+    let disk = Disk::new();
+    let restricted = disk.file("restricted.pdf", &locked_allowing("", 2, lopdf::encryption::Permissions::PRINTABLE));
+    let app = disk.start();
+    app.open(&restricted);
+    app.settle();
+    answer(&app, Panel { to_file: true, ..ALL });
+    app.settle();
+    let anyway = app.reader().selection_notice.and_then(|notice| notice.action_id).expect("Print anyway");
+    app.core().core.frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+    let parts = crate::core::row_parts::RowParts::of(app.core());
+    let row = crate::core::menu_rows::row_in(&parts, &anyway).expect("the row");
+    crate::core::menu_rows::by_person(&parts, row);
+    let printing = app.core().tools.printing();
+    assert!(!printing.preparing(), "nothing's being prepared: the command wasn't taken");
+    app.core().core.frozen.store(false, std::sync::atomic::Ordering::SeqCst);
+    answer(&app, ALL);
+    app.settle();
+    assert_eq!(printed(&app), "[612,612]", "the next print isn't refused");
 }
