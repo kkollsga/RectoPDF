@@ -372,6 +372,10 @@ mod tests {
     }
 
     fn ask_scripted(renderer: &mut Scripted) -> Result<u32, FeedError> {
+        ask_scripted_as(renderer, whole_file)
+    }
+
+    fn ask_scripted_as(renderer: &mut Scripted, meaning: fn(RenderFailure) -> FeedError) -> Result<u32, FeedError> {
         asked(
             renderer,
             |r| r.too_busy,
@@ -381,8 +385,19 @@ mod tests {
                 r.too_busy += u32::from(counted);
                 answer
             },
-            whole_file,
+            meaning,
         )
+    }
+
+    /// Failure: a page read (not only the page count) whose worker hangs before hello ends as `render_unavailable` only if it reaches the outcome as failed; mapped as a pause it would hold the build for ever, as the page count did.
+    #[test]
+    fn a_read_whose_worker_never_says_hello_is_a_failed_build_too() {
+        let busy = (Err(RenderFailure::TooBusyToStart), true);
+        let mut renderer = scripted(vec![busy, busy, (Err(RenderFailure::Unavailable), false)]);
+        let error = ask_scripted_as(&mut renderer, read_failure).unwrap_err();
+        assert_eq!(error, FeedError::Cant("render_unavailable"));
+        let FeedError::Cant(code) = error else { unreachable!() };
+        assert_eq!(outcome_json(&BuildOutcome::Paused(code))["state"], "failed");
     }
 
     /// Failure: a worker that hangs before hello pauses the build for ever (each run is a new process, so the service's count never gets past one start), and `recto wait indexing-done` never says it couldn't be built. The busy starts before it stay counted, and don't turn the `Unavailable` into a pause.
