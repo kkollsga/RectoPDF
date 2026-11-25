@@ -276,7 +276,7 @@ mod tests {
             String::from_utf8_lossy(&signed.stderr)
         );
         let mut children = Children(Vec::new());
-        children.0.push(std::process::Command::new(&copy).arg("30").spawn().unwrap());
+        children.0.push(std::process::Command::new(&copy).arg("10").spawn().unwrap());
         std::fs::remove_file(&copy).unwrap();
         (dir, children)
     }
@@ -292,9 +292,13 @@ mod tests {
         assert!(update_app_is_running(&std::env::current_exe().unwrap()).unwrap());
 
         let dir = recto_testpdf::TempDir::new("update-processes-wanted-");
-        let wanted = dir.path().join("RectoPDF");
+        // A name of this run only: a deleted copy under the app's real name would make every other installer test, and
+        // a real updater on this Mac, see an unknown while it lives. The rule under test is "the same name".
+        let unique = format!("rpdf-{}", std::process::id());
+        assert!(unique.len() <= COMM_LEN - 1);
+        let wanted = dir.path().join(&unique);
         std::fs::copy("/bin/sleep", &wanted).unwrap();
-        let (_same_name, _more) = deleted_sleeper("RectoPDF");
+        let (_same_name, _more) = deleted_sleeper(&unique);
         let error = update_app_is_running(&wanted).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
         assert!(
