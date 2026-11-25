@@ -1532,6 +1532,19 @@ mod tests {
         }
     }
 
+    /// Failure: `text` or `render` with neither a page nor `--ref` isn't refused as the CLI builds it, or is refused with no way on: the typed refusal comes
+    /// from the command's own words (`PageOrRef::of`), and says what to type next.
+    #[test]
+    fn text_and_render_with_neither_a_page_nor_a_ref_are_usage_errors_as_typed() {
+        for words in [vec!["text"], vec!["render", "--out", "x.png"]] {
+            let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
+            let typed = parse_cli(&words).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
+            let error = typed.command().expect_err(&format!("{words:?} names no page"));
+            assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE), "{words:?}: {}", error.message);
+            assert!(error.next.contains("recto"), "{words:?}: {}", error.next);
+        }
+    }
+
     /// Failure: a mistyped command gets no help towards the right one.
     #[test]
     fn a_near_miss_suggests_the_real_command() {
