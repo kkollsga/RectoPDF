@@ -1270,17 +1270,19 @@ fn a_lower_resolution_draw_that_lands_ends_the_run_of_busy_draws() {
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let mut config = config("low_res_by_the_mark", &HeavySlot::new());
     config.extra_env.push(("RECTO_FAKE_MARK".into(), mark.0.to_string_lossy().into_owned()));
+    // Short of time only for the asks that sleep: the one that lands has the ordinary deadline, which a loaded runner needs to start the worker.
     let policy = Policy {
-        page_deadline: Duration::from_millis(400),
+        page_deadline: Duration::from_secs(30),
         ..policy()
     };
     let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
     let ask = |doc: &mut DocRenderer| doc.render_tile(&request(0), &surface());
-    assert!(matches!(ask(&mut doc), Err(RenderFailure::TooBusy { page: 0 })), "first");
-    assert!(matches!(ask(&mut doc), Err(RenderFailure::TooBusy { page: 0 })), "second");
+    let starved = |doc: &mut DocRenderer| recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(400), ask);
+    assert!(matches!(starved(&mut doc), Err(RenderFailure::TooBusy { page: 0 })), "first");
+    assert!(matches!(starved(&mut doc), Err(RenderFailure::TooBusy { page: 0 })), "second");
     std::fs::write(&mark.0, b"land").unwrap();
     assert!(done(ask(&mut doc)).low_res.is_some(), "it lands");
     std::fs::write(&mark.0, b"sleep").unwrap();
-    let after = ask(&mut doc);
+    let after = starved(&mut doc);
     assert!(matches!(after, Err(RenderFailure::TooBusy { page: 0 })), "a run of one, not three: {after:?}");
 }
