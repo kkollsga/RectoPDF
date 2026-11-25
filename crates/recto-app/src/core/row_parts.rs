@@ -167,10 +167,10 @@ impl<'a> RowParts<'a> {
     /// other print is asked for ([`super::printing::Printing::anyway`]). A command not taken (a hand-off froze the app since the menu looked) leaves the
     /// print asked for not running, so it isn't left counted as under way.
     pub fn print_anyway(&self, serial: u64) {
-        if let Some(command) = self.tools.printing().anyway(serial) {
-            if !self.person.submit(command) {
-                self.tools.printing().not_asked();
-            }
+        if let Some(command) = self.tools.printing().anyway(serial)
+            && !self.person.submit(command)
+        {
+            self.tools.printing().not_asked();
         }
     }
 
