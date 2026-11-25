@@ -120,6 +120,15 @@ impl Printing {
         self.running.store(false, Ordering::SeqCst);
     }
 
+    /// **What came of sending the print asked for:** `taken` is whether the person's lane took its command. If not (a hand-off froze the app), the print
+    /// asked for won't run, so it isn't left counted as under way ([`Self::not_asked`]). Says `taken`. The one place that rule is.
+    pub(crate) fn taken(&self, taken: bool) -> bool {
+        if !taken {
+            self.not_asked();
+        }
+        taken
+    }
+
     /// A print asked for, from the answer to what came of it being said: Rust's part, which the app's settled waits for ([`crate::settled`]). The host's
     /// part, the file handed to the system, is in [`Self::busy`].
     pub fn preparing(&self) -> bool {

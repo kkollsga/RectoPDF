@@ -3,7 +3,7 @@
 //! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Of its 21 methods (2026-11-16), 16 serve
 //! one feature each (reading_tab viewing's; selected highlights'; copy_selection, select_all and toggle_panel the window's own rows'; can_save saving's;
 //! update_installs and mark_update_menu the updates'; zoom_for_person the zoom's; open opening's; open_palette the palette's; toggle_snapshot_tool,
-//! arm_snapshot_once and cancel_snapshot_once the snapshot tool's; cancel_print and refused_print_anyway printing's; let_go_image, a 22nd, an image picked
+//! arm_snapshot_once and cancel_snapshot_once the snapshot tool's; cancel_print and print_anyway printing's; let_go_image, a 22nd, an image picked
 //! with a click's, 2026-11-16), four are shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its own as the
 //! person is [`RowParts::person`]'s, which a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
 //!
@@ -167,10 +167,8 @@ impl<'a> RowParts<'a> {
     /// other print is asked for ([`super::printing::Printing::anyway`]). A command not taken (a hand-off froze the app since the menu looked) leaves the
     /// print asked for not running, so it isn't left counted as under way.
     pub fn print_anyway(&self, serial: u64) {
-        if let Some(command) = self.tools.printing().anyway(serial)
-            && !self.person.submit(command)
-        {
-            self.tools.printing().not_asked();
+        if let Some(command) = self.tools.printing().anyway(serial) {
+            self.tools.printing().taken(self.person.submit(command));
         }
     }
 

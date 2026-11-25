@@ -310,6 +310,7 @@ Printing::pub fn take_ready(&self) -> Option<(PathBuf, u64)>
 Printing::pub(crate) fn anyway(&self, serial: u64) -> Option<Command>
 Printing::pub(crate) fn completion_due(&self, now: u64) -> Option<Duration>
 Printing::pub(crate) fn not_asked(&self)
+Printing::pub(crate) fn taken(&self, taken: bool) -> bool
 Prompts (pub struct, derives Debug, Default)
 Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
 Prompts.pub(crate) passwords: Mutex<Asks>
