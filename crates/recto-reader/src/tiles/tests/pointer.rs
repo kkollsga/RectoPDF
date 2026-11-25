@@ -176,3 +176,17 @@ fn a_stopped_text_job_is_asked_for_again() {
     let check = settle_to_text(&mut reader).expect("not tried, so asked for");
     assert!(matches!(check.kind, JobKind::Text { check: true }));
 }
+
+/// Failure (review of the busy renderer start, 2026-11-25): a text read the busy Mac couldn't run ends as `LookLater` and is kept as a page whose text failed: a copy adds an empty page, nothing offers its text, and it's never asked for again. It says nothing of the page, so it's not failed and is asked for again.
+#[test]
+fn a_busy_text_read_isnt_a_failed_page_and_is_asked_again() {
+    let mut reader = reader_on(10);
+    settle_to_text(&mut reader);
+    reader.select_all();
+    let read = settle_to_text(&mut reader).expect("what shows is read");
+    let page = read.position;
+    reader.finish(read, Outcome::LookLater);
+    let again = settle_to_text(&mut reader).expect("still wanted");
+    assert_eq!(again.position, page);
+    assert!(matches!(again.kind, JobKind::Text { check: false }));
+}
