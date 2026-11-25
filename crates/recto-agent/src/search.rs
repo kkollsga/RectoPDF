@@ -436,6 +436,11 @@ impl Found {
         *self.failed_why.entry(why).or_default() += 1;
     }
 
+    /// A page that read with text in the first pass and doesn't in the second. Not `changed_file`, which means the page is behind a file listed in `changed_files`: nothing is listed here, so an agent that follows that code finds no file.
+    fn not_read_the_same_again(&mut self, position: u32) {
+        self.fail(position, "not_read_the_same_again");
+    }
+
     fn no_text(&mut self, position: u32) {
         self.searched += 1;
         self.empty_count += 1;
@@ -1077,7 +1082,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
                 continue;
             }
             Got::NoText | Got::Nothing => {
-                found.fail(position, "changed_file");
+                found.not_read_the_same_again(position);
                 continue;
             }
         };
@@ -1641,6 +1646,16 @@ mod tests {
             indexing: Some(&fixture.indexing),
             force_scan: false,
         }
+    }
+
+    /// Failure: the ranked second pass filed a page that read differently the second time under `changed_file`, the code for a file listed in `changed_files`, so an agent looked for a changed file that wasn't there.
+    #[test]
+    fn a_page_that_reads_differently_the_second_time_isnt_called_a_changed_file() {
+        let mut found = Found::default();
+        found.not_read_the_same_again(4);
+        assert_eq!(found.failed, vec![5]);
+        assert_eq!(found.failed_why.get("not_read_the_same_again"), Some(&1));
+        assert!(!found.failed_why.contains_key("changed_file"), "{:?}", found.failed_why);
     }
 
     /// Failure: a busy page is listed with the failed, so "couldn't be read" covers it and an agent can't tell a page to search again from a damaged one; or it is left out and the total is called complete. It has its own list and its own wording, the failed have their reason codes, and neither lets `hits_total` say a number.
