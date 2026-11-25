@@ -2,6 +2,9 @@
 //! the answer's words. The session is asked once, inside `tab_file`, for the tab's facts; everything after reads the file with the session free. A
 //! token is hostile input and is never echoed, logged or kept: an answer carries only numbers and constant words.
 
+mod hits;
+pub(crate) use hits::HitRefs;
+
 use crate::reading::{TabFile, tab_file};
 use crate::{AgentError, Code, SessionAccess, TabRef, exit};
 use recto_core::locator::{self, DocumentMatch, Locator, Looked, MAX_CANDIDATES, Placed, Resolution, ScanCaps, Status, Target, TextMatch, Unreferenceable};
@@ -20,6 +23,10 @@ const CHARS_PAST_TEXT: &str = "The page's text doesn't reach that far, so there 
 /// The refusal for a `--chars` that can't be a range of characters.
 pub(crate) const CHARS_USAGE: &str = "`--chars` is `START-END` in characters of `recto text`, with the end after the start, not included, and at most 2097152.";
 const UNRESOLVED_TEXT_CHANGED: &str = "The page is there, but its text at those characters isn't what the reference was made of.";
+
+/// What a search answer says of the references on its hits.
+pub(crate) const HIT_REFS_NOTE: &str = "Each hit's `ref` points at its words, as `recto ref --chars` makes one, for `recto resolve` and `--ref`, and `chars` are those characters in `recto text`'s text of the page. Another spelling gets a reference to its page. `missing` counts the hits with none, by why.";
+pub(crate) const HIT_REFS_WITHDRAWN: &str = "The file changed during the search, so no hit has a reference: it would name a version that's gone. Search again.";
 
 const TAB_CHANGED: &str = "The tab changed while the reference was being found. Try again.";
 const BAD_REFERENCE: &str = "That isn't a reference RectoPDF made.";
@@ -86,7 +93,7 @@ fn reference_reading<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, char
     unchanged(&file, stamp)?;
     let made = made.map_err(|why| match why {
         Unreferenceable::NoSuchPage => crate::no_such_page(),
-        Unreferenceable::NoIdentity => not_referenceable(NO_IDENTITY),
+        Unreferenceable::NoIdentity | Unreferenceable::Capped => not_referenceable(NO_IDENTITY),
         Unreferenceable::NoDocumentTag => not_referenceable(NO_DOCUMENT_TAG),
     })?;
     let Some((start, end)) = chars else {

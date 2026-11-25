@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_LIMIT: u32 = 20;
 /// Pages in a ranked answer if not told otherwise. Fewer than hits, because each is a page to look at.
 const DEFAULT_RANKED: u32 = 10;
-const MAX_LIMIT: u32 = 200;
+pub(crate) const MAX_LIMIT: u32 = 200;
 const MAX_QUERY_BYTES: usize = 1024;
 /// How long one search may run before it stops and says where to go on from.
 const MAX_TIME: Duration = Duration::from_secs(30);
@@ -455,6 +455,7 @@ impl Found {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// Takes what's on a page. `hidden` is only asked for if the page has something to show, as finding out can mean drawing it.
     fn take(
         &mut self,
@@ -464,6 +465,7 @@ impl Found {
         settings: &Settings<'_>,
         source: &PlanFile,
         hidden: impl FnOnce() -> HiddenOnPage,
+        refs: &mut crate::locating::HitRefs<'_>,
     ) {
         let room = settings.limit - self.hits.len();
         let found = query.find(view.text, room, settings.deadline);
@@ -498,12 +500,14 @@ impl Found {
             let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": view.has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
             add_context(&mut hit, view.text, &range, settings.context);
             say_where_from(&mut hit, page, source);
+            refs.mark(&mut hit, source.added, page, view.text, Some(&range));
             self.hits.push(hit);
         }
         if let Some(spelled) = spelled {
             self.total += 1;
             let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": view.has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
             say_where_from(&mut hit, page, source);
+            refs.mark(&mut hit, source.added, page, view.text, None);
             self.hits.push(hit);
         }
     }
@@ -945,6 +949,8 @@ fn why(failure: RenderFailure) -> &'static str {
 
 fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
+    let opened = std::cell::OnceCell::new();
+    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened);
     let mut found = Found::default();
     let mut slot = Slot::default();
     let mut folded = String::new();
@@ -987,7 +993,7 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
                     OnPage::Yes | OnPage::No => {}
                 }
                 let source = &plan.files[usize::from(file)];
-                found.take((position, page), &view, query, settings, source, || reader.hidden(file, page, &view));
+                found.take((position, page), &view, query, settings, source, || reader.hidden(file, page, &view), &mut refs);
             }
         }
     }
@@ -998,6 +1004,7 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
         "hidden_text_checked": "pages_with_hits",
         "coverage": found.coverage(plan, &reader),
     });
+    answer["references"] = refs.finish(&mut answer["hits"]);
     reader.say_how(&mut answer);
     Ok(answer)
 }
