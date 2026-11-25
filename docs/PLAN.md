@@ -57,6 +57,28 @@ Follow-ups found this run (not done):
 
 Owner decided all four, 2026-11-25 ("Agree on all 4", `OWNER-RULES.md`): Find text is wiped on a completed removal; Remove Hidden Data's "actions" keeps ordinary links, all three choices ticked by default; true redaction starts as picture pages, edit-in-place later; a copied link carries the page number only for now.
 
+### Later on 2026-11-25: the next slices (batch C)
+
+Started at once after items 2–5, under the owner's pace rule. Each designed by Opus, built by Sonnet, two independent review rounds, one combined full check plus the CI-style lifecycle run on the integrated batch.
+
+- [x] Updater swap window: one last process look under the record's lock immediately before each swap (forward after the signature re-check; rollback after `old_app()`), no retry (a retry would give a racer time after the signature look). Scan 1.5–2.4 ms. Refusals reuse the existing outcomes; reason chosen by type, plain-words log.
+- [x] Locator scan cap 256 MiB → 1 GiB (a bound on work, not memory; 6.2 MiB peak at either). The NASA report now reads all 383 pages (277 MB, ~0.8 s) but still answers `incomplete`: four pages have no identity (a `page_id` names cap, see below).
+- [x] Locator `--ref` on `text` and `render`: resolve, then read through the one `locate` path; only found/moved give a page, every other answer refuses `reference_unresolved` with its own words; the tab is resolved once; `render` removes exactly the file it created if the file changed during the draw.
+- [x] Removal D1b: SHA-256 plan digest over everything the person was shown; caller-owned confirmation store (2 pending per actor, 8 in all, 10-min expiry on an injected clock, one use, ids never reused); another actor's id answers `unknown` and removes nothing; `Progress` starts only from a non-copyable `Confirmed` and is bound by digest. Resume's trust boundary stated (a D3 record type follows).
+- [x] Red CI fixed twice, each from evidence: two render-worker tests that pinned read speed (only the read meant to die is short of time now); the deleted-program platform test's stand-in raced its own deletion on macOS 15 (now a copy of the test binary with a ready handshake and explicit preconditions; proven on the branch's macos-15 job).
+- [x] Held-list headless test: the test's stand-in host claimed scrolls it never applied; a shared `testkit/host_standin.rs` step now arrives like the real host (seeded: old shape fails 10/10).
+- [ ] Page identity hostile-input hole (rules 1/6), `build/page-id-memo`: each XObject record re-parsed its stream dictionary uncharged — a 3 MB crafted file took 17.6 s / 11.5 GB footprint for one page. Fixed to one resolve per object with a per-page memo, then (review round 2 blocker) redesigned so entries keep small facts and whole objects live in single slots: measured by live bytes, 8 hostile forms now hold < 2× one form (were 7.9×). Bench100 digests and costs byte-identical; golden vectors untouched. In final verification; merges after batch C.
+
+Follow-ups from batch C (not done):
+- Page identity: raise the names/records caps only after the memo merges (safe: 0 of 5,857 digests change, 11 corpus pages gain one); `decode::chain_of` holds all 8 `/DecodeParms` at once; `Refs` hits deep-clone; a failed chain decode pulls up to `xobject_bytes` uncharged (needs `recto-page/2`). lopdf inbox addendum written: object-stream members escape `max_object_bytes`; a non-stream is parsed twice.
+- Updater: a rollback refused after `restore_record` can let the next launch restore over newer edits — needs a design decision (data safety); an app started after the last scan but before the swap, not yet at the lock, is still swapped under (a few ms); on `observation_unknown` the old app isn't reopened (product decision); `observation_unknown` has no sentence of its own for the person; read `pbi_name` (31 bytes) instead of `pbi_comm`.
+- Locator: `file_changed` between read and second stat has no test; `incomplete` has no end-to-end case; `render --ref` removes by path (compare dev/inode); `table.rs` `line_of` keys a test rule on literal keys; hostile-file time at the 1 GiB cap not measured.
+- Removal D5: one id counter for all actors leaks a count; the share is per actor type (`Agent(Level)` shares one share). D2: the inventory's order must be deterministic. D3: a record type only `Progress` makes, for `resume`.
+- Tests: about five headless files send a viewport after a jump without draining (`encrypted_sleep`, `sleeping`, `withheld_routes`, `withheld_compare`, `withheld_events`) — move them, and `host_turns`, onto the shared stand-in; `checks_past_their_deadline_cant_stop_a_document_drawing` pins read speed like the fixed pair; `--quick` should always run the socket test and the fuzz smoke (two expectations were found only by the full check).
+- Process: a real-OS-behaviour test merged on local evidence failed only on CI's sandbox job — such tests get a branch CI run before merge.
+
+**Owner question (measurement rule).** `AGENTS.md` says memory tests measure the whole process (`phys_footprint`). On this macOS a freed large block stays in the footprint (a dropped 1 GiB `Vec` still shows ~1 GiB), so footprint can't tell memory that is held from memory that was freed — most of the "11.5 GB" above was freed memory. Recommendation: keep `phys_footprint` for whole-process budgets, and add live-byte counts (a counting allocator) where the question is what code holds.
+
 ## Current run: started 2026-11-17
 
 Owner: "I agree, can you get started on the 4 items?" (`OWNER-RULES.md`). First reviewed increments targeted for **18 November**; these are the first slices, not a promise to finish the complete redaction or retrieval roadmap that day.
