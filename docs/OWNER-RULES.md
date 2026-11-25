@@ -2,6 +2,11 @@
 
 The owner's product rules and one-off decisions, in their words, with the date. Moved here from `AGENTS.md` on 2026-11-13 so that file stays short: it is loaded into every session and read by every worker. Read the section that touches your task; behaviour as built is in `SPEC.md`. A newer rule that replaces an older one says so.
 
+## Decisions of 2026-11-25
+
+- CI: "Lets clear the backlog related to CI. For now lets assume its good enough. But lets keep an eye on it. We want to make sure dev performance is sufficient." No CI optimisation is scheduled; the coordinator watches CI time after every push against the 21:00 budget.
+- Updates and programs whose file was deleted: asked "Should RectoPDF ignore such a program when the name it was started under shows it can't be RectoPDF, and go ahead with the update?", the owner chose "Yes, ignore those". Anything named like RectoPDF is still treated as possibly running, so RectoPDF is never replaced while it might be open.
+
 ## Starting the next four work items (2026-11-17)
 - Given the 2026-11-17 review's four recommendations (bounded CI diagnosis plus no-wait SVG paste; locator 8.1 then reference-bearing retrieval 8.2; redaction/Remove Hidden Data retention design then guarded implementation alongside it; focused copy/highlight/recovery fixes), owner: "I agree, can you get started on the 4 items?". This authorizes work on those tracks under the existing writer, privacy, access and review rules. The recommendation keeps the sidebar after the locator and safe-removal work; external releases and other-repository changes still follow their existing authorization rules.
 
