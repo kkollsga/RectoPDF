@@ -295,7 +295,7 @@ mod tests {
         // A name of this run only: a deleted copy under the app's real name would make every other installer test, and
         // a real updater on this Mac, see an unknown while it lives. The rule under test is "the same name".
         let unique = format!("rpdf-{}", std::process::id());
-        assert!(unique.len() <= COMM_LEN - 1);
+        assert!(unique.len() < COMM_LEN);
         let wanted = dir.path().join(&unique);
         std::fs::copy("/bin/sleep", &wanted).unwrap();
         let (_same_name, _more) = deleted_sleeper(&unique);
