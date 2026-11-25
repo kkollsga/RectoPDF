@@ -1060,6 +1060,41 @@ fn forms_sharing_resources_resolve_them_once() {
     assert_eq!(DICTIONARIES.with(std::cell::Cell::get), 2, "the shared /Resources and its /XObject, once each");
 }
 
+/// Failure caught (memo neutrality): forms sharing a large `/XObject` table but not drawn in a row (A, B with another table, A again) have the shared
+/// table evicted and resolved again; a re-resolved table must give the children it always did, not B's or none. The expectation is the definition's.
+#[test]
+fn a_table_evicted_and_resolved_again_gives_the_same_children() {
+    let (other, form) = (b"another image's bytes", b"/C Do");
+    let filler: String = (0..300).map(|n| format!("/P{n} 7 0 R ")).collect();
+    let objects = vec![
+        stream("", b"/FA1 Do /FB Do /FA2 Do"),
+        Obj::Dict("<< /XObject 9 0 R >>".into()),
+        Obj::Dict("<< /XObject 10 0 R >>".into()),
+        stream(JPEG_DICT, IMAGE),
+        stream(JPEG_DICT, other),
+        Obj::Dict(format!("<< /C 7 0 R {filler}>>")),
+        Obj::Dict("<< /C 8 0 R >>".into()),
+        stream("/Subtype /Form /BBox [0 0 1 1] /Resources 5 0 R", form),
+        stream("/Subtype /Form /BBox [0 0 1 1] /Resources 6 0 R", form),
+        stream("/Subtype /Form /BBox [0 0 1 1] /Resources 5 0 R", form),
+    ];
+    let page = one_page("", "/XObject << /FA1 11 0 R /FB 12 0 R /FA2 13 0 R >>", "4 0 R", objects);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/FA1 Do /FB Do /FA2 Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&3u32.to_le_bytes());
+    for (name, image) in [(&b"FA1"[..], &IMAGE[..]), (b"FB", other), (b"FA2", IMAGE)] {
+        expected.extend(xobject_bytes(name, 0, form));
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend(xobject_bytes(b"C", 1, image));
+    }
+    expected.push(b'E');
+    DICTIONARIES.with(|count| count.set(0));
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+    assert_eq!(DICTIONARIES.with(std::cell::Cell::get), 5, "R1, T, R2, U, then T again as it was evicted");
+}
+
 /// Failure caught (security, review of the memo): a name whose object isn't a stream failed its descriptor each time, and a failure wasn't remembered,
 /// so 256 names to one `5 0 obj << /Junk [100,000 numbers] >>` parsed the dictionary 256 times, as the image repro did before the memo. A failure doesn't
 /// depend on what's left of any cap, so it's remembered with the rest, and its record is the one the definition gives: nothing by that name, kind 2.

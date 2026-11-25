@@ -50,8 +50,8 @@
 //! so one object is parsed at a time, as it was before any of it was kept. A record kept for the page is its tail (at most 1 KiB, else it's read again),
 //! the names a form drew and, for each, the id it found in the form's lookup, never a dictionary; a `/Resources` reference is one small entry saying what
 //! its `/XObject` is; one `/XObject` table and one gave-up stream's descriptor are held, each until the next one is needed; and a read's references
-//! keep at most 16 values of at most 4 KiB. A page's own `/XObject` is the one table held for the whole page. Together, besides the one object being
-//! parsed: under 0.5 MiB.
+//! keep at most 16 values of at most 4 KiB. A page's own `/XObject` is the one table held for the whole page. Together a page holds a fixed number of whole
+//! objects (the page dictionary, the page's `/XObject` table, one form's table, one descriptor, and the one being parsed) plus under 0.5 MiB of facts.
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
 //! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), XObjects in the resources the content doesn't
@@ -311,6 +311,7 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
         content_record(reader, item, budget, &mut hasher, &mut scan)?;
     }
     drop(entries);
+    drop(page);
     if scan.overflowed() {
         return Err(Capped);
     }
@@ -508,6 +509,8 @@ impl Drawn {
                     None => {
                         // A remembered failure includes a transient I/O error, which reads as a dictionary that isn't one. Under I/O errors an identity is
                         // already undefined (the same file may digest differently), so this adds no case.
+                        // A table is never held while the next is resolved.
+                        self.table = None;
                         let (res, inline) = match resolved_dict(reader, &Object::Reference(*r)) {
                             None => (Res::Page, None),
                             Some(mut dict) => match dict.remove(b"XObject") {
