@@ -87,6 +87,13 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     read
 }
 
+/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`] and ended by a worker that opened the file.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Runs {
+    pub(super) starts: u8,
+    pub(super) opens: u8,
+}
+
 /// One more busy start or open in a run: whether the run is still short of [`MAX_BUSY`].
 fn within_bound(run: &mut u8) -> bool {
     *run = run.saturating_add(1);
@@ -97,7 +104,7 @@ fn within_bound(run: &mut u8) -> bool {
 pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
     // No file has reached the worker, so what kept it from saying hello isn't the file's doing.
     doc.stats.too_busy += 1;
-    if within_bound(&mut doc.left_out.busy_starts) {
+    if within_bound(&mut doc.left_out.busy_runs.starts) {
         RenderFailure::TooBusyToStart
     } else {
         RenderFailure::Unavailable
@@ -106,8 +113,8 @@ pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
 
 /// A worker that opened the file ends the runs of busy starts and busy opens.
 pub(super) fn started(doc: &mut DocRenderer) {
-    doc.left_out.busy_starts = 0;
-    doc.left_out.busy_opens = 0;
+    doc.left_out.busy_runs.starts = 0;
+    doc.left_out.busy_runs.opens = 0;
 }
 
 /// An open's worker was stopped for `reason`, which `failed` says. One that had no processor, `starved`, isn't the file's doing: it counts as the Mac being busy and not towards stopping the document, and is [`RenderFailure::TooBusyToStart`] until [`MAX_BUSY`] opens in a row, counted apart from starts, when it's `failed` after all.
@@ -117,7 +124,7 @@ pub(super) fn open_stopped(doc: &mut DocRenderer, failed: RenderFailure, starved
     }
     doc.left_out.busy = doc.left_out.busy.saturating_add(1);
     doc.stats.too_busy += 1;
-    if within_bound(&mut doc.left_out.busy_opens) {
+    if within_bound(&mut doc.left_out.busy_runs.opens) {
         RenderFailure::TooBusyToStart
     } else {
         failed

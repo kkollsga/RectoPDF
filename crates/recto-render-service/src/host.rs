@@ -714,10 +714,8 @@ struct LeftOut {
     prefetch: u32,
     /// Deadlines the Mac was too busy for the worker to meet.
     busy: u32,
-    /// Busy starts in a row ([`busy::start_stopped`]).
-    busy_starts: u8,
-    /// Busy opens in a row ([`busy::open_stopped`]), counted apart from starts.
-    busy_opens: u8,
+    /// Busy starts, and busy opens, in a row, counted apart.
+    busy_runs: busy::Runs,
 }
 
 impl LeftOut {
