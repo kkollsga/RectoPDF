@@ -306,18 +306,19 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
     if scan.overflowed() {
         return Err(Capped);
     }
+    let mut dicts = Dicts::new();
     let resources = entry
         .inherited()
         .resources()
         .and_then(|owner| dict_at(reader, owner))
-        .and_then(|owner| resolved_dict(reader, owner.get(b"Resources").ok()?));
-    let page_xobjects = xobjects_in(reader, resources.as_ref());
+        .and_then(|owner| dict_of(reader, &mut dicts, owner.get(b"Resources").ok()?));
+    let page_xobjects = xobjects_in(reader, &mut dicts, resources.as_deref());
     let mut memo = Memo::new();
     hasher.update(b"X");
     hasher.update(count(scan.names().len()));
     for name in scan.names() {
         budget.record()?;
-        let Some(seen) = xobject_record(reader, page_xobjects.as_ref(), name, budget, &mut hasher, &mut memo, true)? else {
+        let Some(seen) = xobject_record(reader, page_xobjects.as_deref(), name, budget, &mut hasher, &mut memo, true)? else {
             hasher.update(count(0));
             continue;
         };
@@ -328,8 +329,8 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
         if seen.names.is_empty() {
             continue;
         }
-        let own = seen.own_xobjects(reader);
-        let lookup = own.as_ref().unwrap_or(&page_xobjects).as_ref();
+        let own = seen.own_xobjects(reader, &mut dicts);
+        let lookup = own.as_ref().unwrap_or(&page_xobjects).as_deref();
         for child in &seen.names {
             budget.record()?;
             xobject_record(reader, lookup, child, budget, &mut hasher, &mut memo, false)?;
@@ -401,8 +402,22 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
 }
 
 /// A resource dictionary's `/XObject`, resolved: looked up by name, never copied out or sorted.
-fn xobjects_in(reader: &IndexedReader, resources: Option<&Dictionary>) -> Option<Dictionary> {
-    resolved_dict(reader, resources?.get(b"XObject").ok()?)
+fn xobjects_in(reader: &IndexedReader, dicts: &mut Dicts, resources: Option<&Dictionary>) -> Option<Rc<Dictionary>> {
+    dict_of(reader, dicts, resources?.get(b"XObject").ok()?)
+}
+
+/// The dictionaries this page has resolved by reference (a `/Resources`, an `/XObject` table), each once: forms that share a `/Resources 9 0 R` share the one
+/// copy of it, however many there are and however big the table, where a copy for each form was held for the whole page. `None` for a reference that
+/// isn't a dictionary. Per page and dropped with it, with at most two entries for each record the page makes ([`Caps::xobjects`]).
+type Dicts = HashMap<ObjectId, Option<Rc<Dictionary>>>;
+
+/// `object` as a dictionary: a reference once per page, from `dicts`; one written in place as its own copy, which is bounded by the bytes of what holds it.
+fn dict_of(reader: &IndexedReader, dicts: &mut Dicts, object: &Object) -> Option<Rc<Dictionary>> {
+    match object {
+        Object::Reference(id) => dicts.entry(*id).or_insert_with(|| resolved_dict(reader, object).map(Rc::new)).clone(),
+        Object::Dictionary(dict) => Some(Rc::new(dict.clone())),
+        _ => None,
+    }
 }
 
 /// Every image and form this page has drawn, by object: what each one's record said after its name and what reading it cost, so a stream drawn under
@@ -429,19 +444,19 @@ struct Seen {
     overflowed: bool,
     /// The form's own `/Resources`, and its `/XObject` resolved once, however many names it's drawn under.
     resources: Option<Object>,
-    own: OnceCell<Option<Option<Dictionary>>>,
+    own: OnceCell<Option<Option<Rc<Dictionary>>>>,
 }
 
 impl Seen {
     /// The form's own `/Resources`' `/XObject`; `None` where it has no `/Resources` of its own, so the page's are used. Asked for only where the form
     /// drew something.
-    fn own_xobjects(&self, reader: &IndexedReader) -> Option<Option<Dictionary>> {
+    fn own_xobjects(&self, reader: &IndexedReader, dicts: &mut Dicts) -> Option<Option<Rc<Dictionary>>> {
         self.own
             .get_or_init(|| {
                 self.resources
                     .as_ref()
-                    .and_then(|own| resolved_dict(reader, own))
-                    .map(|own| xobjects_in(reader, Some(&own)))
+                    .and_then(|own| dict_of(reader, dicts, own))
+                    .map(|own| xobjects_in(reader, dicts, Some(&own)))
             })
             .clone()
     }
