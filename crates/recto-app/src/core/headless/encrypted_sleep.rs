@@ -60,12 +60,8 @@ fn window_view() -> recto_reader::Viewport {
 
 /// Draws what's in a window's view, as the host would with its UI thread, till it's at rest.
 fn drawn(app: &HeadlessApp) {
-    // A fresh view has applied no scroll: the host starts at `scrolledTo = 0` and only sends a number it has applied.
-    let mut view = recto_reader::Viewport {
-        scrolled_to: 0,
-        ..window_view()
-    };
-    crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
+    crate::testkit::host_standin::report_a_fresh_view(app, &mut view);
     crate::testkit::headless::host_turns(app, &mut view, true);
 }
 
