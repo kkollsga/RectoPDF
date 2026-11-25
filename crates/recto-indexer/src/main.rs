@@ -4,7 +4,7 @@
 
 use recto_core::OpenError;
 use recto_index::corpus::{self, BuildLimits, BuildOutcome, CorpusKey, DocMeta, FailReason, FedPage, FeedError, PageFeed};
-use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, RenderStats, ServiceConfig};
+use recto_render_service::{DocRenderer, KillReason, MAX_BUSY, Policy, RenderFailure, RenderStats, ServiceConfig};
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,14 +50,33 @@ impl WorkerFeed {
     fn stats(&self) -> RenderStats {
         self.renderer.as_ref().map(DocRenderer::stats).unwrap_or_default()
     }
+}
 
-    /// What a failure that isn't about the file means, given how many times the worker had been too busy before the step that failed. A page's own deadline stays with that page, which is read again later.
-    fn unless_too_busy(&self, before: u32, error: FeedError) -> FeedError {
-        match error {
-            FeedError::Cant(_) if self.stats().too_busy > before => FeedError::Cant(TOO_BUSY),
-            error => error,
+/// Asks again of `renderer` while the answer is [`RenderFailure::TooBusyToStart`]: the service's own bound ([`MAX_BUSY`] in a row) decides inside this run, and a worker that hangs before hello ends as `Unavailable` rather than pausing the build for ever. `busy` reads the renderer's `too_busy` count, taken before each try, so a failure that isn't about the file and moved it during that try (not an earlier one) is a pause (`TOO_BUSY`); a page's own deadline stays with that page. At most `2 * MAX_BUSY` tries (starts and opens each have a run of their own), then the build pauses.
+fn asked<R, T>(
+    renderer: &mut R,
+    busy: fn(&R) -> u32,
+    mut ask: impl FnMut(&mut R) -> Result<T, RenderFailure>,
+    meaning: fn(RenderFailure) -> FeedError,
+) -> Result<T, FeedError> {
+    for _ in 0..2 * u32::from(MAX_BUSY) {
+        let before = busy(renderer);
+        match ask(renderer) {
+            Ok(value) => return Ok(value),
+            Err(RenderFailure::TooBusyToStart) => {}
+            Err(failure) => {
+                return Err(match meaning(failure) {
+                    FeedError::Cant(_) if busy(renderer) > before => FeedError::Cant(TOO_BUSY),
+                    error => error,
+                });
+            }
         }
     }
+    Err(FeedError::Cant(TOO_BUSY))
+}
+
+fn busy_count(renderer: &DocRenderer) -> u32 {
+    renderer.stats().too_busy
 }
 
 fn about_the_install(failure: RenderFailure) -> FeedError {
@@ -112,15 +131,13 @@ fn read_failure(failure: RenderFailure) -> FeedError {
 
 impl PageFeed for WorkerFeed {
     fn page_count(&mut self) -> Result<u32, FeedError> {
-        let busy = self.stats().too_busy;
-        let counted = self.renderer()?.page_count();
-        counted.map_err(|failure| self.unless_too_busy(busy, whole_file(failure)))
+        asked(self.renderer()?, busy_count, DocRenderer::page_count, whole_file)
     }
 
     fn read(&mut self, page: u32) -> Result<FedPage, FeedError> {
         let check = self.check_hidden;
-        let busy = self.stats().too_busy;
-        let read = self.renderer()?.page_characters(page, true, check);
+        let renderer = self.renderer()?;
+        let read = asked(renderer, busy_count, |renderer| renderer.page_characters(page, true, check), read_failure);
         match read {
             Ok(characters) => {
                 if check && !characters.hidden_checked {
@@ -133,7 +150,7 @@ impl PageFeed for WorkerFeed {
                     hidden_checked: characters.hidden_checked,
                 })
             }
-            Err(failure) => Err(self.unless_too_busy(busy, read_failure(failure))),
+            Err(error) => Err(error),
         }
     }
 
@@ -337,5 +354,63 @@ mod tests {
         assert!(
             matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::MemoryLimit }), FeedError::Page(reason) if !reason.is_temporary())
         );
+    }
+
+    /// A renderer that answers from a script, counting `too_busy` as the real one does: each busy answer moves it and stays moved.
+    struct Scripted {
+        answers: std::vec::IntoIter<(Result<u32, RenderFailure>, bool)>,
+        too_busy: u32,
+        tries: u32,
+    }
+
+    fn scripted(answers: Vec<(Result<u32, RenderFailure>, bool)>) -> Scripted {
+        Scripted {
+            answers: answers.into_iter(),
+            too_busy: 0,
+            tries: 0,
+        }
+    }
+
+    fn ask_scripted(renderer: &mut Scripted) -> Result<u32, FeedError> {
+        asked(
+            renderer,
+            |r| r.too_busy,
+            |r| {
+                r.tries += 1;
+                let (answer, counted) = r.answers.next().unwrap_or((Err(RenderFailure::TooBusyToStart), true));
+                r.too_busy += u32::from(counted);
+                answer
+            },
+            whole_file,
+        )
+    }
+
+    /// Failure: a worker that hangs before hello pauses the build for ever (each run is a new process, so the service's count never gets past one start), and `recto wait indexing-done` never says it couldn't be built. The busy starts before it stay counted, and don't turn the `Unavailable` into a pause.
+    #[test]
+    fn a_worker_that_never_says_hello_is_a_failed_build_after_the_busy_starts() {
+        let busy = (Err(RenderFailure::TooBusyToStart), true);
+        let mut renderer = scripted(vec![busy.clone(), busy, (Err(RenderFailure::Unavailable), false)]);
+        let error = ask_scripted(&mut renderer).unwrap_err();
+        assert_eq!(error, FeedError::Cant("couldnt_open"));
+        let FeedError::Cant(code) = error else { unreachable!() };
+        assert_eq!(outcome_json(&BuildOutcome::Paused(code))["state"], "failed");
+    }
+
+    /// Failure: a busy Mac whose next start works loses the build, as it did when the first busy answer ended the run.
+    #[test]
+    fn a_start_that_works_after_a_busy_one_goes_on() {
+        let mut renderer = scripted(vec![(Err(RenderFailure::TooBusyToStart), true), (Ok(7), false)]);
+        assert_eq!(ask_scripted(&mut renderer), Ok(7));
+    }
+
+    /// Failure: a busy Mac is called a failure (a failure that moved the busy count must pause, not fail), or a Mac that is busy for ever makes the helper spin without end.
+    #[test]
+    fn a_busy_mac_pauses_the_build_and_the_asking_is_bounded() {
+        let mut renderer = scripted(vec![(Err(RenderFailure::Unavailable), true)]);
+        assert_eq!(ask_scripted(&mut renderer), Err(FeedError::Cant(TOO_BUSY)));
+        assert_eq!(outcome_json(&BuildOutcome::Paused(TOO_BUSY))["state"], "paused");
+        let mut renderer = scripted(vec![]);
+        assert_eq!(ask_scripted(&mut renderer), Err(FeedError::Cant(TOO_BUSY)));
+        assert_eq!(renderer.tries, 2 * u32::from(MAX_BUSY), "asks again no more than a start's and an open's bound");
     }
 }
