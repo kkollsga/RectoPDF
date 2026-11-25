@@ -38,6 +38,9 @@ pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
 /// **How long a print of `pages` pages may take, by the renderer's own bounds, and the kit's wait besides:** a fresh worker starts within its start timeout, then
 /// the open and each page get a page deadline. A wait for a print has patience for that, as a rule of the product's, not one machine's speed
 /// ([`WAIT_LIMIT`] alone was passed by a four-page print under a load of 14, 2026-11-25).
+///
+/// Only as far as the test files go: the bound follows the page count of the print being prepared now (Print anyway asks with 0 until the worker begins). It
+/// leaves out the heavy slot's wait (`export_slot_wait`, 60 s), one `start_timeout` for each further source file, and strip jobs, so nobody relies on it beyond them.
 #[must_use]
 pub fn print_patience(pages: u32) -> Duration {
     let policy = recto_render_service::Policy::default();
@@ -571,12 +574,14 @@ impl HeadlessApp {
     ///
     /// # Panics
     ///
-    /// Past [`WAIT_LIMIT`], naming what was still under way; while a print is being prepared, past [`print_patience`] of its pages, counted from the start.
+    /// Past [`WAIT_LIMIT`], naming what was still under way; while a print is being prepared, past [`print_patience`] of its pages (as far as that goes, see
+    /// there), counted from the start, and no later.
     #[track_caller]
     pub fn settle(&self) {
         let began = Instant::now();
+        let mut limit = WAIT_LIMIT;
         loop {
-            let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, WAIT_LIMIT, || {
+            let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, limit, || {
                 self.take_ops()
             }) else {
                 return;
@@ -585,6 +590,8 @@ impl HeadlessApp {
             let printing = self.core().tools.printing();
             let (done, of) = printing.progress();
             if printing.preparing() && began.elapsed() < print_patience(of) {
+                // The next round ends at the bound, not a full wait past it.
+                limit = WAIT_LIMIT.min(print_patience(of).saturating_sub(began.elapsed()));
                 continue;
             }
             panic!("settle: still under way after {:?} (a print at page {done} of {of}): {busy:?}", began.elapsed());
