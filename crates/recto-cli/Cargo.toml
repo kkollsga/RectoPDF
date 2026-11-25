@@ -24,6 +24,8 @@ recto-update.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Test-only: a process's start time, to tell a reused pid from the copy being waited for (`copy_cleanup`).
+libc.workspace = true
 # Test-only: `corpus::opened_text`, to read what a state folder keeps of a document.
 recto-index = { workspace = true, features = ["test-seams"] }
 # Test-only: `find_key::audit`, the look at a built program for the Keychain's code.

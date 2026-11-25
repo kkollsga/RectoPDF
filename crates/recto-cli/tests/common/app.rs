@@ -185,7 +185,7 @@ impl Drop for OwnCopy {
 
 /// Cancels private fixture program leases; scanned PIDs are observations only.
 fn end_runs(root: &Path, executables: &[PathBuf]) -> bool {
-    match copy_cleanup::end(root, executables, Duration::from_secs(5)) {
+    match copy_cleanup::end(root, executables, copy_cleanup::EXIT_CAP) {
         Ok(()) => true,
         Err(error) => {
             eprintln!("fixture cleanup retained {}: {error}", root.display());
