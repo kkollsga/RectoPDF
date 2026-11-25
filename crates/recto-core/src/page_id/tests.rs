@@ -11,6 +11,8 @@ std::thread_local! {
     pub(super) static DECRYPTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Streams' descriptors resolved for images and forms on this thread: how many times a page's drawn objects were read ([`super::xobject_record`]).
     pub(super) static DESCRIPTORS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// References followed to a value (not a stream) on this thread: how many times one object a dictionary points at was parsed ([`super::deref`]).
+    pub(super) static DEREFERENCES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Dictionaries resolved by reference (a resource dictionary, an `/XObject` table) on this thread: how many copies a page makes of what forms share.
     pub(super) static DICTIONARIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -1157,6 +1159,37 @@ fn a_gave_up_image_re_read_for_want_of_headroom_is_resolved_once() {
         expected.extend(xobject_bytes(format!("N{n}").as_bytes(), 3, stored));
         expected.extend_from_slice(&0u32.to_le_bytes());
     }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
+
+/// Failure caught (security, the same class as the memo's): an image's `/Filter` array of 8 references (the most a chain takes) to one object parsed it 8 times and
+/// more in one read (and `deref` parsed a non-stream twice for each), whatever its size. Each object a read points at is parsed once for that read, and the
+/// record is what the definition gives: a filter that isn't general, as stored.
+#[test]
+fn a_read_follows_each_reference_once() {
+    let refs = 8;
+    let filters: String = (0..refs).map(|_| "6 0 R ").collect();
+    let page = one_page(
+        "",
+        "/XObject << /Im1 5 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/Im1 Do"),
+            stream(&format!("/Subtype /Image /Filter [{filters}]"), IMAGE),
+            Obj::Dict("/DCTDecode".into()),
+        ],
+    );
+    DEREFERENCES.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert_eq!(DEREFERENCES.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/Im1 Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"Im1", 1, IMAGE));
+    expected.extend_from_slice(&0u32.to_le_bytes());
     expected.push(b'E');
     assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
 }

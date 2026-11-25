@@ -782,6 +782,10 @@ impl Read for Stored {
 }
 
 fn deref(reader: &IndexedReader, object: &Object) -> Option<Object> {
+    #[cfg(test)]
+    if matches!(object, Object::Reference(_)) {
+        tests::DEREFERENCES.with(|count| count.set(count.get() + 1));
+    }
     match object {
         // A stream is never resolved whole here: a reference to one isn't a value these walks need.
         Object::Reference(id) if reader.resolve_stream_descriptor(*id).is_ok() => None,
