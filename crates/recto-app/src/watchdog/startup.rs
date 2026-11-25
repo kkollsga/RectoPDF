@@ -38,7 +38,7 @@ const NAMES: [&str; 19] = [
     "window_constructed",
     "window_opened",
     "host_ready",
-    // Appended after host_ready so no earlier id moves. A launch that builds its menu twice keeps 22 points.
+    // Appended after host_ready so no earlier id moves. A launch that builds its menu three times keeps 25 points.
     "menu_model_ready",
     "services_menu_ready",
     "menu_built",
@@ -215,7 +215,8 @@ mod tests {
         }
     }
 
-    /// Failure: phase16+1 grows memory or cannot freeze a full trace, so future work overwrites the startup failure.
+    /// Failure: phase16+1 grows memory or cannot freeze a full trace, so future work overwrites the startup failure; or a busy launch fills the trace
+    /// and drops the very point its intervals are measured to, `host_ready`, so the evidence reads complete but ends short.
     #[test]
     fn a_full_startup_trace_stays_bounded_and_still_freezes() {
         let trace = Startup::default();
@@ -225,7 +226,9 @@ mod tests {
         }
         note(&trace, 14, 99, Some(99));
         let report = trace.json();
-        assert_eq!(report["points"].as_array().unwrap().len(), CAP);
+        let points = report["points"].as_array().unwrap();
+        assert_eq!(points.len(), CAP);
+        assert_eq!(points[CAP - 1]["phase"], "host_ready", "the ready point was dropped: {report}");
         assert_eq!(report["lost"], 1);
         assert_eq!(report["complete"], true);
         note(&trace, 0, 100, Some(100));
@@ -383,23 +386,6 @@ mod tests {
         for (point, id) in points.iter().zip(&ids) {
             assert_eq!(point["phase"], NAMES[usize::from(*id)]);
         }
-    }
-
-    /// Failure: a busy launch fills the trace and drops the very point its intervals are measured to, `host_ready`, so the evidence reads complete but ends short.
-    #[test]
-    fn the_ready_point_is_kept_when_the_trace_overflows() {
-        let trace = Startup::default();
-        note(&trace, 0, 1, Some(1));
-        for at in 0..(CAP as u64 + 5) {
-            note(&trace, 1, 2 + at, Some(2 + at));
-        }
-        note(&trace, 14, 100, Some(100));
-        let report = trace.json();
-        let points = report["points"].as_array().unwrap();
-        assert_eq!(points.len(), CAP);
-        assert_eq!(points[CAP - 1]["phase"], "host_ready");
-        assert_eq!(report["complete"], true);
-        assert_eq!(report["lost"], 7, "dropped points are counted: {report}");
     }
 
     /// Failure: startup observation grows a per-app value without reporting its whole compiler size.
