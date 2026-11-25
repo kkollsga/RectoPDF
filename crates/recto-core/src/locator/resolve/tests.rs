@@ -175,6 +175,74 @@ fn a_byte_cap_of_one_stops_after_one_page_and_says_incomplete() {
     assert!(now.bytes_read >= 1);
 }
 
+/// Failure: the byte cap is off by one at its limit. The cap is checked before each read: with C the cost of the first two pages, a cap of exactly C
+/// stops after two (incomplete, the third unread), and a cap of C + 1 reads the third as well (all three, `Gone`).
+#[test]
+fn a_byte_cap_equal_to_what_was_read_stops_and_one_more_byte_reads_on() {
+    let locator = reference_of(&["A", "B", "C"], 2);
+    let now = pdf(&["D", "E", "F"]);
+    let all = resolve_in(&locator, &now, &ScanCaps { bytes: u64::MAX, ..STANDARD });
+    assert_eq!((all.status, all.pages_read), (Status::Gone, 3));
+    let (reader, map) = open(&now);
+    let before_last: u64 = (0..2)
+        .map(|page| page_id::read_page(&reader, map.get(page).expect("page"), &STANDARD.page).bytes)
+        .sum();
+    let at = resolve_in(
+        &locator,
+        &now,
+        &ScanCaps {
+            bytes: before_last,
+            ..STANDARD
+        },
+    );
+    assert_eq!(at.status, Status::Incomplete { pages: vec![] });
+    assert_eq!((at.looked, at.pages_read), (Looked::Part, 2));
+    let over = resolve_in(
+        &locator,
+        &now,
+        &ScanCaps {
+            bytes: before_last + 1,
+            ..STANDARD
+        },
+    );
+    assert_eq!((over.status, over.looked, over.pages_read), (Status::Gone, Looked::All, 3));
+}
+
+/// Failure: someone makes a scan charge a shared image once, so the byte cap stops bounding the work. The charge matches the work done: a shared
+/// image is decoded and hashed on each page that draws it, so it is charged on each. One page draws an image and is scanned alone; two pages draw it and are scanned together: the two cost at least
+/// twice the one, and the one cost more than the image.
+#[test]
+fn a_scan_charges_an_image_each_page_draws_it() {
+    let side = 64usize;
+    let drawing = |names: &[&str]| {
+        let image = recto_testpdf::Object::Stream {
+            dict: format!("/Type /XObject /Subtype /Image /Width {side} /Height {side} /ColorSpace /DeviceGray /BitsPerComponent 8"),
+            data: (0..side * side).map(|i| (i % 251) as u8).collect(),
+        };
+        let pages: Vec<Page> = names
+            .iter()
+            .map(|name| Page::new(format!("q 100 0 0 100 72 500 cm /Im1 Do Q BT /F1 12 Tf 72 700 Td ({name}) Tj ET")))
+            .collect();
+        let number = recto_testpdf::first_extra_object(pages.len());
+        recto_testpdf::pages_with(&pages, &format!("/XObject << /Im1 {number} 0 R >>"), vec![image])
+    };
+    let locator = reference_of(&["X", "Y"], 0);
+    let alone = resolve_in(&locator, &drawing(&["A"]), &STANDARD);
+    let together = resolve_in(&locator, &drawing(&["A", "B"]), &STANDARD);
+    assert_eq!((alone.status, together.status), (Status::Gone, Status::Gone));
+    assert!(
+        alone.bytes_read > (side * side) as u64,
+        "a page's charge includes the image it draws: {}",
+        alone.bytes_read
+    );
+    assert!(
+        together.bytes_read >= 2 * alone.bytes_read,
+        "the second page was charged the image again: {} for two pages, {} for one",
+        together.bytes_read,
+        alone.bytes_read
+    );
+}
+
 /// Failure: a hint past the end of the file indexes out of the page map, or hides a page that is there.
 #[test]
 fn a_hint_past_the_end_never_indexes_out() {
