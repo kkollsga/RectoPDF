@@ -335,10 +335,11 @@ fn signed_original_refuses_save_and_save_as_keeps_it() {
     let p = make(TargetMode::SaveAs, true, &[], &DESIGN_LIMITS).unwrap();
     assert!(p.unsigned_copy_notice());
     assert_eq!(p.line(Store::SourcePdf).disposition, Disposition::KeptAsSource);
-    assert!(p
-        .steps()
-        .iter()
-        .all(|s| !matches!(s.effect(), Effect::Purge(Store::SourcePdf) | Effect::Rewrite(Store::SourcePdf))));
+    assert!(
+        p.steps()
+            .iter()
+            .all(|s| !matches!(s.effect(), Effect::Purge(Store::SourcePdf) | Effect::Rewrite(Store::SourcePdf)))
+    );
     assert!(!ok(&[]).unsigned_copy_notice());
     assert!(!make(TargetMode::SaveAs, false, &[], &DESIGN_LIMITS).unwrap().unsigned_copy_notice());
 }
