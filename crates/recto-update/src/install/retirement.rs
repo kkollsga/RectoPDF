@@ -161,7 +161,13 @@ pub(super) fn record_lock(
     mut pause: impl FnMut(Duration),
 ) -> io::Result<RecordLock> {
     loop {
-        let held = RecordLock(local::try_update_record_lock(root)?);
+        let held = RecordLock(local::try_update_record_lock(root).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                io::Error::new(error.kind(), format!("the record's lock is held by another writer ({error})"))
+            } else {
+                error
+            }
+        })?);
         let unknown = match present() {
             Ok(false) => return Ok(held),
             Ok(true) => return Err(io::Error::other("an app appeared before rollback acquired the record")),
@@ -542,6 +548,20 @@ mod recovery_tests {
         );
         drop(held);
         free("released with the guard");
+    }
+
+    /// Failure: another writer holds the record's lock on a retry and the refusal reads as a bare "Resource temporarily
+    /// unavailable", which the outcome then reports as an unproven app exit.
+    #[test]
+    fn a_record_lock_held_by_another_writer_says_so() {
+        let dir = recto_testpdf::TempDir::new("record-lock-held-");
+        let _writer = local::try_update_record_lock(dir.path()).unwrap();
+        let error = match record_lock(dir.path(), || Ok(false), Instant::now(), Instant::now, |_| panic!("no pause")) {
+            Ok(_) => panic!("took a lock another writer holds"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("held by another writer"), "{error}");
     }
 
     fn version(app: &Path, version: &str) -> Vec<u8> {
