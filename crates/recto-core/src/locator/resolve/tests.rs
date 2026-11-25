@@ -97,6 +97,21 @@ fn an_unchanged_hint_is_found_without_a_scan() {
     assert_eq!(now.pages_read, 2, "the first page for the document tag, and the hinted page");
 }
 
+/// Failure: the hinted page, read for the hint, is read a second time by the scan when it is past the first [`TAG_PAGES`] pages, so a 20-page file
+/// costs 21 reads.
+#[test]
+fn a_hint_past_the_tag_pages_is_read_once_by_the_scan() {
+    let names: Vec<String> = (0..20).map(|i| format!("P{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (reader, map) = open(&pdf(&refs));
+    let locator = reference(&reader, &map, 18, &STANDARD).expect("a reference");
+    let mut changed = refs.clone();
+    changed.swap(18, 5);
+    let now = resolve_in(&locator, &pdf(&changed), &STANDARD);
+    assert_eq!(now.status, Status::Moved { page: 5 });
+    assert_eq!(now.pages_read, 20, "every page, each once, the hinted one included");
+}
+
 /// Failure: pages that reached a cap (no identity) count as "no match", and a page is called gone that was never read.
 #[test]
 fn a_page_with_no_identity_makes_a_scan_incomplete_never_gone() {

@@ -119,13 +119,16 @@ pub enum Unreferenceable {
     NoDocumentTag,
 }
 
-/// A page read under a [`ScanCaps`], and the spending so far. The first [`TAG_PAGES`] reads are kept so that the document tags, the hint and the scan
-/// never read one twice. Not kept beyond one call.
+/// A page read under a [`ScanCaps`], and the spending so far. The first [`TAG_PAGES`] reads and the hint's are kept so that the document tags, the
+/// hint and the scan never read one twice. Not kept beyond one call.
 struct Reads<'a> {
     reader: &'a IndexedReader,
     map: &'a PageMap,
     caps: &'a ScanCaps,
     first: [Option<PageRead>; TAG_PAGES],
+    /// One more kept read: the page the caller named with [`Reads::keep`], when it is past the first [`TAG_PAGES`].
+    kept: Option<(u32, PageRead)>,
+    keep: Option<u32>,
     pages: u32,
     bytes: u64,
 }
@@ -146,15 +149,25 @@ impl<'a> Reads<'a> {
             map,
             caps,
             first: [None; TAG_PAGES],
+            kept: None,
+            keep: None,
             pages: 0,
             bytes: 0,
         }
+    }
+
+    /// Keep the read of page `index` past the first [`TAG_PAGES`], so asking for it again costs nothing: the hint, which the scan meets again.
+    fn keep(&mut self, index: u32) {
+        self.keep = Some(index);
     }
 
     /// Page `index` (zero-based): from what was read already, else read now while `bytes` and `pages` allow it.
     fn get(&mut self, index: u32) -> Got {
         let Some(entry) = self.map.get(index as usize) else { return Got::Absent };
         if let Some(read) = self.first.get(index as usize).copied().flatten() {
+            return Got::Read(read);
+        }
+        if let Some((_, read)) = self.kept.filter(|(kept, _)| *kept == index) {
             return Got::Read(read);
         }
         if self.bytes >= self.caps.bytes || self.pages >= self.caps.pages {
@@ -165,6 +178,8 @@ impl<'a> Reads<'a> {
         self.bytes = self.bytes.saturating_add(read.bytes);
         if let Some(slot) = self.first.get_mut(index as usize) {
             *slot = Some(read);
+        } else if self.keep == Some(index) {
+            self.kept = Some((index, read));
         }
         Got::Read(read)
     }
@@ -226,6 +241,7 @@ pub fn resolve(locator: &Locator, reader: &IndexedReader, map: &PageMap, caps: &
     let document = compare_documents(locator.document(), id, content);
     let wanted = locator.page().page_check();
     let hint = locator.page().number() - 1;
+    reads.keep(hint);
 
     let mut found = None;
     if let Got::Read(PageRead { identity: Some(identity), .. }) = reads.get(hint)
