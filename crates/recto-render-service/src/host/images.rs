@@ -1,6 +1,6 @@
 //! Where a page's images are, from the host's side, for dark paper: asked of a worker once a page, as a walk over its objects that decodes nothing, and remembered, up to a cap. See `docs/engineering/paper.md`.
 
-use super::{DocRenderer, JobFailure, KillReason, MAX_ASKING_KILLS, MAX_FAILED_PAGES, PageDrawState, RenderFailure, WorkerClass, file_stamp};
+use super::{DocRenderer, JobFailure, KillReason, MAX_ASKING_KILLS, MAX_FAILED_PAGES, PageDrawState, RenderFailure, WorkerClass, busy, file_stamp};
 use recto_proto::{self as proto, Kind, ProtoError};
 use std::collections::{HashMap, HashSet};
 
@@ -52,6 +52,7 @@ impl DocRenderer {
         }
         let job_id = self.next_job_id();
         let frame = proto::encode_traits_request(job_id, page);
+        let busy_before = busy::before(self);
         // Loads this page, which is what the next job for it needs anyway, so it leaves nothing that could explain that job failing.
         let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| {
             match reply.kind {
@@ -74,7 +75,7 @@ impl DocRenderer {
                 self.set_draw(page, 0.0, PageDrawState::NeedsHeavy);
                 0
             }
-            Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
+            Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy_before)),
             Err(failure) => return Err(failure.into()),
         };
         if self.images.traits.len() >= MAX_FAILED_PAGES {

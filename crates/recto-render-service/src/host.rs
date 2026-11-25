@@ -989,6 +989,7 @@ impl DocRenderer {
         }
         let job_id = self.next_job_id();
         let frame = proto::encode_size_request(job_id, page);
+        let busy_before = busy::before(self);
         let size = self.run_job(job_id, page, false, WorkerClass::Normal, None, &[], &frame, |reply| match reply.kind {
             Kind::Size => {
                 let size = PageSize::decode(&reply.payload)?;
@@ -999,10 +1000,7 @@ impl DocRenderer {
         });
         match size {
             Ok(size) => Ok((size.width, size.height)),
-            Err(JobFailure::Stopped(reason)) => {
-                self.remember(page).size = Some(reason);
-                Err(RenderFailure::PageReadFailed { page, reason })
-            }
+            Err(JobFailure::Stopped(reason)) => Err(busy::size_stopped(self, page, reason, busy_before)),
             Err(failure) => Err(failure.into()),
         }
     }
@@ -1067,7 +1065,7 @@ impl DocRenderer {
             if self.control.is_stale(request.generation) {
                 return Ok(TileResult::Cancelled { worker_killed: false });
             }
-            let (state, busy) = (self.page_draw_state_at(page, scale), self.stats.too_busy);
+            let (state, busy_before) = (self.page_draw_state_at(page, scale), busy::before(self));
             if !matches!(state, PageDrawState::Failed(_)) && self.stopped() {
                 return Err(RenderFailure::DocumentStopped);
             }
@@ -1088,7 +1086,7 @@ impl DocRenderer {
                 },
                 PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal, tile_edge) {
                     Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::NeedsHeavy),
-                    Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy)),
+                    Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy_before)),
                     other => return busy::drew(self, page, other),
                 },
                 PageDrawState::NeedsHeavy => {
@@ -1144,7 +1142,7 @@ impl DocRenderer {
                             DrawPurpose::Export => {}
                         },
                         Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::LowResOnly),
-                        Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy)),
+                        Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy_before)),
                         other => return busy::drew(self, page, other),
                     }
                 }
@@ -1208,9 +1206,10 @@ impl DocRenderer {
             height: bottom - y,
         };
         let smaller = TileRequest { rect, scale, ..*request };
-        let busy = self.stats.too_busy;
+        let busy_before = busy::before(self);
         match self.draw_once(&smaller, surface, WorkerClass::Normal, 0) {
             Ok(TileResult::Done(tile)) => {
+                busy::landed(self, page);
                 self.stats.low_res_tiles += 1;
                 Ok(TileResult::Done(Tile {
                     low_res: Some(LowRes { scale, rect, why }),
@@ -1222,7 +1221,7 @@ impl DocRenderer {
                 Err(RenderFailure::NotDrawableNow { page, why })
             }
             Err(JobFailure::Stopped(KillReason::MemoryLimit)) => Err(self.give_up_drawing(page, scale, KillReason::MemoryLimit)),
-            Err(JobFailure::Stopped(reason)) => Err(busy::draw_stopped(self, page, 0.0, reason, busy)),
+            Err(JobFailure::Stopped(reason)) => Err(busy::draw_stopped(self, page, 0.0, reason, busy_before)),
             other => busy::drew(self, page, other),
         }
     }
@@ -1322,7 +1321,7 @@ impl DocRenderer {
             && !self.remembered(page).is_some_and(|memory| memory.check_stopped)
             && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp;
         if may_check {
-            let (kills, busy) = (self.kills(), self.left_out.busy);
+            let (kills, busy_before) = (self.kills(), self.left_out.busy);
             match self.text_job(page, boxes, true, generation) {
                 // A worker that breaks the protocol is that worker's doing, whatever it was asked.
                 Err(JobFailure::Stopped(reason @ KillReason::Rejected(_))) => {
@@ -1330,16 +1329,16 @@ impl DocRenderer {
                     return Err(RenderFailure::PageReadFailed { page, reason });
                 }
                 Err(JobFailure::Stopped(_)) => {
-                    self.left_out.check = self.left_out.check.saturating_add(self.left_out.since(self.kills() - kills, busy));
+                    self.left_out.check = self.left_out.check.saturating_add(self.left_out.since(self.kills() - kills, busy_before));
                     self.remember(page).check_stopped = true;
                 }
                 other => return other.map_err(RenderFailure::from),
             }
         }
-        let busy = self.stats.too_busy;
+        let busy_before = self.stats.too_busy;
         match self.text_job(page, boxes, false, generation) {
             // The Mac was too busy for the read to get its time: nothing's known about the page, so it isn't remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long. A worker that hangs looks the same, so after [`MAX_BUSY`] of them in a row the page is remembered after all, and a hostile page costs a deadline at most that many times.
-            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy => Err(busy::read_stopped(self, page, reason)),
+            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy_before => Err(busy::read_stopped(self, page, reason)),
             Err(JobFailure::Stopped(reason)) => {
                 self.remember(page).text = Some(reason);
                 Err(RenderFailure::PageReadFailed { page, reason })

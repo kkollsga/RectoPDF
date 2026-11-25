@@ -855,6 +855,38 @@ fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {
     assert_eq!(doc.stats().spawns, spawns, "with no worker started to learn it again");
 }
 
+/// Runs `ask` with the worker stopped and the page's deadline short, as a wake leaves it: the Mac gave the worker no processor time.
+fn asked_starved<T>(doc: &mut DocRenderer, ask: impl FnOnce(&mut DocRenderer) -> T) -> T {
+    stop_worker(doc);
+    recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(250), ask)
+}
+
+/// Failure (review of the long-session wake, B1): the reader asks for a page's traits before it draws, and a traits job starved of the processor left the page failed at every scale for good, so the page stayed bare however often it was drawn again. It comes back as `TooBusy`, nothing is remembered, and a draw after it lands.
+#[test]
+fn a_traits_job_the_mac_was_too_busy_for_is_tried_again() {
+    let file = TempPdf::new("busy-traits.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    let asked = asked_starved(&mut doc, |doc| doc.largest_image_pixels(1, 0));
+    assert!(matches!(asked, Err(RenderFailure::TooBusy { page: 1 })), "{asked:?}, {:?}", doc.stats());
+    assert_eq!(doc.page_draw_state_at(1, 2.0), PageDrawState::Sharp, "nothing was remembered");
+    assert!(
+        matches!(draws(&mut doc, 1), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
+        "drawn when asked again"
+    );
+}
+
+/// Failure (review of the long-session wake, S2): a page's size asked while the Mac was too busy for the worker was remembered as failed for the session, and the page was bare for ever. It comes back as `TooBusy` and is read again when asked.
+#[test]
+fn a_size_the_mac_was_too_busy_for_is_asked_again() {
+    let file = TempPdf::new("busy-size.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    let asked = asked_starved(&mut doc, |doc| doc.page_size(1));
+    assert!(matches!(asked, Err(RenderFailure::TooBusy { page: 1 })), "{asked:?}, {:?}", doc.stats());
+    assert!(doc.page_size(1).is_ok(), "read when asked again");
+}
+
 /// Failure: a check nobody wants any more holds the thread that draws for as long as its deadline, up to 5 s, and on a hostile file again and again, while the page in view stays blank. It has to stop when it's told to, and a text job's generation has to reach the worker.
 #[test]
 fn a_check_stops_when_it_is_cancelled() {
