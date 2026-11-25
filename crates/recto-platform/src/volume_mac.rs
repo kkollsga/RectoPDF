@@ -20,6 +20,9 @@
 //!
 //! With A and B attached together, B's `st_dev` was another number (16777252 for APFS, 16777248 for HFS+, whose number A's earlier attach
 //! had been given): `st_dev` and `f_fsid.val[0]` are equal, and the number is reused by the next attach, so it can't say which disk it is.
+//! ExFAT is left out though its UUID looked stable here: it is made from a 32-bit volume serial number, not a UUID of its own, so two
+//! cards can share one (MS-DOS likewise, and its copy was given a different one beside the original). Leaving them out can only cause a
+//! false refusal, never a false join.
 //! The same UUID came from asking the file's path and from asking `f_mntonname`. A volume attached from a copy has the original's UUID, a
 //! block copy being a copy of it, which is why the lineage has a fork rule (`docs/design/removal.md` §10, D2b).
 
