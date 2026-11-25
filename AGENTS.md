@@ -35,7 +35,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - **A test names the failure it catches** in its doc comment. Don't pin exact pixels, wording or timings from one machine; assert the property.
 - **No manual tests and no synthetic input:** no posted mouse or key events, AppleScript or accessibility input. QA commands call the same methods the UI calls. Quiet runs never take the screen, focus or keyboard, and use temp state only.
 - **No bugs left behind.** Any bug you see, related or not, gets a fix and a test in its own commit. "Flaky" isn't an answer.
-- Memory tests run in their own binary, on release builds where the number matters. Measure the whole process (`phys_footprint`).
+- Memory tests run in their own binary, on release builds where the number matters. Measure the whole process (`phys_footprint`) for whole-app budgets. **Where the question is what code holds** (a cache, per-page or per-tab state), count live bytes with a counting allocator as well: on this macOS a freed large block stays in `phys_footprint` (a dropped 1 GiB `Vec` still shows ~1 GiB), so footprint can't tell held memory from freed (2026-11-25: most of an "11.5 GB" page-identity peak was freed memory). Owner, 2026-11-25, on that recommendation: "Agreed".
 
 ## This machine
 - 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. `HEAVY_SOLO=1` runs with nothing else running: only the coordinator uses it, for final measurements at a quiet time. Workers measure under load and say so. `heavy.sh --status` shows the queue, and `--report` the waits.
