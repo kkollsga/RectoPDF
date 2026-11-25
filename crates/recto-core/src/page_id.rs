@@ -37,7 +37,7 @@
 //! 4. `E`.
 //!
 //! **2026-11-25: the records cap went from 256 to 8,192, and the forms cap is new.** No existing digest changed (0 of 5,857 pages of the corpus
-//! `bench100`, compared page by page), and 11 pages that had none gained one; the name stays `recto-page/1`. The only cap whose value is hashed is the
+//! `bench100`, compared page by page), and 11 pages that had none gained one (one more refused page, the 330 MiB map's, is charged more work before its refusal); the name stays `recto-page/1`. The only cap whose value is hashed is the
 //! image's own ([`Caps::xobject_bytes`]); the others only refuse, and a page with at most 256 records drew at most 128 forms, so the forms cap can't touch
 //! an identity made before.
 //!
