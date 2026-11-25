@@ -34,7 +34,7 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
         let name = entry.file_name();
         let name = name.as_encoded_bytes();
         let Ok(meta) = entry.metadata() else { return Ok(()) };
-        if name == b".DS_Store" && meta.is_file() {
+        if name == b".DS_Store" && meta.is_file() && links(&meta) == 1 {
             continue;
         }
         let owner = match names.get(name) {

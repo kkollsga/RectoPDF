@@ -192,6 +192,15 @@ fn a_folder_over_the_cap_refuses() {
     assert!(survey(&dir, TargetMode::Save, 3).is_ok());
 }
 
+/// Puts a folder's mode back on drop, so a failed check can't leave one `TempDir` can't remove.
+struct Restore(PathBuf);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
 /// Failure: a folder that can't be read, or whose parent can't be searched, is marked complete, so a plan claims "none found" about backups it
 /// never saw.
 #[test]
@@ -200,6 +209,7 @@ fn an_unreadable_folder_is_not_complete() {
     let folder = base.join("backups");
     std::fs::create_dir(&folder).unwrap();
     std::fs::write(backup(&folder, MINE), b"%PDF-1.4").unwrap();
+    let _restore = [Restore(folder.clone()), Restore(base.to_path_buf())];
     let mode = |path: &Path, bits| std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
     mode(&folder, 0o000);
     let unlistable = refusal(&folder, TargetMode::Save);
@@ -211,7 +221,7 @@ fn an_unreadable_folder_is_not_complete() {
     assert_eq!(unsearchable, Refusal::Incomplete(Store::Backup));
 }
 
-/// Failure: a link or a directory named `.DS_Store` is skipped as Finder's file, so whatever it leads to is never looked at and the plan
+/// Failure: a link, a directory or a hard link named `.DS_Store` is skipped as Finder's file, so whatever it leads to is never looked at and the plan
 /// claims "none found".
 #[test]
 fn only_a_plain_ds_store_file_is_skipped() {
@@ -222,16 +232,25 @@ fn only_a_plain_ds_store_file_is_skipped() {
     let folder = TempDir::new("recto-backups-");
     std::fs::create_dir(folder.join(".DS_Store")).unwrap();
     assert_eq!(refusal(&folder, TargetMode::Save), Refusal::Incomplete(Store::Backup));
+    // A hard link under that name is a second way to reach another file, so it is shared, not skipped.
+    let hard = TempDir::new("recto-backups-");
+    std::fs::write(target.join("other"), b"x").unwrap();
+    std::fs::hard_link(target.join("other"), hard.join(".DS_Store")).unwrap();
+    assert_eq!(refusal(&hard, TargetMode::Save), Refusal::Shared(Store::Backup));
 }
 
 /// Failure: the adapter starts reading, renaming or removing a backup. It decides by name and metadata alone (rule 5 and 6: a backup is a PDF
-/// of the document, hostile input and not ours to touch here), and the survey is read-only.
+/// of the document, hostile input and not ours to touch here), and the survey is read-only. A tripwire on the source, not proof: the behavioural
+/// guard is `the_targets_backup_is_found_and_anothers_left`, whose mode-000 files an opener would trip on.
 #[test]
 fn the_adapter_only_lists_and_never_touches_a_file() {
     let source = include_str!("../backups.rs");
-    let production = source.split("#[cfg(test)]").next().unwrap();
+    let production = source.split("\n#[cfg(test)]\nmod tests;").next().unwrap();
     for word in [
-        "File::open",
+        "File::",
+        "fs::copy",
+        "hard_link",
+        "libc::open",
         "fs::read(",
         "fs::read_to",
         "OpenOptions",
