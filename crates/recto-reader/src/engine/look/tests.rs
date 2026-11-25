@@ -163,6 +163,14 @@ fn a_look_to_be_tried_again_is_never_handed_on_or_kept() {
     assert_eq!(*at(&mut doc, &mut looks, 30).unwrap(), PageLook::dark_page(), "decided at its time");
 }
 
+/// Failure (review of the long-session wake, B1): the small picture a dark page's look is decided from comes back `TooBusy` when the Mac gave the worker no processor, and the look took it for a final failure: a dark slide's look was decided and kept as a page of text, shown light for the renderer's life. It's a try that may pass: nothing's kept and the page is asked again after the wait. Seen failing with `TooBusy` as `Picture::Final` (decided at the first ask).
+#[test]
+fn a_small_picture_the_mac_was_too_busy_for_is_tried_again_not_decided() {
+    let (mut doc, mut looks) = (StandIn::new(Some(Vec::new()), [Err(RenderFailure::TooBusy { page: 0 })]), Looks::default());
+    assert_eq!(asked(&mut doc, &mut looks), Err(NoLook::Again));
+    assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
+}
+
 /// Failure: a picture that can't be had for good (a page that stopped its worker) is tried again at every job, a tile thrown away each time. It takes [`PageLook::undecided`] at once and keeps it, as before.
 #[test]
 fn a_small_picture_that_fails_for_good_is_answered_at_once() {
