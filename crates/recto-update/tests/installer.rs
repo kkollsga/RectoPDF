@@ -1254,6 +1254,7 @@ fn an_app_opened_while_going_back_is_not_replaced() {
     wait_until("the installer to put the record back", Duration::from_secs(30), || {
         bed.files.work.join("paused").exists()
     });
+    assert_eq!(bed.record(), "the state", "the record is put back before the pause");
     let mut second = bed.dir.own(
         Command::new(bed.plan.executable())
             .args([
