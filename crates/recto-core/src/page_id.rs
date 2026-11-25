@@ -49,8 +49,8 @@
 //! together; more than 8,192 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 8,192 names); more than 256
 //! forms drawn by the page whose content draws a name; more than 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored
 //! length of the streams opened (each charged its length when
-//! it's opened, before a byte is read, and again if it's read again as stored); more than 256 MiB decoded in all, a decode that failed counted as one
-//! that didn't ([`Caps::decode_work`]); and in a file anyone may open (encrypted with an empty password), a
+//! it's opened, before a byte is read, and again if it's read again as stored); more than 256 MiB read through a stream in all, decoded or as stored, stage by stage of a
+//! chain, a decode that failed counted as one that didn't ([`Caps::decode_work`]); and in a file anyone may open (encrypted with an empty password), a
 //! stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs at most the caps, holding a few buffers
 //! of [`decode::CHUNK`], a predictor's row and the scan's names (8,192 of at most 127 bytes).
 //!
@@ -84,8 +84,8 @@
 
 mod decode;
 mod scan;
-
 mod work;
+
 use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
 /// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_version_for_identity`]).
 pub use lopdf::{IndexedReader, PageMap};
@@ -96,8 +96,8 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
 use std::rc::Rc;
-
 use work::Meter;
+
 /// The digest's name, and the first bytes hashed.
 pub const DIGEST_NAME: &str = "recto-page/1";
 
@@ -112,7 +112,7 @@ pub struct Caps {
     pub xobject_bytes: u64,
     pub page_bytes: u64,
     pub page_read: u64,
-    /// Bytes a page may decode in all, **the failed ones too**; refusal only, never hashed and never in [`PageRead::bytes`].
+    /// Bytes a page may read through a stream in all, decoded or as stored, **every stage of a chain's output counted and the failed ones too**; refusal only, never hashed and never in [`PageRead::bytes`].
     pub decode_work: u64,
 }
 
@@ -857,7 +857,6 @@ enum Taken {
 #[allow(clippy::too_many_arguments)] // Each says one thing of this one read; a struct would be built for each call and read once.
 fn take_stream(
     reader: &IndexedReader,
-    reader: &IndexedReader,
     id: ObjectId,
     descriptor: &lopdf::IndexedStreamDescriptor,
     chain: Option<&[decode::Filter]>,
@@ -876,6 +875,7 @@ fn take_stream(
 /// [`take_stream`]'s read, its decode work charged to `meter`.
 #[allow(clippy::too_many_arguments)] // As [`take_stream`].
 fn take_metered(
+    reader: &IndexedReader,
     id: ObjectId,
     descriptor: &lopdf::IndexedStreamDescriptor,
     chain: Option<&[decode::Filter]>,
@@ -883,8 +883,8 @@ fn take_metered(
     budget: &mut Budget<'_>,
     mut scan: Option<&mut DoScan>,
     prefix: bool,
-) -> Result<Taken, Capped> {
     meter: &Meter,
+) -> Result<Taken, Capped> {
     let Some(length) = descriptor.encoded_len() else {
         return Ok(Taken::Failed);
     };
@@ -928,19 +928,17 @@ fn take_metered(
         let read = match source.read(&mut buf[..want]) {
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return Ok(Taken::Failed),
             // The work ran out in some stage, which a decoder may have turned into an error of its own: a cap reached, not a failed decode.
             Err(_) if meter.ran_out() => return Err(Capped),
+            Err(_) => return Ok(Taken::Failed),
         };
-        if read == 0 {
         // A decoder that swallowed the error and went on (or ended) hashes what depends on where the work ran out.
         if meter.ran_out() {
             return Err(Capped);
         }
+        if read == 0 {
             break;
         }
-        // Every byte a decoder gives is work done, whether the stream ends well or not (a failed decode of 16 MiB costs what a good one does).
-        budget.work_left = budget.work_left.checked_sub(read as u64).ok_or(Capped)?;
         if n + read as u64 > limit {
             if !prefix {
                 return Err(Capped);
