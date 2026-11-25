@@ -97,6 +97,9 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
 }
 
 /// True only when the start name is read and differs from the wanted file's name (both cut to `MAXCOMLEN`).
+/// Known limit: the start name is the last part of the path the program was started through, so the app's own executable
+/// run through a link of another name, and then deleted while running, would be skipped. The app as launched normally
+/// runs under its own name, so a running copy of it stays unknown.
 fn started_as_another_program(wanted: &Path, scan: &mut impl Scan, pid: i32) -> bool {
     let Some(wanted) = wanted.file_name() else { return false };
     let wanted = &wanted.as_bytes()[..wanted.len().min(MAXCOMLEN)];
