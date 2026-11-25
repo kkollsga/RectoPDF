@@ -770,6 +770,7 @@ impl<'a> Reader<'a> {
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             Err(failure) if read_again_live => return Ok(Got::Failed(why(failure))),
+            // This arm precedes the whole-search `Err` arms below, so a file that vanishes during a busy deadline is reported busy, not as ending the search (accepted; rare).
             // A page the index marked failed stays failed, but a worker the Mac gave no processor to says nothing about a page.
             Err(_) if renderer.stats().too_busy > busy => return Ok(Got::Busy),
             Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
