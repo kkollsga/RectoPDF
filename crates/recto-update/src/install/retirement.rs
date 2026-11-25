@@ -182,6 +182,25 @@ pub(super) fn record_lock(
     }
 }
 
+/// The last look before a swap, taken under the record's lock: one observation, never repeated. The early
+/// [`before_swap`] waits out unknown answers and finds an app that's plainly back before the slow work; this is the
+/// look nothing slow comes after, so it must not retry: a retry would give a same-user racer its whole patience to
+/// replace `new/` after the signature check. A live app, an unknown answer or a lock another writer holds refuses; on
+/// a definite absence the lock is held, so the app's own launch (which takes it) waits for the swap.
+pub(super) fn last_look(root: &Path, present: impl FnMut() -> io::Result<bool>) -> io::Result<RecordLock> {
+    record_lock(root, present, Instant::now(), Instant::now, |_| {})
+}
+
+/// The same single look when the record's lock is already held (a rollback takes it earlier, and keeps it until it
+/// returns): `Ok` only on a definite absence, so a live or unknown app is never read as absent.
+pub(super) fn still_absent(mut present: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
+    match present() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(io::Error::other("an app appeared before the swap")),
+        Err(error) => Err(error),
+    }
+}
+
 trait Owned {
     fn exited(&mut self) -> io::Result<bool>;
     fn kill(&mut self) -> io::Result<()>;
@@ -563,6 +582,45 @@ mod recovery_tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(error.to_string().contains("held by another writer"), "{error}");
+    }
+
+    /// Failure: the look before a swap retries (a racer then has the patience to open the app or replace `new/`),
+    /// reads an unknown answer as absent, or leaves the record's lock held after a refusal, or looks without the lock.
+    #[test]
+    fn the_last_look_sees_once_and_never_retries() {
+        let dir = recto_testpdf::TempDir::new("last-look-");
+        let free = |what: &str| drop(local::try_update_record_lock(dir.path()).unwrap_or_else(|error| panic!("{what}: {error}")));
+        let held = last_look(dir.path(), || Ok(false)).unwrap();
+        assert!(
+            local::try_update_record_lock(dir.path()).is_err(),
+            "on absence the lock is held when it returns"
+        );
+        drop(held);
+        free("released with the guard");
+        let error = last_look(dir.path(), || Ok(true)).map(drop).unwrap_err();
+        assert!(error.to_string().contains("appeared"), "{error}");
+        free("a live app leaves the lock free");
+        let mut calls = 0;
+        let error = last_look(dir.path(), || {
+            calls += 1;
+            Err(io::Error::other("unknown"))
+        })
+        .map(drop)
+        .unwrap_err();
+        assert_eq!((calls, error.to_string().as_str()), (1, "unknown"));
+        free("an unknown answer leaves the lock free");
+        let _writer = local::try_update_record_lock(dir.path()).unwrap();
+        let error = last_look(dir.path(), || panic!("looked without the lock")).map(drop).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    /// Failure: a rollback swaps the old app back over an app that opened after its recheck, because a live or
+    /// unknown answer to the last look reads as absent.
+    #[test]
+    fn a_rollback_looks_again_right_before_swapping_back() {
+        assert!(still_absent(|| Ok(false)).is_ok());
+        assert!(still_absent(|| Ok(true)).unwrap_err().to_string().contains("appeared"));
+        assert_eq!(still_absent(|| Err(io::Error::other("unknown"))).unwrap_err().to_string(), "unknown");
     }
 
     fn version(app: &Path, version: &str) -> Vec<u8> {

@@ -4,7 +4,7 @@
 //! 1. Waits for the one process it was told about to end. A launch waits only 600 ms for the record's lock and then starts empty, so this comes first.
 //! 2. Looks once more at what it's about to swap in: the very bytes that were verified, however long ago that was.
 //! 3. Copies the record aside, to put back if the new version goes wrong.
-//! 4. Swaps the new app and the running one's bundle in a single step. There's never a moment with no app or half of one.
+//! 4. Swaps, after one last look under the record's lock, the new app and the running one's bundle in a single step. There's never a moment with no app or half of one.
 //! 5. Moves the old app to be kept.
 //! 6. Opens the new app, and waits for it to say it's come up: see [`crate::updater::Updater::first_frame`] for what that means.
 //! 7. If it doesn't, or it comes up with fewer tabs than were handed off, having misread the record, stops it, puts the record back, swaps the old app back, and opens that.
@@ -202,23 +202,26 @@ impl Run<'_> {
         self.go_back_after(why, self.launched.recover(&self.plan.root, &self.plan.executable(), STOP_PATIENCE))
     }
 
+    /// Going back can't go on because the app's absence isn't proven: both bundles and the recovery record stay as they are.
+    fn rollback_unproven(&self, error: &std::io::Error) -> Ended {
+        self.say(&format!(
+            "installer: app exit is unproven ({error}); both bundles and the recovery record are kept"
+        ));
+        let _ = Outcome {
+            kind: OutcomeKind::CouldntGoBack,
+            from: self.plan.from.clone(),
+            to: self.plan.to.clone(),
+            why: "app_exit_unproven".into(),
+            plan: Some(self.plan.id.clone()),
+        }
+        .write(&self.files.outcome());
+        Ended::Stuck
+    }
+
     fn go_back_after(&self, why: &str, retired: std::io::Result<retirement::RecordLock>) -> Ended {
         let writer = match retired {
             Ok(writer) => writer,
-            Err(error) => {
-                self.say(&format!(
-                    "installer: app exit is unproven ({error}); both bundles and the recovery record are kept"
-                ));
-                let _ = Outcome {
-                    kind: OutcomeKind::CouldntGoBack,
-                    from: self.plan.from.clone(),
-                    to: self.plan.to.clone(),
-                    why: "app_exit_unproven".into(),
-                    plan: Some(self.plan.id.clone()),
-                }
-                .write(&self.files.outcome());
-                return Ended::Stuck;
-            }
+            Err(error) => return self.rollback_unproven(&error),
         };
         self.step("new_app_stopped");
         if !self.plan.keep_record {
@@ -230,6 +233,10 @@ impl Run<'_> {
             self.finish_with(OutcomeKind::CouldntGoBack, "nothing_to_go_back_to");
             return Ended::Stuck;
         };
+        // An app opened since the recheck isn't the installer's to replace: the lock is still held, so this is the last look.
+        if let Err(error) = retirement::still_absent(|| self.launched.running(&self.plan.executable())) {
+            return self.rollback_unproven(&error);
+        }
         if local::swap_paths(&old, &self.plan.app).is_err() {
             self.say("installer: the kept app couldn't be put back");
             self.finish_with(OutcomeKind::CouldntGoBack, "couldnt_swap_back");
@@ -388,7 +395,7 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the record couldn't be copied aside, so going back would bring back what's there");
     }
     run.step("record_copied");
-    // The last look, and the last thing before the swap, so there's nothing slow between it and the swap for anyone to use. The release's own team, always, in a real build, whatever the plan says: a plan's only a file. Except a development build, which is signed ad hoc: then it's an X.Y.Z.N, the owner's switch is on in the real state folder, read here and never where the plan points, and its signature names this app and its helper, as an ad-hoc signature is anyone's.
+    // The signature look is the last slow step, so there's nothing slow between it and the swap for anyone to use; the scan of whether the app's running comes after it, as the last thing before the swap. The release's own team, always, in a real build, whatever the plan says: a plan's only a file. Except a development build, which is signed ad hoc: then it's an X.Y.Z.N, the owner's switch is on in the real state folder, read here and never where the plan points, and its signature names this app and its helper, as an ad-hoc signature is anyone's.
     // Only over a copy that's itself ad hoc, looked at now, right before the swap: a copy signed by the team never takes an ad-hoc build, as an ad-hoc signature can claim any identifier. From a release, the way to a dev build is `tools/dev-build.sh --first-install --replace-release`.
     let as_a_build = plan.development_build
         && replacing_is_ad_hoc(plan)
@@ -413,7 +420,24 @@ pub fn run(plan: &Plan) -> Ended {
     }
     let verified = crate::wall_ms();
     run.step("still_verified");
-    if let Err(error) = swap_in(plan) {
+    // The signature look above is the last slow step, and this scan is the last thing before the swap. It isn't retried: see `retirement::last_look`.
+    let held = match retirement::last_look(&plan.root, || local::update_app_is_running(&plan.executable())) {
+        Ok(held) => held,
+        Err(error) => {
+            let why = if error.kind() == std::io::ErrorKind::WouldBlock || error.to_string().contains("appeared") {
+                "app_reopened"
+            } else {
+                "observation_unknown"
+            };
+            run.say(&format!("installer: app absence isn't established ({why}: {error}), so nothing was replaced"));
+            run.finish_with(OutcomeKind::NotInstalled, why);
+            let _ = std::fs::remove_dir_all(files.before());
+            return Ended::NotInstalled;
+        }
+    };
+    let swapped_in = swap_in(plan);
+    drop(held); // So the app opened on the swap-failed path can take the record.
+    if let Err(error) = swapped_in {
         // macOS's App Management can refuse a change to an app in /Applications the first time, until the owner allows it: that's said so, apart from a swap that can't work.
         let why = if error.raw_os_error() == Some(libc_eperm()) {
             "not_permitted"
