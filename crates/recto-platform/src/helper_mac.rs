@@ -354,11 +354,11 @@ mod tests {
         .collect()
     }
 
-    /// Failure: the helper runs at Darwin background or at the default priority instead of utility, or a child it starts escapes the level. A shell
+    /// Failure: the helper runs at Darwin background (also with the clamp kept and background set on top) or at the default priority instead of utility, or a child it starts escapes the level. A shell
     /// that starts a `sleep` stands in for the helper and its render worker. On CI's virtual Macs, Darwin background starved both helpers for minutes.
     /// It doesn't assert a thread's current priority: the kernel lifts it above the clamp for a moment while the thread holds a contended lock, by
     /// design (`ps` read 46 once at load 12, a stand-in shell with a clamp of 20). The QoS bucket the CPU time was charged to doesn't move with that,
-    /// so the time is the primary check, and the base priority, which the clamp holds, the second.
+    /// so the time is what's asserted, and the threads' numbers are shown on failure.
     #[test]
     fn a_utility_helper_and_what_it_starts_run_at_utility() {
         let started = spawn(Path::new("/bin/sh"), &[], Priority::Utility).unwrap();
@@ -389,20 +389,26 @@ mod tests {
             shell_time,
             sleeper_time,
         } = seen.unwrap();
-        // The promise: the work ran at utility, and nowhere else. Both have done real work by now, so each has utility time.
-        for (who, time) in [("the helper", &shell_time), ("what it started", &sleeper_time)] {
+        // The promise: the work ran at utility, and nowhere else. Both have done real work by now, so each has utility time. The threads' scheduling
+        // numbers are in the message only: with the clamp kept and Darwin background set on top (the old regression), the buckets fail as well, so a
+        // base-priority assert would only repeat them. A kernel lock promotion moves `current`, and a push from a higher-QoS thread of the same
+        // process moves `base`, so neither is a promise.
+        for (who, time, levels) in [("the helper", &shell_time, &shell), ("what it started", &sleeper_time, &sleeper)] {
+            let threads: Vec<String> = levels
+                .iter()
+                .map(|l| format!("current {} base {} ceiling {}", l.current, l.base, l.ceiling))
+                .collect();
             assert!(
                 time.ri_cpu_time_qos_utility > 0,
-                "{who} used no CPU time at utility: outside it {:?}",
+                "{who} used no CPU time at utility: outside it {:?}; threads {threads:?}",
                 outside_utility(time)
             );
-            assert_eq!(outside_utility(time), vec![], "{who} ran outside utility, by bucket in ns");
+            assert!(
+                outside_utility(time).is_empty(),
+                "{who} ran outside utility, by bucket in ns: {:?}; threads {threads:?}",
+                outside_utility(time)
+            );
         }
-        // Below an ordinary process's 31 and above Darwin background's 4: the base priority the clamp holds. A kernel lock promotion doesn't move
-        // it, but a push from a higher-QoS thread of the same process can; nothing in these two processes does that.
-        let utility = |levels: &[Level]| !levels.is_empty() && levels.iter().all(|l| l.base > 4 && l.base < 31);
-        assert!(utility(&shell), "the helper's threads (current, base, ceiling): {shell:?}");
-        assert!(utility(&sleeper), "what it started (current, base, ceiling): {sleeper:?}");
     }
 
     /// Failure: the helper sees more than it's given: an environment variable of this process, or a descriptor beyond its three. A file's name or a
