@@ -19,16 +19,15 @@ pub fn report_where_the_host_is(app: &HeadlessApp, view: &mut recto_reader::View
     let queued = engine.drain();
     if queued.is_empty() {
         let first = engine.set_viewport(*view);
-        apply_batch(engine, view, &first, began);
+        apply_batch(engine, view, first, began);
     } else {
-        apply_batch(engine, view, &queued, began);
+        apply_batch(engine, view, queued, began);
     }
 }
 
 // A batch is applied as the host's `apply` does: arrive at its last scroll, release its surfaces, send the viewport (which hands back a batch of its
 // own, applied the same way), and only then say it's applied; for a moment before that everything would look settled on the old view.
-fn apply_batch(engine: &recto_reader::Engine, view: &mut recto_reader::Viewport, first: &[recto_reader::Op], began: std::time::Instant) {
-    let mut ops = first.to_vec();
+fn apply_batch(engine: &recto_reader::Engine, view: &mut recto_reader::Viewport, mut ops: Vec<recto_reader::Op>, began: std::time::Instant) {
     let mut batches = 0;
     while !ops.is_empty() {
         let last = ops.iter().rev().find_map(|op| {
@@ -62,7 +61,7 @@ pub fn the_person_scrolls(app: &HeadlessApp, view: &mut recto_reader::Viewport, 
     let began = std::time::Instant::now();
     let engine = &app.core().engine;
     let ops = engine.set_viewport(*view);
-    apply_batch(engine, view, &ops, began);
+    apply_batch(engine, view, ops, began);
 }
 
 /// A pane's view before any tab has been shown in it: the real host has one `PageArea` per pane (`MainWindow.swift`), and its `scrolledTo` starts at 0
