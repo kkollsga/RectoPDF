@@ -36,7 +36,7 @@ impl Launched {
 
     pub(super) fn recover(&self, root: &Path, program: &Path, patience: Duration) -> io::Result<RecordLock> {
         self.retire(program, patience)?;
-        record_lock(root, || self.running(program))
+        record_lock(root, || self.running(program), patience, Instant::now, std::thread::sleep)
     }
 
     fn retire(&self, program: &Path, patience: Duration) -> io::Result<()> {
@@ -134,9 +134,18 @@ impl Drop for RecordLock {
     }
 }
 
-pub(super) fn record_lock(root: &Path, mut present: impl FnMut() -> io::Result<bool>) -> io::Result<RecordLock> {
+/// Takes the record's lock, then rechecks that no app is running, within the same patience as the exit wait: an
+/// unknown observation is "not yet known" here as in `known`, so one transient unknown during rollback is not
+/// reported as "couldn't go back" (`app_exit_unproven`). A live app, or no definite answer by the deadline, refuses.
+pub(super) fn record_lock(
+    root: &Path,
+    present: impl FnMut() -> io::Result<bool>,
+    patience: Duration,
+    now: impl FnMut() -> Instant,
+    pause: impl FnMut(Duration),
+) -> io::Result<RecordLock> {
     let held = RecordLock(local::try_update_record_lock(root)?);
-    if present()? {
+    if known(present, patience, now, pause)? {
         return Err(io::Error::other("an app appeared before rollback acquired the record"));
     }
     Ok(held)
@@ -415,6 +424,36 @@ mod recovery_tests {
         }
     }
 
+    /// Failure: one transient unknown observation of the app during rollback's recheck is reported as "couldn't go
+    /// back" (`app_exit_unproven`) instead of being rechecked within the patience the exit wait already has.
+    #[test]
+    fn the_record_lock_recheck_polls_past_a_transient_unknown_within_its_patience() {
+        let dir = recto_testpdf::TempDir::new("record-lock-recheck-");
+        let clock = std::cell::Cell::new(Instant::now());
+        let patience = Duration::from_millis(100);
+        let run = |mut answers: Vec<io::Result<bool>>, repeat: Option<fn() -> io::Result<bool>>| {
+            answers.reverse();
+            record_lock(
+                dir.path(),
+                || answers.pop().or_else(|| repeat.map(|again| again())).expect("probe asked past its answers"),
+                patience,
+                || clock.get(),
+                |step| clock.set(clock.get() + step),
+            )
+            .map(drop)
+        };
+        assert!(run(vec![Err(io::Error::other("transient unknown")), Ok(false)], None).is_ok());
+        let began = clock.get();
+        let error = run(vec![], Some(|| Err(io::Error::other("persistent unknown")))).unwrap_err();
+        assert!(error.to_string().contains("persistent unknown"), "{error}");
+        assert!(
+            clock.get().duration_since(began) <= patience,
+            "no new limit: the recheck stays within its patience"
+        );
+        let error = run(vec![Ok(true)], None).unwrap_err();
+        assert!(error.to_string().contains("appeared"), "a live app refuses: {error}");
+    }
+
     fn version(app: &Path, version: &str) -> Vec<u8> {
         std::fs::create_dir_all(app.join("Contents")).unwrap();
         let bytes =
@@ -468,11 +507,17 @@ mod recovery_tests {
                 )
             }
             .and_then(|()| {
-                record_lock(&plan.root, || match case {
-                    "reopened" => Ok(true),
-                    "recheck_unknown" => Err(io::Error::other("recheck unknown")),
-                    _ => Ok(false),
-                })
+                record_lock(
+                    &plan.root,
+                    || match case {
+                        "reopened" => Ok(true),
+                        "recheck_unknown" => Err(io::Error::other("recheck unknown")),
+                        _ => Ok(false),
+                    },
+                    Duration::ZERO,
+                    Instant::now,
+                    |_| panic!("zero patience waits"),
+                )
             });
             assert_eq!(run.go_back_after("misread", refused), Ended::Stuck);
             if std::fs::read(files.session().join("record.a.json")).ok().as_deref() != Some(b"current owner edits".as_slice())
