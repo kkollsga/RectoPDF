@@ -49,7 +49,11 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -
     let (file, opened, stamp) = readable(access, tab)?;
     // The file's page that stands at this position now. A position with none, inside the tab, is a page added from another PDF.
     let Some(file_page) = file.file_page_at(wanted) else {
-        return Err(if wanted < file.pages() { not_referenceable(ADDED_PAGE) } else { crate::no_such_page() });
+        return Err(if wanted < file.pages() {
+            not_referenceable(ADDED_PAGE)
+        } else {
+            crate::no_such_page()
+        });
     };
     let made = locator::reference(opened.reader(), opened.map(), file_page, &ScanCaps::STANDARD);
     unchanged(&file, stamp)?;
@@ -208,7 +212,10 @@ mod tests {
             let same = note_of(&resolution(status.clone(), DocumentMatch::Same), Some(Some(3)), 1, false);
             let other = note_of(&resolution(status, DocumentMatch::Different), Some(Some(3)), 1, false);
             assert!(!same.contains("same content"), "{same}");
-            assert!(other.contains("A page with the same content is") && other.contains("page 3 of the file"), "{other}");
+            assert!(
+                other.contains("A page with the same content is") && other.contains("page 3 of the file"),
+                "{other}"
+            );
             assert!(!other.contains("still") && !other.contains("It moved"), "{other}");
         }
     }
