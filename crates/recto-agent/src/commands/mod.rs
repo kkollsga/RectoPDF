@@ -24,7 +24,7 @@ pub mod export;
 pub mod finding;
 pub mod highlight;
 pub mod linking;
-pub mod locating; // new-feature: locating
+pub mod locating;
 pub mod measure;
 pub mod qa;
 pub mod reading;
@@ -340,6 +340,9 @@ family! {
         Facts(reading::Facts),
         Contents(reading::Contents),
         Search(text::Search),
+        Ref(locating::Ref),
+        #[line(locating::line::Resolve)]
+        Resolve(locating::Resolve),
         Index(text::Index),
         IndexStatus(text::IndexStatus),
         IndexClear(text::IndexClear),

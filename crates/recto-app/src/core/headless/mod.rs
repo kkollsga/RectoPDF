@@ -29,7 +29,7 @@ mod launch;
 mod levels;
 pub(super) mod life_locks;
 mod life_script;
-mod locating; // new-feature: locating
+mod locating;
 mod menu_agents;
 mod menu_twins;
 mod navigation;

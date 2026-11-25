@@ -13,6 +13,26 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// A reference to page 1 of a made-up document, with the target given: for `ref` and `resolve` in the walks.
+fn locator_with(target: recto_core::locator::Target) -> recto_core::locator::Locator {
+    use recto_core::locator::{DocumentTags, Locator, PageRef};
+    let identity = recto_core::page_id::PageIdentity {
+        digest: [2; 32],
+        object: (1, 0),
+        frame: 0,
+    };
+    let page = PageRef::new(1, &identity).expect("page 1 is a page");
+    Locator::new(DocumentTags::new([1; 8], None), page, target)
+}
+
+fn locator_page() -> recto_core::locator::Locator {
+    locator_with(recto_core::locator::Target::Page)
+}
+
+fn locator_spot() -> recto_core::locator::Locator {
+    locator_with(recto_core::locator::Target::Spot(recto_core::locator::Spot::point(10, 20).expect("a point")))
+}
+
 /// One of every command the session answers, each with its tab `#1`: the list the walks here and in `lib.rs` go over.
 /// `every_command_has_a_row_and_every_session_row_has_a_command` holds it to the table, so a session command added later must be added here.
 pub(crate) fn every_command() -> Vec<Command> {
@@ -175,6 +195,15 @@ pub(crate) fn every_command() -> Vec<Command> {
             regex: false,
             rank: false,
             context: None,
+        }),
+        Command::from(crate::commands::locating::Ref { page: 1, tab: tab() }),
+        Command::from(crate::commands::locating::Resolve {
+            reference: locator_page(),
+            tab: tab(),
+        }),
+        Command::from(crate::commands::locating::Resolve {
+            reference: locator_spot(),
+            tab: tab(),
         }),
         Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Query("x".into()))),
         Command::from(crate::commands::text::Index { tab: tab(), agent: false }),

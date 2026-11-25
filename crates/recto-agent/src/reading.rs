@@ -14,14 +14,14 @@ const DEFAULT_CONTENTS: u32 = 200;
 const MAX_CONTENTS: u32 = 2000;
 
 pub(crate) struct TabFile {
-    id: u32,
-    path: PathBuf,
+    pub(crate) id: u32,
+    pub(crate) path: PathBuf,
     name: String,
     pub(crate) pages: u32,
     edited: bool,
-    renderer_only: bool,
+    pub(crate) renderer_only: bool,
     /// For each of the file's pages, its place now. Only for an edited tab.
-    positions: Option<Vec<u32>>,
+    pub(crate) positions: Option<Vec<u32>>,
     /// The pages whose entries' places mean something in the view the reader has.
     placed: recto_session::Placed,
     /// The file isn't the one those edits' page numbers came from.
@@ -29,12 +29,12 @@ pub(crate) struct TabFile {
     /// What the file was when those page numbers were made, to look at it against, as [`recto_session::recorded_version_is_current`] reads it.
     check_against: Option<Option<recto_platform::FileStamp>>,
     /// Its own pages are withheld ([`recto_session::Notices::pages_withheld`]): what decides the person's contents pane too.
-    withheld: bool,
+    pub(crate) withheld: bool,
 }
 
 impl TabFile {
     /// Refuses when page numbers here would be about a different version of the file.
-    fn require_current(&self) -> Result<(), AgentError> {
+    pub(crate) fn require_current(&self) -> Result<(), AgentError> {
         if self.changed {
             return Err(crate::source_changed(&self.path));
         }
@@ -42,7 +42,7 @@ impl TabFile {
     }
 }
 
-fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, AgentError> {
+pub(crate) fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, AgentError> {
     access
         .with(|s| {
             let id = select(s, tab)?;
