@@ -7,6 +7,7 @@ import AppKit
         case launchBegin = 0, menuReady, servicesReady, restoreQueued, restoreBegin, appearanceReady
         case windowBegin, windowBody, nativeWindowReady, pageReady, sidebarReady, windowLayoutReady
         case windowConstructed, windowOpened, hostReady
+        case menuModelReady = 15, servicesMenuReady, menuBuilt, windowModelReady
     }
 
     static func mark(_ phase: Phase) {
