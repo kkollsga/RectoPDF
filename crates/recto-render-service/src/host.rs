@@ -1664,6 +1664,7 @@ impl DocRenderer {
             StartFailure::TimedOut => busy::start_stopped(self),
             StartFailure::Other => RenderFailure::Unavailable,
         })?;
+        busy::started(self);
         if worker.walled {
             self.stats.walled_spawns += 1;
         }
@@ -1823,7 +1824,7 @@ impl DocRenderer {
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);
         }
         self.worker = Some(worker);
-        busy::started(self);
+        busy::opened(self);
         Ok(())
     }
 }

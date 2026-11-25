@@ -87,7 +87,7 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     read
 }
 
-/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`] and ended by a worker that opened the file.
+/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`]; a worker that said hello ends the starts ([`started`]) and one that opened the file the opens ([`opened`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Runs {
     pub(super) starts: u8,
@@ -111,9 +111,13 @@ pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
     }
 }
 
-/// A worker that opened the file ends the runs of busy starts and busy opens.
+/// A worker that said hello ends the run of busy starts: it started, whatever came of the file after.
 pub(super) fn started(doc: &mut DocRenderer) {
     doc.left_out.busy_runs.starts = 0;
+}
+
+/// A worker that opened the file ends the run of busy opens.
+pub(super) fn opened(doc: &mut DocRenderer) {
     doc.left_out.busy_runs.opens = 0;
 }
 

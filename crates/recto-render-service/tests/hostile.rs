@@ -1008,6 +1008,39 @@ fn busy_starts_and_busy_opens_are_counted_apart() {
     );
 }
 
+/// Failure (final review of the busy renderer start, 2026-11-25): a worker that said hello didn't end the run of busy starts unless it also opened the file, so two busy starts, a hello with a starved open, and one more busy start read as the third start in a row and said `Unavailable` (the renderer can't start) of a worker that had started. A hello ends the run of starts; the bound still holds, as alternating starts and opens end at the file's failure after at most twice `MAX_BUSY` tries.
+#[test]
+fn a_worker_that_said_hello_ends_the_run_of_busy_starts() {
+    let max = recto_render_service::MAX_BUSY;
+    let policy = || Policy {
+        page_deadline: Duration::from_millis(150),
+        ..policy()
+    };
+    let no_time = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::ZERO, |doc| doc.page_count());
+    let (mut doc, _file) = doc("sleep_on_open", policy());
+    for run in 1..max {
+        assert_eq!(no_time(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "start {run}");
+    }
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::TooBusyToStart, "a hello, then a starved open");
+    assert_eq!(
+        no_time(&mut doc).unwrap_err(),
+        RenderFailure::TooBusyToStart,
+        "the run of starts began again at the hello"
+    );
+    // Alternating never runs either count to its end sooner than the opens do.
+    let (mut doc, _file) = self::doc("sleep_on_open", policy());
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let failure = if tries % 2 == 1 { no_time(&mut doc) } else { doc.page_count() }.unwrap_err();
+        if failure != RenderFailure::TooBusyToStart {
+            assert_eq!(failure, RenderFailure::OpenFailed { reason: KillReason::Deadline });
+            break;
+        }
+        assert!(tries <= 2 * u32::from(max), "alternating ran on past the bound");
+    }
+}
+
 /// Failure: a draw that hangs while using the processor, on every thread it can, reads as a Mac too busy to run its worker, so a hostile page is asked again and again as `TooBusy` and never remembered. Using the processor, it's the page: the first ask is a failure at the deadline and nothing counts as busy. (The draw twin of the open test above; seeded by counting every deadline as busy.)
 #[test]
 fn a_draw_that_uses_the_processor_is_told_from_a_mac_too_busy_to_run_it() {
