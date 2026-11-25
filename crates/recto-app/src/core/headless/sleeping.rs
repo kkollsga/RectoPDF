@@ -1462,7 +1462,7 @@ fn every_route_that_writes_a_sleep_file_writes_no_picture() {
     let app = disk_again(app);
     // Drawn, so its worker has said its length and what came from its sleep file is checked (`Session::file_length_is`): only then is it written again.
     let mut view = crate::testkit::host_standin::first_shown(window_view());
-    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
     host_turns(&app, &mut view, true);
     let file = on_screen(&app);
     let _ = std::fs::remove_file(&file);
