@@ -608,3 +608,15 @@ Owner's new way of working: Sonnet workers build from tight briefs; Opus agents 
 | Review fixes ×3, wire pin, installer | Sonnet | 25–75 each | 68–158k | 1 permission refusal surfaced to the owner |
 
 Two independent review rounds found what reports did not: a crash tracker claiming "complete" early, a page read twice, a removed file-changed check (the coordinator's error; lesson in the guide §6.2), a start-name length bug, a lock held through a wait. One combined full check on the integrated batch passed first time; no full runs by workers. What changes: split a slice before it reaches ~150k tokens of a worker; tell workers to reply with SendMessage after their first report (duplicate and refused hand-backs cost several round trips); keep the "a check no test misses" proof rule.
+
+## 2026-11-25 evening, the second half of the run
+
+After the owner's "agree" the run kept every slot busy on the next plan steps: the updater swap window, redaction D1b, locator scan cap, `--ref`, character references, page-identity hardening (a hostile 3 MB file went from 17.6 s / 11.5 GB footprint to 63 ms), the rollback data-safety pin, the privacy week, and three busy-Mac product bugs. Every branch had two independent review rounds; several blockers were found only by review (a cache that held gigabytes, a decode stage that escaped its budget, a busy size still remembered, an indexer regression).
+
+What went wrong and what changes:
+- Six worker waiting loops matched their own command lines (`while pgrep -f "check.sh --quick"`) and never ended; one worker misread its wait as a four-hour check. Written into the worker brief; the coordinator checks for them after each hand-back.
+- Workers reset after a failed step and lost commits three times; destructive git commands run alone (brief).
+- Seed proofs were sometimes aimed at the wrong code (a test of the tiles routing seeded in run.rs); the coordinator now names the exact line to seed.
+- Heavy load (peaks 30–67) from four concurrent workers plus a long-running iOS Simulator turned slowness into failures; that surfaced real bugs, but builds were held to fewer workers when load stayed high.
+- GitHub had an outage (Internal Server Errors, a lost push event, unacquired runners); pushes were retried through `tools/push-main.sh`, never forced.
+- The footprint measure was shown to include freed memory on this macOS; the owner agreed a live-byte count where the question is what code holds (`AGENTS.md`).
