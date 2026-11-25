@@ -19,6 +19,7 @@ mod marks;
 pub use marks::extends_previous;
 pub mod nav;
 pub mod page_id;
+pub mod removal;
 pub mod save;
 mod save_error;
 mod signatures;
