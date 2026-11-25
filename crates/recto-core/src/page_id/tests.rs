@@ -1085,3 +1085,37 @@ fn forms_sharing_resources_resolve_them_once() {
     assert!(read.identity.is_some());
     assert_eq!(DICTIONARIES.with(std::cell::Cell::get), 2, "the shared /Resources and its /XObject, once each");
 }
+
+/// Failure caught (security, review of the memo): a name whose object isn't a stream failed its descriptor each time, and a failure wasn't remembered,
+/// so 256 names to one `5 0 obj << /Junk [100,000 numbers] >>` parsed the dictionary 256 times, as the image repro did before the memo. A failure doesn't
+/// depend on what's left of any cap, so it's remembered with the rest, and its record is the one the definition gives: nothing by that name, kind 2.
+#[test]
+fn a_name_that_is_not_a_stream_is_resolved_once() {
+    let names = 256;
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let junk = format!("<< /Junk [{}] >>", "0 ".repeat(100_000));
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), Obj::Dict(junk)],
+    );
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws.as_bytes()));
+    expected.push(b'X');
+    expected.extend_from_slice(&(names as u32).to_le_bytes());
+    for n in 0..names {
+        let name = format!("N{n}");
+        expected.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        expected.extend_from_slice(name.as_bytes());
+        expected.push(2);
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
