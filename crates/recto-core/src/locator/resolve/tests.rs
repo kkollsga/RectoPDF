@@ -361,3 +361,55 @@ fn another_document_says_different_and_pages_still_decide() {
     assert_eq!(same.document, DocumentMatch::Same, "the /ID[0] tag is the same");
     assert_eq!(same.status, Status::Gone, "and its pages are not");
 }
+
+fn numbered(count: usize) -> Vec<u8> {
+    let names: Vec<String> = (0..count).map(|index| format!("Page {index}")).collect();
+    pdf(&names.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// Failure: the document's tags are read again for every hit (16 page reads each, 200 hits), or a page again for each of its hits: 20, 20 and 21 cost
+/// the pages 20 and 21 and the first tag page, three reads, and every token is the one `reference` makes.
+#[test]
+fn a_referrer_reads_the_documents_tags_once_and_a_page_once_for_all_its_hits() {
+    let (reader, map) = open(&numbered(25));
+    let mut referrer = Referrer::new(&reader, &map, &STANDARD);
+    let made: Vec<_> = [20, 20, 21].map(|page| referrer.page(page).expect("a reference")).into();
+    assert_eq!(referrer.spent().0, 3, "page 20, the tag page, page 21");
+    assert_eq!(made[0], made[1]);
+    for (token, page) in made.iter().zip([20, 20, 21]) {
+        assert_eq!(*token, reference(&reader, &map, page, &STANDARD).expect("the same"));
+    }
+}
+
+/// Failure: a limit on pages is off by one (the 4th distinct page past one tag read and three pages is read anyway), or a page already answered is
+/// refused once the limit is spent.
+#[test]
+fn a_referrers_page_cap_at_its_limit_refers_and_one_more_page_is_capped() {
+    let (reader, map) = open(&numbered(30));
+    let caps = ScanCaps { pages: 4, ..STANDARD };
+    let mut referrer = Referrer::new(&reader, &map, &caps);
+    for page in [20, 21, 22] {
+        assert!(referrer.page(page).is_ok(), "page {page} is within the limit");
+    }
+    assert_eq!(referrer.spent().0, 4, "one tag page and three pages");
+    assert!(referrer.page(22).is_ok(), "the page it has just read costs nothing");
+    assert_eq!(referrer.page(23), Err(Unreferenceable::Capped));
+    assert!(referrer.page(0).is_ok(), "the tag page was read, so it is still answered");
+    assert_eq!(referrer.spent().0, 4);
+}
+
+/// Failure: a byte cap is off by one at its limit. With C the bytes spent making a reference to page 1 (the page and the tag page), a cap of exactly C
+/// leaves no room for the next page, and C + 1 reads it.
+#[test]
+fn a_referrers_byte_cap_equal_to_what_was_read_is_capped_and_one_more_byte_reads_on() {
+    let (reader, map) = open(&numbered(25));
+    let mut first = Referrer::new(&reader, &map, &STANDARD);
+    first.page(1).expect("a reference");
+    let spent = first.spent().1;
+    for (bytes, expected) in [(spent, Err(Unreferenceable::Capped)), (spent + 1, Ok(()))] {
+        let caps = ScanCaps { bytes, ..STANDARD };
+        let mut referrer = Referrer::new(&reader, &map, &caps);
+        referrer.page(1).expect("a reference");
+        assert_eq!(referrer.page(20).map(|_| ()), expected, "cap {bytes}");
+    }
+}
