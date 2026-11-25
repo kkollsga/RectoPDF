@@ -55,6 +55,12 @@ pub(super) fn landed(doc: &mut DocRenderer, page: u32) {
     }
 }
 
+/// A job that landed with `read` ends a run of busy draws.
+pub(super) fn landed_with<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
+    landed(doc, page);
+    read
+}
+
 /// A draw's result for the caller. One that landed ends a run of busy draws.
 pub(super) fn drew(doc: &mut DocRenderer, page: u32, result: Result<TileResult, JobFailure>) -> Result<TileResult, RenderFailure> {
     if matches!(result, Ok(TileResult::Done(_))) {

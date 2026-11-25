@@ -999,10 +999,7 @@ impl DocRenderer {
             _ => Err(ProtoError("the wrong kind of reply to a size request")),
         });
         match size {
-            Ok(size) => {
-                busy::landed(self, page);
-                Ok((size.width, size.height))
-            }
+            Ok(size) => Ok(busy::landed_with(self, page, (size.width, size.height))),
             Err(JobFailure::Stopped(reason)) => Err(busy::size_stopped(self, page, reason, busy_before)),
             Err(failure) => Err(failure.into()),
         }

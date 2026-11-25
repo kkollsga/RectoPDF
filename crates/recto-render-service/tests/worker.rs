@@ -858,7 +858,10 @@ fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {
 /// Failure (final review): only a draw that landed ended a run of busy draws, so two busy draws, a page whose size then read fine, and a third busy draw remembered the page as failed for good, though the worker had just answered about it. Any job of the page that succeeds ends the run.
 #[test]
 fn a_size_that_reads_fine_ends_a_run_of_busy_draws() {
-    let file = TempPdf::new("busy-then-size.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let file = TempPdf::new(
+        "busy-then-size.pdf",
+        &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]),
+    );
     let mut doc = renderer(&file.0, Policy::default());
     for round in 0..3 {
         if round == 2 {
@@ -874,7 +877,11 @@ fn a_size_that_reads_fine_ends_a_run_of_busy_draws() {
             Duration::from_millis(250),
             |doc| doc.render_tile(&tile_request(1, 0), &surface),
         );
-        assert!(matches!(busy, Err(RenderFailure::TooBusy { page: 1 })), "round {round}: {busy:?}, {:?}", doc.stats());
+        assert!(
+            matches!(busy, Err(RenderFailure::TooBusy { page: 1 })),
+            "round {round}: {busy:?}, {:?}",
+            doc.stats()
+        );
     }
 }
 

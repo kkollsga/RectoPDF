@@ -782,7 +782,10 @@ mod tests {
         assert!(matches!(size_outcome(Err(RenderFailure::TooBusy { page: 2 })), Outcome::LookLater));
         assert!(matches!(size_outcome(Ok((10.0, 20.0))), Outcome::Size(_)));
         assert!(matches!(
-            size_outcome(Err(RenderFailure::PageReadFailed { page: 2, reason: KillReason::Deadline })),
+            size_outcome(Err(RenderFailure::PageReadFailed {
+                page: 2,
+                reason: KillReason::Deadline
+            })),
             Outcome::PageFailed { may_pass: false, .. }
         ));
     }
