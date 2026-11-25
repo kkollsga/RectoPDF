@@ -52,7 +52,7 @@ impl WorkerFeed {
     }
 }
 
-/// Asks again of `renderer` while the answer is [`RenderFailure::TooBusyToStart`]: the service's own bound ([`MAX_BUSY`] in a row) decides inside this run, and a worker that hangs before hello ends as `Unavailable` rather than pausing the build for ever. `busy` reads the renderer's `too_busy` count, taken before each try, so a failure that isn't about the file and moved it during that try (not an earlier one) is a pause (`TOO_BUSY`); a page's own deadline stays with that page. At most `2 * MAX_BUSY` tries (starts and opens each have a run of their own), then the build pauses.
+/// Takes the renderer itself, not a closure that reports whether the count moved, so the count is read here before each try and a test can fail the bug of reading it once before the loop. Asks again of `renderer` while the answer is [`RenderFailure::TooBusyToStart`]: the service's own bound ([`MAX_BUSY`] in a row) decides inside this run, and a worker that hangs before hello ends as `Unavailable` rather than pausing the build for ever. `busy` reads the renderer's `too_busy` count, taken before each try, so a failure that isn't about the file and moved it during that try (not an earlier one) is a pause (`TOO_BUSY`); a page's own deadline stays with that page. At most `2 * MAX_BUSY` tries (starts and opens each have a run of their own), then the build pauses.
 fn asked<R, T>(
     renderer: &mut R,
     busy: fn(&R) -> u32,

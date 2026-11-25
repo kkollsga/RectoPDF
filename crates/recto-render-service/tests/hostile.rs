@@ -929,7 +929,7 @@ fn a_worker_that_wont_start_properly_is_refused() {
     assert_eq!(wrong.stats().spawns, 0);
 }
 
-/// Failure: a worker that never says hello hangs its caller for ever.
+/// Failure: a worker that never says hello hangs its caller for ever. And the count of busy starts: counted past the bound, the indexer (which watches it) pauses for ever and never says it couldn't be built; not counted within it, a busy Mac is called broken.
 #[test]
 fn a_worker_that_never_says_hello_is_given_up_on() {
     let (mut doc, _file) = doc(
@@ -948,7 +948,7 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
     assert_eq!(
         doc.stats().too_busy,
         u32::from(recto_render_service::MAX_BUSY) - 1,
-        "each start inside the bound is counted as the Mac being busy; the one that ends the run isn't"
+        "the start past the bound isn't counted as the Mac being busy"
     );
 }
 
