@@ -223,7 +223,7 @@ document tags beside the status as information only, and `reference` and `docume
 add to the text above. First, a hinted page whose digest prefix equals the reference's is answered `Found` at the hint with no scan, whatever the
 file's version, where "Duplicate pages and incomplete reads" asked for a verified unchanged original: the token carries no version stamp, so that rule
 would cost a scan of the file on every resolve (rule 1), and identical page content is retrieved identically. Every other case needs a scan of every
-page within caps (256 MiB, 200,000 pages, the page digest's own caps): none matching is `Gone` only after a complete scan, one is `Moved`, several are
+page within caps (1 GiB of reads since 2026-11-25, as a stream is charged again on every page that draws it; 200,000 pages, the page digest's own caps): none matching is `Gone` only after a complete scan, one is `Moved`, several are
 `Ambiguous` (at most 8 listed), and a cap or a page with no identity makes it `Incomplete` with at most one candidate; never a nearest page. A frame
 tag that differs still finds the page, and a spot is then not placed. Second, the document tags are fixed: the id tag is the first 8 bytes of the existing
 `recto-id/1` hash of `/ID[0]` (no second hash), and the content tag is the first 8 bytes of SHA-256 over `recto-doc-c/1`, a NUL and the whole

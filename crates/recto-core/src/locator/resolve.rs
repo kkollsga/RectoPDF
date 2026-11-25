@@ -25,7 +25,8 @@ pub const TAG_PAGES: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScanCaps {
     /// Bytes of page reads (as [`PageRead::bytes`] charges them) after which no further page is read. Checked before each read, so one page's own
-    /// cap (`page.page_read`, 256 MiB under [`page_id::Caps::STANDARD`]) can carry the total past it by up to that much: 512 MiB at most, as STANDARD.
+    /// cap (`page.page_read`, 256 MiB under [`page_id::Caps::STANDARD`]) can carry the total past it by up to that much, and the page's whole caps by
+    /// about 336 MiB: 1 GiB plus that at most, as STANDARD.
     pub bytes: u64,
     /// Pages read, after which no further page is read.
     pub pages: u32,
@@ -34,9 +35,13 @@ pub struct ScanCaps {
 }
 
 impl ScanCaps {
-    /// 256 MiB, as a whole identity job is held to elsewhere, and as many pages as a reference can name.
+    /// 1 GiB of page reads and as many pages as a reference can name. The byte cap bounds work (time), not memory: each page streams through
+    /// `decode::CHUNK` buffers over the mapped file and nothing is kept per page, so a scan's footprint is the same at any cap (6.2 MiB peak on a
+    /// 383-page report). A stream is charged each time a page draws it, so an image or form shared by many pages is charged again on every page, and
+    /// a 97 MiB report costs 269 MB to read through; 1 GiB is about 3.5 times the largest corpus document's whole read, so a scan of any ordinary file
+    /// completes and `gone` can be said. It is not the matcher's `MAX_JOB_BYTES` (256 MiB), which stays what it was. Worst case about 1.33 GiB.
     pub const STANDARD: Self = Self {
-        bytes: 256 << 20,
+        bytes: 1 << 30,
         pages: MAX_PAGE,
         page: page_id::Caps::STANDARD,
     };
