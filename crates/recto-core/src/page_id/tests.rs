@@ -629,6 +629,36 @@ fn the_forms_a_page_draws_are_capped_at_their_limit_plus_one() {
     assert!(digest_under(&forms(2), &caps).is_some(), "two forms");
     assert_eq!(digest_under(&forms(3), &caps), None, "three forms");
     assert!(digest_under(&forms(3), &Caps::STANDARD).is_some(), "three are nothing under the standard cap");
+    assert!(digest_under(&forms(256), &Caps::STANDARD).is_some(), "256 forms under the standard cap");
+    assert_eq!(digest_under(&forms(257), &Caps::STANDARD), None, "257 forms under the standard cap");
+}
+
+/// Failure caught: a form that draws nothing is counted against the forms cap, so a page of many empty forms (a watermark layer repeated) has no
+/// identity where nothing it draws costs more than the form itself. With the cap at 2, five empty forms have one, and a form that draws something
+/// among them is the one that counts.
+#[test]
+fn a_form_that_draws_nothing_is_not_counted_against_the_forms_cap() {
+    let page = |forms_drawing: usize, drawing: usize| {
+        let count = 5;
+        let names: String = (0..count).map(|at| format!("/F{at} {} 0 R ", 5 + at)).collect();
+        let drawn: String = (0..count).map(|at| format!("/F{at} Do ")).collect();
+        let mut objects = vec![stream("", drawn.as_bytes())];
+        objects.extend((0..count).map(|at| Obj::Stream {
+            dict: "/Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /I 10 0 R >> >>".into(),
+            data: if at < drawing { b"/I Do".to_vec() } else { b"0 0 m".to_vec() },
+        }));
+        objects.push(stream(JPEG_DICT, IMAGE));
+        digest_under(
+            &one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects),
+            &Caps {
+                forms_drawing,
+                ..Caps::STANDARD
+            },
+        )
+    };
+    assert!(page(2, 0).is_some(), "five forms drawing nothing");
+    assert!(page(2, 2).is_some(), "two drawing, three not");
+    assert_eq!(page(2, 3), None, "three drawing");
 }
 
 /// Failure caught: the page's own caps aren't held, so a page of many large images hashes a gigabyte, or a stream that decodes to little from very
@@ -1428,6 +1458,17 @@ fn the_names_cap_does_not_multiply_the_cost_of_one_hostile_image() {
     DESCRIPTORS.with(|count| count.set(0));
     assert!(reads_of(&page, &Caps::STANDARD).remove(0).identity.is_some(), "8,192 names drawn");
     assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    // One name past the cap, under the standard caps: no identity (the cap's own value, which the tests with a cap held small don't see).
+    let over = names + 1;
+    let draws: String = (0..over).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..over).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), stream(JPEG_DICT, IMAGE)],
+    );
+    assert_eq!(digest_under(&page, &Caps::STANDARD), None, "8,193 names drawn");
 }
 
 /// A double-Flate stream that decodes to `kib` KiB of zeros and then fails (its inner Adler-32 cut off), from about a kilobyte stored.

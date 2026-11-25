@@ -446,15 +446,18 @@ mod tests {
 
     /// Failure caught: a page drawing more different names than the cap is hashed by some of them, so its digest depends on where the cap fell, or the
     /// scan keeps names without bound. With the cap held at 4 (what's proved is the exactness at the limit, not the value): 4 names all kept; at 5 it says
-    /// it overflowed, and keeps no more. A cap past `u16::MAX` is clamped, so the sorted index never wraps.
+    /// it overflowed, and keeps no more. A cap past `u16::MAX` is clamped, so a name's place never wraps.
     #[test]
     fn the_names_are_capped_at_their_limit_plus_one() {
         let many = |count: usize| (0..count).map(|at| format!("/N{at} Do ")).collect::<String>();
         assert_eq!(names_of_capped(4, &[many(4).as_bytes()]), ((0..4).map(|at| format!("N{at}")).collect(), false));
         let (names, overflowed) = names_of_capped(4, &[many(5).as_bytes(), b"/N0 Do"]);
         assert_eq!((names.len(), overflowed), (4, true));
-        let (names, overflowed) = names_of_capped(usize::MAX, &[many(70_000).as_bytes()]);
-        assert_eq!((names.len(), overflowed), (usize::from(u16::MAX), true), "clamped");
+        assert_eq!(
+            DoScan::with_cap(usize::MAX).cap,
+            usize::from(u16::MAX),
+            "a cap past what a place holds is clamped"
+        );
     }
 
     /// Failure caught: a stream that didn't decode (hashed as stored instead) leaves the names of its first part, so the digest depends on how far a
