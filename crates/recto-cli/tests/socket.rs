@@ -324,6 +324,7 @@ fn a_client_dying_mid_request_costs_nothing() {
 }
 
 /// Failure: hostile bytes crash the server or get a command through. Each must be refused, and the server left answering. Unknown fields are refused, and so is deep nesting and bad UTF-8.
+/// `text` with neither a page nor `--ref` is a real command missing its one required choice, so it is a `usage` refusal naming `--ref`, not an unknown or malformed command.
 #[test]
 fn hostile_messages_are_refused_and_nothing_falls_over() {
     let state = State::at(Level::Full);
@@ -339,7 +340,6 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
         b"\"text\"".to_vec(),
         b"{}".to_vec(),
         b"{\"cmd\":null}".to_vec(),
-        b"{\"cmd\":\"text\"}".to_vec(),
         b"{\"cmd\":\"text\",\"page\":\"one\"}".to_vec(),
         b"{\"cmd\":\"text\",\"page\":-1}".to_vec(),
         b"{\"cmd\":\"text\",\"page\":1e99}".to_vec(),
@@ -361,6 +361,10 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
             .unwrap_or_else(|| panic!("the connection closed on {:?}", String::from_utf8_lossy(&line)));
         assert_eq!(reply["error"]["code"], "bad_command", "{:?}: {reply}", String::from_utf8_lossy(&line));
     }
+    raw.stream.write_all(b"{\"cmd\":\"text\"}\n").unwrap();
+    let reply = raw.read().expect("the connection closed on text with neither page nor ref");
+    assert_eq!(reply["error"]["code"], "usage", "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("--ref"), "{reply}");
     // Numbers that are in range but absurd: the session must refuse them, not panic on arithmetic.
     let file = doc();
     assert_eq!(raw.call(&open_cmd(&file.0))["ok"], true);
