@@ -509,6 +509,31 @@ mod tests {
         assert!(all_read.contains("Nothing found") && !all_read.contains("couldn't be read"), "{all_read}");
     }
 
+    /// Failure: a search whose pages were all left unread because the Mac was busy ended "Nothing found.", a claim about pages it never read, and said nothing of why (the owner's Find decision, 2026-11-25: say it plainly).
+    #[test]
+    fn pages_the_busy_mac_couldnt_read_are_said_plainly_and_never_nothing_found() {
+        let one = render(
+            "search",
+            &json!({ "hits": [], "coverage": { "pages_searched": 0, "pages_in_scope": 1, "failed_pages": [], "busy_pages": [1] } }),
+        );
+        assert!(!one.contains("Nothing found"), "{one}");
+        assert!(one.contains("No hits on the pages that could be read."), "{one}");
+        assert!(
+            one.lines()
+                .next()
+                .unwrap()
+                .contains("1 page wasn't read: the Mac was busy. Search again to read it."),
+            "{one}"
+        );
+        assert!(!one.contains("couldn't be read."), "a busy page isn't one that failed: {one}");
+        let many = render(
+            "search",
+            &json!({ "hits": [], "coverage": { "pages_searched": 1, "pages_in_scope": 4, "busy_pages": [2, 3, 4] } }),
+        );
+        assert!(many.contains("3 pages weren't read: the Mac was busy. Search again to read them."), "{many}");
+        assert!(!many.contains("Nothing found"), "{many}");
+    }
+
     /// Failure: a search with nothing to show reads as an empty success, with no word on what was searched, so "not found" gets believed for pages never looked at.
     #[test]
     fn finding_nothing_says_what_was_searched() {
