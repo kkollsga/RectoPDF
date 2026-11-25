@@ -113,6 +113,8 @@ pub struct Caps {
     pub page_bytes: u64,
     pub page_read: u64,
     /// Bytes a page may read through a stream in all, decoded or as stored, **every stage of a chain's output counted and the failed ones too**; refusal only, never hashed and never in [`PageRead::bytes`].
+    ///
+    /// Each stage pays for what it reads from the one before, and a stage reads ahead (inflate's input buffer and the `BufReader`s take up to `decode::CHUNK` each), so near this limit whether a page has an identity can depend on up to one `CHUNK` per stage of decoded bytes past the hashed prefix, and on how flate2 reads. For the same build the result is the same and no digest changes; a flate2 upgrade could move pages that sit right at the limit.
     pub decode_work: u64,
 }
 
@@ -933,6 +935,7 @@ fn take_metered(
             Err(_) => return Ok(Taken::Failed),
         };
         // A decoder that swallowed the error and went on (or ended) hashes what depends on where the work ran out.
+        // No current decoder reaches this (base-85 says its error at its next read, which the arm above catches); it stays for one that swallows and then ends.
         if meter.ran_out() {
             return Err(Capped);
         }

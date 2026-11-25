@@ -1613,3 +1613,32 @@ fn nested_flate_into_an_eater_is_charged_every_stage() {
     );
     assert!(least_decode_work(&page) >= 1 << 20, "1 MiB between the stages");
 }
+
+/// Holds: no digest below the least budget for a chain whose last stage swallows an error. `[/FlateDecode /ASCII85Decode]` over 256 KiB of text:
+/// base-85 gives the bytes it made before an input error and says the error at its next read, so the budget can run out between two of its
+/// buffer fills, after output. At the least budget that reads the page whole the page has the whole digest; at half of it, one under it and just
+/// past each 64 KiB boundary under it, no identity. This does not prove the check after an Ok read in `page_id.rs`: that line is unreachable
+/// today (base-85's next read errs, so the error arm catches it first), and stays as defence for a decoder that swallows and then ends.
+#[test]
+fn a_decoder_that_swallows_the_work_error_gives_no_digest_at_a_short_budget() {
+    let mut state = 0x9e37_79b9u32;
+    let data: Vec<u8> = (0..256 << 10)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let page = one_page("", "", "4 0 R", vec![stream("/Filter [/FlateDecode /ASCII85Decode]", &flate(&ascii85(&data)))]);
+    let whole = digest_of(&page);
+    let least = least_decode_work(&page);
+    let chunk = decode::CHUNK as u64;
+    assert!(least > 3 * chunk, "the work spans several buffers, {least}");
+    let under = |decode_work: u64| digest_under(&page, &Caps { decode_work, ..Caps::STANDARD });
+    assert_eq!(under(least), Some(whole), "at the least");
+    let points = [least - 1, least / 2]
+        .into_iter()
+        .chain((1..).map(|k| k * chunk).take_while(|&at| at + 2 < least).flat_map(|at| [at + 1, at + 2]));
+    for budget in points {
+        assert_eq!(under(budget), None, "a budget of {budget} of {least} gave an identity");
+    }
+}

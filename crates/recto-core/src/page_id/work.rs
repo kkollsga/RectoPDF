@@ -11,26 +11,25 @@ use std::rc::Rc;
 /// The decode work a stream's read may still do, shared by every stage of its chain.
 #[derive(Clone)]
 pub(super) struct Meter {
-    left: Rc<Cell<u64>>,
-    out: Rc<Cell<bool>>,
+    /// What's left, and whether it ran out: one allocation for a stream's whole read.
+    state: Rc<(Cell<u64>, Cell<bool>)>,
 }
 
 impl Meter {
     pub(super) fn new(left: u64) -> Self {
         Self {
-            left: Rc::new(Cell::new(left)),
-            out: Rc::new(Cell::new(false)),
+            state: Rc::new((Cell::new(left), Cell::new(false))),
         }
     }
 
     /// What's left.
     pub(super) fn left(&self) -> u64 {
-        self.left.get()
+        self.state.0.get()
     }
 
     /// Whether the work ran out: a read that then failed was refused, not undecodable.
     pub(super) fn ran_out(&self) -> bool {
-        self.out.get()
+        self.state.1.get()
     }
 
     /// `reader`, its bytes charged to this meter.
@@ -50,14 +49,14 @@ struct Counting<'a> {
 impl Read for Counting<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let read = self.inner.read(buf)?;
-        match self.meter.left.get().checked_sub(read as u64) {
+        match self.meter.state.0.get().checked_sub(read as u64) {
             Some(left) => {
-                self.meter.left.set(left);
+                self.meter.state.0.set(left);
                 Ok(read)
             }
             None => {
-                self.meter.left.set(0);
-                self.meter.out.set(true);
+                self.meter.state.0.set(0);
+                self.meter.state.1.set(true);
                 Err(io::Error::other("the decode work ran out"))
             }
         }
