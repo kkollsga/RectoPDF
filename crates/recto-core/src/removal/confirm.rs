@@ -101,7 +101,6 @@ pub struct Binding<A> {
 pub enum ConfirmRefusal {
     Unknown,
     Expired,
-    OtherActor,
     OtherTarget,
     Stale,
     PlanChanged,
@@ -182,14 +181,16 @@ impl<A: Copy + Eq> Confirmations<A> {
         Ok(PlanId(id))
     }
 
-    /// Confirms a plan. Checked in order: unknown id, another actor (nothing changes and nothing else is said), expired, another
-    /// target, a changed document, a changed plan. Every refusal after the actor check removes the entry; success removes it too.
+    /// Confirms a plan. Checked in order: unknown id or another actor's id (the same answer, `Unknown`, and nothing changes, so an id
+    /// reveals nothing to anyone but its owner), expired, another target, a changed document, a changed plan. Every refusal after that
+    /// removes the entry; success removes it too.
     pub fn take(&mut self, id: PlanId, binding: &Binding<A>, plan: &Plan, now: Instant) -> Result<Confirmed, ConfirmRefusal> {
-        let at = self.pending.iter().position(|p| p.id == id.0).ok_or(ConfirmRefusal::Unknown)?;
+        let at = self
+            .pending
+            .iter()
+            .position(|p| p.id == id.0 && p.binding.actor == binding.actor)
+            .ok_or(ConfirmRefusal::Unknown)?;
         let p = &self.pending[at];
-        if p.binding.actor != binding.actor {
-            return Err(ConfirmRefusal::OtherActor);
-        }
         let verdict = if self.expired(p, now) {
             Err(ConfirmRefusal::Expired)
         } else if p.binding.target != binding.target {

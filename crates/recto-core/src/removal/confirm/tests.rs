@@ -193,7 +193,7 @@ fn stale_epoch_or_changed_file_refuses() {
 }
 
 /// Catches one actor confirming, cancelling or learning about another's plan, and a wrong actor's
-/// refusal removing the plan or revealing its state before the right one asks.
+/// refusal removing the plan or revealing that it exists (an id held by another actor answers as an unknown id).
 #[test]
 fn other_actor_refuses_and_keeps_the_plan() {
     let (plan, t0) = (ok(&[]), Instant::now());
@@ -201,21 +201,23 @@ fn other_actor_refuses_and_keeps_the_plan() {
     let mut s = store();
     let id = s.offer(person, &plan, t0).unwrap();
     for other in [Who::Agent(1), Who::Agent(2)] {
-        assert_eq!(s.take(id, &bind(other, same()), &plan, t0).unwrap_err(), ConfirmRefusal::OtherActor);
+        assert_eq!(s.take(id, &bind(other, same()), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     }
-    // Even stale, expired and for another target, the answer is the same: nothing else is said.
+    // Even stale, expired and for another target, the answer is the same as for an id that was never offered.
     let stale_late = Binding {
         version: Version { epoch: 9, ..version() },
         target: new_file("/x.pdf"),
         actor: Who::Agent(1),
     };
     let late = t0 + SMALL.ttl * 2;
-    assert_eq!(s.take(id, &stale_late, &plan, late).unwrap_err(), ConfirmRefusal::OtherActor);
+    assert_eq!(s.take(id, &stale_late, &plan, late).unwrap_err(), ConfirmRefusal::Unknown);
     assert_eq!(s.len(), 1);
     assert!(s.take(id, &person, &plan, t0).is_ok());
     let agent = bind(Who::Agent(1), same());
     let id = s.offer(agent, &plan, t0).unwrap();
-    assert_eq!(s.take(id, &bind(Who::Agent(2), same()), &plan, t0).unwrap_err(), ConfirmRefusal::OtherActor);
+    assert_eq!(s.take(id, &bind(Who::Agent(2), same()), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
+    assert_eq!(s.len(), 1);
+    assert!(s.take(id, &agent, &plan, t0).is_ok());
 }
 
 /// Catches a confirmation for one output being used for another: a different mode, output path, replace-versus-new, or source file.
