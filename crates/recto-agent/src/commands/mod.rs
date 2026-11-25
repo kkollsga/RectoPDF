@@ -555,6 +555,9 @@ const COMBINATIONS: &[(&str, &str)] = &[
     ("highlight_remove", highlight::ID_ALONE),
     ("text", locating::TEXT_BOTH),
     ("render", locating::RENDER_BOTH),
+    // Both flags are optional in the table, so the CLI can build the line with neither, and the typed payload refuses it as it's read.
+    ("text", locating::TEXT_NEITHER),
+    ("render", locating::RENDER_NEITHER),
 ];
 
 /// For tests (the table's and the fuzz target's): whether a line the CLI built, each of whose words its row takes, is refused as it's read only for what its
@@ -664,3 +667,22 @@ const fn grouped<const N: usize>(parts: &[&[&[Spec]]]) -> [Spec; N] {
 
 /// Every row, in order.
 pub(crate) static ROWS: [Spec; rows_in(PARTS)] = grouped(PARTS);
+
+#[cfg(test)]
+mod combination_tests {
+    use super::*;
+
+    /// Failure: the fuzz target calls a CLI-built `text` or `render` with neither page nor `--ref` a bug, when it is a combination refusal made as it's read;
+    /// or lets any usage refusal pass for one.
+    #[test]
+    fn a_locator_with_neither_page_nor_ref_is_a_combination_refusal_and_other_refusals_are_not() {
+        let usage = |words: &'static str| AgentError::new(Code::USAGE, words, crate::exit::USAGE);
+        assert!(refused_for_its_combination("text", &usage(locating::TEXT_NEITHER)));
+        assert!(refused_for_its_combination("render", &usage(locating::RENDER_NEITHER)));
+        assert!(
+            !refused_for_its_combination("text", &usage(locating::RENDER_NEITHER)),
+            "another command's words"
+        );
+        assert!(!refused_for_its_combination("text", &usage("`text` takes a page that is a number.")));
+    }
+}
