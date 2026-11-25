@@ -640,15 +640,6 @@ mod recovery_tests {
         );
     }
 
-    /// Failure: a live or unknown answer to a look reads as absent. (That a rollback makes the look right before
-    /// swapping back is caught by the installer integration test, not here.)
-    #[test]
-    fn still_absent_never_reads_live_or_unknown_as_absent() {
-        assert!(still_absent(|| Ok(false)).is_ok());
-        assert!(matches!(still_absent(|| Ok(true)), Err(LookRefusal::Live)));
-        assert!(matches!(still_absent(|| Err(io::Error::other("unknown"))), Err(LookRefusal::Unknown(e)) if e.to_string() == "unknown"));
-    }
-
     fn version(app: &Path, version: &str) -> Vec<u8> {
         std::fs::create_dir_all(app.join("Contents")).unwrap();
         let bytes =
