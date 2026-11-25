@@ -9,13 +9,23 @@ const MAX_PATH: usize = 4096;
 trait Scan {
     fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize>;
     fn path(&mut self, pid: i32, buffer: &mut [u8]) -> io::Result<usize>;
-    /// The name the process was started under, written into `buffer`: at most `COMM_LEN` bytes, the kernel's cut.
-    fn name(&mut self, pid: i32, buffer: &mut [u8; COMM_LEN]) -> io::Result<usize>;
+    /// The name the process was started under, written into `buffer`: its length, and the length at which the kernel
+    /// cuts the name it was read from (a name of exactly that length may be a cut).
+    fn name(&mut self, pid: i32, buffer: &mut [u8; NAME_LEN]) -> io::Result<Name>;
 }
 
-/// The longest start name the kernel keeps: `pbi_comm` holds `MAXCOMLEN` bytes and xnu ends it with a NUL at the
-/// last one, so the usable length is `MAXCOMLEN - 1` (`universalaccessd` reads `universalaccess`).
+/// The longest start name `pbi_name` keeps: it holds `2 * MAXCOMLEN` bytes and xnu ends it with a NUL at the last one.
+const NAME_LEN: usize = 2 * libc::MAXCOMLEN - 1;
+/// The longest start name `pbi_comm` keeps (`universalaccessd` reads `universalaccess`): the fallback when `pbi_name`
+/// is empty.
 const COMM_LEN: usize = libc::MAXCOMLEN - 1;
+
+/// A start name as read: its length in the buffer, and the length at which its source cuts a longer name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Name {
+    len: usize,
+    cut: usize,
+}
 
 struct Mac;
 
@@ -35,7 +45,7 @@ impl Scan for Mac {
         if bytes <= 0 { Err(io::Error::last_os_error()) } else { Ok(bytes as usize) }
     }
 
-    fn name(&mut self, pid: i32, buffer: &mut [u8; COMM_LEN]) -> io::Result<usize> {
+    fn name(&mut self, pid: i32, buffer: &mut [u8; NAME_LEN]) -> io::Result<Name> {
         // SAFETY: observation only; `info` is a zeroed plain struct and its exact size is passed.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = size_of::<libc::proc_bsdinfo>() as i32;
@@ -47,16 +57,20 @@ impl Scan for Mac {
                 io::Error::other("short process info")
             });
         }
-        let mut count = 0;
-        for (slot, byte) in buffer.iter_mut().zip(info.pbi_comm.iter().map(|byte| *byte as u8)) {
-            if byte == 0 {
-                break;
-            }
-            *slot = byte;
-            count += 1;
-        }
-        Ok(count)
+        Ok(pick_name(&info.pbi_name.map(|byte| byte as u8), &info.pbi_comm.map(|byte| byte as u8), buffer))
     }
+}
+
+/// The start name from `pbi_name` (up to its NUL), or from `pbi_comm` when `pbi_name` is empty, copied into `buffer`.
+fn pick_name(pbi_name: &[u8], pbi_comm: &[u8], buffer: &mut [u8; NAME_LEN]) -> Name {
+    let until_nul = |bytes: &[u8]| bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let (source, cut) = match until_nul(pbi_name) {
+        0 => (&pbi_comm[..until_nul(pbi_comm)], COMM_LEN),
+        len => (&pbi_name[..len], NAME_LEN),
+    };
+    let len = source.len().min(cut);
+    buffer[..len].copy_from_slice(&source[..len]);
+    Name { len, cut }
 }
 
 /// Whether this user's processes include the exact update executable.
@@ -121,16 +135,17 @@ fn deleted_executable(pid: i32, name: &str, cause: &io::Error) -> io::Error {
 }
 
 /// Reads the start name once. It is `Other` only when the name shows the process can't be the wanted program. The kernel
-/// cuts the name at `COMM_LEN` bytes: a shorter name must differ from the wanted file name in full; a name of exactly
-/// `COMM_LEN` may be a cut, so it is skipped only when it is not a prefix of the wanted name. A name that can't be read
+/// cuts the name at `NAME_LEN` bytes (`COMM_LEN` for the `pbi_comm` fallback): a shorter name must differ from the
+/// wanted file name in full; a name of exactly the cut may be a cut, so it is skipped only when it is not a prefix of
+/// the wanted name. A name that can't be read
 /// stays unknown, except that a process that vanished (`ESRCH`) is skipped as `path` skips it.
 /// Known limit: the start name is the last part of the path the program was started through, so the app's own executable
 /// run through a link of another name, and then deleted while running, would be skipped. The app as launched normally
 /// runs under its own name, so a running copy of it stays unknown.
 fn started_as(wanted: &Path, scan: &mut impl Scan, pid: i32) -> Start {
-    let mut name = [0u8; COMM_LEN];
-    let count = match scan.name(pid, &mut name) {
-        Ok(count) => count,
+    let mut name = [0u8; NAME_LEN];
+    let Name { len: count, cut } = match scan.name(pid, &mut name) {
+        Ok(name) => name,
         Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Start::Other,
         Err(_) => return Start::Unknown("unreadable name".into()),
     };
@@ -139,7 +154,7 @@ fn started_as(wanted: &Path, scan: &mut impl Scan, pid: i32) -> Start {
     };
     let other = wanted.file_name().is_some_and(|wanted| {
         let wanted = wanted.as_bytes();
-        if count == COMM_LEN { !wanted.starts_with(read) } else { read != wanted }
+        if count == cut { !wanted.starts_with(read) } else { read != wanted }
     });
     if other {
         Start::Other
@@ -158,6 +173,8 @@ mod tests {
         error: Option<i32>,
         started_as: Option<&'static [u8]>,
         name_error: Option<i32>,
+        /// The length at which the name's source cuts, as `Name::cut`.
+        cut: usize,
     }
     impl Scan for Fake {
         fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize> {
@@ -171,12 +188,15 @@ mod tests {
             buffer[..self.path.len()].copy_from_slice(self.path);
             Ok(self.path.len())
         }
-        fn name(&mut self, _: i32, buffer: &mut [u8; COMM_LEN]) -> io::Result<usize> {
+        fn name(&mut self, _: i32, buffer: &mut [u8; NAME_LEN]) -> io::Result<Name> {
             let name = self
                 .started_as
                 .ok_or_else(|| io::Error::from_raw_os_error(self.name_error.unwrap_or(libc::EPERM)))?;
             buffer[..name.len()].copy_from_slice(name);
-            Ok(name.len())
+            Ok(Name {
+                len: name.len(),
+                cut: self.cut,
+            })
         }
     }
 
@@ -191,6 +211,7 @@ mod tests {
             error: None,
             started_as: None,
             name_error: None,
+            cut: NAME_LEN,
         };
         assert!(observe(wanted, &mut fake).unwrap());
         fake.path = b"/private/other/RectoPDF\0";
@@ -218,39 +239,46 @@ mod tests {
         assert!(!observe(wanted, &mut fake).unwrap());
     }
 
-    /// Failure: the kernel keeps at most 15 bytes of a start name (`universalaccessd` reads `universalaccess`), so a
-    /// running, deleted copy of an app with a longer executable name is skipped as "another program" and the installer
-    /// replaces a running app. A cut name that is a prefix of the wanted name stays unknown.
+    /// Failure: the kernel keeps at most 31 bytes of a start name in `pbi_name`, so a running, deleted copy of an app
+    /// with a longer executable name is skipped as "another program" and the installer replaces a running app. A cut
+    /// name that is a prefix of the wanted name stays unknown; a shorter one is compared in full, with no prefix guess.
     #[test]
     fn a_start_name_cut_by_the_kernel_is_compared_as_a_prefix() {
-        let long = Path::new("/private/app/A-very-long-program-name");
+        let long = Path::new("/private/app/A-very-long-program-name-that-the-kernel-cuts");
         let mut fake = Fake {
             list_bytes: 4,
             path: b"",
             error: Some(libc::ENOENT),
-            started_as: Some(b"A-very-long-pro"),
+            started_as: Some(b"A-very-long-program-name-that-"),
             name_error: None,
+            cut: NAME_LEN,
         };
-        assert_eq!(fake.started_as.unwrap().len(), COMM_LEN);
+        assert_eq!(fake.started_as.unwrap().len(), NAME_LEN - 1);
+        assert!(
+            !observe(long, &mut fake).unwrap(),
+            "a name below the cut is compared in full, with no prefix guess"
+        );
+        fake.started_as = Some(b"A-very-long-program-name-that-t");
+        assert_eq!(fake.started_as.unwrap().len(), NAME_LEN);
         assert!(
             observe(long, &mut fake).is_err(),
-            "a 15-byte cut that is a prefix of the wanted name is unknown"
+            "a cut-length name that is a prefix of the wanted name is unknown"
         );
-        fake.started_as = Some(b"Another-long-pr");
-        assert!(!observe(long, &mut fake).unwrap(), "a 15-byte cut that is not a prefix is another program");
-        let exactly = Path::new("/private/app/Exactly-15-byte");
-        fake.started_as = Some(b"Exactly-15-byte");
-        assert!(
-            observe(exactly, &mut fake).is_err(),
-            "a name of exactly the cap that is the whole wanted name is unknown"
-        );
+        fake.started_as = Some(b"Another-long-program-name-that-");
+        assert!(!observe(long, &mut fake).unwrap(), "a cut-length name that is not a prefix is another program");
+        let exactly = Path::new("/private/app/Exactly-31-bytes-long-name-xxxxx");
+        fake.started_as = Some(b"Exactly-31-bytes-long-name-xxxx");
+        assert!(observe(exactly, &mut fake).is_err(), "a cut-length prefix of the wanted name is unknown");
         let short = Path::new("/private/app/Short");
         fake.started_as = Some(b"Shor");
-        assert!(!observe(short, &mut fake).unwrap(), "a short name below the cap is compared in full");
+        assert!(!observe(short, &mut fake).unwrap(), "a short name below the cut is compared in full");
         fake.started_as = Some(b"Short");
         assert!(observe(short, &mut fake).is_err(), "the same short name is unknown");
-        fake.started_as = Some(b"A-very-long-pro");
-        assert!(!observe(short, &mut fake).unwrap(), "a 15-byte name can't be a prefix of a shorter wanted name");
+        fake.started_as = Some(b"A-very-long-program-name-that-t");
+        assert!(
+            !observe(short, &mut fake).unwrap(),
+            "a cut-length name can't be a prefix of a shorter wanted name"
+        );
         fake.started_as = None;
         fake.name_error = Some(libc::ESRCH);
         assert!(
@@ -259,6 +287,63 @@ mod tests {
         );
         fake.name_error = Some(libc::EPERM);
         assert!(observe(short, &mut fake).is_err(), "any other name error is unknown");
+    }
+
+    /// Failure: a 20-byte start name, which `pbi_comm` cuts to 15 and so had to be guessed by prefix, is again treated as
+    /// a possible cut: a different wanted name sharing its first 15 bytes keeps an unknown, and the installer is held up
+    /// by an unrelated program (or, the other way, a name that differs after byte 15 is judged equal).
+    #[test]
+    fn a_name_pbi_comm_would_cut_is_an_exact_match_now() {
+        let twenty = b"Recto-sibling-tool-x"; // 20 bytes
+        assert_eq!(twenty.len(), 20);
+        let mut buffer = [0u8; NAME_LEN];
+        let name = pick_name(twenty, &twenty[..COMM_LEN], &mut buffer);
+        assert_eq!(name, Name { len: 20, cut: NAME_LEN });
+        assert_eq!(&buffer[..name.len], twenty);
+        let mut fake = Fake {
+            list_bytes: 4,
+            path: b"",
+            error: Some(libc::ENOENT),
+            started_as: Some(twenty),
+            name_error: None,
+            cut: NAME_LEN,
+        };
+        let wanted = Path::new("/private/app/Recto-sibling-tool-y");
+        assert!(
+            !observe(wanted, &mut fake).unwrap(),
+            "the same first 15 bytes, a different name: another program"
+        );
+        let same = Path::new("/private/app/Recto-sibling-tool-x");
+        assert!(observe(same, &mut fake).is_err(), "the whole name is the same: unknown");
+    }
+
+    /// Failure: an empty `pbi_name` leaves the start name empty ("unreadable", so every such program holds up the
+    /// update), or the `pbi_comm` fallback is trusted as a whole name when it is a 15-byte cut.
+    #[test]
+    fn an_empty_pbi_name_falls_back_to_pbi_comm_with_its_own_cut() {
+        let mut buffer = [0u8; NAME_LEN];
+        let mut comm = [0u8; libc::MAXCOMLEN + 1];
+        comm[..COMM_LEN].copy_from_slice(b"Recto-sibling-t");
+        let name = pick_name(&[0; 32], &comm, &mut buffer);
+        assert_eq!(name, Name { len: COMM_LEN, cut: COMM_LEN });
+        assert_eq!(&buffer[..name.len], b"Recto-sibling-t");
+        let mut fake = Fake {
+            list_bytes: 4,
+            path: b"",
+            error: Some(libc::ENOENT),
+            started_as: Some(b"Recto-sibling-t"),
+            name_error: None,
+            cut: COMM_LEN,
+        };
+        let wanted = Path::new("/private/app/Recto-sibling-tool-y");
+        assert!(
+            observe(wanted, &mut fake).is_err(),
+            "a 15-byte fallback name that is a prefix is a possible cut"
+        );
+        // A non-empty pbi_name wins over pbi_comm, and stops at its NUL.
+        let mut long = [0u8; 32];
+        long[..4].copy_from_slice(b"abcd");
+        assert_eq!(pick_name(&long, &comm, &mut buffer), Name { len: 4, cut: NAME_LEN });
     }
 
     struct Children(Vec<std::process::Child>);
@@ -326,11 +411,11 @@ mod tests {
             "the OS doesn't answer ENOENT for a live program whose file was deleted here: {:?}",
             result.map(|count| String::from_utf8_lossy(&buffer[..count]).into_owned())
         );
-        let mut started = [0u8; COMM_LEN];
-        let count = Mac
+        let mut started = [0u8; NAME_LEN];
+        let read = Mac
             .name(pid, &mut started)
             .unwrap_or_else(|error| panic!("the stand-in's name can't be read: {error}"));
-        assert_eq!(&started[..count], name.as_bytes(), "the OS keeps another start name than the copy's");
+        assert_eq!(&started[..read.len], name.as_bytes(), "the OS keeps another start name than the copy's");
         (dir, children)
     }
 
@@ -343,15 +428,26 @@ mod tests {
     fn a_deleted_program_started_under_another_name_is_skipped_but_one_named_like_the_app_is_not() {
         // A name that isn't the app's, short enough for the kernel to keep whole.
         let other = format!("rpdf-o-{}", std::process::id());
-        assert!(other.len() < COMM_LEN);
+        assert!(other.len() < NAME_LEN);
         let (_other, _children) = deleted_stand_in(&other);
         assert!(update_app_is_running(&std::env::current_exe().unwrap()).unwrap());
 
+        // A name over the 15 bytes `pbi_comm` keeps: read whole from `pbi_name`, so a wanted file that shares its first 15
+        // bytes but is another name is no possible match (it was an unknown by prefix before).
+        let long = format!("rpdf-long-name-{}", std::process::id());
+        assert!(long.len() > COMM_LEN && long.len() < NAME_LEN);
+        let (_long, _more_children) = deleted_stand_in(&long);
         let dir = recto_testpdf::TempDir::new("update-processes-wanted-");
+        let sibling = dir.path().join("rpdf-long-name-sibling");
+        std::fs::File::create(&sibling).unwrap();
+        assert!(
+            !update_app_is_running(&sibling).unwrap(),
+            "a name over 15 bytes is compared whole, not by prefix"
+        );
         // A name of this run only: a deleted copy under the app's real name would make every other installer test, and
         // a real updater on this Mac, see an unknown while it lives. The rule under test is "the same name".
         let unique = format!("rpdf-{}", std::process::id());
-        assert!(unique.len() < COMM_LEN);
+        assert!(unique.len() < NAME_LEN);
         let wanted = dir.path().join(&unique);
         std::fs::File::create(&wanted).unwrap();
         let (_same_name, _more) = deleted_stand_in(&unique);
