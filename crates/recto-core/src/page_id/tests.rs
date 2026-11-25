@@ -925,27 +925,28 @@ fn golden_vectors_of_recto_page_1() {
     assert_eq!(reads_of(&capped, &Caps::STANDARD)[0].identity, None);
 }
 
-/// The page's records of `names` (all the one image object, `5 0 R`, whose dictionary is `extra` past the JPEG's) and what they cost: its identity,
-/// how many descriptors were resolved to make it, and the page's cost.
-fn many_names_one_image(names: usize, extra: &str) -> (Vec<u8>, PageRead, u64) {
+/// Failure caught (security, the probe's repro: a hostile page's identity cost 10.8 GB of a 3 MB file): an image drawn under many names had its stream's
+/// descriptor (its dictionary, parsed whole and charged to nothing) resolved again for each name; 256 names to one image whose dictionary holds a
+/// 100,000-element array took 1.35 s and 789 MiB for one page, with 4,902 bytes charged. A stream is read once for a page, and the identity is what the
+/// definition says and always was: every name's record, each with the same kind, length and hash.
+#[test]
+fn the_once_read_hostile_dictionary_costs_one_resolution() {
+    let names = 256;
+    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
     let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
     let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
     let page = one_page(
         "",
         &format!("/XObject << {table} >>"),
         "4 0 R",
-        vec![stream("", draws.as_bytes()), stream(&format!("{JPEG_DICT} {extra}"), IMAGE)],
+        vec![stream("", draws.as_bytes()), stream(&format!("{JPEG_DICT} {junk}"), IMAGE)],
     );
     DESCRIPTORS.with(|count| count.set(0));
     let read = reads_of(&page, &Caps::STANDARD).remove(0);
-    (page, read, DESCRIPTORS.with(std::cell::Cell::get))
-}
-
-/// What the definition says of a page drawing one image under `names` names: every name's record, each with the same kind, length and hash.
-fn expected_many_names(names: usize, draws: &[u8]) -> [u8; 32] {
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
     let mut expected = b"recto-page/1\0C".to_vec();
     expected.extend_from_slice(&1u32.to_le_bytes());
-    expected.extend(content_bytes(0, draws));
+    expected.extend(content_bytes(0, draws.as_bytes()));
     expected.push(b'X');
     expected.extend_from_slice(&(names as u32).to_le_bytes());
     for n in 0..names {
@@ -953,23 +954,7 @@ fn expected_many_names(names: usize, draws: &[u8]) -> [u8; 32] {
         expected.extend_from_slice(&0u32.to_le_bytes());
     }
     expected.push(b'E');
-    sha(&expected)
-}
-
-/// Failure caught (security, the probe's repro: a hostile page's identity cost 10.8 GB of a 3 MB file): an image drawn under many names had its stream's
-/// descriptor (its dictionary, parsed whole and charged to nothing) resolved again for each name; 256 names to one image whose dictionary holds a
-/// 100,000-element array took 1.35 s and 789 MiB for one page, with 4,902 bytes charged. A stream is read once for a page, and the identity is what the
-/// definition says and always was: every name's record, each with the same kind, length and hash.
-#[test]
-fn the_once_read_hostile_dictionary_costs_one_resolution() {
-    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
-    let (_, read, resolved) = many_names_one_image(256, &junk);
-    assert_eq!(resolved, 1);
-    let draws: String = (0..256).map(|n| format!("/N{n} Do ")).collect();
-    assert_eq!(
-        hex(&read.identity.expect("an identity").digest),
-        hex(&expected_many_names(256, draws.as_bytes()))
-    );
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
 }
 
 /// Failure caught (the memo's neutrality): a stream taken again is charged to the page as it was when read, so the read cap still counts every record
@@ -1051,8 +1036,8 @@ fn an_image_and_a_form_under_two_names_each_are_hashed_as_defined() {
     assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
 }
 
-/// Failure caught (memory, review of the memo): each form kept its own copy of its `/Resources`' `/XObject` table for the whole page, so 128 forms that
-/// share one `/Resources 5 0 R` -> `/XObject 6 0 R` held 128 copies of a table that may be huge, where one at a time was held before. The shared
+/// Failure caught (memory, review of the memo): each form kept its own copy of its `/Resources`' `/XObject` table for the whole page, so 100 forms that
+/// share one `/Resources 5 0 R` -> `/XObject 6 0 R` held 100 copies of a table that may be huge, where one at a time was held before. The shared
 /// resource dictionary and table are resolved once for the page, whatever the number of forms, and the identity is the one it always had.
 #[test]
 fn forms_sharing_resources_resolve_them_once() {
@@ -1151,7 +1136,8 @@ fn a_gave_up_image_re_read_for_want_of_headroom_is_resolved_once() {
 }
 
 /// Failure caught (security, the same class as the memo's): an image's `/Filter` array of 8 references (the most a chain takes) to one object parsed it 8 times and
-/// more in one read (and `deref` parsed a non-stream twice for each), whatever its size. Each object a read points at is parsed once for that read, and the
+/// more in one read, whatever its size. (`deref` itself parses a non-stream twice, a stream probe and then the object, which is lopdf's API; the count here is
+/// of the misses of `Refs`, the times a read went to the reader for an object.) Each object a read points at is parsed once for that read, and the
 /// record is what the definition gives: a filter that isn't general, as stored.
 #[test]
 fn a_read_follows_each_reference_once() {

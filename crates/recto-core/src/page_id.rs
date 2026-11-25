@@ -45,6 +45,14 @@
 //! stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs at most the caps, holding a few buffers
 //! of [`decode::CHUNK`], a predictor's row and the scan's names (256 of at most 127 bytes).
 //!
+//! **What a page holds at once:** what the digest needs of what it has resolved is small facts, and a whole parsed object (a dictionary, an array: up to
+//! the reader's object limit, and an object stream's members aren't under even that) lives only in a single slot, dropped before the next is resolved,
+//! so one object is parsed at a time, as it was before any of it was kept. A record kept for the page is its tail (at most 1 KiB, else it's read again),
+//! the names a form drew and, for each, the id it found in the form's lookup, never a dictionary; a `/Resources` reference is one small entry saying what
+//! its `/XObject` is; one `/XObject` table and one gave-up stream's descriptor are held, each until the next one is needed; and a read's references
+//! keep at most 16 values of at most 4 KiB. A page's own `/XObject` is the one table held for the whole page. Together, besides the one object being
+//! parsed: under 0.5 MiB.
+//!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
 //! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), XObjects in the resources the content doesn't
 //! draw (documents sharing one `/Resources` at the page tree's top would otherwise put every image in every page's digest), `/StructParents`,
@@ -628,6 +636,8 @@ fn xobject_record(
     }
     let Some(descriptor) = kept.or_else(|| reader.resolve_stream_descriptor(id).ok().map(Rc::new)) else {
         // Resolving it parsed its whole dictionary, and what it comes to doesn't depend on what's left of any cap: it's kept like any other record.
+        // A remembered failure includes a transient I/O error, which reads as a stream that isn't one: under I/O errors identity is already undefined (the
+        // same file can digest differently), so remembering it adds no case.
         let seen = Rc::new(Seen::of(vec![2], children));
         hasher.update(&seen.tail);
         drawn.seen.insert(id, Rc::clone(&seen));
