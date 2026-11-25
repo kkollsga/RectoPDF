@@ -84,6 +84,7 @@
 mod decode;
 mod scan;
 
+mod work;
 use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
 /// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_version_for_identity`]).
 pub use lopdf::{IndexedReader, PageMap};
@@ -95,6 +96,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::rc::Rc;
 
+use work::Meter;
 /// The digest's name, and the first bytes hashed.
 pub const DIGEST_NAME: &str = "recto-page/1";
 
@@ -854,6 +856,25 @@ enum Taken {
 #[allow(clippy::too_many_arguments)] // Each says one thing of this one read; a struct would be built for each call and read once.
 fn take_stream(
     reader: &IndexedReader,
+    reader: &IndexedReader,
+    id: ObjectId,
+    descriptor: &lopdf::IndexedStreamDescriptor,
+    chain: Option<&[decode::Filter]>,
+    limit: u64,
+    budget: &mut Budget<'_>,
+    scan: Option<&mut DoScan>,
+    prefix: bool,
+) -> Result<Taken, Capped> {
+    // Every stage's output is charged to one meter as it's read; what it has left goes back whatever the read's end.
+    let meter = Meter::new(budget.work_left);
+    let taken = take_metered(reader, id, descriptor, chain, limit, budget, scan, prefix, &meter);
+    budget.work_left = meter.left();
+    taken
+}
+
+/// [`take_stream`]'s read, its decode work charged to `meter`.
+#[allow(clippy::too_many_arguments)] // As [`take_stream`].
+fn take_metered(
     id: ObjectId,
     descriptor: &lopdf::IndexedStreamDescriptor,
     chain: Option<&[decode::Filter]>,
@@ -862,6 +883,7 @@ fn take_stream(
     mut scan: Option<&mut DoScan>,
     prefix: bool,
 ) -> Result<Taken, Capped> {
+    meter: &Meter,
     let Some(length) = descriptor.encoded_len() else {
         return Ok(Taken::Failed);
     };
@@ -891,10 +913,7 @@ fn take_stream(
             }
         }
     };
-    let mut source = match chain {
-        Some(chain) => decode::decoded(stored, chain),
-        None => stored,
-    };
+    let mut source = decode::decoded_metered(stored, chain.unwrap_or(&[]), Some(meter));
     // One byte past what may be hashed says a cap is reached. Each read asks for no more than that byte, and a decoder reads nothing past the unit
     // holding it (its group, row or run, as [`decode`] defines them), so what's in the stream after it never decides anything. A prefix is of the
     // stream's own cap only.
@@ -909,8 +928,14 @@ fn take_stream(
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => return Ok(Taken::Failed),
+            // The work ran out in some stage, which a decoder may have turned into an error of its own: a cap reached, not a failed decode.
+            Err(_) if meter.ran_out() => return Err(Capped),
         };
         if read == 0 {
+        // A decoder that swallowed the error and went on (or ended) hashes what depends on where the work ran out.
+        if meter.ran_out() {
+            return Err(Capped);
+        }
             break;
         }
         // Every byte a decoder gives is work done, whether the stream ends well or not (a failed decode of 16 MiB costs what a good one does).

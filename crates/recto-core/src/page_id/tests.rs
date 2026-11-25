@@ -1583,3 +1583,33 @@ fn a_failing_form_taken_from_the_memo_is_charged_again() {
     );
     assert!(least_decode_work(&page) >= 1 << 20, "four draws of a form that decodes 256 KiB before failing");
 }
+
+/// Failure caught (final review, blocker): the budget counted only what the whole chain gave, so a stage that eats its input got through free:
+/// `[/FlateDecode /ASCIIHexDecode]` over 1 MiB of whitespace, which AsciiHex skips to 0 bytes out, was charged 0. Each stage's output is charged: its
+/// decode work is at least the 1 MiB Flate gave AsciiHex.
+#[test]
+fn a_stage_that_eats_what_it_is_given_is_charged_for_it() {
+    let page = one_page(
+        "",
+        "",
+        "4 0 R",
+        vec![stream("/Filter [/FlateDecode /ASCIIHexDecode]", &flate(&vec![b' '; 1 << 20]))],
+    );
+    assert!(least_decode_work(&page) >= 1 << 20, "1 MiB went from Flate to AsciiHex");
+}
+
+/// Failure caught: the same through a chain of Flates (the bytes between stages are what's charged, not only the end): stored kilobyte, a megabyte
+/// between the first two stages, then eaten.
+#[test]
+fn nested_flate_into_an_eater_is_charged_every_stage() {
+    let page = one_page(
+        "",
+        "",
+        "4 0 R",
+        vec![stream(
+            "/Filter [/FlateDecode /FlateDecode /ASCIIHexDecode]",
+            &flate(&flate(&vec![b' '; 1 << 20])),
+        )],
+    );
+    assert!(least_decode_work(&page) >= 1 << 20, "1 MiB between the stages");
+}
