@@ -61,6 +61,14 @@ fn not_referenceable(words: &'static str) -> AgentError {
 /// `recto ref <page>`: a reference to page `page` (counted from 1 in the tab as it is now, unsaved edits included), or with `chars` to characters `[start, end)` of
 /// its text, checked against that text as `recto text` reads it.
 pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, chars: Option<(u32, u32)>) -> Result<Value, AgentError> {
+    reference_reading(access, tab, page, chars, crate::render::page_text)
+}
+
+/// A page's text as the reader gives it: `render::page_text` in production, a made one where a test needs the read to fail the way it can, without the
+/// page that makes it fail.
+type PageTextReader = fn(&std::path::Path, u32) -> Result<String, AgentError>;
+
+fn reference_reading<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, chars: Option<(u32, u32)>, read_text: PageTextReader) -> Result<Value, AgentError> {
     // A page that can't be is refused before the file is opened or its state said.
     let wanted = crate::one_based(page)?;
     let (file, opened, stamp) = readable(access, tab)?;
@@ -84,7 +92,7 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, c
     let Some((start, end)) = chars else {
         return Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }));
     };
-    let text = crate::render::page_text(file.path(), file_page)?;
+    let text = read_text(file.path(), file_page)?;
     let range = locator::characters(&text, start, end).map_err(|_| not_referenceable(CHARS_PAST_TEXT))?;
     drop(text);
     unchanged(&file, stamp)?;
@@ -105,6 +113,7 @@ fn resolved<A: SessionAccess>(
     access: &A,
     tab: &TabRef,
     reference: &Locator,
+    read_text: PageTextReader,
 ) -> Result<(TabFile, Resolution, Outcome, Option<TextMatch>, recto_platform::FileStamp), AgentError> {
     let (file, opened, stamp) = readable(access, tab)?;
     let found = locator::resolve(reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
@@ -112,7 +121,7 @@ fn resolved<A: SessionAccess>(
     unchanged(&file, stamp)?;
     let text = match (reference.target(), &found.status) {
         (Target::Characters(range), Status::Found { page } | Status::Moved { page }) => {
-            let held = locator::check_characters(range, &crate::render::page_text(file.path(), *page)?);
+            let held = locator::check_characters(range, &read_text(file.path(), *page)?);
             unchanged(&file, stamp)?;
             Some(held)
         }
@@ -128,7 +137,11 @@ fn resolved<A: SessionAccess>(
 /// `recto resolve <ref>`: where the reference's page is in this tab now. A page that moved, is gone, can't be told from others or wasn't fully looked
 /// for is an answer (exit 0), never a guess.
 pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Locator) -> Result<Value, AgentError> {
-    let (file, found, outcome, text, _) = resolved(access, tab, &reference)?;
+    resolve_reading(access, tab, reference, crate::render::page_text)
+}
+
+fn resolve_reading<A: SessionAccess>(access: &A, tab: &TabRef, reference: Locator, read_text: PageTextReader) -> Result<Value, AgentError> {
+    let (file, found, outcome, text, _) = resolved(access, tab, &reference, read_text)?;
     // A page of the file, as the tab shows it now (from 1): its position among the unsaved edits, or none when they removed it.
     let place = |file_page: u32| -> Option<u32> { file.place_of(file_page).map(|place| place + 1) };
     let both = |file_page: u32| json!({ "page": place(file_page), "file_page": file_page + 1 });
@@ -191,7 +204,11 @@ fn unresolved(words: &'static str) -> AgentError {
 /// matches several pages, wasn't fully looked for, or points at a page unsaved edits removed is refused, because the next thing done is a read of a page
 /// and a guess would read the wrong one. The token is never repeated.
 pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator) -> Result<Located, AgentError> {
-    let (file, found, outcome, text, stamp) = resolved(access, tab, reference)?;
+    page_of_reading(access, tab, reference, crate::render::page_text)
+}
+
+fn page_of_reading<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator, read_text: PageTextReader) -> Result<Located, AgentError> {
+    let (file, found, outcome, text, stamp) = resolved(access, tab, reference, read_text)?;
     let (status, file_page, page) = settle(&outcome, |file_page| file.place_of(file_page))?;
     let mut said = json!({
         "status": status,
@@ -520,5 +537,42 @@ mod tests {
             assert_eq!((error.code, error.exit), (Code::REFERENCE_UNRESOLVED, exit::NOT_FOUND), "{}", error.message);
             assert!(words.insert(error.message.clone()), "two cases share their words: {}", error.message);
         }
+    }
+}
+
+#[cfg(test)]
+mod unreadable_text_tests {
+    use super::*;
+    use recto_core::locator::Locator;
+    use recto_session::{DiskLoader, Session};
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+    use std::sync::Mutex;
+
+    fn unreadable(_: &std::path::Path, _: u32) -> Result<String, AgentError> {
+        Err(AgentError::new(Code::RENDERER_MISBEHAVED, "made: the page's text can't be read", exit::FAILED))
+    }
+
+    /// Failure: a character target on a page whose text can't be read is answered as a status (`found`, `text_changed`) or with other words than the read's
+    /// own, by any of `ref --chars`, `resolve` and a command that goes on to read the page (`page_of`), so an agent is told something about words nobody
+    /// could read. The reader's refusal must come out of each unchanged, whatever made it fail.
+    #[test]
+    fn a_page_text_that_cannot_be_read_is_the_readers_own_refusal_in_ref_resolve_and_page_of() {
+        let file = TempPdf::new("two.pdf", &pages(&[Page::new(text_lines(&["First page"])), Page::new(text_lines(&["Second page"]))]));
+        let mut session = Session::new(DiskLoader);
+        session.open(&file.0).unwrap();
+        let access = Mutex::new(session);
+        let tab = TabRef::Active;
+        let whole = reference(&access, &tab, 2, None).expect("the page's reference");
+        let made = read_reference(whole["ref"].as_str().unwrap()).expect("a reference");
+        let range = locator::characters("Second page", 0, 6).unwrap();
+        let chars = Locator::new(made.document(), made.page(), Target::Characters(range));
+        let want = unreadable(std::path::Path::new(""), 0).unwrap_err();
+        let same = |said: AgentError, from: &str| assert_eq!((said.code, said.exit, said.message), (want.code, want.exit, want.message.clone()), "{from}");
+        same(resolve_reading(&access, &tab, chars.clone(), unreadable).expect_err("not a status"), "resolve");
+        same(page_of_reading(&access, &tab, &chars, unreadable).err().expect("not a page"), "page_of");
+        same(reference_reading(&access, &tab, 2, Some((0, 6)), unreadable).expect_err("not a reference"), "ref --chars");
+        // The same reference with a reader that works is answered, so the refusals above are the reader's and not the setup's.
+        let answered = resolve_reading(&access, &tab, chars, |_, _| Ok("Second page".into())).expect("resolved");
+        assert_eq!(answered["status"], "found", "{answered}");
     }
 }

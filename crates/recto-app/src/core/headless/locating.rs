@@ -655,28 +655,3 @@ fn a_protected_document_gives_no_character_reference_and_no_check() {
         assert!(!drew(&events), "{events:?}");
     }
 }
-
-/// Failure: a character target on a found page whose text can't be read is answered as a status (`found`, or `text_changed`), so an agent is told something
-/// about words nobody could read; or `resolve` and `recto text` refuse in different words for the same page. By design (D3) it is `recto text`'s own
-/// refusal, with its code and exit, and not a status: the page can't be read, which isn't a page whose text changed.
-#[test]
-fn a_character_target_on_a_page_whose_text_cannot_be_read_is_texts_own_refusal_not_a_status() {
-    let app = HeadlessApp::start();
-    let file = app.disk().file("bomb.pdf", &recto_testpdf::form_bomb());
-    app.open(&file);
-    let page = reference(&app, 1);
-    let token = hostile_chars(&page, 0, 1);
-    let read = app.recto(Level::ReadOnly, &["text", "--page", "1"]).expect_err("the bomb's text can't be read");
-    let said = resolve(&app, Level::ReadOnly, &token).expect_err("a refusal, not a status");
-    assert_eq!(
-        (said.code, said.exit, said.message.as_str()),
-        (read.code, read.exit, read.message.as_str()),
-        "{said:?} against {read:?}"
-    );
-    let by_ref = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect_err("refused");
-    assert_eq!((by_ref.code, by_ref.exit), (read.code, read.exit), "{by_ref:?}");
-    let made = app
-        .agent(Level::ReadOnly, &json!({ "cmd": "ref", "page": 1, "chars": "0-1", "tab": "#1" }).to_string())
-        .expect_err("no characters to point at");
-    assert_eq!((made.code, made.exit), (read.code, read.exit), "{made:?}");
-}
