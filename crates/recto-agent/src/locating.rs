@@ -92,13 +92,20 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, c
     Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "chars": [start, end], "ref": locator::encode(&made) }))
 }
 
+/// What a resolution comes to once the page's text is looked at: the core's status, except that a page found with other text at the characters a reference
+/// names is `TextChanged`, whichever way it was found. Decided once, here, so `resolve`, `page_of` and the note can't disagree.
+enum Outcome {
+    Status(Status),
+    TextChanged { page: u32 },
+}
+
 /// The file's resolution of a reference, and for a character target on a page that was found, whether its text is the text it was made of. The text is read
 /// with the session free, and the file's version is checked after that read as well.
 fn resolved<A: SessionAccess>(
     access: &A,
     tab: &TabRef,
     reference: &Locator,
-) -> Result<(TabFile, Resolution, Option<TextMatch>, recto_platform::FileStamp), AgentError> {
+) -> Result<(TabFile, Resolution, Outcome, Option<TextMatch>, recto_platform::FileStamp), AgentError> {
     let (file, opened, stamp) = readable(access, tab)?;
     let found = locator::resolve(reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
     drop(opened);
@@ -111,23 +118,27 @@ fn resolved<A: SessionAccess>(
         }
         _ => None,
     };
-    Ok((file, found, text, stamp))
+    let outcome = match (&found.status, text) {
+        (Status::Found { page } | Status::Moved { page }, Some(TextMatch::Changed)) => Outcome::TextChanged { page: *page },
+        (status, _) => Outcome::Status(status.clone()),
+    };
+    Ok((file, found, outcome, text, stamp))
 }
 
 /// `recto resolve <ref>`: where the reference's page is in this tab now. A page that moved, is gone, can't be told from others or wasn't fully looked
 /// for is an answer (exit 0), never a guess.
 pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Locator) -> Result<Value, AgentError> {
-    let (file, found, text, _) = resolved(access, tab, &reference)?;
+    let (file, found, outcome, text, _) = resolved(access, tab, &reference)?;
     // A page of the file, as the tab shows it now (from 1): its position among the unsaved edits, or none when they removed it.
     let place = |file_page: u32| -> Option<u32> { file.place_of(file_page).map(|place| place + 1) };
     let both = |file_page: u32| json!({ "page": place(file_page), "file_page": file_page + 1 });
-    let (status, at, listed) = match &found.status {
-        Status::Found { .. } | Status::Moved { .. } if text == Some(TextMatch::Changed) => ("text_changed", found_page(&found.status), &[][..]),
-        Status::Found { page } => ("found", Some(*page), &[][..]),
-        Status::Moved { page } => ("moved", Some(*page), &[][..]),
-        Status::Ambiguous { pages, .. } => ("ambiguous", None, pages.as_slice()),
-        Status::Gone => ("gone", None, &[][..]),
-        Status::Incomplete { pages } => ("incomplete", None, pages.as_slice()),
+    let (status, at, listed) = match &outcome {
+        Outcome::TextChanged { page } => ("text_changed", Some(*page), &[][..]),
+        Outcome::Status(Status::Found { page }) => ("found", Some(*page), &[][..]),
+        Outcome::Status(Status::Moved { page }) => ("moved", Some(*page), &[][..]),
+        Outcome::Status(Status::Ambiguous { pages, .. }) => ("ambiguous", None, pages.as_slice()),
+        Outcome::Status(Status::Gone) => ("gone", None, &[][..]),
+        Outcome::Status(Status::Incomplete { pages }) => ("incomplete", None, pages.as_slice()),
     };
     let was = reference.page().number();
     let target = found.target.map(|placed| target_json(&placed, text));
@@ -150,14 +161,6 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
         "pages_read": found.pages_read,
         "note": note,
     }))
-}
-
-/// The page a `found` or `moved` status stands at.
-fn found_page(status: &Status) -> Option<u32> {
-    match status {
-        Status::Found { page } | Status::Moved { page } => Some(*page),
-        _ => None,
-    }
 }
 
 const UNRESOLVED_GONE: &str = "That page is gone from this file: every page was read and none is it.";
@@ -188,8 +191,8 @@ fn unresolved(words: &'static str) -> AgentError {
 /// matches several pages, wasn't fully looked for, or points at a page unsaved edits removed is refused, because the next thing done is a read of a page
 /// and a guess would read the wrong one. The token is never repeated.
 pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator) -> Result<Located, AgentError> {
-    let (file, found, text, stamp) = resolved(access, tab, reference)?;
-    let (status, file_page, page) = settle(&found.status, text, |file_page| file.place_of(file_page))?;
+    let (file, found, outcome, text, stamp) = resolved(access, tab, reference)?;
+    let (status, file_page, page) = settle(&outcome, |file_page| file.place_of(file_page))?;
     let mut said = json!({
         "status": status,
         "was_page": reference.page().number(),
@@ -209,16 +212,14 @@ pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Lo
 }
 
 /// Which page a status points at: only `found` and `moved` (with the characters the reference names, if it names any, still the same) give one, and only if the tab still has it. Each other case is refused with its own words.
-fn settle(status: &Status, text: Option<TextMatch>, place_of: impl Fn(u32) -> Option<u32>) -> Result<(&'static str, u32, u32), AgentError> {
-    if matches!(status, Status::Found { .. } | Status::Moved { .. }) && text == Some(TextMatch::Changed) {
-        return Err(unresolved(UNRESOLVED_TEXT_CHANGED));
-    }
-    let (word, file_page) = match status {
-        Status::Found { page } => ("found", *page),
-        Status::Moved { page } => ("moved", *page),
-        Status::Ambiguous { .. } => return Err(unresolved(UNRESOLVED_AMBIGUOUS)),
-        Status::Gone => return Err(unresolved(UNRESOLVED_GONE)),
-        Status::Incomplete { .. } => return Err(unresolved(UNRESOLVED_INCOMPLETE)),
+fn settle(outcome: &Outcome, place_of: impl Fn(u32) -> Option<u32>) -> Result<(&'static str, u32, u32), AgentError> {
+    let (word, file_page) = match outcome {
+        Outcome::TextChanged { .. } => return Err(unresolved(UNRESOLVED_TEXT_CHANGED)),
+        Outcome::Status(Status::Found { page }) => ("found", *page),
+        Outcome::Status(Status::Moved { page }) => ("moved", *page),
+        Outcome::Status(Status::Ambiguous { .. }) => return Err(unresolved(UNRESOLVED_AMBIGUOUS)),
+        Outcome::Status(Status::Gone) => return Err(unresolved(UNRESOLVED_GONE)),
+        Outcome::Status(Status::Incomplete { .. }) => return Err(unresolved(UNRESOLVED_INCOMPLETE)),
     };
     let place = place_of(file_page).ok_or_else(|| unresolved(UNRESOLVED_REMOVED))?;
     Ok((word, file_page, place + 1))
@@ -497,21 +498,21 @@ mod tests {
     #[test]
     fn only_found_and_moved_give_a_page_every_other_status_refuses_with_its_own_words() {
         let at = |file_page: u32| (file_page != 9).then_some(file_page + 4);
-        assert_eq!(settle(&Status::Found { page: 2 }, None, at).ok(), Some(("found", 2, 7)));
-        assert_eq!(settle(&Status::Moved { page: 3 }, Some(TextMatch::Same), at).ok(), Some(("moved", 3, 8)));
+        let status = Outcome::Status;
+        assert_eq!(settle(&status(Status::Found { page: 2 }), at).ok(), Some(("found", 2, 7)));
+        assert_eq!(settle(&status(Status::Moved { page: 3 }), at).ok(), Some(("moved", 3, 8)));
         let refused = [
-            settle(&Status::Gone, None, at),
+            settle(&status(Status::Gone), at),
             settle(
-                &Status::Ambiguous {
+                &status(Status::Ambiguous {
                     pages: vec![1, 2],
                     complete: true,
-                },
-                None,
+                }),
                 at,
             ),
-            settle(&Status::Incomplete { pages: vec![] }, None, at),
-            settle(&Status::Found { page: 9 }, None, at),
-            settle(&Status::Found { page: 2 }, Some(TextMatch::Changed), at),
+            settle(&status(Status::Incomplete { pages: vec![] }), at),
+            settle(&status(Status::Found { page: 9 }), at),
+            settle(&Outcome::TextChanged { page: 2 }, at),
         ]
         .map(|answer| answer.expect_err("refused"));
         let mut words = std::collections::BTreeSet::new();
