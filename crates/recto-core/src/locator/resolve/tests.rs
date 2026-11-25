@@ -209,27 +209,37 @@ fn the_byte_cap_at_a_whole_scans_cost_reads_every_page_and_one_less_is_incomplet
 }
 
 /// Failure: someone makes a scan charge a shared image once, so the byte cap stops bounding the work (the image is still decoded and hashed on
-/// every page that draws it). Two pages draw one image: the scan's bytes are at least twice one page's charge, and more than twice the image.
+/// every page that draws it). One page draws an image and is scanned alone; two pages draw it and are scanned together: the two cost at least
+/// twice the one, and the one cost more than the image.
 #[test]
 fn a_scan_charges_an_image_each_page_draws_it() {
     let side = 64usize;
-    let image = recto_testpdf::Object::Stream {
-        dict: format!("/Type /XObject /Subtype /Image /Width {side} /Height {side} /ColorSpace /DeviceGray /BitsPerComponent 8"),
-        data: (0..side * side).map(|i| (i % 251) as u8).collect(),
+    let drawing = |names: &[&str]| {
+        let image = recto_testpdf::Object::Stream {
+            dict: format!("/Type /XObject /Subtype /Image /Width {side} /Height {side} /ColorSpace /DeviceGray /BitsPerComponent 8"),
+            data: (0..side * side).map(|i| (i % 251) as u8).collect(),
+        };
+        let pages: Vec<Page> = names
+            .iter()
+            .map(|name| Page::new(format!("q 100 0 0 100 72 500 cm /Im1 Do Q BT /F1 12 Tf 72 700 Td ({name}) Tj ET")))
+            .collect();
+        let number = recto_testpdf::first_extra_object(pages.len());
+        recto_testpdf::pages_with(&pages, &format!("/XObject << /Im1 {number} 0 R >>"), vec![image])
     };
-    let draw = |name: &str| Page::new(format!("q 100 0 0 100 72 500 cm /Im1 Do Q BT /F1 12 Tf 72 700 Td ({name}) Tj ET"));
-    let number = recto_testpdf::first_extra_object(2);
-    let bytes = recto_testpdf::pages_with(&[draw("A"), draw("B")], &format!("/XObject << /Im1 {number} 0 R >>"), vec![image]);
     let locator = reference_of(&["X", "Y"], 0);
-    let now = resolve_in(&locator, &bytes, &STANDARD);
-    assert_eq!((now.status, now.pages_read), (Status::Gone, 2));
-    let (reader, map) = open(&bytes);
-    let one = page_id::read_page(&reader, map.get(0).expect("page"), &STANDARD.page).bytes;
-    assert!(one > (side * side) as u64, "a page's charge includes the image it draws: {one}");
+    let alone = resolve_in(&locator, &drawing(&["A"]), &STANDARD);
+    let together = resolve_in(&locator, &drawing(&["A", "B"]), &STANDARD);
+    assert_eq!((alone.status, together.status), (Status::Gone, Status::Gone));
     assert!(
-        now.bytes_read >= 2 * one,
-        "the second page was charged the image again: {} for pages of {one}",
-        now.bytes_read
+        alone.bytes_read > (side * side) as u64,
+        "a page's charge includes the image it draws: {}",
+        alone.bytes_read
+    );
+    assert!(
+        together.bytes_read >= 2 * alone.bytes_read,
+        "the second page was charged the image again: {} for two pages, {} for one",
+        together.bytes_read,
+        alone.bytes_read
     );
 }
 
