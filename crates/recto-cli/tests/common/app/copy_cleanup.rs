@@ -140,23 +140,46 @@ impl Lease {
     }
 }
 
+/// What a quiet run is given to be up (`qa_launch::READY_WAIT`, 30 s) and to have armed its end-watch, which it does before its ready line, plus this to exit once the watch fires.
+pub const EXIT_GRACE: Duration = Duration::from_secs(10);
+
+/// How long cleanup keeps a copy's program unlinked while it waits for the runs to exit. A run still starting when the lease is taken arms its watch
+/// within `READY_WAIT`, finds the program gone and exits; a shorter wait gives up on a run that is about to end (a 5 s wait did, under load 23).
+pub const EXIT_CAP: Duration = Duration::from_secs(40);
+
+/// Takes the program away (the lease), waits for every run of it to exit, and puts it back. The lease is kept until the exit, not given back at the
+/// first sign of slowness: a run that arms its watch after the program is back never sees it go and lives on. Each wait is one `kevent` on the
+/// processes' own exit; after each exit it looks again, for a launch still in flight. No PID is signalled.
 #[cfg(unix)]
 pub fn cancel(root: &Path, program: &Path, initial: &[u32], wait: Duration) -> Result<(), String> {
     let lease = Lease::remove(root, program)?;
-    let began = Instant::now();
+    let deadline = Instant::now() + wait;
+    let mut alive: Vec<u32> = initial.to_vec();
     let ended = loop {
-        let observed_alive = initial.iter().any(|pid| recto_platform::local::process_counters(*pid).is_some());
-        let fresh = recto_platform::local::observe_missing_program_processes(program);
-        if !observed_alive && fresh.is_empty() {
+        for pid in recto_platform::local::observe_missing_program_processes(program) {
+            if !alive.contains(&pid) {
+                alive.push(pid);
+            }
+        }
+        alive.retain(|pid| recto_platform::local::process_counters(*pid).is_some());
+        if alive.is_empty() {
             break true;
         }
-        let Some(left) = wait.checked_sub(began.elapsed()) else { break false };
-        std::thread::sleep(left.min(Duration::from_millis(20))); // ratchet: poll
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break false;
+        }
+        let waited = Instant::now();
+        recto_platform::local::wait_until_gone(&alive, &[], left);
+        if waited.elapsed() < Duration::from_millis(20) {
+            // An exit already seen but not yet reaped by its parent answers at once: don't spin on it.
+            std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+        }
     };
     let restored = lease.restore();
     if !ended {
         return Err(format!(
-            "fixture processes did not exit within {wait:?}: {}; no PID was signalled; restoration: {restored:?}",
+            "fixture processes did not exit within {wait:?}: {} (still running: {alive:?}); no PID was signalled; restoration: {restored:?}",
             program.display()
         ));
     }

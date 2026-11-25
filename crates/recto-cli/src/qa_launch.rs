@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const READY_WAIT: Duration = Duration::from_secs(30);
+pub const READY_WAIT: Duration = Duration::from_secs(30);
 const MAX_READY_BYTES: usize = 64 * 1024;
 const MAX_STDERR_BYTES: usize = 4 * 1024;
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";

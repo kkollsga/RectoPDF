@@ -292,6 +292,11 @@ fn fixture_lease_watcher_child() {
     let program = PathBuf::from(program);
     println!("LEASE_READY");
     std::io::stdout().flush().unwrap();
+    if std::env::var_os("RECTO_TEST_ARM_AFTER_LINE").is_some() {
+        // A run still starting when its program is taken away: it arms its watch only when told, as the app does at the end of its start.
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+    }
     let gone = recto_platform::local::wait_until_gone(&[], &[&program], std::time::Duration::from_secs(5));
     assert!(matches!(gone, recto_platform::local::Gone::Path(_)));
 }
@@ -495,4 +500,106 @@ fn long_session_keeps_its_owned_child_and_thirty_minute_limit() {
         "the supplied lifetime must reach the shared CLI launcher"
     );
     assert!(launch.contains("Lifetime::Owned(child)"));
+}
+
+/// Failure: cleanup's wait for a copy's exit is a fixed 5 s, not the bound a quiet run has to arm its watcher (`READY_WAIT` plus the time to exit), and the
+/// watcher is armed after the ready line, so a run is up (and the start's cap spent) before it can notice its program go (CI: `a_copy_opened_and_dropped_at_once_is_forgotten`,
+/// 22.4 s under load 23, the app did exit).
+#[test]
+fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
+    assert!(
+        copy_cleanup::EXIT_CAP >= qa_launch::READY_WAIT + copy_cleanup::EXIT_GRACE,
+        "EXIT_CAP {:?} is shorter than READY_WAIT {:?} plus the grace to exit",
+        copy_cleanup::EXIT_CAP,
+        qa_launch::READY_WAIT
+    );
+    let source = include_str!("common/app.rs");
+    let end_runs = source.split("fn end_runs(").nth(1).expect("end_runs").split("\n}").next().unwrap();
+    assert!(
+        end_runs.contains("copy_cleanup::EXIT_CAP"),
+        "end_runs gives cleanup a wait of its own, not EXIT_CAP"
+    );
+    // The watch is armed by the end of the app's start, and the ready line is written by `ready`, which the host calls after `start` returned.
+    let start = include_str!("../../recto-app/src/core/start.rs");
+    let arming = start.split("fn start_with(").nth(1).expect("start_with");
+    assert!(arming.contains("qa::end_with_starter("), "start_with no longer arms the quiet run's end-watch");
+    assert!(
+        !start.contains("\"running\": true"),
+        "the ready line is written inside start, before the watch is armed"
+    );
+    let ffi = include_str!("../../recto-ffi/src/lib.rs");
+    let started = ffi.find("let inner = Inner::start(").expect("the bridge's start");
+    let ready_line = ffi.find("\"running\": true").expect("the ready line");
+    assert!(started < ready_line, "the ready line comes before the app's start has returned");
+    assert!(
+        ffi[started..ready_line].contains("pub fn ready("),
+        "the ready line is not in `ready`, which follows `start`"
+    );
+}
+
+/// Failure: cleanup gives a copy its program back at the first slow moment, so a run that arms its watch after that finds its program present, never sees it
+/// go, and lives on (the harness bug behind the 5 s cap: `cancel` restored the program as a new inode when its time ran out). The run here arms only after
+/// the program is absent, as a copy still starting does.
+#[cfg(unix)]
+#[test]
+fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_restored() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::process::ExitStatusExt;
+    let folder = recto_testpdf::TempDir::new("lease-late-");
+    let fixture = folder.join(format!("own-{}-5", std::process::id()));
+    std::fs::create_dir(&fixture).unwrap();
+    let fixture = fixture.canonicalize().unwrap();
+    let program = fixture.join("RectoPDF");
+    // A copy, not a clone: the temp folder may be on another volume than the build.
+    std::fs::copy(std::env::current_exe().unwrap(), &program).unwrap();
+    let mut child = std::process::Command::new(&program)
+        .args(["--exact", "fixture_lease_watcher_child", "--nocapture"])
+        .env("RECTO_TEST_PROGRAM_LEASE", &program)
+        .env("RECTO_TEST_ARM_AFTER_LINE", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut gate = child.stdin.take().unwrap();
+    let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut owner = lifetime::Lifetime::Owned(child);
+    let mut line = String::new();
+    loop {
+        assert!(output.read_line(&mut line).unwrap() > 0, "child exited before readiness: {line}");
+        if line.contains("LEASE_READY") {
+            break;
+        }
+        line.clear();
+    }
+    let cleaning = {
+        let (fixture, program) = (fixture.clone(), program.clone());
+        std::thread::spawn(move || copy_cleanup::end(&fixture, &[program], copy_cleanup::EXIT_CAP))
+    };
+    let began = std::time::Instant::now();
+    while program.exists() {
+        assert!(began.elapsed() < std::time::Duration::from_secs(10), "cleanup never took the program away");
+        std::thread::sleep(std::time::Duration::from_millis(5)); // ratchet: poll
+    }
+    writeln!(gate, "arm").unwrap();
+    gate.flush().unwrap();
+    let ended = cleaning.join().unwrap();
+    let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
+    let status = child.wait().unwrap();
+    assert!(ended.is_ok(), "{ended:?}");
+    assert!(
+        status.success() && status.signal().is_none(),
+        "the run ends by its lease, not a signal: {status:?}"
+    );
+    assert_eq!(
+        std::fs::read(&program).unwrap(),
+        std::fs::read(std::env::current_exe().unwrap()).unwrap(),
+        "the program is back, byte for byte"
+    );
+    assert!(
+        std::fs::read_dir(&fixture)
+            .unwrap()
+            .flatten()
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with(".recto-cleanup-")),
+        "no backup is left"
+    );
 }
