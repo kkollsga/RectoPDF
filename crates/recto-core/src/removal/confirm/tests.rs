@@ -292,7 +292,6 @@ fn ids_are_never_reused() {
     let second = s.offer(b, &plan, t0).unwrap();
     let third = s.offer(b, &plan, t0).unwrap();
     assert_eq!((second.get(), third.get()), (2, 3));
-    assert_eq!(PlanId::from_raw(3), third);
     assert_eq!(s.take(first, &b, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     s.next = u64::MAX;
     assert_eq!(s.offer(b, &plan, t0), Err(ConfirmRefusal::Full));
@@ -303,5 +302,4 @@ fn ids_are_never_reused() {
 fn an_empty_store_holds_no_buffer() {
     let s = store();
     assert_eq!(s.pending.capacity(), 0);
-    assert_eq!(std::mem::size_of::<Confirmed>(), 32);
 }

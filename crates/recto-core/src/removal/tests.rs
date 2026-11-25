@@ -460,18 +460,6 @@ fn kinds_reject_empty_and_unknown_bits() {
     assert!(!Kinds::from_bits(1).unwrap().contains(Kinds::ATTACHMENTS));
 }
 
-/// Catches progress made for one plan advancing, or answering outcomes for, a plan of another length.
-#[test]
-fn progress_from_another_plan_is_refused() {
-    let small = ok(&[]);
-    let big = ok(&[art(1, Store::Journal, Owner::Target)]);
-    let mut pr = started(&small);
-    assert_eq!(pr.acknowledge(&big, 0, Ack::Done), Err(OrderError::WrongPlan));
-    assert_eq!(pr.next(&big), None);
-    assert!(!pr.succeeded(&big));
-    assert_eq!(pr.outcome(&big), Err(OrderError::WrongPlan));
-}
-
 /// Pins today's sizes so a field added to a capped value is seen, not slipped in.
 #[test]
 fn values_stay_small() {
@@ -540,17 +528,22 @@ fn same_length_plans() -> (Plan, Plan) {
     (a, b)
 }
 
-/// Catches progress for one plan walking another that is just as long, which a length check lets
-/// through: the carrier would then purge the second plan's artifacts on the first's confirmation.
+/// Catches progress for one plan walking another: one of a different length (advancing, or answering outcomes for it) or, which a
+/// length check lets through, one just as long, where the carrier would purge the second plan's artifacts on the first's confirmation.
 #[test]
-fn progress_refuses_a_plan_of_the_same_length() {
+fn progress_refuses_any_other_plan() {
     let (a, b) = same_length_plans();
-    let mut pr = started(&a);
-    assert_eq!(pr.next(&b), None);
-    assert_eq!(pr.acknowledge(&b, 0, Ack::Done), Err(OrderError::WrongPlan));
-    assert_eq!(pr.outcome(&b), Err(OrderError::WrongPlan));
-    assert!(!progress_after(&a, a.steps().len() as u32).succeeded(&b));
-    assert_eq!(pr.acknowledge(&a, 0, Ack::Done), Ok(Outcome::Unchanged));
+    let shorter = ok(&[]);
+    assert_ne!(a.steps().len(), shorter.steps().len());
+    for other in [&b, &shorter] {
+        let mut pr = started(&a);
+        assert_eq!(pr.next(other), None);
+        assert_eq!(pr.acknowledge(other, 0, Ack::Done), Err(OrderError::WrongPlan));
+        assert_eq!(pr.outcome(other), Err(OrderError::WrongPlan));
+        assert!(!pr.succeeded(other));
+        assert!(!progress_after(&a, a.steps().len() as u32).succeeded(other));
+        assert_eq!(pr.acknowledge(&a, 0, Ack::Done), Ok(Outcome::Unchanged));
+    }
 }
 
 /// Catches a walk starting from another plan's confirmation: a person confirmed the one they were shown.
