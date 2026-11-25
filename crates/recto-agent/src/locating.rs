@@ -73,6 +73,8 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, c
         });
     };
     let made = locator::reference(opened.reader(), opened.map(), file_page, &ScanCaps::STANDARD);
+    // The mapped file is let go before the renderer reads the page's text.
+    drop(opened);
     unchanged(&file, stamp)?;
     let made = made.map_err(|why| match why {
         Unreferenceable::NoSuchPage => crate::no_such_page(),
