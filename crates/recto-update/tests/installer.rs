@@ -1232,7 +1232,7 @@ fn an_app_opened_after_the_first_look_is_not_replaced() {
     drop(second);
 }
 
-/// Failure: going back swaps the old app over a copy of the new one that someone opened after the rollback's recheck, while it runs. Held once the record's put back, a second app comes up; the last look sees it, nothing's swapped, and both bundles and the plan are kept for the next launch.
+/// Failure: going back swaps the old app over a copy of the new one that someone opened after the rollback's recheck, while it runs. Held once the record's put back, a second app comes up; the last look sees it, nothing's swapped, and both bundles and the plan are kept for the next launch. And a rollback refused after the record was put back leaves the next launches to put `before/` back again, over what the person did in the copy that kept running: later launches change nothing and begin no second going back.
 #[test]
 fn an_app_opened_while_going_back_is_not_replaced() {
     let mut bed = Bed::new("opened-going-back", "misreads");
@@ -1254,7 +1254,8 @@ fn an_app_opened_while_going_back_is_not_replaced() {
     wait_until("the installer to put the record back", Duration::from_secs(30), || {
         bed.files.work.join("paused").exists()
     });
-    let second = bed.dir.own(
+    assert_eq!(bed.record(), "the state", "the record is put back before the pause");
+    let mut second = bed.dir.own(
         Command::new(bed.plan.executable())
             .args([
                 "test-app",
@@ -1277,8 +1278,63 @@ fn an_app_opened_while_going_back_is_not_replaced() {
     let outcome = Outcome::read(&bed.files.outcome()).unwrap();
     assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::CouldntGoBack, "app_exit_unproven"), "{log}");
     assert!(bed.files.plan().exists(), "the plan is kept for the next launch");
+    assert_eq!(Plan::read(&bed.files.plan()).unwrap().id, "first", "{log}");
     assert!(bed.files.before().join(".whole").exists(), "{log}");
-    drop(second);
+
+    // The copy that kept running is the person's now: what it writes is theirs.
+    let session = bed.files.session();
+    let theirs = "edits made in the copy that kept running";
+    std::fs::write(session.join("record.a.json"), theirs).unwrap();
+    std::fs::write(session.join("record.b.json"), theirs).unwrap();
+    std::fs::write(session.join("journals/journal-2.log"), "unsaved edits").unwrap();
+    std::fs::write(session.join("places.log"), "places").unwrap();
+    second.kill().unwrap();
+    second.wait().unwrap();
+    wait_until("the second app to end", Duration::from_secs(10), || {
+        local::processes_running(&bed.plan.executable()).is_empty()
+    });
+    recto_update::saved::Saved {
+        unstarted: 1000,
+        probation: Some(recto_update::saved::Probation {
+            version: "0.2.0".into(),
+            early_ends: 1000,
+            since_ms: recto_update::wall_ms(),
+            running_since_ms: Some(0),
+        }),
+        ..recto_update::saved::Saved::default()
+    }
+    .write(&bed.files.saved);
+
+    let snapshot = || {
+        let mut files = Vec::new();
+        let mut folders = vec![session.clone()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    files.push((path.clone(), std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let before = snapshot();
+    assert_eq!(before.len(), 5, "the record's two files, the journals and places");
+    let going_back_lines = |log: &str| log.lines().filter(|line| line.contains("going back")).count();
+    let lines_before = going_back_lines(&log);
+    for launch in 1..=5 {
+        let (_, at) = bed.launch();
+        let log = std::fs::read_to_string(&bed.files.log).unwrap();
+        assert_eq!(at, AtLaunch::GoOn, "launch {launch}: {log}");
+        assert!(snapshot() == before, "launch {launch} changed the record's folder: {log}");
+        assert_eq!(Plan::read(&bed.files.plan()).unwrap().id, "first", "launch {launch}: {log}");
+        assert_eq!(bed.installed(), "0.2.0", "launch {launch}: {log}");
+        assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "launch {launch}: {log}");
+        assert_eq!(going_back_lines(&log), lines_before, "launch {launch} began going back: {log}");
+    }
 }
 
 /// Failure: a damaged plan moves something. The installer takes nothing from a file that doesn't make sense.
