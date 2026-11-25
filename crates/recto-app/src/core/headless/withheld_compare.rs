@@ -437,7 +437,7 @@ fn first_pane_shown(app: &HeadlessApp, tab: u32, zoom: f64) -> (recto_reader::Vi
         magnification: at.magnification * zoom,
         backing: 1.0,
         live: false,
-        scrolled_to: u64::MAX,
+        scrolled_to: 0,
     };
     (view, engine)
 }
