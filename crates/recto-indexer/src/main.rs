@@ -400,6 +400,35 @@ mod tests {
         assert_eq!(outcome_json(&BuildOutcome::Paused(code))["state"], "failed");
     }
 
+    /// Failure: `WorkerFeed::read` goes back to asking once (or maps a failure its own way) and a worker that never says hello pauses every build for ever, whatever `asked` does. Through the feed itself, with a worker that has no time to say hello (a start timeout of nothing; the file is never opened by it, so any bytes will do): the build ends as failed, and no page is written down as failed.
+    #[test]
+    fn the_feeds_read_ends_a_worker_that_never_says_hello_as_a_failed_build() {
+        let folder = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-indexer-hello-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("doc.pdf");
+        std::fs::write(&path, b"not read: no worker starts").unwrap();
+        let policy = Policy {
+            start_timeout: Duration::ZERO,
+            ..Policy::default()
+        };
+        let renderer = DocRenderer::new(&path, None, ServiceConfig::discover().unwrap(), policy).unwrap();
+        let mut feed = WorkerFeed {
+            path: path.clone(),
+            key: CorpusKey::of_file(&path).unwrap(),
+            renderer: Some(renderer),
+            check_hidden: false,
+            hidden_check_failures: 0,
+        };
+        let error = feed.read(0).unwrap_err();
+        let _ = std::fs::remove_dir_all(&folder);
+        assert_eq!(error, FeedError::Cant("render_unavailable"));
+        let FeedError::Cant(code) = error else { unreachable!() };
+        assert_eq!(outcome_json(&BuildOutcome::Paused(code))["state"], "failed");
+    }
+
     /// Failure: a worker that hangs before hello pauses the build for ever (each run is a new process, so the service's count never gets past one start), and `recto wait indexing-done` never says it couldn't be built. The busy starts before it stay counted, and don't turn the `Unavailable` into a pause.
     #[test]
     fn a_worker_that_never_says_hello_is_a_failed_build_after_the_busy_starts() {
