@@ -156,22 +156,33 @@ impl Drop for RecordLock {
     }
 }
 
-/// Takes the record's lock, then rechecks that no app is running, until `deadline` (the one the exit wait's absence
-/// proof had): an unknown observation is "not yet known" here as in `known`, so one transient unknown during rollback
-/// is not reported as "couldn't go back" (`app_exit_unproven`). A live app, or no definite answer by the deadline,
-/// refuses.
+/// Takes the record's lock and rechecks, until `deadline` (the one the exit wait's absence proof had), that no app is
+/// running. The lock is held only while an observation is made: on a definite absence it is kept and returned; on an
+/// unknown it is released before the pause and taken again for the next look, so the app's own short lock patience
+/// (600 ms) is never spent against rollback's long one. An unknown is "not yet known" as in `known`, so one transient
+/// unknown is not reported as "couldn't go back" (`app_exit_unproven`). A live app, a lock another writer holds, or no
+/// definite answer by the deadline, refuses.
 pub(super) fn record_lock(
     root: &Path,
-    present: impl FnMut() -> io::Result<bool>,
+    mut present: impl FnMut() -> io::Result<bool>,
     deadline: Instant,
-    now: impl FnMut() -> Instant,
-    pause: impl FnMut(Duration),
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
 ) -> io::Result<RecordLock> {
-    let held = RecordLock(local::try_update_record_lock(root)?);
-    if known_until(present, deadline, now, pause)? {
-        return Err(io::Error::other("an app appeared before rollback acquired the record"));
+    loop {
+        let held = RecordLock(local::try_update_record_lock(root)?);
+        let unknown = match present() {
+            Ok(false) => return Ok(held),
+            Ok(true) => return Err(io::Error::other("an app appeared before rollback acquired the record")),
+            Err(error) => error,
+        };
+        drop(held);
+        let left = deadline.saturating_duration_since(now());
+        if left.is_zero() {
+            return Err(unknown);
+        }
+        pause(left.min(Duration::from_millis(20)));
     }
-    Ok(held)
 }
 
 trait Owned {
@@ -513,6 +524,33 @@ mod recovery_tests {
         assert!(proven && error.to_string().contains("unknown"), "{error}");
         let waited = clock.get().duration_since(began);
         assert!(waited <= patience, "waited {waited:?} of {patience:?}");
+    }
+
+    /// Failure: the recheck holds `run/session.lock` for its whole patience, so a person opening RectoPDF during an
+    /// unknown observation (the app's own lock patience is 600 ms) starts with an empty record beside the saved one.
+    #[test]
+    fn the_record_lock_is_not_held_between_unknown_observations() {
+        let dir = recto_testpdf::TempDir::new("record-lock-free-between-");
+        let clock = std::cell::Cell::new(Instant::now());
+        let free = |what: &str| drop(local::try_update_record_lock(dir.path()).unwrap_or_else(|error| panic!("{what}: {error}")));
+        let mut answers = vec![Ok(false), Err(io::Error::other("unknown")), Err(io::Error::other("unknown"))];
+        let held = record_lock(
+            dir.path(),
+            || answers.pop().expect("asked past its answers"),
+            clock.get() + Duration::from_secs(1),
+            || clock.get(),
+            |step| {
+                free("the lock must be free while waiting");
+                clock.set(clock.get() + step);
+            },
+        )
+        .unwrap();
+        assert!(
+            local::try_update_record_lock(dir.path()).is_err(),
+            "on a definite absence the lock is held when it returns"
+        );
+        drop(held);
+        free("released with the guard");
     }
 
     fn version(app: &Path, version: &str) -> Vec<u8> {
