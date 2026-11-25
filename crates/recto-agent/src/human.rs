@@ -509,6 +509,19 @@ mod tests {
         assert!(all_read.contains("Nothing found") && !all_read.contains("couldn't be read"), "{all_read}");
     }
 
+    /// Failure: a file whose renderer wouldn't start was left out of a search and the answer said "Nothing found." (a claim about pages never read) with no word of why, or counted its pages as failed ("couldn't be read"), against the owner's Find rule.
+    #[test]
+    fn a_file_whose_renderer_wouldnt_start_is_said_with_the_readers_sentence_and_isnt_nothing_found() {
+        let said = render(
+            "search",
+            &json!({ "hits": [], "coverage": { "pages_searched": 0, "pages_in_scope": 3, "failed_pages": [], "files_not_read": [{ "untrusted": { "file": "a.pdf" }, "why": "The page renderer couldn't be started.", "code": "render_unavailable" }] } }),
+        );
+        assert!(said.contains("The page renderer couldn't be started."), "{said}");
+        assert!(!said.contains("Nothing found"), "{said}");
+        assert!(said.contains("No hits on the pages that could be read."), "{said}");
+        assert!(!said.contains("couldn't be read."), "no page of it is one that failed: {said}");
+    }
+
     /// Failure: a search whose pages were all left unread because the Mac was busy ended "Nothing found.", a claim about pages it never read, and said nothing of why (the owner's Find decision, 2026-11-25: say it plainly).
     #[test]
     fn pages_the_busy_mac_couldnt_read_are_said_plainly_and_never_nothing_found() {

@@ -169,6 +169,10 @@ fn a_renderer_that_wont_start_stops_the_file_and_fails_no_page() {
     assert!(matches!(reader.read(0, 3, &mut slot), Ok(Got::Nothing)), "no later page of the file is asked");
     let coverage = Found::default().coverage(&plan, &reader);
     assert_eq!(coverage["failed_pages"], json!([]), "{coverage}");
+    assert!(
+        coverage["hits_total"].is_null(),
+        "a total of hits over pages that weren't searched is a claim about them: {coverage}"
+    );
     let files = coverage["files_not_read"].as_array().expect("the file is listed");
     assert_eq!(files.len(), 1, "said once: {coverage}");
     assert_eq!(files[0]["why"], RenderFailure::Unavailable.message(), "the reader's own sentence");

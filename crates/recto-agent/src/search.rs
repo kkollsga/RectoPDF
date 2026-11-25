@@ -523,7 +523,7 @@ impl Found {
             "pages_with_tag_chars": self.tag_pages,
             "changed_files": reader.changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
             "next_page": self.next_page,
-            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty()).then_some(self.total),
+            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty() && reader.unstarted.is_empty()).then_some(self.total),
             "hits_at_least": self.total,
             "uncounted_pages": self.uncounted,
             "pages_too_long_for_a_pattern": self.too_long,
