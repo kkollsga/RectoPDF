@@ -9,6 +9,8 @@ use std::sync::Arc;
 std::thread_local! {
     /// Bytes decrypted whole for the digest on this thread: what a file anyone may open costs ([`super::take_stream`]).
     pub(super) static DECRYPTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Streams' descriptors resolved for images and forms on this thread: how many times a page's drawn objects were read ([`super::xobject_record`]).
+    pub(super) static DESCRIPTORS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -917,4 +919,113 @@ fn golden_vectors_of_recto_page_1() {
     // At a cap: the content's 16 MiB passed by one byte, so no identity.
     let capped = one_page("", "", "4 0 R", vec![stream("/Filter /FlateDecode", &flate(&vec![b' '; (16 << 20) + 1]))]);
     assert_eq!(reads_of(&capped, &Caps::STANDARD)[0].identity, None);
+}
+
+/// The page's records of `names` (all the one image object, `5 0 R`, whose dictionary is `extra` past the JPEG's) and what they cost: its identity,
+/// how many descriptors were resolved to make it, and the page's cost.
+fn many_names_one_image(names: usize, extra: &str) -> (Vec<u8>, PageRead, u64) {
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), stream(&format!("{JPEG_DICT} {extra}"), IMAGE)],
+    );
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &Caps::STANDARD).remove(0);
+    (page, read, DESCRIPTORS.with(std::cell::Cell::get))
+}
+
+/// What the definition says of a page drawing one image under `names` names: every name's record, each with the same kind, length and hash.
+fn expected_many_names(names: usize, draws: &[u8]) -> [u8; 32] {
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws));
+    expected.push(b'X');
+    expected.extend_from_slice(&(names as u32).to_le_bytes());
+    for n in 0..names {
+        expected.extend(xobject_bytes(format!("N{n}").as_bytes(), 1, IMAGE));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    sha(&expected)
+}
+
+/// Failure caught (security: a hostile page's identity cost 10.8 GB of a 3 MB file): an image drawn under many names had its stream's descriptor
+/// (its dictionary, parsed whole and charged to nothing) resolved again for each name. A stream is read once for a page, and what it said is what every
+/// name's record hashes, as the definition says: the digest is of the bytes, and the same as when each was read.
+#[test]
+fn a_stream_drawn_under_many_names_is_read_once() {
+    let (page, read, resolved) = many_names_one_image(64, "");
+    assert_eq!(resolved, 1);
+    let draws: String = (0..64).map(|n| format!("/N{n} Do ")).collect();
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&expected_many_names(64, draws.as_bytes())));
+    assert!(!page.is_empty());
+}
+
+/// Failure caught (security, the probe's repro): 256 names to one image whose dictionary holds a 100,000-element array took 1.35 s and 789 MiB for
+/// one page, with 4,902 bytes charged: the dictionary was parsed again for each name. It's resolved once, and the identity is the one it always had.
+#[test]
+fn the_once_read_hostile_dictionary_costs_one_resolution() {
+    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
+    let (_, read, resolved) = many_names_one_image(256, &junk);
+    assert_eq!(resolved, 1);
+    let draws: String = (0..256).map(|n| format!("/N{n} Do ")).collect();
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&expected_many_names(256, draws.as_bytes())));
+}
+
+/// Failure caught (the memo's neutrality): a stream taken again is charged to the page as it was when read, so the read cap still counts every record
+/// as it did. Three names to one image cost three stored lengths of the read cap, not one: one byte less and the page has no identity.
+#[test]
+fn a_stream_taken_again_is_charged_as_it_was_read() {
+    let draws = b"/N0 Do /N1 Do /N2 Do ";
+    let page = |caps: &Caps| {
+        let bytes = one_page(
+            "",
+            "/XObject << /N0 5 0 R /N1 5 0 R /N2 5 0 R >>",
+            "4 0 R",
+            vec![stream("", draws), stream(JPEG_DICT, IMAGE)],
+        );
+        reads_of(&bytes, caps).remove(0)
+    };
+    let exact = Caps { page_read: (draws.len() + 3 * IMAGE.len()) as u64, ..Caps::STANDARD };
+    let read = page(&exact);
+    assert!(read.identity.is_some());
+    assert_eq!(read.bytes, page(&Caps::STANDARD).bytes);
+    assert!(page(&Caps { page_read: exact.page_read - 1, ..exact }).identity.is_none());
+    // And the bytes it hashed count too: three images' lengths of the page's own cap.
+    let bytes = Caps { page_bytes: (draws.len() + 3 * IMAGE.len()) as u64, ..Caps::STANDARD };
+    assert!(page(&bytes).identity.is_some());
+    assert!(page(&Caps { page_bytes: bytes.page_bytes - 1, ..bytes }).identity.is_none());
+}
+
+/// Failure caught (the memo's neutrality): an image under two names and a form with one child under two names (the child is the image again) hash
+/// as the definition says, each name's record whole, the form's count of children after each of its names.
+#[test]
+fn an_image_and_a_form_under_two_names_each_are_hashed_as_defined() {
+    let form_content = b"/C Do";
+    let draws = b"/A Do /B Do /F Do /G Do";
+    let page = one_page(
+        "",
+        "/XObject << /A 5 0 R /B 5 0 R /F 6 0 R /G 6 0 R /C 5 0 R >>",
+        "4 0 R",
+        vec![stream("", draws), stream(JPEG_DICT, IMAGE), stream("/Subtype /Form /BBox [0 0 1 1]", form_content)],
+    );
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws));
+    expected.push(b'X');
+    expected.extend_from_slice(&4u32.to_le_bytes());
+    for name in [&b"A"[..], b"B"] {
+        expected.extend(xobject_bytes(name, 1, IMAGE));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    for name in [&b"F"[..], b"G"] {
+        expected.extend(xobject_bytes(name, 0, form_content));
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend(xobject_bytes(b"C", 1, IMAGE));
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
 }

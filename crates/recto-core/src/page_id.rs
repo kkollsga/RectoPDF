@@ -417,6 +417,8 @@ fn xobject_record(
 ) -> Result<Option<Dictionary>, Capped> {
     hasher.update(count(name.len()));
     hasher.update(name);
+    #[cfg(test)]
+    tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
     let found = match xobjects.and_then(|xobjects| xobjects.get(name).ok()) {
         Some(Object::Reference(id)) => reader.resolve_stream_descriptor(*id).ok().map(|descriptor| (*id, descriptor)),
         _ => None,
