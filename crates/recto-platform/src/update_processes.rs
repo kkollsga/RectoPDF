@@ -118,6 +118,56 @@ mod tests {
         assert!(!observe(wanted, &mut fake).unwrap());
     }
 
+    struct Children(Vec<std::process::Child>);
+    impl Drop for Children {
+        fn drop(&mut self) {
+            for child in &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// A copy of `/bin/sleep` named `name`, started with its executable then deleted: a live process whose
+    /// image is gone, which the OS answers a path query for with ENOENT.
+    fn deleted_sleeper(name: &str) -> (recto_testpdf::TempDir, Children) {
+        let dir = recto_testpdf::TempDir::new("update-processes-deleted-");
+        let copy = dir.path().join(name);
+        std::fs::copy("/bin/sleep", &copy).unwrap();
+        // A plain copy of a system binary is killed at exec; an ad-hoc signature lets it run.
+        assert!(
+            std::process::Command::new("/usr/bin/codesign")
+                .args(["-s", "-", "-f"])
+                .arg(&copy)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let mut children = Children(Vec::new());
+        children.0.push(std::process::Command::new(&copy).arg("30").spawn().unwrap());
+        std::fs::remove_file(&copy).unwrap();
+        (dir, children)
+    }
+
+    /// Failure: an unrelated program of this user whose file was deleted (an updated tool still running) makes
+    /// every observation of the update executable unknown, so an update can't go ahead (owner, 2026-11-25,
+    /// `docs/OWNER-RULES.md` "Decisions of 2026-11-25"). A deleted program that could still be RectoPDF must
+    /// stay unknown, so RectoPDF is never replaced while it might be open.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_deleted_program_started_under_another_name_is_skipped_but_one_named_like_the_app_is_not() {
+        let (_other, _children) = deleted_sleeper("sleep");
+        assert!(update_app_is_running(&std::env::current_exe().unwrap()).unwrap());
+
+        let dir = recto_testpdf::TempDir::new("update-processes-wanted-");
+        let wanted = dir.path().join("RectoPDF");
+        std::fs::copy("/bin/sleep", &wanted).unwrap();
+        let (_same_name, _more) = deleted_sleeper("RectoPDF");
+        let error = update_app_is_running(&wanted).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT), "{error}");
+    }
+
     /// Failure: the native ABI or path handling silently misses this process.
     #[test]
     fn native_observation_finds_the_current_program() {
