@@ -150,8 +150,7 @@ fn only_the_persons_jump_to_a_place_chosen_by_itself_lets_a_withheld_place_go() 
     });
     // The host scrolls the view by the person's hand, as it does for the page keys too.
     route("a scroll, and the page keys", &mut |view| {
-        view.y += 300.0;
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(*view));
+        crate::testkit::host_standin::the_person_scrolls(&app, view, 300.0);
     });
     route("a zoom", &mut |_| {
         app.act(UiAction::Menu { id: "view.zoom_in".into() });

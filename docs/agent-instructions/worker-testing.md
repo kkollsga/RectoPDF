@@ -65,6 +65,7 @@ Never `git stash`, which is shared across worktrees. To compare with old code, u
 
 ## What you start, you stop (2026-11-13)
 - **No background load of your own.** Never start busy loops, `yes`, or anything else to starve the machine: 30 burner loops left by one worker ran for 42 minutes after it had finished, took the load over 100 on 10 cores, and made every other worker's check crawl and one lifecycle run fail. To see a test under CPU starvation use `tools/check.sh --like-ci <filter> --times N`, which limits the test's own process.
+- **Never wait on a process by a pattern that appears in your own command** (2026-11-25: six `while pgrep -f "check.sh --quick"; do sleep …; done` loops matched their own command lines and never ended, one for 45 minutes, and a worker read the wait as a four-hour check). Wait on the job itself (`run_in_background`), on the queue, or on a file the command writes when it ends.
 - **Anything you put in the background, you see gone before you hand back:** `jobs -p` in the same command that started it, with a `trap` that kills them on exit, and a `pgrep` for it afterwards. A command that ends by a timeout or an error leaves its children running.
 - **Name what you keep by your branch.** The scratchpad folder is shared by every worker of a session: `full.txt` there has been overwritten by another worker's run. Use `<branch>-full.txt`, `<branch>-quick.txt`.
 - **A lifecycle run (`--like-ci lifecycle`) goes at ordinary load.** Read `uptime` first and write the load down before and after; over about 30, wait or tell the coordinator.

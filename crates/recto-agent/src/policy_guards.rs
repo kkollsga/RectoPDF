@@ -17,6 +17,11 @@ fn locator_page() -> recto_core::locator::Locator {
     crate::commands::locating::made_up_locator(recto_core::locator::Target::Page)
 }
 
+fn locator_characters() -> recto_core::locator::Locator {
+    let range = recto_core::locator::CharacterRange::new(0, 1, [3; 8]).expect("a range");
+    crate::commands::locating::made_up_locator(recto_core::locator::Target::Characters(range))
+}
+
 fn locator_spot() -> recto_core::locator::Locator {
     crate::commands::locating::made_up_locator(recto_core::locator::Target::Spot(recto_core::locator::Spot::point(10, 20).expect("a point")))
 }
@@ -187,14 +192,32 @@ pub(crate) fn every_command() -> Vec<Command> {
             rank: false,
             context: None,
         }),
-        Command::from(crate::commands::locating::Ref { page: 1, tab: tab() }),
+        Command::from(crate::commands::locating::Ref {
+            page: 1,
+            chars: None,
+            tab: tab(),
+        }),
+        // The reading of a page's text, for a range of characters: `ref --chars`, and `resolve` and `text --ref` of a reference that holds one.
+        Command::from(crate::commands::locating::Ref {
+            page: 1,
+            chars: Some("0-1".into()),
+            tab: tab(),
+        }),
         Command::from(crate::commands::locating::Resolve {
             reference: locator_page(),
+            tab: tab(),
+        }),
+        Command::from(crate::commands::locating::Resolve {
+            reference: locator_characters(),
             tab: tab(),
         }),
         Command::from(crate::commands::text::Text {
             tab: tab(),
             at: crate::commands::locating::PageOrRef::Ref(locator_page()),
+        }),
+        Command::from(crate::commands::text::Text {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_characters()),
         }),
         Command::from(crate::commands::export::Render {
             tab: tab(),
@@ -907,11 +930,19 @@ fn pointing_at_page_one(access: &Mutex<Session<crate::DrawableLoader>>, command:
     if !fields.get("ref").is_some_and(Value::is_string) {
         return command;
     }
+    // A reference to characters stays one, so the text-reading branch is the one the walk reaches.
+    let chars = recto_core::locator::decode(fields["ref"].as_str().expect("a string"))
+        .ok()
+        .and_then(|made| match made.target() {
+            recto_core::locator::Target::Characters(range) => Some(format!("{}-{}", range.offsets().0, range.offsets().1)),
+            _ => None,
+        });
     let made = execute(
         access,
         Actor::Agent(Level::Full),
         &Command::from(commands::locating::Ref {
             page: 1,
+            chars,
             tab: crate::TabRef::from("#1"),
         }),
         &mut Vec::new(),

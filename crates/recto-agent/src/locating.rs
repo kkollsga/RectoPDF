@@ -4,7 +4,7 @@
 
 use crate::reading::{TabFile, tab_file};
 use crate::{AgentError, Code, SessionAccess, TabRef, exit};
-use recto_core::locator::{self, DocumentMatch, Locator, Looked, MAX_CANDIDATES, Placed, Resolution, ScanCaps, Status, Unreferenceable};
+use recto_core::locator::{self, DocumentMatch, Locator, Looked, MAX_CANDIDATES, Placed, Resolution, ScanCaps, Status, Target, TextMatch, Unreferenceable};
 use recto_session::identify::Opened;
 use serde_json::{Value, json};
 
@@ -14,6 +14,12 @@ const CHANGED_WHILE_READ: &str = "The file changed while it was being read. Try 
 const NO_IDENTITY: &str = "That page can't be told apart from the others, so it can't be pointed at.";
 const NO_DOCUMENT_TAG: &str = "This document has nothing to say which document it is, so a reference to it would mean nothing.";
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet. Save first, or point at a page of the file.";
+
+/// The refusal for characters past the end of the page's text, or no characters at all, in constant words.
+const CHARS_PAST_TEXT: &str = "The page's text doesn't reach that far, so there are no such characters to point at. `recto text` gives the page's text.";
+/// The refusal for a `--chars` that can't be a range of characters.
+pub(crate) const CHARS_USAGE: &str = "`--chars` is `START-END` in characters of `recto text`, with the end after the start, not included, and at most 2097152.";
+const UNRESOLVED_TEXT_CHANGED: &str = "The page is there, but its text at those characters isn't what the reference was made of.";
 
 const TAB_CHANGED: &str = "The tab changed while the reference was being found. Try again.";
 const BAD_REFERENCE: &str = "That isn't a reference RectoPDF made.";
@@ -52,8 +58,17 @@ fn not_referenceable(words: &'static str) -> AgentError {
     AgentError::new(Code::NOT_REFERENCEABLE, words, exit::FAILED)
 }
 
-/// `recto ref <page>`: a reference to page `page` (counted from 1 in the tab as it is now, unsaved edits included).
-pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<Value, AgentError> {
+/// `recto ref <page>`: a reference to page `page` (counted from 1 in the tab as it is now, unsaved edits included), or with `chars` to characters `[start, end)` of
+/// its text, checked against that text as `recto text` reads it.
+pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, chars: Option<(u32, u32)>) -> Result<Value, AgentError> {
+    reference_reading(access, tab, page, chars, crate::render::page_text)
+}
+
+/// A page's text as the reader gives it: `render::page_text` in production, a made one where a test needs the read to fail the way it can, without the
+/// page that makes it fail.
+type PageTextReader = fn(&std::path::Path, u32) -> Result<String, AgentError>;
+
+fn reference_reading<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, chars: Option<(u32, u32)>, read_text: PageTextReader) -> Result<Value, AgentError> {
     // A page that can't be is refused before the file is opened or its state said.
     let wanted = crate::one_based(page)?;
     let (file, opened, stamp) = readable(access, tab)?;
@@ -66,34 +81,81 @@ pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -
         });
     };
     let made = locator::reference(opened.reader(), opened.map(), file_page, &ScanCaps::STANDARD);
+    // The mapped file is let go before the renderer reads the page's text.
+    drop(opened);
     unchanged(&file, stamp)?;
     let made = made.map_err(|why| match why {
         Unreferenceable::NoSuchPage => crate::no_such_page(),
         Unreferenceable::NoIdentity => not_referenceable(NO_IDENTITY),
         Unreferenceable::NoDocumentTag => not_referenceable(NO_DOCUMENT_TAG),
     })?;
-    Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }))
+    let Some((start, end)) = chars else {
+        return Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }));
+    };
+    let text = read_text(file.path(), file_page)?;
+    let range = locator::characters(&text, start, end).map_err(|_| not_referenceable(CHARS_PAST_TEXT))?;
+    drop(text);
+    unchanged(&file, stamp)?;
+    let made = Locator::new(made.document(), made.page(), Target::Characters(range));
+    Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "chars": [start, end], "ref": locator::encode(&made) }))
+}
+
+/// What a resolution comes to once the page's text is looked at: the core's status, except that a page found with other text at the characters a reference
+/// names is `TextChanged`, whichever way it was found. Decided once, here, so `resolve`, `page_of` and the note can't disagree.
+enum Outcome {
+    Status(Status),
+    TextChanged { page: u32 },
+}
+
+/// The file's resolution of a reference, and for a character target on a page that was found, whether its text is the text it was made of. The text is read
+/// with the session free, and the file's version is checked after that read as well.
+fn resolved<A: SessionAccess>(
+    access: &A,
+    tab: &TabRef,
+    reference: &Locator,
+    read_text: PageTextReader,
+) -> Result<(TabFile, Resolution, Outcome, Option<TextMatch>, recto_platform::FileStamp), AgentError> {
+    let (file, opened, stamp) = readable(access, tab)?;
+    let found = locator::resolve(reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
+    drop(opened);
+    unchanged(&file, stamp)?;
+    let text = match (reference.target(), &found.status) {
+        (Target::Characters(range), Status::Found { page } | Status::Moved { page }) => {
+            let held = locator::check_characters(range, &read_text(file.path(), *page)?);
+            unchanged(&file, stamp)?;
+            Some(held)
+        }
+        _ => None,
+    };
+    let outcome = match (&found.status, text) {
+        (Status::Found { page } | Status::Moved { page }, Some(TextMatch::Changed)) => Outcome::TextChanged { page: *page },
+        (status, _) => Outcome::Status(status.clone()),
+    };
+    Ok((file, found, outcome, text, stamp))
 }
 
 /// `recto resolve <ref>`: where the reference's page is in this tab now. A page that moved, is gone, can't be told from others or wasn't fully looked
 /// for is an answer (exit 0), never a guess.
 pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Locator) -> Result<Value, AgentError> {
-    let (file, opened, stamp) = readable(access, tab)?;
-    let found = locator::resolve(&reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
-    unchanged(&file, stamp)?;
+    resolve_reading(access, tab, reference, crate::render::page_text)
+}
+
+fn resolve_reading<A: SessionAccess>(access: &A, tab: &TabRef, reference: Locator, read_text: PageTextReader) -> Result<Value, AgentError> {
+    let (file, found, outcome, text, _) = resolved(access, tab, &reference, read_text)?;
     // A page of the file, as the tab shows it now (from 1): its position among the unsaved edits, or none when they removed it.
     let place = |file_page: u32| -> Option<u32> { file.place_of(file_page).map(|place| place + 1) };
     let both = |file_page: u32| json!({ "page": place(file_page), "file_page": file_page + 1 });
-    let (status, at, listed) = match &found.status {
-        Status::Found { page } => ("found", Some(*page), &[][..]),
-        Status::Moved { page } => ("moved", Some(*page), &[][..]),
-        Status::Ambiguous { pages, .. } => ("ambiguous", None, pages.as_slice()),
-        Status::Gone => ("gone", None, &[][..]),
-        Status::Incomplete { pages } => ("incomplete", None, pages.as_slice()),
+    let (status, at, listed) = match &outcome {
+        Outcome::TextChanged { page } => ("text_changed", Some(*page), &[][..]),
+        Outcome::Status(Status::Found { page }) => ("found", Some(*page), &[][..]),
+        Outcome::Status(Status::Moved { page }) => ("moved", Some(*page), &[][..]),
+        Outcome::Status(Status::Ambiguous { pages, .. }) => ("ambiguous", None, pages.as_slice()),
+        Outcome::Status(Status::Gone) => ("gone", None, &[][..]),
+        Outcome::Status(Status::Incomplete { pages }) => ("incomplete", None, pages.as_slice()),
     };
     let was = reference.page().number();
-    let target = found.target.map(|placed| target_json(&placed));
-    let note = note_of(&found, at.map(place), was, file.has_edit_list());
+    let target = found.target.map(|placed| target_json(&placed, text));
+    let note = note_of(&found, text, at.map(place), was, file.has_edit_list());
     Ok(json!({
         "tab": file.id(),
         "status": status,
@@ -142,16 +204,21 @@ fn unresolved(words: &'static str) -> AgentError {
 /// matches several pages, wasn't fully looked for, or points at a page unsaved edits removed is refused, because the next thing done is a read of a page
 /// and a guess would read the wrong one. The token is never repeated.
 pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator) -> Result<Located, AgentError> {
-    let (file, opened, stamp) = readable(access, tab)?;
-    let found = locator::resolve(reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
-    unchanged(&file, stamp)?;
-    let (status, file_page, page) = settle(&found.status, |file_page| file.place_of(file_page))?;
-    let said = json!({
+    page_of_reading(access, tab, reference, crate::render::page_text)
+}
+
+fn page_of_reading<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator, read_text: PageTextReader) -> Result<Located, AgentError> {
+    let (file, found, outcome, text, stamp) = resolved(access, tab, reference, read_text)?;
+    let (status, file_page, page) = settle(&outcome, |file_page| file.place_of(file_page))?;
+    let mut said = json!({
         "status": status,
         "was_page": reference.page().number(),
         "file_page": file_page + 1,
         "document": document_word(found.document),
     });
+    if text.is_some() {
+        said["text"] = json!("same");
+    }
     Ok(Located {
         tab: recto_session::TabId(file.id()),
         page,
@@ -161,14 +228,15 @@ pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Lo
     })
 }
 
-/// Which page a status points at: only `found` and `moved` give one, and only if the tab still has it. Each other case is refused with its own words.
-fn settle(status: &Status, place_of: impl Fn(u32) -> Option<u32>) -> Result<(&'static str, u32, u32), AgentError> {
-    let (word, file_page) = match status {
-        Status::Found { page } => ("found", *page),
-        Status::Moved { page } => ("moved", *page),
-        Status::Ambiguous { .. } => return Err(unresolved(UNRESOLVED_AMBIGUOUS)),
-        Status::Gone => return Err(unresolved(UNRESOLVED_GONE)),
-        Status::Incomplete { .. } => return Err(unresolved(UNRESOLVED_INCOMPLETE)),
+/// Which page a status points at: only `found` and `moved` (with the characters the reference names, if it names any, still the same) give one, and only if the tab still has it. Each other case is refused with its own words.
+fn settle(outcome: &Outcome, place_of: impl Fn(u32) -> Option<u32>) -> Result<(&'static str, u32, u32), AgentError> {
+    let (word, file_page) = match outcome {
+        Outcome::TextChanged { .. } => return Err(unresolved(UNRESOLVED_TEXT_CHANGED)),
+        Outcome::Status(Status::Found { page }) => ("found", *page),
+        Outcome::Status(Status::Moved { page }) => ("moved", *page),
+        Outcome::Status(Status::Ambiguous { .. }) => return Err(unresolved(UNRESOLVED_AMBIGUOUS)),
+        Outcome::Status(Status::Gone) => return Err(unresolved(UNRESOLVED_GONE)),
+        Outcome::Status(Status::Incomplete { .. }) => return Err(unresolved(UNRESOLVED_INCOMPLETE)),
     };
     let place = place_of(file_page).ok_or_else(|| unresolved(UNRESOLVED_REMOVED))?;
     Ok((word, file_page, place + 1))
@@ -240,19 +308,24 @@ fn unchanged(file: &TabFile, stamp: recto_platform::FileStamp) -> Result<(), Age
     }
 }
 
-fn target_json(placed: &Placed) -> Value {
+fn target_json(placed: &Placed, text: Option<TextMatch>) -> Value {
     match placed {
         Placed::Page => json!({ "kind": "page" }),
         Placed::Spot([x, y, width, height]) => json!({ "kind": "spot", "placed": true, "rect": [x, y, width, height] }),
         Placed::SpotFrameChanged => json!({ "kind": "spot", "placed": false, "why": "frame_changed" }),
         Placed::SpotOutsidePage => json!({ "kind": "spot", "placed": false, "why": "outside_page" }),
-        Placed::CharactersNotChecked { start, end } => json!({ "kind": "characters", "start": start, "end": end, "checked": false }),
+        Placed::CharactersNotChecked { start, end } => match text {
+            Some(held) => {
+                json!({ "kind": "characters", "start": start, "end": end, "checked": true, "text": if held == TextMatch::Same { "same" } else { "changed" } })
+            }
+            None => json!({ "kind": "characters", "start": start, "end": end, "checked": false }),
+        },
     }
 }
 
 /// What the answer says in words: one sentence for the status, and one for each thing worth knowing beside it. `at` is the page found (zero-based, in
 /// the file) and its place in the tab now; `was` the page the reference hinted at.
-fn note_of(found: &Resolution, at: Option<Option<u32>>, was: u32, edited: bool) -> String {
+fn note_of(found: &Resolution, text: Option<TextMatch>, at: Option<Option<u32>>, was: u32, edited: bool) -> String {
     // A page of another document, by content alone, isn't "the page": it says only what is known.
     let other = found.document == DocumentMatch::Different;
     let mut note = match (&found.status, at) {
@@ -291,7 +364,13 @@ fn note_of(found: &Resolution, at: Option<Option<u32>>, was: u32, edited: bool) 
         Some(Placed::Spot(_)) => note.push_str(" The spot is in points on the page as the file shows it, before any unsaved turn."),
         Some(Placed::SpotFrameChanged) => note.push_str(" The page's crop or turn changed, so the spot isn't placed."),
         Some(Placed::SpotOutsidePage) => note.push_str(" The spot is outside the page now, so it isn't placed."),
-        Some(Placed::CharactersNotChecked { .. }) => note.push_str(" The characters aren't checked against the page's text."),
+        Some(Placed::CharactersNotChecked { .. }) => note.push_str(match text {
+            Some(TextMatch::Same) => " The characters are the same as the ones the reference was made of.",
+            Some(TextMatch::Changed) => {
+                " The page is there, but its text at those characters isn't what the reference was made of, and nothing else on the page was searched for it."
+            }
+            None => " The characters aren't checked against the page's text.",
+        }),
         Some(Placed::Page) | None => {}
     }
     note
@@ -318,8 +397,8 @@ mod tests {
     #[test]
     fn a_page_of_another_document_is_said_to_have_the_same_content_not_to_be_still_there() {
         for status in [Status::Found { page: 2 }, Status::Moved { page: 2 }] {
-            let same = note_of(&resolution(status.clone(), DocumentMatch::Same), Some(Some(3)), 1, false);
-            let other = note_of(&resolution(status, DocumentMatch::Different), Some(Some(3)), 1, false);
+            let same = note_of(&resolution(status.clone(), DocumentMatch::Same), None, Some(Some(3)), 1, false);
+            let other = note_of(&resolution(status, DocumentMatch::Different), None, Some(Some(3)), 1, false);
             assert!(!same.contains("same content"), "{same}");
             assert!(
                 other.contains("A page with the same content is") && other.contains("page 3 of the file"),
@@ -354,7 +433,7 @@ mod tests {
 
     /// The page `page` of the tab, found by a reference to it.
     fn found_at(access: &std::sync::Mutex<recto_session::Session<crate::DrawableLoader>>, tab: &TabRef, page: u32) -> Located {
-        let made = reference(access, tab, page).expect("a reference");
+        let made = reference(access, tab, page, None).expect("a reference");
         page_of(access, tab, &read_reference(made["ref"].as_str().expect("its token")).expect("a reference")).expect("found")
     }
 
@@ -436,19 +515,21 @@ mod tests {
     #[test]
     fn only_found_and_moved_give_a_page_every_other_status_refuses_with_its_own_words() {
         let at = |file_page: u32| (file_page != 9).then_some(file_page + 4);
-        assert_eq!(settle(&Status::Found { page: 2 }, at).ok(), Some(("found", 2, 7)));
-        assert_eq!(settle(&Status::Moved { page: 3 }, at).ok(), Some(("moved", 3, 8)));
+        let status = Outcome::Status;
+        assert_eq!(settle(&status(Status::Found { page: 2 }), at).ok(), Some(("found", 2, 7)));
+        assert_eq!(settle(&status(Status::Moved { page: 3 }), at).ok(), Some(("moved", 3, 8)));
         let refused = [
-            settle(&Status::Gone, at),
+            settle(&status(Status::Gone), at),
             settle(
-                &Status::Ambiguous {
+                &status(Status::Ambiguous {
                     pages: vec![1, 2],
                     complete: true,
-                },
+                }),
                 at,
             ),
-            settle(&Status::Incomplete { pages: vec![] }, at),
-            settle(&Status::Found { page: 9 }, at),
+            settle(&status(Status::Incomplete { pages: vec![] }), at),
+            settle(&status(Status::Found { page: 9 }), at),
+            settle(&Outcome::TextChanged { page: 2 }, at),
         ]
         .map(|answer| answer.expect_err("refused"));
         let mut words = std::collections::BTreeSet::new();
@@ -456,5 +537,48 @@ mod tests {
             assert_eq!((error.code, error.exit), (Code::REFERENCE_UNRESOLVED, exit::NOT_FOUND), "{}", error.message);
             assert!(words.insert(error.message.clone()), "two cases share their words: {}", error.message);
         }
+    }
+}
+
+#[cfg(test)]
+mod unreadable_text_tests {
+    use super::*;
+    use recto_core::locator::Locator;
+    use recto_session::{DiskLoader, Session};
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+    use std::sync::Mutex;
+
+    fn unreadable(_: &std::path::Path, _: u32) -> Result<String, AgentError> {
+        Err(AgentError::new(Code::RENDERER_MISBEHAVED, "made: the page's text can't be read", exit::FAILED))
+    }
+
+    /// Failure: a character target on a page whose text can't be read is answered as a status (`found`, `text_changed`) or with other words than the read's
+    /// own, by any of `ref --chars`, `resolve` and a command that goes on to read the page (`page_of`), so an agent is told something about words nobody
+    /// could read. The reader's refusal must come out of each unchanged, whatever made it fail.
+    #[test]
+    fn a_page_text_that_cannot_be_read_is_the_readers_own_refusal_in_ref_resolve_and_page_of() {
+        let file = TempPdf::new(
+            "two.pdf",
+            &pages(&[Page::new(text_lines(&["First page"])), Page::new(text_lines(&["Second page"]))]),
+        );
+        let mut session = Session::new(DiskLoader);
+        session.open(&file.0).unwrap();
+        let access = Mutex::new(session);
+        let tab = TabRef::Active;
+        let whole = reference(&access, &tab, 2, None).expect("the page's reference");
+        let made = read_reference(whole["ref"].as_str().unwrap()).expect("a reference");
+        let range = locator::characters("Second page", 0, 6).unwrap();
+        let chars = Locator::new(made.document(), made.page(), Target::Characters(range));
+        let want = unreadable(std::path::Path::new(""), 0).unwrap_err();
+        let same = |said: AgentError, from: &str| assert_eq!((said.code, said.exit, said.message), (want.code, want.exit, want.message.clone()), "{from}");
+        same(resolve_reading(&access, &tab, chars, unreadable).expect_err("not a status"), "resolve");
+        same(page_of_reading(&access, &tab, &chars, unreadable).err().expect("not a page"), "page_of");
+        same(
+            reference_reading(&access, &tab, 2, Some((0, 6)), unreadable).expect_err("not a reference"),
+            "ref --chars",
+        );
+        // The same reference with a reader that works is answered, so the refusals above are the reader's and not the setup's.
+        let answered = resolve_reading(&access, &tab, chars, |_, _| Ok("Second page".into())).expect("resolved");
+        assert_eq!(answered["status"], "found", "{answered}");
     }
 }

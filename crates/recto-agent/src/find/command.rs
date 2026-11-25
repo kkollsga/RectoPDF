@@ -307,15 +307,14 @@ fn answer<A: crate::SessionAccess>(access: &A, actor: Actor, finding: &dyn Findi
             "hits_total": p.total,
             "hits_listed": results.hits.len(),
             "pages_with_hits": p.pages_with_hits,
-            "pages_searched": p.pages_done,
-            "pages_in_scope": p.pages,
-            "failed_pages": p.failed,
-            "no_text_pages": p.no_text,
             "first_hit_ms": results.first_hit.map(|took| took.as_secs_f64() * 1000.0),
             "took_ms": results.took.map(|took| took.as_secs_f64() * 1000.0),
             "current": results.current.and_then(|at| results.hits.get(at).map(|hit| hit_json(at, hit))),
             "hits": results.hits.iter().take(listed).enumerate().map(|(at, hit)| hit_json(at, hit)).collect::<Vec<_>>(),
         });
+        if let (Some(value), Some(counts)) = (value.as_object_mut(), coverage_counts(&p).as_object()) {
+            value.extend(counts.iter().map(|(key, count)| (key.clone(), count.clone())));
+        }
         if withheld {
             value = json!({ "open": record.open, "tab": results.tab, "state": state, "protected": true, "protected_note": crate::PROTECTED_NOTE, "hits": [] });
         } else if place_withheld || current_withheld {
@@ -330,4 +329,28 @@ fn answer<A: crate::SessionAccess>(access: &A, actor: Actor, finding: &dyn Findi
         };
     }
     value
+}
+
+/// The page counts of a Find answer. `busy_pages` is its own count beside `failed_pages`: a page the Mac was too busy to read isn't one that failed, and Find again reads it.
+fn coverage_counts(p: &Progress) -> Value {
+    json!({ "pages_searched": p.pages_done, "pages_in_scope": p.pages, "failed_pages": p.failed, "busy_pages": p.busy, "no_text_pages": p.no_text })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: `recto find` reported only `failed_pages`, so an agent was told a page was fine, or couldn't tell a busy Mac from a page that failed, while the line in the window said so.
+    #[test]
+    fn the_answer_counts_busy_pages_apart_from_failed_ones() {
+        let counts = coverage_counts(&Progress {
+            pages: 9,
+            pages_done: 6,
+            failed: 1,
+            busy: 2,
+            ..Progress::default()
+        });
+        assert_eq!(counts["busy_pages"], 2, "{counts}");
+        assert_eq!(counts["failed_pages"], 1, "{counts}");
+    }
 }

@@ -540,11 +540,10 @@ fn a_bad_byte_past_the_cap_reaches_the_cap_as_a_lazy_decode_does() {
     as_stored("/Filter /RunLengthDecode", &[129, b'a', 9, b'x', b'x'], 129);
 }
 
-/// Failure caught: the stream and image counts aren't capped where the definition says, so a page of 100,000 streams costs what it likes, or a page
-/// past them is hashed by part of itself. At 1,024 streams and 256 images drawn the page has an identity (and the last of each counts); one more of
-/// either and it has none.
+/// Failure caught: the stream count isn't capped where the definition says, so a page of 100,000 streams costs what it likes, or a page past it is
+/// hashed by part of itself. At 1,024 streams the page has an identity (and the last counts); one more and it has none.
 #[test]
-fn the_stream_and_image_counts_are_capped() {
+fn the_stream_count_is_capped() {
     let streams = |count: usize, last: &[u8]| {
         let refs: String = (0..count).map(|at| format!("{} 0 R ", 4 + at)).collect();
         let mut objects: Vec<Obj> = (0..count).map(|_| stream("", b"0 0 m")).collect();
@@ -555,31 +554,111 @@ fn the_stream_and_image_counts_are_capped() {
     };
     assert_ne!(streams(1024, b"one").unwrap(), streams(1024, b"two").unwrap(), "the 1,024th counts");
     assert_eq!(streams(1025, b"one"), None, "1,025 streams");
-    let images = |count: usize, last: &[u8]| {
-        let names: String = (0..count).map(|at| format!("/I{at:03} {} 0 R ", 5 + at)).collect();
-        let drawn: String = (0..count).map(|at| format!("/I{at:03} Do ")).collect();
+}
+
+/// A page drawing `count` distinct images `/I000...`, the last one's bytes `last`.
+fn images_page(count: usize, last: &[u8]) -> Vec<u8> {
+    let names: String = (0..count).map(|at| format!("/I{at:03} {} 0 R ", 5 + at)).collect();
+    let drawn: String = (0..count).map(|at| format!("/I{at:03} Do ")).collect();
+    let mut objects = vec![stream("", drawn.as_bytes())];
+    objects.extend((0..count).map(|at| stream(JPEG_DICT, &if at + 1 == count { last.to_vec() } else { (at as u32).to_le_bytes().to_vec() })));
+    one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects)
+}
+
+/// A page drawing one form `/F` whose content draws `children` distinct images.
+fn form_page(children: usize) -> Vec<u8> {
+    let names: String = (0..children).map(|at| format!("/I{at:03} {} 0 R ", 6 + at)).collect();
+    let drawn: String = (0..children).map(|at| format!("/I{at:03} Do ")).collect();
+    let mut objects = vec![
+        stream("", b"/F Do"),
+        Obj::Stream {
+            dict: format!("/Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << {names} >> >>"),
+            data: drawn.into_bytes(),
+        },
+    ];
+    objects.extend((0..children).map(|at| stream(JPEG_DICT, &(at as u32).to_le_bytes())));
+    one_page("", "/XObject << /F 5 0 R >>", "4 0 R", objects)
+}
+
+/// Failure caught: the records cap isn't counted exactly, or a form's children aren't counted in it, so a page draws what it likes or is refused one
+/// short. With the cap set to 4 (the cap's value isn't what's tested here, its exactness is): 4 images drawn have an identity and the last counts, 5
+/// have none; a form with 3 children is 4 records, and 4 children are one too many. The scan's own name cap is the same number, so the 5th name of a
+/// form is refused there too.
+#[test]
+fn the_record_count_is_capped_at_its_limit_plus_one() {
+    let caps = Caps { xobjects: 4, ..Caps::STANDARD };
+    assert_ne!(
+        digest_under(&images_page(4, b"one"), &caps).unwrap(),
+        digest_under(&images_page(4, b"two"), &caps).unwrap(),
+        "the 4th drawn counts"
+    );
+    assert_eq!(digest_under(&images_page(5, b"one"), &caps), None, "5 drawn");
+    assert!(digest_under(&form_page(3), &caps).is_some(), "a form and 3 children");
+    assert_eq!(digest_under(&form_page(4), &caps), None, "a form and 4 children");
+    assert_eq!(digest_under(&form_page(5), &caps), None, "a form of 5 names overflows its own scan");
+}
+
+/// Failure caught: a page of more than 256 distinct images, as a scanned report cut into strips is, has no identity, so a page of it that moved can't be
+/// found again (NASA report pages 127, 137, 156, 197 of bench100: `incomplete`). Under the standard caps 300 images drawn have one, and the last counts.
+#[test]
+fn a_page_of_many_images_has_an_identity() {
+    let one = digest_under(&images_page(300, b"one"), &Caps::STANDARD);
+    assert!(one.is_some(), "300 images drawn");
+    assert_ne!(one, digest_under(&images_page(300, b"two"), &Caps::STANDARD), "the 300th counts");
+}
+
+/// Failure caught: the cap on forms the page draws that draw something isn't held exactly, so a page of thousands of such forms (each read and scanned)
+/// costs what it likes. With the cap set to 2: two forms each drawing an image have an identity, a third is one too many.
+#[test]
+fn the_forms_a_page_draws_are_capped_at_their_limit_plus_one() {
+    let forms = |count: usize| {
+        let names: String = (0..count).map(|at| format!("/F{at} {} 0 R ", 5 + at)).collect();
+        let drawn: String = (0..count).map(|at| format!("/F{at} Do ")).collect();
         let mut objects = vec![stream("", drawn.as_bytes())];
-        objects.extend((0..count).map(|at| stream(JPEG_DICT, &if at + 1 == count { last.to_vec() } else { (at as u32).to_le_bytes().to_vec() })));
-        digest_under(&one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects), &Caps::STANDARD)
+        objects.extend((0..count).map(|at| Obj::Stream {
+            dict: format!("/Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /I {} 0 R >> >>", 5 + count + at),
+            data: b"/I Do".to_vec(),
+        }));
+        objects.extend((0..count).map(|at| stream(JPEG_DICT, &(at as u32).to_le_bytes())));
+        one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects)
     };
-    assert_ne!(images(256, b"one").unwrap(), images(256, b"two").unwrap(), "the 256th drawn counts");
-    assert_eq!(images(257, b"one"), None, "257 drawn");
-    // A form's children count toward the same 256: a form drawing 255 images is 256 records, and 256 is one too many.
-    let form = |children: usize| {
-        let names: String = (0..children).map(|at| format!("/I{at:03} {} 0 R ", 6 + at)).collect();
-        let drawn: String = (0..children).map(|at| format!("/I{at:03} Do ")).collect();
-        let mut objects = vec![
-            stream("", b"/F Do"),
-            Obj::Stream {
-                dict: format!("/Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << {names} >> >>"),
-                data: drawn.into_bytes(),
+    let caps = Caps {
+        forms_drawing: 2,
+        ..Caps::STANDARD
+    };
+    assert!(digest_under(&forms(2), &caps).is_some(), "two forms");
+    assert_eq!(digest_under(&forms(3), &caps), None, "three forms");
+    assert!(digest_under(&forms(3), &Caps::STANDARD).is_some(), "three are nothing under the standard cap");
+    assert!(digest_under(&forms(256), &Caps::STANDARD).is_some(), "256 forms under the standard cap");
+    assert_eq!(digest_under(&forms(257), &Caps::STANDARD), None, "257 forms under the standard cap");
+}
+
+/// Failure caught: a form that draws nothing is counted against the forms cap, so a page of many empty forms (a watermark layer repeated) has no
+/// identity where nothing it draws costs more than the form itself. With the cap at 2, five empty forms have one, and a form that draws something
+/// among them is the one that counts.
+#[test]
+fn a_form_that_draws_nothing_is_not_counted_against_the_forms_cap() {
+    let page = |forms_drawing: usize, drawing: usize| {
+        let count = 5;
+        let names: String = (0..count).map(|at| format!("/F{at} {} 0 R ", 5 + at)).collect();
+        let drawn: String = (0..count).map(|at| format!("/F{at} Do ")).collect();
+        let mut objects = vec![stream("", drawn.as_bytes())];
+        objects.extend((0..count).map(|at| Obj::Stream {
+            dict: "/Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /I 10 0 R >> >>".into(),
+            data: if at < drawing { b"/I Do".to_vec() } else { b"0 0 m".to_vec() },
+        }));
+        objects.push(stream(JPEG_DICT, IMAGE));
+        digest_under(
+            &one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects),
+            &Caps {
+                forms_drawing,
+                ..Caps::STANDARD
             },
-        ];
-        objects.extend((0..children).map(|at| stream(JPEG_DICT, &(at as u32).to_le_bytes())));
-        digest_under(&one_page("", "/XObject << /F 5 0 R >>", "4 0 R", objects), &Caps::STANDARD)
+        )
     };
-    assert!(form(255).is_some());
-    assert_eq!(form(256), None);
+    assert!(page(2, 0).is_some(), "five forms drawing nothing");
+    assert!(page(2, 2).is_some(), "two drawing, three not");
+    assert_eq!(page(2, 3), None, "three drawing");
 }
 
 /// Failure caught: the page's own caps aren't held, so a page of many large images hashes a gigabyte, or a stream that decodes to little from very
@@ -1359,4 +1438,207 @@ fn a_record_with_a_long_tail_is_read_again_and_is_the_same() {
     }
     expected.push(b'E');
     assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
+
+/// Failure caught (security, the cost of raising the names cap from 256 to 8,192): an image drawn under 8,192 names had its descriptor (its dictionary,
+/// parsed whole, here 100,000 elements) resolved for each name, 32 times the probe's 10.8 GB. At the cap a page has an identity, and the one image is
+/// resolved once.
+#[test]
+fn the_names_cap_does_not_multiply_the_cost_of_one_hostile_image() {
+    let names = 8192;
+    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), stream(&format!("{JPEG_DICT} {junk}"), IMAGE)],
+    );
+    DESCRIPTORS.with(|count| count.set(0));
+    assert!(reads_of(&page, &Caps::STANDARD).remove(0).identity.is_some(), "8,192 names drawn");
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    // One name past the cap, under the standard caps: no identity (the cap's own value, which the tests with a cap held small don't see).
+    let over = names + 1;
+    let draws: String = (0..over).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..over).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![stream("", draws.as_bytes()), stream(JPEG_DICT, IMAGE)],
+    );
+    assert_eq!(digest_under(&page, &Caps::STANDARD), None, "8,193 names drawn");
+}
+
+/// A double-Flate stream that decodes to `kib` KiB of zeros and then fails (its inner Adler-32 cut off), from about a kilobyte stored.
+fn failing_after(kib: usize) -> Vec<u8> {
+    let mut inner = flate(&vec![0u8; kib << 10]);
+    inner.truncate(inner.len() - 4);
+    flate(&inner)
+}
+
+/// The least `decode_work` under which `page` still has an identity, found by halving: the page's decode work as the budget counts it.
+fn least_decode_work(page: &[u8]) -> u64 {
+    let has = |decode_work: u64| digest_under(page, &Caps { decode_work, ..Caps::STANDARD }).is_some();
+    assert!(has(u64::MAX), "the page has an identity with no limit");
+    let (mut low, mut high) = (0u64, 8u64 << 20);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if has(middle) { high = middle } else { low = middle + 1 }
+    }
+    low
+}
+
+/// Failure caught (review round 1, blocker): a decode that fails is charged nothing but its stored length, so a page of failing double-Flate forms
+/// (each a kilobyte stored, 16 MiB decoded before its error) costs records times 16 MiB, 128 GiB at 8,192 records, from 2 MB of file. Four such forms,
+/// each failing after 256 KiB, have a decode work of at least 1 MiB; at that limit the page has an identity and one byte under it none.
+#[test]
+fn forms_that_fail_to_decode_are_charged_the_work_they_did() {
+    let page = |count: usize| {
+        let names: String = (0..count).map(|at| format!("/F{at} {} 0 R ", 5 + at)).collect();
+        let drawn: String = (0..count).map(|at| format!("/F{at} Do ")).collect();
+        let mut objects = vec![stream("", drawn.as_bytes())];
+        objects.extend((0..count).map(|_| stream("/Subtype /Form /BBox [0 0 1 1] /Filter [/FlateDecode /FlateDecode]", &failing_after(256))));
+        one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects)
+    };
+    let page = page(4);
+    let limit = least_decode_work(&page);
+    assert!(limit >= 1 << 20, "four forms decoded 256 KiB each before failing, charged {limit}");
+    assert!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit,
+                ..Caps::STANDARD
+            }
+        )
+        .is_some(),
+        "at the limit"
+    );
+    assert_eq!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit - 1,
+                ..Caps::STANDARD
+            }
+        ),
+        None,
+        "one byte under"
+    );
+}
+
+/// Failure caught: the same for a page's content streams, which are read as stored after a failed decode: 1,024 streams each failing after 16 MiB.
+#[test]
+fn content_streams_that_fail_to_decode_are_charged_the_work_they_did() {
+    let count = 4;
+    let list: String = (0..count).map(|at| format!("{} 0 R ", 4 + at)).collect();
+    let page = one_page(
+        "",
+        "",
+        &format!("[{list}]"),
+        (0..count).map(|_| stream("/Filter [/FlateDecode /FlateDecode]", &failing_after(256))).collect(),
+    );
+    let limit = least_decode_work(&page);
+    assert!(limit >= 1 << 20, "four streams decoded 256 KiB each before failing, charged {limit}");
+    assert!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit,
+                ..Caps::STANDARD
+            }
+        )
+        .is_some(),
+        "at the limit"
+    );
+    assert_eq!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit - 1,
+                ..Caps::STANDARD
+            }
+        ),
+        None,
+        "one byte under"
+    );
+}
+
+/// Failure caught: a failing form drawn under many names is charged once, the memo giving it back free, so 8,192 names of one 16 MiB failure cost
+/// 128 GiB of the work the cap counts. Drawn under 4 names, it is charged 4 times.
+#[test]
+fn a_failing_form_taken_from_the_memo_is_charged_again() {
+    let draws: String = (0..4).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..4).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![
+            stream("", draws.as_bytes()),
+            stream("/Subtype /Form /BBox [0 0 1 1] /Filter [/FlateDecode /FlateDecode]", &failing_after(256)),
+        ],
+    );
+    assert!(least_decode_work(&page) >= 1 << 20, "four draws of a form that decodes 256 KiB before failing");
+}
+
+/// Failure caught (final review, blocker): the budget counted only what the whole chain gave, so a stage that eats its input got through free:
+/// `[/FlateDecode /ASCIIHexDecode]` over 1 MiB of whitespace, which AsciiHex skips to 0 bytes out, was charged 0. Each stage's output is charged: its
+/// decode work is at least the 1 MiB Flate gave AsciiHex.
+#[test]
+fn a_stage_that_eats_what_it_is_given_is_charged_for_it() {
+    let page = one_page(
+        "",
+        "",
+        "4 0 R",
+        vec![stream("/Filter [/FlateDecode /ASCIIHexDecode]", &flate(&vec![b' '; 1 << 20]))],
+    );
+    assert!(least_decode_work(&page) >= 1 << 20, "1 MiB went from Flate to AsciiHex");
+}
+
+/// Failure caught: the same through a chain of Flates (the bytes between stages are what's charged, not only the end): stored kilobyte, a megabyte
+/// between the first two stages, then eaten.
+#[test]
+fn nested_flate_into_an_eater_is_charged_every_stage() {
+    let page = one_page(
+        "",
+        "",
+        "4 0 R",
+        vec![stream(
+            "/Filter [/FlateDecode /FlateDecode /ASCIIHexDecode]",
+            &flate(&flate(&vec![b' '; 1 << 20])),
+        )],
+    );
+    assert!(least_decode_work(&page) >= 1 << 20, "1 MiB between the stages");
+}
+
+/// Holds: no digest below the least budget for a chain whose last stage swallows an error. `[/FlateDecode /ASCII85Decode]` over 256 KiB of text:
+/// base-85 gives the bytes it made before an input error and says the error at its next read, so the budget can run out between two of its
+/// buffer fills, after output. At the least budget that reads the page whole the page has the whole digest; at half of it, one under it and just
+/// past each 64 KiB boundary under it, no identity. This does not prove the check after an Ok read in `page_id.rs`: that line is unreachable
+/// today (base-85's next read errs, so the error arm catches it first), and stays as defence for a decoder that swallows and then ends.
+#[test]
+fn a_decoder_that_swallows_the_work_error_gives_no_digest_at_a_short_budget() {
+    let mut state = 0x9e37_79b9u32;
+    let data: Vec<u8> = (0..256 << 10)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let page = one_page("", "", "4 0 R", vec![stream("/Filter [/FlateDecode /ASCII85Decode]", &flate(&ascii85(&data)))]);
+    let whole = digest_of(&page);
+    let least = least_decode_work(&page);
+    let chunk = decode::CHUNK as u64;
+    assert!(least > 3 * chunk, "the work spans several buffers, {least}");
+    let under = |decode_work: u64| digest_under(&page, &Caps { decode_work, ..Caps::STANDARD });
+    assert_eq!(under(least), Some(whole), "at the least");
+    let points = [least - 1, least / 2]
+        .into_iter()
+        .chain((1..).map(|k| k * chunk).take_while(|&at| at + 2 < least).flat_map(|at| [at + 1, at + 2]));
+    for budget in points {
+        assert_eq!(under(budget), None, "a budget of {budget} of {least} gave an identity");
+    }
 }

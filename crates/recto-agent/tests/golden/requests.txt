@@ -787,6 +787,10 @@
 {"cmd":"ref"}
 {"cmd":"ref","page":3}
 {"cmd":"ref","page":3,"tab":"#2"}
+{"cmd":"ref","page":3,"chars":"120-180"}
+{"cmd":"ref","page":3,"chars":"5-5"}
+{"cmd":"ref","page":3,"chars":null}
+{"cmd":"ref","page":3,"chars":{}}
 {"cmd":"ref","page":3,"extra":1}
 {"cmd":"ref","page":{}}
 {"cmd":"ref","page":null}

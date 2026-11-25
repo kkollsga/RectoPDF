@@ -151,11 +151,11 @@ fn a_tab_whose_pages_change_off_screen_sleeps_with_no_size_of_another_page() {
     let (a, b, c) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 6));
     let app = disk.start();
     let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in [&c, &a, &b] {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, c) = (tab_named(&app, "a.pdf"), tab_named(&app, "c.pdf"));
@@ -192,11 +192,11 @@ fn a_tab_asleep_whose_pages_change_wakes_with_nothing_from_before() {
     let (a, b) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 3));
     let app = disk.start();
     let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in [&a, &b] {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let a = tab_named(&app, "a.pdf");
@@ -243,12 +243,11 @@ fn a_tab_woken_while_its_worker_outlived_its_sleep_has_its_next_sleep_file_decid
     let disk = Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 12));
     let app = disk.start();
-    let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in [&a, &b] {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
@@ -299,11 +298,11 @@ fn a_tab_put_to_sleep_and_woken_in_one_look_has_its_next_sleep_file_decided() {
     let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 3));
     let app = disk.start();
     let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in [&a, &b] {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
@@ -355,12 +354,11 @@ fn another_tabs_job_on_a_file_leaves_its_length_to_be_said_to_the_tab_that_owns_
     let disk = Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 12), disk.pdf("b.pdf", 2));
     let app = disk.start();
-    let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in [&a, &b] {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     full(&app, &["page", "insert", a.to_str().expect("a path"), "--at", "3"]);
@@ -401,11 +399,11 @@ fn a_tab_left_inside_the_gap_after_a_page_was_rotated_wakes_from_its_facts() {
     let app = disk.start();
     let engine = app.core().engine.clone();
     engine.waking().window_up();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in [&a, &b] {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (a, b) = (tab_named(&app, "a.pdf"), tab_named(&app, "b.pdf"));
@@ -459,12 +457,11 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
         .map(|name| disk.pdf(&format!("{name}.pdf"), if *name == "doc" { 12 } else { 2 }))
         .collect();
     let app = disk.start();
-    let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for file in &docs[..2] {
         app.open(file);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
@@ -503,8 +500,8 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
     host_turns(&app, &mut view, true);
     for file in &docs[2..] {
         app.open(file);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
@@ -526,12 +523,11 @@ fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
     let disk = Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 6));
     let app = disk.start();
-    let engine = app.core().engine.clone();
-    let mut view = retina_view();
+    let mut view = crate::testkit::host_standin::first_shown(retina_view());
     for doc in [&a, &b] {
         app.open(doc);
-        view = retina_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, retina_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     // Room for a tab's facts.
@@ -570,7 +566,6 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
     let app = disk.start();
     // Nothing goes dormant by itself here: only tabs pushed out of the warm ones are written.
     app.core().on_disk.sleeper().set_after(24 * 60 * 60);
-    let engine = app.core().engine.clone();
     let small = || recto_reader::Viewport {
         width: 160.0,
         height: 120.0,
@@ -578,11 +573,11 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
         backing: 1.0,
         ..window_view()
     };
-    let mut view = small();
+    let mut view = crate::testkit::host_standin::first_shown(small());
     for doc in &docs {
         app.open(doc);
-        view = small();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, small());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
@@ -985,11 +980,11 @@ fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64
     app.core().on_disk.sleeper().set_hour_cap(cap);
     let engine = app.core().engine.clone();
     engine.waking().window_up();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in &docs {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
         app.advance(dwell.0);
     }
@@ -1091,11 +1086,11 @@ fn a_pushed_out_and_waiting(disk: Disk, wait_ms: u64) -> (crate::testkit::headle
     let app = disk.builder().leaving_wait(wait_ms).start();
     let engine = app.core().engine.clone();
     engine.waking().window_up();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for doc in &docs {
         app.open(doc);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let a = tab_named(&app, "a.pdf");
@@ -1212,12 +1207,11 @@ fn session_sleep_keeps_to_the_limits_on_writing() {
     let disk = Disk::new();
     let (doc, other) = (disk.pdf("doc.pdf", 12), disk.pdf("other.pdf", 2));
     let app = disk.start();
-    let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     for file in [&doc, &other] {
         app.open(file);
-        view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        view = crate::testkit::host_standin::shown_again(&view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
         host_turns(&app, &mut view, true);
     }
     let (doc, other) = (tab_named(&app, "doc.pdf"), tab_named(&app, "other.pdf"));
@@ -1421,11 +1415,11 @@ fn every_route_that_writes_a_sleep_file_writes_no_picture() {
     let engine = app.core().engine.clone();
     engine.waking().window_up();
     let root = app.disk().paths().root.clone();
-    let mut view = window_view();
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
     let open = |doc: &std::path::Path, view: &mut recto_reader::Viewport| {
         app.open(doc);
-        *view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(*view));
+        *view = crate::testkit::host_standin::shown_again(&*view, window_view());
+        crate::testkit::host_standin::report_where_the_host_is(&app, view);
         host_turns(&app, view, true);
     };
     for doc in &docs[..4] {
@@ -1467,8 +1461,8 @@ fn every_route_that_writes_a_sleep_file_writes_no_picture() {
     every_sleep_file_holds_facts_only(&root, "a hand-off");
     let app = disk_again(app);
     // Drawn, so its worker has said its length and what came from its sleep file is checked (`Session::file_length_is`): only then is it written again.
-    let mut view = window_view();
-    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
+    crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
     host_turns(&app, &mut view, true);
     let file = on_screen(&app);
     let _ = std::fs::remove_file(&file);

@@ -32,6 +32,7 @@
 //!   asked. So a stream past a cap reaches it ([`super`] asks for one byte past the cap) unless the unit holding the cap's byte is an error, in which
 //!   case the stream didn't decode; what lies after that unit is never read for it.
 
+use super::work::Meter;
 use lopdf::{Dictionary, Object};
 use std::io::{self, BufRead, BufReader, Read};
 
@@ -239,15 +240,25 @@ pub(super) fn fuzz_dictionary(input: &[u8]) -> (Dictionary, &[u8]) {
 
 /// The decoded bytes of `raw` through `chain`, in order, as a reader.
 pub(super) fn decoded<'a>(raw: Box<dyn Read + 'a>, chain: &[Filter]) -> Box<dyn Read + 'a> {
-    let mut reader = raw;
+    decoded_metered(raw, chain, None)
+}
+
+/// [`decoded`], with the output of each stage (the raw bytes where there is no stage) charged to `meter`.
+pub(super) fn decoded_metered<'a>(raw: Box<dyn Read + 'a>, chain: &[Filter], meter: Option<&Meter>) -> Box<dyn Read + 'a> {
+    let count = |reader: Box<dyn Read + 'a>| match meter {
+        Some(meter) => meter.count(reader),
+        None => reader,
+    };
+    // The stored bytes are charged to the read cap already: they are work only where they are the output.
+    let mut reader = if chain.is_empty() { count(raw) } else { raw };
     for filter in chain {
-        reader = match *filter {
+        reader = count(match *filter {
             Filter::Flate(predictor) => predicted(Box::new(flate2::read::ZlibDecoder::new_with_buf(reader, vec![0; CHUNK])), predictor),
             Filter::Lzw { early_change, predictor } => predicted(Box::new(Lzw::new(reader, early_change)), predictor),
             Filter::AsciiHex => Box::new(AsciiHex::new(reader)),
             Filter::Ascii85 => Box::new(Ascii85::new(reader)),
             Filter::RunLength => Box::new(RunLength::new(reader)),
-        };
+        });
     }
     reader
 }
