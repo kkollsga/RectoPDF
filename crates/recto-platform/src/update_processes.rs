@@ -88,6 +88,7 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
             // app. The same name, or a name that can't be read, stays unknown, so the app is never replaced
             // while it might be open.
             Err(error) if error.raw_os_error() == Some(libc::ENOENT) && started_as_another_program(wanted, scan, pid) => continue,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Err(deleted_executable(scan, pid, &error)),
             Err(error) => return Err(error),
         };
         if count == 0 || count >= path.len() {
@@ -101,6 +102,17 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
         live |= found == wanted;
     }
     Ok(live)
+}
+
+/// The unknown for a live program whose file was deleted and that could be the app: says which process, and keeps
+/// `ErrorKind::NotFound`.
+fn deleted_executable(scan: &mut impl Scan, pid: i32, cause: &io::Error) -> io::Error {
+    let mut name = [0u8; COMM_LEN];
+    let name = match scan.name(pid, &mut name) {
+        Ok(count) if count <= COMM_LEN => String::from_utf8_lossy(&name[..count]).into_owned(),
+        _ => "unreadable name".into(),
+    };
+    io::Error::new(io::ErrorKind::NotFound, format!("pid {pid} ({name}) has a deleted executable: {cause}"))
 }
 
 /// True only when the start name shows the process can't be the wanted program. The kernel cuts the name at
@@ -184,6 +196,8 @@ mod tests {
         assert!(!observe(wanted, &mut fake).unwrap());
         fake.started_as = Some(b"RectoPDF");
         assert!(observe(wanted, &mut fake).is_err(), "the app's own name stays unknown");
+        let error = observe(wanted, &mut fake).unwrap_err();
+        assert!(error.to_string().contains("pid 42 (RectoPDF)"), "{error}");
         fake.started_as = None;
         assert!(observe(wanted, &mut fake).is_err(), "an unreadable name stays unknown");
         fake.error = Some(libc::ESRCH);
@@ -250,14 +264,16 @@ mod tests {
         let copy = dir.path().join(name);
         std::fs::copy("/bin/sleep", &copy).unwrap();
         // A plain copy of a system binary is killed at exec; an ad-hoc signature lets it run.
+        let signed = std::process::Command::new("/usr/bin/codesign")
+            .args(["-s", "-", "-f"])
+            .arg(&copy)
+            .output()
+            .unwrap_or_else(|error| panic!("codesign could not be run: {error}"));
         assert!(
-            std::process::Command::new("/usr/bin/codesign")
-                .args(["-s", "-", "-f"])
-                .arg(&copy)
-                .output()
-                .unwrap()
-                .status
-                .success()
+            signed.status.success(),
+            "codesign failed ({}): {}",
+            signed.status,
+            String::from_utf8_lossy(&signed.stderr)
         );
         let mut children = Children(Vec::new());
         children.0.push(std::process::Command::new(&copy).arg("30").spawn().unwrap());
@@ -280,7 +296,11 @@ mod tests {
         std::fs::copy("/bin/sleep", &wanted).unwrap();
         let (_same_name, _more) = deleted_sleeper("RectoPDF");
         let error = update_app_is_running(&wanted).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::ENOENT), "{error}");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+        assert!(
+            error.to_string().contains("has a deleted executable"),
+            "the unknown says which process: {error}"
+        );
     }
 
     /// Failure: the native ABI or path handling silently misses this process.
