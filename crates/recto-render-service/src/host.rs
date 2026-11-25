@@ -1824,8 +1824,7 @@ impl DocRenderer {
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);
         }
         self.worker = Some(worker);
-        busy::opened(self);
-        Ok(())
+        Ok(busy::opened(self))
     }
 }
 
