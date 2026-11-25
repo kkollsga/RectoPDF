@@ -189,8 +189,11 @@ pub(super) fn page_look(
 
 /// A small picture of the whole page, drawn to decide its look, and the part of it that was drawn: [`LOOK_PICTURE_EDGE`] long, or [`IMAGELESS_LOOK_EDGE`] for a page with no images. Or why there's none, as what it gives the page.
 fn small_picture(doc: &mut impl LookSource, page: u32, generation: u64, image_less: bool) -> Result<Result<(PixelSurface, TileRect), Picture>, NoLook> {
-    let Ok((width, height)) = doc.page_size(page) else {
-        return Ok(Err(Picture::Final));
+    let (width, height) = match doc.page_size(page) {
+        Ok(size) => size,
+        // The Mac gave the worker no processor: nothing is known of the page, so it's asked again.
+        Err(RenderFailure::TooBusy { .. }) => return Ok(Err(Picture::Passing)),
+        Err(_) => return Ok(Err(Picture::Final)),
     };
     let edge = if image_less { IMAGELESS_LOOK_EDGE } else { LOOK_PICTURE_EDGE };
     let scale = (edge / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
