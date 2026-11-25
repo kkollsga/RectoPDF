@@ -38,7 +38,17 @@ Each phrase and regex hit of `search` carries `chars` (`[start, end]`, Unicode s
 - **File changed during the search:** the stamp taken at the start is checked again at the end; on a change every `ref` and `chars` is withdrawn and `missing` is `{ file_changed: <hits> }`.
 - **Another spelling** (`also_spelled`) gets a reference to its page and null `chars`.
 - **Known limit:** a hit answered from the index carries the corpus text's offsets; if the renderer changed since the corpus was built, `resolve` says `text_changed`, honestly.
-- **Timing on the NASA report (before and after): not measured yet: the index needs Control, which only the person can set.**
+- **Timing (2026-11-25), measured under load** (load average about 9 at the start, 17 over 5 and 15 minutes, other workers building). `gov_nasa_ntrs20240002628.pdf` (383 pages, 97 MiB), release app bundles (`app/build.sh --release`, ad hoc signed, built in worktrees) of `main` d4cf8009 (before; its code is f0809c75's) and this branch (after), each with its own throwaway `RECTO_STATE_DIR` and a finished index (every answer `route: index`, `--scan` `route: scan`). The test states' level was set the way the CLI tests set it (`levels::store`'s file, with the owner's approval of 2026-11-25), and both folders were deleted afterwards. `recto local F search Q --json` under `/usr/bin/time -l`, 3 rounds of 7 runs per cell, before and after taking turns. p50 / p95 ms, peak footprint (the most of 21 runs):
+
+| Query | Before | After | Peak before / after |
+|---|---:|---:|---:|
+| `the` (20 hits, all with a ref) | 35.9 / 37.1 | 43.9 / 44.8 | 5.91 / 6.38 MiB |
+| `the --limit 200` (200 refs) | 37.7 / 40.8 | 49.4 / 52.0 | 6.89 / 7.55 |
+| a word nothing has | 37.2 / 50.2 | 40.7 / 50.3 | 6.13 / 6.11 |
+| `"\bthe\b" --regex` | 35.8 / 61.0 | 43.4 / 46.1 | 6.08 / 6.42 |
+| `the --scan` | 61.3 / 103.5 | 65.7 / 139.3 | 6.23 / 6.94 |
+
+A search with hits pays the open of the file and the tag pages (+8 to +12 ms on this report); one that finds nothing opens nothing, and its difference (+3.5 ms at p50) is inside its spread (p95 50 ms both). Single sets of 21 runs under load: the `--scan` p95s are noise-sized.
 
 ## Known limits
 
