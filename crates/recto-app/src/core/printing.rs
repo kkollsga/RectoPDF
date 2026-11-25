@@ -135,6 +135,11 @@ impl Printing {
         self.selection_notice().map(|notice| notice.text)
     }
 
+    /// How far the print being prepared has got: pages done, of how many.
+    pub fn progress(&self) -> (u32, u32) {
+        (self.done.load(Ordering::SeqCst), self.of.load(Ordering::SeqCst))
+    }
+
     /// The notice as the window shows it: Stop while preparing, "Print anyway" naming the notice that offered it.
     pub fn selection_notice(&self) -> Option<SelectionNotice> {
         if self.running.load(Ordering::SeqCst) {

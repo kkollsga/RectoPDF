@@ -301,6 +301,7 @@ Printing::pub fn dismiss_notice(&self)
 Printing::pub fn has_ready(&self) -> bool
 Printing::pub fn notice(&self) -> Option<String>
 Printing::pub fn preparing(&self) -> bool
+Printing::pub fn progress(&self) -> (u32, u32)
 Printing::pub fn publishing(&self) -> bool
 Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)

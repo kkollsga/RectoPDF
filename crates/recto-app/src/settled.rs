@@ -264,7 +264,8 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
         busy.push("a snapshot on its way to the clipboard".to_string());
     }
     if inner.tools.printing().preparing() {
-        busy.push("a print's pages being prepared".to_string());
+        let (done, of) = inner.tools.printing().progress();
+        busy.push(format!("a print's pages being prepared: page {done} of {of}"));
     }
     // A look at where a tab's generated contents stand, or at a shown tab's file, holding its way back to the session thread till it's queued what it found.
     let ways_back = inner.core.ways_back_held();
