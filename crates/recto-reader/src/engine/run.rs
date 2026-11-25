@@ -99,7 +99,7 @@ fn rest_or_wait_for_a_surface(
             Some(reader.work.surfaces.refused())
         } else {
             reader.work.surfaces.clear();
-            // A page held for a look or a draw to be tried again has no event coming to ask it: the thread wakes when its wait is over.
+            // A page held for a look or a draw to be tried again has no event coming to ask it: the thread wakes when its wait is over, at once if it's over already (the plan was made before this rest).
             reader.docs.next_hold_ends(Instant::now())
         }
     };

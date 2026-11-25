@@ -908,7 +908,7 @@ impl Reader {
             return false;
         }
         for page in self.visible_pages(doc) {
-            // A page waiting for its look will change: it isn't settled. One with a problem is as it'll be.
+            // A page waiting for its look will change: it isn't settled. One with a problem is as it'll be. (A hold whose time is over is dropped by the next plan, `drop_ended_holds`: until then the page is still to be asked for.)
             if let Some(issue) = doc.drawing.issues.get(&page) {
                 if issue.message.is_none() {
                     return false;
