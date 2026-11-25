@@ -122,9 +122,12 @@ impl Cmd for Render {
         {
             crate::quiet_files::check_new_file(access, out)?;
             let (page, found) = at.find(access, tab)?;
+            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
+            let pinned = found.as_ref().map(locating::Located::tab_ref);
+            let tab = pinned.as_ref().unwrap_or(tab);
             let (id, position, source) = locate(access, tab, page)?;
             if let Some(found) = &found {
-                locating::agree(found, id, &source)?;
+                locating::agree(found, &source)?;
             }
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let hidden = crate::highlighting::hidden_on(access, id, &source);
@@ -135,7 +138,7 @@ impl Cmd for Render {
             let mut data = drawn?;
             describe_source(&mut data, page, &source);
             if let Some(found) = found {
-                locating::attach(access, tab, &found, &mut data)?;
+                locating::attach(access, &found, &mut data)?;
             }
             Ok(data)
         }

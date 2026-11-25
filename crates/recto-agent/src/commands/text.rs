@@ -328,9 +328,12 @@ impl Cmd for Text {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             let (page, found) = at.find(access, tab)?;
+            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
+            let pinned = found.as_ref().map(locating::Located::tab_ref);
+            let tab = pinned.as_ref().unwrap_or(tab);
             let (id, position, source) = locate(access, tab, page)?;
             if let Some(found) = &found {
-                locating::agree(found, id, &source)?;
+                locating::agree(found, &source)?;
             }
             let read = render::text(&source.path, source.page + 1).map_err(|error| unreadable_if_added_needs_password(error, &source, page));
             let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
@@ -340,7 +343,7 @@ impl Cmd for Text {
             let mut data = read?;
             describe_source(&mut data, page, &source);
             if let Some(found) = found {
-                locating::attach(access, tab, &found, &mut data)?;
+                locating::attach(access, &found, &mut data)?;
             }
             Ok(data)
         }
