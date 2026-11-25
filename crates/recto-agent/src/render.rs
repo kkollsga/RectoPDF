@@ -880,17 +880,25 @@ mod tests {
         TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))]))
     }
 
-    /// Failure: `ref --chars` and `resolve` read a page's text another way than `recto text` does, so a range counted in one is in different characters in
-    /// the other (a joined hyphen shifts every character after it). The word drawn late is in the page, but pdfium already gives it in place, so `runs_moved` is 0 there; the tag-character case can't be built:
-    /// the test PDFs' standard font has no code for one, and an invisible character doesn't come through it either.
+    /// Failure: `ref --chars` and `resolve` read a page's text another way than `recto text` does (no boxes, so no word drawn late is put back; the hyphen not joined), so a range counted in one is in
+    /// different characters in the other. Each run is its own `BT`..`ET`, the last drawn after the line below it, as `late_word_page` has it, so `runs_moved` is above 0 and the boxes are read. The tag-character
+    /// case can't be built: the test PDFs' standard font has no code for one, and an invisible character doesn't come through it either.
     #[test]
     fn page_text_is_the_text_of_text_for_a_joined_hyphen_and_a_word_drawn_late() {
-        let content =
-            b"BT /F1 12 Tf 1 0 0 1 72 720 Tm (An exam-) Tj 1 0 0 1 72 706 Tm (ple of) Tj 1 0 0 1 250 706 Tm (text) Tj 1 0 0 1 120 706 Tm (joined) Tj ET\n"
-                .to_vec();
-        let file = TempPdf::new("odd.pdf", &pages(&[Page::new(content)]));
+        let run = |x: u32, y: u32, text: &str| format!("BT /F1 12 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n");
+        let content = [
+            run(72, 740, "An exam-"),
+            run(72, 726, "ple of"),
+            run(72, 700, "A recipient"),
+            run(170, 700, "ignore this field"),
+            run(72, 680, "and the next line goes on"),
+            run(132, 700, "MUST"),
+        ]
+        .concat();
+        let file = TempPdf::new("odd.pdf", &pages(&[Page::new(content.into_bytes())]));
         let said = text(&file.0, 1).unwrap();
         assert!(said["hyphens_joined"].as_u64().unwrap() > 0, "{said}");
+        assert!(said["runs_moved"].as_u64().unwrap() > 0, "{said}");
         assert_eq!(page_text(&file.0, 0).unwrap(), said["untrusted"]["text"].as_str().unwrap());
     }
 
