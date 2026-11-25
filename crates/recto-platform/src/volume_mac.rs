@@ -34,6 +34,7 @@ use std::path::Path;
 const TYPES_WITH_A_REAL_UUID: [&[u8]; 2] = [b"apfs", b"hfs"];
 
 /// What `statfs` and `getattrlist` say about the volume `path` is on: its type name, mount point and UUID.
+#[allow(dead_code)] // `mount_point` and `fsid` are read by the probe in the tests.
 pub(crate) struct Seen {
     pub(crate) fs_type: Vec<u8>,
     pub(crate) mount_point: Vec<u8>,

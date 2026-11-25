@@ -13,6 +13,7 @@ pub mod page_id;
 pub mod pdf;
 pub mod proto;
 pub mod record;
+pub mod removal_ledger;
 pub mod select;
 pub mod svg;
 pub mod update;
