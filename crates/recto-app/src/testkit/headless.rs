@@ -563,6 +563,7 @@ impl HeadlessApp {
     /// # Panics
     ///
     /// Past [`WAIT_LIMIT`], naming what was still under way.
+    #[track_caller]
     pub fn settle(&self) {
         if let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, WAIT_LIMIT, || {
             self.take_ops()
@@ -703,6 +704,7 @@ impl HeadlessApp {
     /// # Panics
     ///
     /// Past [`WAIT_LIMIT`], naming `what` and what's still under way.
+    #[track_caller]
     pub fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
         self.wait_for(what, || if done() { Ok(()) } else { Err(String::new()) });
     }
@@ -712,6 +714,7 @@ impl HeadlessApp {
     /// # Panics
     ///
     /// Past [`WAIT_LIMIT`], naming `what`, what was still missing at the last look, and what's still under way.
+    #[track_caller]
     pub fn wait_for(&self, what: &str, done: impl Fn() -> Result<(), String>) {
         let began = Instant::now();
         loop {
