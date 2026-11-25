@@ -98,13 +98,20 @@ fn at_cap_an_actor_replaces_only_its_own_oldest() {
 #[test]
 fn an_actor_at_its_share_evicts_only_its_own_oldest() {
     let (plan, t0) = (save_as_plan(), Instant::now());
-    let mut s = Confirmations::new(ConfirmLimits { max_pending: n(4), per_actor: n(2), ttl: SMALL.ttl });
+    let mut s = Confirmations::new(ConfirmLimits {
+        max_pending: n(4),
+        per_actor: n(2),
+        ttl: SMALL.ttl,
+    });
     let x = s.offer(bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap();
     let y = s.offer(bind(Who::Agent(1), new_file("/y.pdf")), &plan, t0).unwrap();
     let z = s.offer(bind(Who::Person, new_file("/z.pdf")), &plan, t0).unwrap();
     let w = s.offer(bind(Who::Agent(1), new_file("/w.pdf")), &plan, t0).unwrap();
     assert_eq!(s.len(), 3);
-    assert_eq!(s.take(x, &bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
+    assert_eq!(
+        s.take(x, &bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap_err(),
+        ConfirmRefusal::Unknown
+    );
     assert!(s.take(y, &bind(Who::Agent(1), new_file("/y.pdf")), &plan, t0).is_ok());
     assert!(s.take(z, &bind(Who::Person, new_file("/z.pdf")), &plan, t0).is_ok());
     assert!(s.take(w, &bind(Who::Agent(1), new_file("/w.pdf")), &plan, t0).is_ok());
