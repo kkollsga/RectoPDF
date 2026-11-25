@@ -120,8 +120,13 @@ fn is_print_file_of(name: &str, pid: u32) -> bool {
 /// **The files with no name this process holds a descriptor of,** by inode, with each one's permissions, sorted: where the person's print's file is while
 /// it's anywhere, as nothing else can reach it. Counted before and after a step, the difference is what the step made or let go.
 pub(crate) fn unnamed_files_held() -> Vec<(u64, u32)> {
+    unnamed_files_held_in(std::path::Path::new("/dev/fd"))
+}
+
+/// [`unnamed_files_held`] of the descriptors listed in `folder` (`/dev/fd`, or another to test the look itself).
+pub(crate) fn unnamed_files_held_in(folder: &std::path::Path) -> Vec<(u64, u32)> {
     use std::os::unix::fs::MetadataExt;
-    let mut held: Vec<(u64, u32)> = std::fs::read_dir("/dev/fd")
+    let mut held: Vec<(u64, u32)> = std::fs::read_dir(folder)
         .into_iter()
         .flatten()
         .flatten()
@@ -694,4 +699,24 @@ fn another_processs_print_file_isnt_counted_as_this_ones() {
         is_print_file_of(&format!(".recto-unnamed-{pid}-{:016x}", recto_platform::local::random_u64()), pid),
         "this process's own print file wasn't seen"
     );
+}
+
+/// Failure (2026-11-25, `[] then []` in `a_persons_print_does_what_it_did` on a loaded machine): the look at this process's descriptors swallowed every
+/// error (a folder that couldn't be listed, an entry that couldn't be read), so one transient failure gave an empty list that the print's check read as
+/// "the print's file never was there". A look that fails panics and names the OS error.
+#[test]
+fn a_look_at_the_descriptors_that_fails_says_so() {
+    let folder = recto_testpdf::TempDir::new("fd-look-");
+    let missing = folder.join("nothing-here");
+    let regular = folder.join("a-file");
+    std::fs::write(&regular, b"x").expect("a file");
+    for (what, path, os_error) in [("missing", missing, "No such file"), ("a regular file", regular, "Not a directory")] {
+        let said = std::panic::catch_unwind(|| unnamed_files_held_in(&path)).expect_err(&format!("{what}: the look panics"));
+        let said = said
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| said.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default();
+        assert!(said.contains(os_error), "{what}: the panic names the OS error, got {said:?}");
+    }
 }
