@@ -264,6 +264,9 @@ fn outcome_for_every_prefix_keeps_the_contract() {
         if o == Outcome::Complete {
             assert_eq!(acked, n, "complete with a step unacknowledged");
         }
+        if matches!(o, Outcome::SanitizedCleanupPending | Outcome::Complete) {
+            assert!(acked_step(acked, Effect::ReadBackTarget), "installed but not read back, acked {acked}");
+        }
     }
 }
 

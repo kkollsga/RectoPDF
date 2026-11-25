@@ -18,9 +18,10 @@ pub enum Outcome {
     Unchanged,
     /// Old history is being retired; only forward completion is possible.
     HistoryRetiring,
-    /// The point of no return passed but the sanitized file is not known to be installed.
+    /// The point of no return passed but the sanitized file is not known to be installed: an
+    /// install that was not read back is in doubt too, since the read-back is what shows it.
     ReplacementInDoubt,
-    /// Installed; the session and leases still need cleaning up. Lasts until the last step is
+    /// Installed and read back; the session and leases still need cleaning up. Lasts until the last step is
     /// acknowledged, so a failed invalidation, lease release or barrier retirement stays here.
     SanitizedCleanupPending,
     /// Every step of the plan is acknowledged.
@@ -123,7 +124,7 @@ impl Progress {
             Outcome::Unchanged
         } else if self.acked <= index_of(plan, Effect::MarkNoReturn) {
             Outcome::HistoryRetiring
-        } else if self.acked <= index_of(plan, Effect::InstallTarget) {
+        } else if self.acked <= index_of(plan, Effect::ReadBackTarget) {
             Outcome::ReplacementInDoubt
         } else if self.acked < self.steps {
             Outcome::SanitizedCleanupPending
