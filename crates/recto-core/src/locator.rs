@@ -1,15 +1,18 @@
 //! Bounded references into a source-file page, using the existing `recto-page/1` identity.
 //!
-//! This first slice provides fixed-size values, canonical token encoding and shown-frame conversions, not a resolver.
+//! This provides fixed-size values, canonical token encoding, shown-frame conversions and a bounded resolver (`resolve`) that says where a page is now.
 //! A token is hostile input, never authority: document/text checks only identify candidates. A later executor must
-//! authorize documents and verify the file version, page, text and frame before using a target. After a version change,
-//! matching the hinted page alone does not disambiguate identical pages; incomplete scanning proves neither unique nor gone.
+//! authorize documents and verify the file version, page, text and frame before using a target. A hinted page
+//! with the page's own digest prefix is found there (see `resolve`); otherwise only a scan of every page may say moved, ambiguous or gone, and an
+//! incomplete scan proves neither unique nor gone.
 //! Nothing here opens a file, computes a second page identity, retains per-tab state or starts work.
 
 mod codec;
 mod geometry;
+mod resolve;
 
 pub use codec::{decode, encode};
+pub use resolve::*;
 
 use crate::page_id::PageIdentity;
 
