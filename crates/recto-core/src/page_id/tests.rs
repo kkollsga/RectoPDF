@@ -1084,7 +1084,7 @@ fn a_table_evicted_and_resolved_again_gives_the_same_children() {
     expected.extend(content_bytes(0, b"/FA1 Do /FB Do /FA2 Do"));
     expected.push(b'X');
     expected.extend_from_slice(&3u32.to_le_bytes());
-    for (name, image) in [(&b"FA1"[..], &IMAGE[..]), (b"FB", other), (b"FA2", IMAGE)] {
+    for (name, image) in [(&b"FA1"[..], IMAGE), (b"FB", other), (b"FA2", IMAGE)] {
         expected.extend(xobject_bytes(name, 0, form));
         expected.extend_from_slice(&1u32.to_le_bytes());
         expected.extend(xobject_bytes(b"C", 1, image));
