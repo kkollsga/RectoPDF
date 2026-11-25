@@ -11,7 +11,7 @@ std::thread_local! {
     pub(super) static DECRYPTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Streams' descriptors resolved for images and forms on this thread: how many times a page's drawn objects were read ([`super::xobject_record`]).
     pub(super) static DESCRIPTORS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// References followed to a value (not a stream) on this thread: how many times one object a dictionary points at was parsed ([`super::deref`]).
+    /// References a read of a stream's dictionary followed on this thread, not found already followed: how many times an object it points at was parsed ([`super::Refs`]).
     pub(super) static DEREFERENCES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Dictionaries resolved by reference (a resource dictionary, an `/XObject` table) on this thread: how many copies a page makes of what forms share.
     pub(super) static DICTIONARIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };

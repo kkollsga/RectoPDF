@@ -67,7 +67,7 @@ use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
 pub use lopdf::{IndexedReader, PageMap};
 use scan::DoScan;
 use sha2::{Digest, Sha256};
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
@@ -376,7 +376,8 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
         return Ok(());
     };
     let limit = budget.content_left;
-    let chain = decode::chain_of(descriptor.dictionary(), &|object| deref(reader, object));
+    let refs = Refs::new(reader);
+    let chain = decode::chain_of(descriptor.dictionary(), &|object| refs.deref(object));
     let mark = scan.mark();
     let decoded = match &chain {
         Some(chain) => take_stream(reader, id, &descriptor, Some(chain), limit, budget, Some(scan), false)?,
@@ -570,7 +571,8 @@ fn read_xobject(
     children: Option<&mut DoScan>,
 ) -> Result<XRead, Capped> {
     let dict = descriptor.dictionary();
-    let resolve = |object: &Object| deref(reader, object);
+    let refs = Refs::new(reader);
+    let resolve = |object: &Object| refs.deref(object);
     let subtype = dict.get(b"Subtype").ok().and_then(resolve);
     let is_form = matches!(&subtype, Some(Object::Name(subtype)) if subtype == b"Form");
     // An image past its cap is hashed by its first cap's worth and what it says of itself; anything else past it is a cap reached.
@@ -782,15 +784,45 @@ impl Read for Stored {
 }
 
 fn deref(reader: &IndexedReader, object: &Object) -> Option<Object> {
-    #[cfg(test)]
-    if matches!(object, Object::Reference(_)) {
-        tests::DEREFERENCES.with(|count| count.set(count.get() + 1));
-    }
     match object {
         // A stream is never resolved whole here: a reference to one isn't a value these walks need.
         Object::Reference(id) if reader.resolve_stream_descriptor(*id).is_ok() => None,
         Object::Reference(id) => reader.resolve_object(*id).ok(),
         other => Some(other.clone()),
+    }
+}
+
+/// The objects one read of a stream's dictionary has followed a reference to, each parsed once, however many places in it point there (a `/Filter` of
+/// references to one object, read for what it is, for its chain and for its record, was parsed for each). Most [`Refs::MAX`] kept: one more is parsed
+/// each time asked for, so what a read holds stays small.
+struct Refs<'r> {
+    reader: &'r IndexedReader,
+    seen: RefCell<HashMap<ObjectId, Option<Object>>>,
+}
+
+impl<'r> Refs<'r> {
+    const MAX: usize = 16;
+
+    fn new(reader: &'r IndexedReader) -> Self {
+        Self {
+            reader,
+            seen: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn deref(&self, object: &Object) -> Option<Object> {
+        let Object::Reference(id) = object else { return Some(object.clone()) };
+        if let Some(value) = self.seen.borrow().get(id) {
+            return value.clone();
+        }
+        #[cfg(test)]
+        tests::DEREFERENCES.with(|count| count.set(count.get() + 1));
+        let value = deref(self.reader, object);
+        let mut seen = self.seen.borrow_mut();
+        if seen.len() < Self::MAX {
+            seen.insert(*id, value.clone());
+        }
+        value
     }
 }
 
