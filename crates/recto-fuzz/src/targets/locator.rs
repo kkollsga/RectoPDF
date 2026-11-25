@@ -42,6 +42,8 @@ fn resolves(read: &Locator) {
         Status::Gone => {}
     }
     if let Some(Placed::Spot([left, top, right, bottom])) = now.target {
+        // The fixture's pages are US Letter (612 x 792 points) by construction, so its bounds are stated here rather than
+        // read through `nav::frame_of`, which is private to recto-core.
         assert!(0.0 <= left && left <= right && right <= 612.0, "a spot lies inside its page");
         assert!(0.0 <= top && top <= bottom && bottom <= 792.0, "a spot lies inside its page");
     }
