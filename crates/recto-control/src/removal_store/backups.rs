@@ -16,7 +16,9 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
     match std::fs::symlink_metadata(folder) {
         Ok(meta) if meta.is_dir() => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            survey.mark_complete(Store::Backup);
+            if lineage.complete() {
+                survey.mark_complete(Store::Backup);
+            }
             return Ok(());
         }
         _ => return Ok(()),

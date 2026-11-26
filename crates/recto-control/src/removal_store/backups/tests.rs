@@ -305,3 +305,44 @@ fn a_backup_older_than_the_ledger_is_unknown() {
     let s = survey_of(&late, &dir, TargetMode::Save, 16).unwrap();
     assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
 }
+
+/// Failure: a missing backup folder is marked complete although the ledger lost something (a gap), so the plan says "no backups" about a
+/// history that may have had one, in a folder that only seems empty.
+#[test]
+fn a_missing_folder_is_not_complete_while_the_ledger_has_a_gap() {
+    let dir = TempDir::new("recto-backups-");
+    let missing = dir.join("none");
+    assert!(plan_of(&survey(&missing, TargetMode::Save, 16).unwrap(), TargetMode::Save).is_ok());
+    let mut gapped = ledger();
+    gapped.gap = Some(Gap::Overflowed);
+    let s = survey_of(&gapped, &missing, TargetMode::Save, 16).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+}
+
+/// Failure: the ledger's beginning is compared in the wrong unit (seconds against nanoseconds) or off by one, so a backup made just before the
+/// ledger is placed by it, or one made at its first moment is not. A backup at `began_ns` is the ledger's; one nanosecond older is not.
+#[test]
+fn a_backup_is_older_than_the_ledger_only_by_a_nanosecond() {
+    use std::io::Write;
+    let began: i64 = 1_800_000_000_123_456_789;
+    let at = |ns: i64| std::time::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(ns).unwrap());
+    let made = |ns: i64| {
+        let dir = TempDir::new("recto-backups-");
+        let mut file = std::fs::File::create(backup(&dir, MINE)).unwrap();
+        file.write_all(b"%PDF-1.4").unwrap();
+        file.set_modified(at(ns)).unwrap();
+        drop(file);
+        let mut from = ledger();
+        from.began_ns = began;
+        let s = survey_of(&from, &dir, TargetMode::Save, 16).unwrap();
+        plan_of(&s, TargetMode::Save)
+    };
+    assert_eq!(purges(&made(began).unwrap()), 1, "made at the first moment: the ledger's");
+    assert_eq!(made(began - 1).unwrap_err(), Refusal::Incomplete(Store::Backup), "a nanosecond before: unknown");
+    assert_eq!(
+        made(began - 2_000_000_000).unwrap_err(),
+        Refusal::Incomplete(Store::Backup),
+        "seconds before: unknown"
+    );
+    assert_eq!(purges(&made(began + 1).unwrap()), 1);
+}
