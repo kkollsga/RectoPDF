@@ -1031,7 +1031,7 @@ fn reopening_the_window_keeps_the_place_and_the_zoom() {
 }
 
 /// Failure: a tab's file doesn't answer, on a dead volume, and a click on the tab holds the session thread for as long as it takes: later clicks and opens wait, and with the session's lock held so does `status`. A FIFO with no writer stands in for a dead volume: its open never returns. Everything else goes on, on the app's real path.
-/// A FIFO stands in for a dead volume only for the page view's open (`recto-open`); the session's read of a cold tab refuses a file that isn't regular at once. So the tab is put to sleep first, and its click wakes it from its sleep file, which leaves the page view the only thing opening the path. The test then waits to see that open under way (`reader.opens_waiting`) before it lets go, and its own open of the FIFO's write end is non-blocking: a blocking one waited for ever when no reader had come (CI run 45789292698, which hung the whole job).
+/// A FIFO stands in for a dead volume only for the page view's open (`recto-open`): the session's read of a cold tab refuses a file that isn't regular at once (`open_regular`), so only the page view opens the FIFO, and `reader.opens_waiting` shows that open under way. The test waits to see it before it lets go, and its own open of the FIFO's write end is non-blocking: a blocking one waited for ever when no reader had come (CI run 45789292698, which hung the whole job).
 #[test]
 fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     let Some(run) = Run::start() else { return };
@@ -1044,18 +1044,15 @@ fn a_file_that_doesnt_answer_holds_up_nothing_else() {
         run.ok(&["open", path.to_str().unwrap()]);
     }
     run.settled();
-    // The first is put to sleep, so its click wakes it from its sleep file and the FIFO is opened by the page view alone.
+    // The first is put to sleep, so its click is a read of a cold tab.
     let slept = run.ok(&["session", "sleep", "--tab", "#1"]);
     assert_eq!(slept["dormant"], true, "{slept}");
-    let woken = |state: &Value| state["record"]["sleep"]["woken_from_file"].as_u64().unwrap_or(0);
-    let woken_before = woken(&run.report());
     // Its file stops answering.
     std::fs::remove_file(&paths[0]).unwrap();
     assert!(Command::new("/usr/bin/mkfifo").arg(&paths[0]).status().unwrap().success());
     let started = std::time::Instant::now();
     run.ok(&["qa", "click-row", "0"]);
-    let opening = wait_for(&run, |state| state["reader"]["opens_waiting"].as_u64().unwrap_or(0) >= 1);
-    assert!(woken(&opening) > woken_before, "the tab wasn't woken from its sleep file, so no open of the FIFO is to be seen: {}", opening["record"]["sleep"]);
+    wait_for(&run, |state| state["reader"]["opens_waiting"].as_u64().unwrap_or(0) >= 1);
     assert_eq!(run.ok(&["status"])["tabs"], 5, "the session answers");
     assert_eq!(run.ok(&["tabs"])["count"].as_u64().or(Some(5)), Some(5));
     // A later click goes ahead, and it's what's shown when the read does come back.
@@ -1072,7 +1069,7 @@ fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     use std::os::unix::fs::OpenOptionsExt;
     let writer = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&paths[0]);
     let writer = writer.unwrap_or_else(|error| {
-        panic!("nothing was reading the FIFO ({error}); opens_waiting {}, woken_from_file {}", run.report()["reader"]["opens_waiting"], run.report()["record"]["sleep"]["woken_from_file"])
+        panic!("nothing was reading the FIFO ({error}): {}", run.report()["reader"])
     });
     wait_for(&run, |state| state["reader"]["opens_waiting"] == 0);
     drop(writer);
