@@ -54,8 +54,8 @@ pub struct Survey {
     complete: StoreSet,
     found: Vec<Found>,
     over: bool,
-    /// Whether a whole lineage was noted. Not noted reads as incomplete.
-    history: bool,
+    /// Whether the lineages noted were all whole. `None`: none noted, which reads as incomplete. Once `Some(false)`, it stays so.
+    history: Option<bool>,
 }
 
 impl Survey {
@@ -66,7 +66,7 @@ impl Survey {
             complete: StoreSet::empty(),
             found: Vec::new(),
             over: false,
-            history: false,
+            history: None,
         }
     }
 
@@ -86,9 +86,10 @@ impl Survey {
     }
 
     /// Notes the lineage the adapters placed artifacts by. Until this is called, or when the lineage has a gap or a fork, the plan refuses with
-    /// `HistoryIncomplete`, so no adapter repeats the gate and one that forgets can't pass.
+    /// `HistoryIncomplete`, so no adapter repeats the gate and one that forgets can't pass. Sticky: once a lineage was incomplete, a later whole one
+    /// can't undo it.
     pub fn history(&mut self, lineage: &Lineage<'_>) {
-        self.history = lineage.complete();
+        self.history = Some(self.history.unwrap_or(true) && lineage.complete());
     }
 
     /// Sorts into the order contract. `TooLarge` if the cap was passed, `Inconsistent` if one (store, key) was found twice.
@@ -117,7 +118,7 @@ impl Survey {
             complete: self.complete,
             artifacts,
             keys,
-            history: self.history,
+            history: self.history == Some(true),
         })
     }
 }

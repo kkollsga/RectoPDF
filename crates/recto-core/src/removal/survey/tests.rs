@@ -191,6 +191,24 @@ fn a_history_never_noted_or_incomplete_refuses_the_plan() {
     assert!(refused(Some(&whole())).is_ok());
 }
 
+/// Failure: two adapters note the lineage and a later one, given a whole lineage, undoes an earlier one's incomplete note, so a plan is made from a
+/// history that is only partly known.
+#[test]
+fn an_incomplete_history_stays_incomplete_when_a_whole_one_is_noted_later() {
+    let mut gapped = whole();
+    gapped.gap = Some(Gap::Torn);
+    let after = |first: &Ledger, second: &Ledger| {
+        let mut survey = Survey::new(&DESIGN_LIMITS);
+        all_complete(&mut survey);
+        note(&mut survey, first);
+        note(&mut survey, second);
+        plan(&request(TargetMode::Save, false), &survey.finish().unwrap().inventory(), &DESIGN_LIMITS)
+    };
+    assert_eq!(after(&gapped, &whole()).unwrap_err(), Refusal::HistoryIncomplete, "a gap, then a whole one");
+    assert_eq!(after(&whole(), &gapped).unwrap_err(), Refusal::HistoryIncomplete, "a whole one, then a gap");
+    assert!(after(&whole(), &whole()).is_ok());
+}
+
 /// Failure: purge acts on the wrong file, because the number a plan step names does not map back to the key of the file it was made for.
 #[test]
 fn every_planned_id_maps_back_to_its_key() {
