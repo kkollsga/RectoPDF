@@ -111,6 +111,27 @@ impl Cmd for Link {
     }
 }
 
+pub(crate) const ROWS_LINK: &[Spec] = &[Spec {
+    name: "link",
+    tag: "link",
+    group: GROUP_READ,
+    access: Access::At(Level::ReadOnly),
+    summary: "The standard link to a page of the tab's file: the file's own name and `#page=N`, which any PDF reader opens at that page. Not `links`, which lists where a page's own links lead. It names no folder, reads no file and changes nothing; the person's Copy Link is this command. In a tab with unsaved edits the link names the page's place in the file on disk, and a page added from another PDF has none until saved.",
+    args: &[
+        Arg {
+            key: "page",
+            flag: None,
+            kind: Kind::Page,
+            required: true,
+            help: "The page, counted from 1 in the tab as it is shown.",
+        },
+        TAB,
+    ],
+    data: "`{ tab, page, file_page, untrusted: { link }, note }`. `page` is the page as asked, in the tab as shown; `file_page` is its page of the file on disk, which differs only when there are unsaved edits, and is the page the link names. `link` is the file's name, percent-encoded, then `#page=` and `file_page`: the file's name is anyone's, so it is under `untrusted`. `note` is there only when the two pages differ.",
+    examples: &["recto link 3", "recto link 3 --tab \"#2\" --json"],
+    ..BASE
+}];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,24 +231,3 @@ mod tests {
         assert!(access.clipboard.texts.lock().unwrap().is_empty());
     }
 }
-
-pub(crate) const ROWS_LINK: &[Spec] = &[Spec {
-    name: "link",
-    tag: "link",
-    group: GROUP_READ,
-    access: Access::At(Level::ReadOnly),
-    summary: "The standard link to a page of the tab's file: the file's own name and `#page=N`, which any PDF reader opens at that page. Not `links`, which lists where a page's own links lead. It names no folder, reads no file and changes nothing; the person's Copy Link is this command. In a tab with unsaved edits the link names the page's place in the file on disk, and a page added from another PDF has none until saved.",
-    args: &[
-        Arg {
-            key: "page",
-            flag: None,
-            kind: Kind::Page,
-            required: true,
-            help: "The page, counted from 1 in the tab as it is shown.",
-        },
-        TAB,
-    ],
-    data: "`{ tab, page, file_page, untrusted: { link }, note }`. `page` is the page as asked, in the tab as shown; `file_page` is its page of the file on disk, which differs only when there are unsaved edits, and is the page the link names. `link` is the file's name, percent-encoded, then `#page=` and `file_page`: the file's name is anyone's, so it is under `untrusted`. `note` is there only when the two pages differ.",
-    examples: &["recto link 3", "recto link 3 --tab \"#2\" --json"],
-    ..BASE
-}];
