@@ -87,8 +87,13 @@ fn compared(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Optio
 }
 
 /// lopdf needs a password; they differ only if the renderer opened the file without one.
-fn password_half(r: &mut impl RendererHalf, _deadline: Instant) -> Option<Disagreement> {
-    r.page_count().is_ok().then_some(Disagreement::Encryption)
+fn password_half(r: &mut impl RendererHalf, deadline: Instant) -> Option<Disagreement> {
+    match asked(deadline, || r.page_count()) {
+        Ok(_) => Some(Disagreement::Encryption),
+        // Still busy is about the moment, not agreement.
+        Err(busy) if busy.is_busy() => Some(Disagreement::Unchecked),
+        Err(_) => None,
+    }
 }
 
 /// What the renderer can be asked for the renderer's half of a look, so a test can script its answers.
