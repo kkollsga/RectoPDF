@@ -470,17 +470,22 @@ fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
     };
     let waiting = || engine.report().0["opens_waiting"].as_u64().unwrap();
     let mut most = 0;
-    // More revisits than the page view's cap on opens (4), so a leak shows as the cap and a cap that holds shows as one.
-    for _ in 0..8 {
-        show(1, &dead, &[2]);
-        let deadline = Instant::now() + HANG;
-        while waiting() == 0 && Instant::now() < deadline {
+    // Looks at the page view for this long, as the host does, and notes the most opens it had at once. An open starts the moment the job reaches it, so a few hundred ms show a leak.
+    let mut watch = |limit: Duration| {
+        let until = Instant::now() + limit;
+        while Instant::now() < until {
             engine.drain();
-            std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+            engine.applied();
+            most = most.max(waiting());
+            std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
         }
+    };
+    // More revisits than the page view's cap on opens (4), so a leak shows as the cap and a cap that holds shows as one.
+    for _ in 0..6 {
+        show(1, &dead, &[2]);
+        watch(Duration::from_millis(400));
         show(2, &healthy.0, &[1]);
-        pump(&engine, HANG);
-        most = most.max(waiting());
+        watch(Duration::from_millis(200));
     }
     assert!(most <= 1, "{most} opens of one file at once: {}", engine.report().0);
     use std::os::unix::fs::OpenOptionsExt;
