@@ -193,6 +193,11 @@ pub mod helper;
 #[cfg_attr(not(target_os = "macos"), path = "local_stub.rs")]
 pub mod local;
 
+/// A folder opened once and held by its descriptor, so a path swapped for a link after the check is not followed (`docs/design/removal.md` §10).
+#[cfg_attr(target_os = "macos", path = "folder_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "folder_stub.rs")]
+pub mod folder;
+
 /// Which volume a file is on, by the volume's own UUID rather than the mount's device number (`docs/design/removal.md` §4, D2b).
 #[cfg_attr(target_os = "macos", path = "volume_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "volume_stub.rs")]

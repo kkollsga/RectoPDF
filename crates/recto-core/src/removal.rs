@@ -183,11 +183,24 @@ pub struct Artifact {
 pub struct Inventory<'a> {
     complete: StoreSet,
     artifacts: &'a [Artifact],
+    history: bool,
 }
 
 impl<'a> Inventory<'a> {
+    /// An inventory whose history is whole: for the pure tests in core.
+    #[cfg(test)]
     pub(crate) const fn new(complete: StoreSet, artifacts: &'a [Artifact]) -> Self {
-        Self { complete, artifacts }
+        Self::with_history(complete, artifacts, true)
+    }
+
+    /// `history` is whether the survey was made against a lineage that was whole (`Survey::history`).
+    pub(crate) const fn with_history(complete: StoreSet, artifacts: &'a [Artifact], history: bool) -> Self {
+        Self { complete, artifacts, history }
+    }
+
+    /// Whether the survey noted a whole lineage. A survey that never noted one reads `false`, so an adapter that forgets can't pass.
+    pub const fn history(&self) -> bool {
+        self.history
     }
 
     pub const fn complete(&self) -> StoreSet {
@@ -280,6 +293,8 @@ pub enum Refusal {
     UnknownKind,
     /// A signed source cannot be replaced in place; Save As is the way.
     SignedOriginal,
+    /// The survey never noted the document's history, or noted one with a gap or a fork, so which files are the target's can't be told.
+    HistoryIncomplete,
     TooLarge,
     /// A store was not covered completely, or an artifact's owner is unknown.
     Incomplete(Store),

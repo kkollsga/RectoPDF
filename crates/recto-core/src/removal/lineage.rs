@@ -63,6 +63,14 @@ impl Sides {
         }
     }
 
+    /// Everything either has seen.
+    pub fn union(self, other: Sides) -> Self {
+        Self {
+            target: self.target || other.target,
+            other: self.other || other.other,
+        }
+    }
+
     /// Target only is the target's (a Save's), or the source's history (a Save As keeps it); Other only is another document's. Both or neither
     /// can't be placed, so the plan refuses rather than guesses.
     pub fn owner(self, mode: TargetMode) -> Owner {
@@ -80,6 +88,7 @@ impl Sides {
 pub struct Lineage<'a> {
     links: &'a [Link],
     path: &'a Path,
+    current: FileVersion,
     target: Vec<bool>,
     gap: Option<Gap>,
     began_ns: i64,
@@ -108,6 +117,7 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
         return Err(Refusal::TooLarge);
     }
     let mut joined = Joined::default();
+    let current_version = current;
     let current = joined.node(current);
     // One node per link, from the first end: a `Saved` has joined its two ends by the time it is read back.
     let mut nodes = Vec::with_capacity(links.len());
@@ -135,6 +145,7 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
     Ok(Lineage {
         links,
         path,
+        current: current_version,
         target,
         gap: ledger.gap.or(forked.then_some(Gap::Forked)),
         began_ns: ledger.began_ns,
@@ -206,6 +217,11 @@ impl Lineage<'_> {
             };
             ends.into_iter().flatten().map(move |v| (v, side(t)))
         })
+    }
+
+    /// The version the document is now: not among the links, since nothing has been saved from it yet.
+    pub fn current(&self) -> FileVersion {
+        self.current
     }
 
     /// Whether the ledger is the whole story of this document: nothing was lost, and the history did not fork.

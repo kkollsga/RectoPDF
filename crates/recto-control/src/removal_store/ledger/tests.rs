@@ -721,6 +721,7 @@ fn plan_for(root: &Path, folder: &Path, current: FileVersion, at: &Path, mode: T
     for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
         survey.mark_complete(store);
     }
+    survey.history(&lineage);
     crate::removal_store::survey_backups(folder, &lineage, mode, &mut survey)?;
     let surveyed = survey.finish()?;
     let request = Request::new(Kinds::from_bits(Kinds::METADATA).unwrap(), mode, false);

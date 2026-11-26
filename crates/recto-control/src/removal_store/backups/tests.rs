@@ -62,6 +62,7 @@ fn survey_of(links: &Ledger, folder: &Path, mode: TargetMode, max: u32) -> Resul
     for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
         survey.mark_complete(store);
     }
+    survey.history(&lineage);
     survey_backups(folder, &lineage, mode, &mut survey)?;
     survey.finish()
 }
@@ -77,6 +78,13 @@ fn purges(p: &Plan) -> usize {
         .filter(|s| s.effect() == Effect::Purge(Store::Backup))
         .map(|s| p.artifacts(s).len())
         .sum()
+}
+
+/// With a gap or a fork the plan now stops at the history, before it reaches coverage; the adapter's own gate (the store left unmarked) is what this
+/// still holds, by reading the mark itself.
+fn history_refuses_and_backups_unmarked(s: &Surveyed) {
+    assert_eq!(plan_of(s, TargetMode::Save).unwrap_err(), Refusal::HistoryIncomplete);
+    assert!(!s.inventory().complete().contains(Store::Backup));
 }
 
 fn backup(folder: &Path, of: &str) -> PathBuf {
@@ -284,7 +292,7 @@ fn an_incomplete_ledger_leaves_the_folder_unmarked() {
     let mut gapped = ledger();
     gapped.gap = Some(Gap::Torn);
     let s = survey_of(&gapped, &dir, TargetMode::Save, 16).unwrap();
-    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    history_refuses_and_backups_unmarked(&s);
     // The same folder with a whole ledger plans.
     assert!(plan_of(&survey(&dir, TargetMode::Save, 16).unwrap(), TargetMode::Save).is_ok());
     // A fork in the target's own history is a gap too.
@@ -293,7 +301,7 @@ fn an_incomplete_ledger_leaves_the_folder_unmarked() {
         .links
         .extend([Link::Saved { from: stamp(7), to: stamp(70) }, Link::Saved { from: stamp(7), to: stamp(71) }]);
     let s = survey_of(&forked, &dir, TargetMode::Save, 16).unwrap();
-    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    history_refuses_and_backups_unmarked(&s);
 }
 
 /// Failure: a backup made before the ledger existed is placed by a path the ledger only saw later, and the original of another document is
@@ -318,7 +326,7 @@ fn a_missing_folder_is_not_complete_while_the_ledger_has_a_gap() {
     let mut gapped = ledger();
     gapped.gap = Some(Gap::Overflowed);
     let s = survey_of(&gapped, &missing, TargetMode::Save, 16).unwrap();
-    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    history_refuses_and_backups_unmarked(&s);
 }
 
 /// Failure: the ledger's beginning is compared in the wrong unit (seconds against nanoseconds) or off by one, so a backup made just before the
@@ -347,4 +355,29 @@ fn a_backup_is_older_than_the_ledger_only_by_a_nanosecond() {
         "seconds before: unknown"
     );
     assert_eq!(purges(&made(began + 1).unwrap()), 1);
+}
+
+/// Failure: the backups folder is checked as a real folder and then listed by its path, so one swapped for a link in between (the real one moved
+/// away) is followed: the other place's files are listed as the backups, and the real folder's unplaceable file is never seen.
+#[test]
+fn a_backups_folder_swapped_for_a_link_after_the_check_is_not_followed() {
+    let root = TempDir::new("recto-backups-");
+    let folder = root.join("backups");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("notes.txt"), b"hi").unwrap();
+    let outside = TempDir::new("recto-backups-out-");
+    let links = ledger();
+    let lineage = lineage(&links, stamp(7), Path::new(MINE), &LEDGER_LIMITS).unwrap();
+    let mut survey = Survey::new(&limits(16));
+    for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
+        survey.mark_complete(store);
+    }
+    survey.history(&lineage);
+    let swap = |path: &Path| {
+        std::fs::rename(path, root.join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), path).unwrap();
+    };
+    survey_backups_with(&folder, &lineage, TargetMode::Save, &mut survey, &swap).unwrap();
+    let s = survey.finish().unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
 }
