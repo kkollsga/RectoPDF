@@ -186,3 +186,58 @@ fn a_contents_rows_menu_is_rusts_copy_link_for_a_row_with_a_page_and_nothing_oth
     };
     assert!(crate::core::copy_link::contents_menu(&without).is_empty());
 }
+
+/// Failure: a Copy Link that a hand-off's freeze took between `submit`'s look and its push (`submit` said it was taken) leaves its place at the front of the
+/// order for good, so every later link lands at that old place and is dropped behind a snapshot asked since, though it's said to be copied.
+#[test]
+fn a_copy_link_the_freeze_took_gives_its_place_back() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("freeze.pdf", &super::snapshot_tool::text_and_image());
+    app.open(&file);
+    selects_on_page(&app, 0);
+    let (held, go) = app.hold_next("submit_looked");
+    std::thread::scope(|scope| {
+        let asked = std::thread::Builder::new()
+            .name("recto-test-window".into())
+            .spawn_scoped(scope, || app.act(menu()))
+            .expect("the window's thread");
+        held.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("held after submit's look");
+        app.core().set_frozen(true);
+        drop(go);
+        asked.join().expect("the window's thread");
+    });
+    app.core().set_frozen(false);
+    app.settle();
+    assert_eq!(pasteboard(&app), None, "the frozen one copied nothing");
+    super::snapshot_tool::tool_on(&app);
+    super::snapshot_tool::take_box(&app);
+    app.act(menu());
+    app.settle();
+    let address = pasteboard(&app).expect("a copy");
+    assert!(address.starts_with("file://"), "the link asked last is on the clipboard: {address}");
+}
+
+/// Failure: after a Copy Link that was refused, a snapshot and then a Copy Link, the clipboard has the snapshot (a refusal left its place), or the person
+/// is told the wrong thing: the refusal in the person's words, then the link's confirmation.
+#[test]
+fn a_refused_link_a_snapshot_and_a_link_leave_the_last_on_the_clipboard() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("last.pdf", &super::snapshot_tool::text_and_image());
+    app.open(&file);
+    let other = app.disk().file("other.pdf", &pdf_bytes("Other", 1));
+    app.person(&json!({ "cmd": "page_insert", "tab": "#1", "path": other, "at": 1 }).to_string());
+    app.settle();
+    app.act(UiAction::CopyLink { row: contents_row(&app, 1) });
+    app.settle();
+    assert_eq!(pasteboard(&app), None);
+    assert!(app.core().window.notices().notice().expect("said").contains("another PDF"));
+    super::snapshot_tool::tool_on(&app);
+    super::snapshot_tool::take_box(&app);
+    selects_on_page(&app, 1);
+    app.act(menu());
+    app.settle();
+    let address = pasteboard(&app).expect("a copy");
+    assert!(address.starts_with("file://"), "the link, asked last: {address}");
+    let said = app.core().window.notices().notice().expect("said");
+    assert!(said.starts_with("Copied a link to page"), "{said}");
+}

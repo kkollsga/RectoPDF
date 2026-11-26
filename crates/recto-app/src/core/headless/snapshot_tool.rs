@@ -20,7 +20,7 @@ fn jpeg() -> Vec<u8> {
 }
 
 /// A page with a line of text and the JPEG over 100..140 across and 252..292 down, from the top left.
-fn text_and_image() -> Vec<u8> {
+pub(super) fn text_and_image() -> Vec<u8> {
     let image = recto_testpdf::first_extra_object(1);
     let content = [
         recto_testpdf::text_lines(&["Words to take in a box"]),
@@ -42,7 +42,7 @@ const PAGE_WIDTH: f32 = 612.0;
 const BOX: [f32; 4] = [40.0, 30.0, 300.0, 280.0];
 
 /// Turns the tool on, if it's off.
-fn tool_on(app: &HeadlessApp) {
+pub(super) fn tool_on(app: &HeadlessApp) {
     if !app.core().tools.tool().is_on() {
         app.core().perform(snapshot_tool::TOGGLE_ID.into());
     }
@@ -94,7 +94,7 @@ fn clipboard_data(app: &HeadlessApp, serial: u64, uti: &str) -> Option<Vec<u8>> 
         .flatten()
 }
 
-fn take_box(app: &HeadlessApp) {
+pub(super) fn take_box(app: &HeadlessApp) {
     mouse(app, (BOX[0], BOX[1]), Some((BOX[0] + BOX[2], BOX[1] + BOX[3])));
 }
 
