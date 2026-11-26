@@ -670,6 +670,15 @@ impl Tool {
         true
     }
 
+    /// The slot as new after a refused send (the app hands off), but counting on: the tickets never go back, or the clipboard's newest ticket (kept here)
+    /// would be above every later one and each later snapshot dropped though it says "Copied".
+    pub(super) fn reset_jobs(&self) {
+        let mut jobs = lock(&self.jobs);
+        let tickets = jobs.tickets;
+        **jobs = JobSlot::default();
+        jobs.tickets = tickets;
+    }
+
     /// The person asks for Copy Link now: its place in the order of what's asked for, kept for [`Self::offer_link`].
     pub(super) fn link_asked(&self) {
         let ticket = lock(&self.jobs).ticket();
@@ -880,7 +889,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
         && !super::person::submit(inner, job.command())
     {
         // Not taken, as the app hands off: nothing runs, and nothing's said to be on its way.
-        **lock(&tool.jobs) = JobSlot::default();
+        tool.reset_jobs();
         lock(&tool.notice).take();
     }
 }
@@ -918,7 +927,7 @@ fn answer(tool: &Tool, person: super::person::Person<'_>, ran: &super::person::R
 /// The snapshot that waited, sent as the person's now; not taken, as the app hands off, nothing runs and nothing's said to be on its way.
 fn send_next(tool: &Tool, person: super::person::Person<'_>, next: Job) {
     if !person.submit(next.command()) {
-        **lock(&tool.jobs) = JobSlot::default();
+        tool.reset_jobs();
         lock(&tool.notice).take();
     }
 }
@@ -1370,6 +1379,23 @@ mod tests {
         tool.link_asked();
         assert!(tool.offer_link("file:///b.pdf#page=2".into()));
         assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT]);
+    }
+
+    /// Failure: a slot cleared after a refused send (⌘Q, Stay) starts its tickets again from 0 while the clipboard's newest ticket is high, so every later
+    /// snapshot is dropped as "older" though the notice says Copied.
+    #[test]
+    fn a_cleared_slot_keeps_counting_tickets_so_the_next_snapshot_is_put() {
+        let tool = Tool::default();
+        for _ in 0..3 {
+            lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+            let ticket = lock(&tool.jobs).running_ticket;
+            assert!(snapshot_lands(&tool, ticket));
+            lock(&tool.jobs).next();
+        }
+        tool.reset_jobs();
+        lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+        let ticket = lock(&tool.jobs).running_ticket;
+        assert!(snapshot_lands(&tool, ticket), "the snapshot after the reset is the offer");
     }
 
     /// Failure: a snapshot that waited behind another is given the ticket of the one before it, so a Copy Link asked between them is wrongly overwritten.
