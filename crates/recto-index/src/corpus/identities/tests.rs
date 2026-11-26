@@ -23,6 +23,22 @@ impl Temp {
     }
 }
 
+/// Other rules for the rest of the test, on this thread.
+struct RulesTag;
+
+impl RulesTag {
+    fn set(tag: [u8; 16]) -> Self {
+        super::RULES_TAG_OVERRIDE.with(|cell| cell.set(Some(tag)));
+        Self
+    }
+}
+
+impl Drop for RulesTag {
+    fn drop(&mut self) {
+        super::RULES_TAG_OVERRIDE.with(|cell| cell.set(None));
+    }
+}
+
 const KEY: CorpusKey = CorpusKey([77; 32]);
 
 /// The read a page of the made-up document has: no identity on every fifth page, and what it was charged.
@@ -56,6 +72,8 @@ struct Feed {
     watch: Option<CorpusPaths>,
     /// A copy of `ids.bin` as the retry began.
     at_retry: Option<Vec<u8>>,
+    /// Each identity read takes this long (spent working, not sleeping).
+    spin: Option<std::time::Duration>,
 }
 
 impl Feed {
@@ -73,6 +91,7 @@ impl Feed {
             last_look: None,
             watch: None,
             at_retry: None,
+            spin: None,
         }
     }
 
@@ -125,6 +144,12 @@ impl PageFeed for Feed {
 
     fn identity(&mut self, page: u32) -> PageRead {
         self.asked.push(page);
+        if let Some(spin) = self.spin {
+            let start = std::time::Instant::now();
+            while start.elapsed() < spin {
+                std::hint::spin_loop();
+            }
+        }
         match &self.real {
             Some(real) => real.read(page),
             None => made_up(page),
@@ -415,6 +440,21 @@ fn a_resume_keeps_the_records_that_hold_up() {
     let mut again = Feed::made_up(8);
     assert!(matches!(built(&temp.0, &mut again, &BuildLimits::default()), BuildOutcome::Ready { .. }));
     assert_eq!(again.asked, vec![5, 6, 7], "the five before the kill were kept");
+}
+
+/// Failure: a build paused under one set of rules and resumed under another keeps the first one's records, and the header then vouches for them under the
+/// second's tag (a stale "no identity" answers as current). The records of another rules tag are read again, and the finished corpus holds this build's.
+#[test]
+fn a_resume_under_other_rules_reads_every_record_again() {
+    let temp = Temp::new();
+    let mut feed = Feed::made_up(8);
+    feed.stop_at = Some(5);
+    built(&temp.0, &mut feed, &BuildLimits::default());
+    let _other_rules = RulesTag::set([9; 16]);
+    let mut again = Feed::made_up(8);
+    assert!(matches!(built(&temp.0, &mut again, &BuildLimits::default()), BuildOutcome::Ready { .. }));
+    assert_eq!(again.asked, (0..8).collect::<Vec<_>>(), "none of the five before the pause was kept");
+    assert_eq!(every_read(&stored(&temp.0)).len(), 8);
 }
 
 fn rewrite_records(root: &Path, change: impl FnOnce(&mut Vec<u8>)) {

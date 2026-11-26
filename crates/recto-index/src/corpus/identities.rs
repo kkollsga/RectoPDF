@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! ids.bin      one sealed record for each page of lopdf's page map, in order, each `RECORD_BYTES` long: `Purpose::Identity(page)` over
-//!              [identity present (1)] [digest (32)] [object number (4)] [generation (2)] [frame tag (4)] [bytes the read was charged (8)]
+//!              [identity present (1)] [digest (32)] [object number (4)] [generation (2)] [frame tag (4)] [rules tag, first 8 bytes] [bytes the read was charged (8)]
 //! ids.sealed   the header, `Purpose::Identities`: [rules tag (16)] [map length (4)] [`/ID` pair present (1)] [first (16)] [second (16)]; written last, before `ready.sealed`
 //! ```
 //!
@@ -23,9 +23,26 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
 
+#[cfg(test)]
+thread_local! {
+    /// A test's other rules, for the thread it runs on.
+    static RULES_TAG_OVERRIDE: std::cell::Cell<Option<[u8; 16]>> = const { std::cell::Cell::new(None) };
+}
+
+/// The rules these identities are made and trusted under: [`stored_rules_tag`], or in a test the tag it set.
+fn rules_tag() -> [u8; 16] {
+    #[cfg(test)]
+    if let Some(tag) = RULES_TAG_OVERRIDE.with(std::cell::Cell::get) {
+        return tag;
+    }
+    stored_rules_tag()
+}
+
 /// What a record holds before it's sealed.
-const RECORD_PLAIN: usize = 1 + 32 + 4 + 2 + 4 + 8;
-/// A record on disk: what it holds, the nonce and the tag. `docs/engineering/search-index.md` says 79 bytes a page.
+const RECORD_PLAIN: usize = 1 + 32 + 4 + 2 + 4 + TAG_BYTES + 8;
+/// How much of the rules tag each record carries: a record made under other rules is not this build's.
+const TAG_BYTES: usize = 8;
+/// A record on disk: what it holds, the nonce and the tag. `docs/engineering/search-index.md` says how much a page takes.
 pub const RECORD_BYTES: usize = RECORD_PLAIN + seal::OVERHEAD;
 const HEADER_PLAIN: usize = 16 + 4 + 1 + 16 + 16;
 /// The header on disk.
@@ -77,14 +94,19 @@ fn encode(read: &PageRead) -> [u8; RECORD_PLAIN] {
         out[37..39].copy_from_slice(&identity.object.1.to_le_bytes());
         out[39..43].copy_from_slice(&identity.frame.to_le_bytes());
     }
-    out[43..].copy_from_slice(&read.bytes.to_le_bytes());
+    out[43..43 + TAG_BYTES].copy_from_slice(&rules_tag()[..TAG_BYTES]);
+    out[43 + TAG_BYTES..].copy_from_slice(&read.bytes.to_le_bytes());
     out
 }
 
-/// A record's plain bytes, if they say something a build could have written: a present flag of 0 or 1, and no identity's bytes where there is none.
+/// A record's plain bytes, if they say something this build could have written: made under its rules, a present flag of 0 or 1, and no identity's bytes
+/// where there is none.
 fn decode(bytes: &[u8]) -> Option<PageRead> {
     let bytes: &[u8; RECORD_PLAIN] = bytes.try_into().ok()?;
-    let charged = u64::from_le_bytes(bytes[43..].try_into().ok()?);
+    if bytes[43..43 + TAG_BYTES] != rules_tag()[..TAG_BYTES] {
+        return None;
+    }
+    let charged = u64::from_le_bytes(bytes[43 + TAG_BYTES..].try_into().ok()?);
     match bytes[0] {
         0 if bytes[1..43].iter().all(|byte| *byte == 0) => Some(PageRead {
             identity: None,
@@ -214,7 +236,7 @@ impl IdentityRun {
     pub(super) fn seal_header(&mut self, paths: &CorpusPaths, seal: &CorpusSeal) -> io::Result<u64> {
         self.file.sync_all()?;
         let mut plain = Vec::with_capacity(HEADER_PLAIN);
-        plain.extend_from_slice(&stored_rules_tag());
+        plain.extend_from_slice(&rules_tag());
         plain.extend_from_slice(&self.info.pages.to_le_bytes());
         match self.info.ids {
             Some(ids) => {
@@ -254,7 +276,7 @@ impl Identities {
         if plain.len() != HEADER_PLAIN {
             return Err(Damaged);
         }
-        if plain[..16] != stored_rules_tag() {
+        if plain[..16] != rules_tag() {
             return Ok(None);
         }
         let pages = u32::from_le_bytes(plain[16..20].try_into().map_err(|_| Damaged)?);
