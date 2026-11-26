@@ -14,7 +14,7 @@ use crate::{AgentError, SessionAccess, select};
 use recto_core::OpenError;
 use recto_core::agreement::{Disagreement, View, compare, compared_pages, structure_view};
 use recto_platform::FileStamp;
-use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
+use recto_render_service::{DocRenderer, MAX_BUSY, Policy, RenderFailure, ServiceConfig};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -107,7 +107,7 @@ impl RendererHalf for DocRenderer {
 
 /// **The renderer's half, compared with the structure's:** `None` when they agree.
 fn renderer_half(r: &mut impl RendererHalf, structure: &View, deadline: Instant) -> Option<Disagreement> {
-    let page_count = match r.page_count() {
+    let page_count = match asked(deadline, || r.page_count()) {
         Ok(count) => count,
         Err(failure) => return Some(renderer_refused(failure)),
     };
@@ -119,6 +119,26 @@ fn renderer_half(r: &mut impl RendererHalf, structure: &View, deadline: Instant)
         Ok(renderer) => compare(structure, &renderer),
         Err(failure) => Some(renderer_refused(failure)),
     }
+}
+
+/// **Asks again while the Mac is too busy.** A busy answer ([`RenderFailure::TooBusyToStart`], [`RenderFailure::TooBusy`]) says nothing of the file, the
+/// service remembers nothing of it and bounds a run of them itself ([`MAX_BUSY`]), so the look, which has its own `deadline`, asks again until then: a
+/// person on a busy Mac isn't told to save again. No sleep between asks: each costs the service's own start and page deadline. At most `2 * MAX_BUSY`
+/// asks (a start's run and an open's run each have one, as the indexer's), then the last busy answer is the answer, which is `Unchecked`.
+fn asked<T>(deadline: Instant, mut ask: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
+    let mut last = RenderFailure::TooBusyToStart;
+    for _ in 0..2 * u32::from(MAX_BUSY) {
+        match ask() {
+            Err(busy @ (RenderFailure::TooBusyToStart | RenderFailure::TooBusy { .. })) => {
+                last = busy;
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
+            other => return other,
+        }
+    }
+    Err(last)
 }
 
 /// What the renderer failing says: it needs a password lopdf didn't (`Encryption`); it can't read the file at all, which is the file's
@@ -136,14 +156,14 @@ fn renderer_refused(failure: RenderFailure) -> Disagreement {
 /// The renderer's half, once its count is known to be the structure's: whether it rebuilt the file's index, and the sizes of the pages compared,
 /// by `deadline`. A page it can't size is `None`, up to [`PAGE_FAILURES`] of them; a failure of the whole file is the answer.
 fn renderer_view(doc: &mut impl RendererHalf, page_count: u32, deadline: Instant) -> Result<View, RenderFailure> {
-    let repaired = doc.repaired()?;
+    let repaired = asked(deadline, || doc.repaired())?;
     let mut failures = 0;
     let mut sizes = Vec::new();
     for page in compared_pages(page_count) {
         if Instant::now() >= deadline {
             return Err(RenderFailure::Unavailable);
         }
-        sizes.push(match doc.page_size(page) {
+        sizes.push(match asked(deadline, || doc.page_size(page)) {
             Ok(size) => Some(size),
             Err(RenderFailure::PageReadFailed { .. } | RenderFailure::BadPage) if failures < PAGE_FAILURES => {
                 failures += 1;
@@ -753,5 +773,47 @@ mod tests {
     fn a_busy_answer_is_asked_again_within_the_deadline() {
         let mut renderer = busy_then_ok();
         assert_eq!(renderer_half(&mut renderer, &one_page(), Instant::now() + LOOK_DEADLINE), None);
+    }
+
+    fn always_busy() -> Scripted {
+        Scripted {
+            counts: vec![Err(RenderFailure::TooBusyToStart)],
+            repaired: Ok(false),
+            sizes: vec![Ok((612., 792.))],
+            asks: 0,
+            counted: 0,
+            sized: 0,
+        }
+    }
+
+    /// Failure: a worker that never gets the processor would keep the check asking for ever. It stops at `2 * MAX_BUSY` asks, as the indexer does,
+    /// and fails closed.
+    #[test]
+    fn a_renderer_always_busy_is_asked_a_bounded_number_of_times() {
+        let mut renderer = always_busy();
+        assert_eq!(
+            renderer_half(&mut renderer, &one_page(), Instant::now() + LOOK_DEADLINE),
+            Some(Disagreement::Unchecked)
+        );
+        assert_eq!(renderer.asks, 2 * u32::from(MAX_BUSY));
+        let mut sizing = Scripted {
+            counts: vec![Ok(1)],
+            sizes: vec![Err(RenderFailure::TooBusy { page: 0 })],
+            ..always_busy()
+        };
+        assert_eq!(
+            renderer_half(&mut sizing, &one_page(), Instant::now() + LOOK_DEADLINE),
+            Some(Disagreement::Unchecked)
+        );
+        assert_eq!(sizing.sized, 2 * usize::from(MAX_BUSY));
+    }
+
+    /// Failure: a check past its deadline that went on asking would hold a save beyond [`LOOK_DEADLINE`]. A busy answer after the deadline is the
+    /// answer, with no second ask.
+    #[test]
+    fn a_deadline_past_ends_the_asking_at_once() {
+        let mut renderer = always_busy();
+        assert_eq!(renderer_half(&mut renderer, &one_page(), Instant::now()), Some(Disagreement::Unchecked));
+        assert_eq!(renderer.asks, 1);
     }
 }
