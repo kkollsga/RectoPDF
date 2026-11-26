@@ -284,6 +284,8 @@ impl Cmd for Goto {
                 exit::USAGE,
             )
             .then("`recto goto 12 --within 0.3`.")),
+            (None, None) => Err(AgentError::new(Code::USAGE, super::locating::GOTO_NEITHER, exit::USAGE)
+                .then("`recto goto 12`, `recto goto label iv` or `recto goto --ref <token>`.")),
             _ => Err(AgentError::new(
                 Code::USAGE,
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
@@ -767,7 +769,11 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE));
+        assert_eq!(
+            (error.code.as_str(), error.exit, error.message.as_str()),
+            ("usage", exit::USAGE, crate::commands::locating::GOTO_NEITHER),
+            "in the same words as the line's refusal, not \"and not both\""
+        );
         assert!(access.lock().unwrap().mail_mut().take_jump(id).is_none(), "nothing was told to move");
     }
 }
