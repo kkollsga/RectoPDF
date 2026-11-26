@@ -2,6 +2,12 @@
 
 The owner's product rules and one-off decisions, in their words, with the date. Moved here from `AGENTS.md` on 2026-11-13 so that file stays short: it is loaded into every session and read by every worker. Read the section that touches your task; behaviour as built is in `SPEC.md`. A newer rule that replaces an older one says so.
 
+## Decisions of 2026-11-26 (put with recommendations; the recommended option chosen each time)
+
+- **Copy Link (locator 8.4) puts the full file address on the clipboard**, with the standard page number: `file:///…/manual.pdf#page=42`, so it works pasted anywhere on this Mac. Before 8.4 is built it is tried from Notes and Mail into Preview; if the page is lost there, the owner hears before it's built. (Agents still get the file's name only: `recto link`.)
+- **A leftover temporary file of a crashed save** (lopdf's temp beside a document), which makes removal refuse: removal lists it and offers to move it to the Trash with the rest, after the person confirms. Nothing is deleted without the confirmation.
+- **The session copies the app keeps** (a week after every update, copies for older versions, records set aside as damaged): a confirmed removal also deletes these copies whole. The accepted cost: if that update later has to go back, the earlier version may open without the person's tabs.
+
 ## Decisions of 2026-11-25
 
 - CI: "Lets clear the backlog related to CI. For now lets assume its good enough. But lets keep an eye on it. We want to make sure dev performance is sufficient." No CI optimisation is scheduled; the coordinator watches CI time after every push against the 21:00 budget.
