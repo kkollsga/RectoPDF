@@ -15,7 +15,7 @@ use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::marker::PhantomData;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
@@ -92,8 +92,13 @@ impl Folder {
 
     /// The entries of this folder, as it was when opened whatever its path now leads to. `.` and `..` are left out.
     pub fn entries(&self) -> io::Result<Entries<'_>> {
-        // A duplicate shares the offset, so it is rewound, and `closedir` closes the duplicate only.
-        let copy = self.fd.try_clone()?.into_raw_fd();
+        // A duplicate would share the offset with every other listing, so each listing opens the folder again through the descriptor.
+        // SAFETY: `fd` is open for as long as `self`, and "." is a NUL-ended string.
+        let raw = unsafe { libc::openat(self.fd.as_raw_fd(), c".".as_ptr(), libc::O_RDONLY | flags()) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let copy = raw;
         // SAFETY: `copy` is a descriptor we own; on success the stream owns it.
         let dir = unsafe { libc::fdopendir(copy) };
         if dir.is_null() {
@@ -102,8 +107,6 @@ impl Folder {
             drop(unsafe { OwnedFd::from_raw_fd(copy) });
             return Err(error);
         }
-        // SAFETY: `dir` is a live stream.
-        unsafe { libc::rewinddir(dir) };
         Ok(Entries {
             dir,
             folder: self.fd.as_raw_fd(),

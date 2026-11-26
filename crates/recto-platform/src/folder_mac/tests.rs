@@ -136,3 +136,24 @@ fn a_name_that_is_not_one_plain_name_is_refused() {
     }
     assert!(folder.open_private_in(OsStr::new("plain")).is_ok());
 }
+
+/// Failure: two listings of one folder alive together share one directory offset (a duplicated descriptor), so one's progress or rewind
+/// changes what the other sees: entries skipped or listed twice.
+#[test]
+fn two_listings_at_once_do_not_disturb_each_other() {
+    let dir = TempDir::new("recto-folder-");
+    let count = 1500; // more than one read of the directory's buffer holds
+    for i in 0..count {
+        std::fs::write(dir.join(format!("file-with-a-longish-name-{i:05}")), b"").unwrap();
+    }
+    let folder = opened(dir.path());
+    let mut first = folder.entries().unwrap();
+    let mut seen_first: Vec<OsString> = (0..10).map(|_| first.next().unwrap().unwrap().name).collect();
+    let second: Vec<OsString> = folder.entries().unwrap().map(|e| e.unwrap().name).collect();
+    seen_first.extend(first.map(|e| e.unwrap().name));
+    for (case, mut names) in [("the first, interrupted", seen_first), ("the second", second)] {
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), count, "{case}: every entry once");
+    }
+}
