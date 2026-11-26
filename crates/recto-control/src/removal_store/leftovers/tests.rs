@@ -2,7 +2,7 @@
 //! it names would, and the act must stop or finish as the doc comment says. The Trash is a folder on the same volume.
 
 use super::act::{CopyState, Done, Env, Hooks, Why, clear, copy_state};
-use super::pin::{Local, PinSet, Pins, temp_pid};
+use super::pin::{Local, PinSet, Pins, temp_pid, tree_of};
 use super::trash::{FolderTrash, Trash};
 use crate::removal_store::copy_fixtures::{State, copy_tree, found_of, state, surveyed, write_session};
 use crate::removal_store::legacy_session::{LegacyCaps, survey_legacy_sessions_with};
@@ -11,7 +11,7 @@ use crate::removal_store::update_copy::{UpdateCaps, survey_update_copy_with};
 use crate::removal_store::writer_temps::{TempCaps, survey_writer_temps_with};
 use recto_core::removal::{ArtifactKey, LEDGER_LIMITS, Ledger, Link, Owner, Store, Survey, TargetMode, lineage};
 use recto_core::save::writer_temp_prefix;
-use recto_platform::folder::Identity;
+use recto_platform::folder::{Folder, Opened};
 use recto_platform::trash::Failure as TrashFailure;
 use recto_testpdf::TempDir;
 use std::ffi::OsStr;
@@ -41,7 +41,7 @@ struct World {
 fn world() -> World {
     let state = state();
     write_session(&state);
-    copy_tree(&state.session(), &state.root().join("session.v1"));
+    copy_tree(&state.session(), &state.root().join("session.damaged.1"));
     copy_tree(&state.session(), &state.root().join("session.damaged"));
     std::fs::create_dir_all(state.root().join("update")).unwrap();
     assert!(recto_update::install::copy_record(
@@ -159,6 +159,11 @@ fn key_of(pins: &PinSet, store: Store, name: &str) -> ArtifactKey {
         .key
 }
 
+/// Where the live record is told to be in a test that has no live record to guard: two paths nothing is at.
+fn no_live() -> [&'static Path; 2] {
+    [Path::new("/recto-test-no-live-a"), Path::new("/recto-test-no-live-b")]
+}
+
 fn local_everywhere() -> Local {
     Arc::new(|_| true)
 }
@@ -171,7 +176,7 @@ fn run(pins: &PinSet, keys: &[ArtifactKey], trash: &dyn Trash, alive: &dyn Fn(u3
             trash,
             alive,
             local: &|_| true,
-            live: None,
+            live: no_live(),
         },
         hooks,
     )
@@ -198,7 +203,7 @@ fn the_surveys_pin_exactly_the_artifacts_they_list() {
     let w = world();
     let pins = w.pins();
     assert_eq!(pins.temps.len(), 2);
-    assert_eq!(pins.copies.len(), 3, "session.v1, session.damaged and update/before");
+    assert_eq!(pins.copies.len(), 3, "session.damaged.1, session.damaged and update/before");
     let sink = || Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false), local_everywhere());
     let s = surveyed(&[Store::LegacySession, Store::UpdateCopy, Store::WriterTemp], |lineage, survey| {
         survey_legacy_sessions_with(
@@ -243,7 +248,7 @@ fn the_surveys_pin_exactly_the_artifacts_they_list() {
         survey_legacy_sessions_with(w.root(), lineage, TargetMode::Save, survey, &LegacyCaps::default())
     })
     .unwrap();
-    assert!(!found_of(&plain).iter().any(|f| f.3 == key_of(&pins, Store::LegacySession, "session.v1")));
+    assert!(!found_of(&plain).iter().any(|f| f.3 == key_of(&pins, Store::LegacySession, "session.damaged.1")));
 }
 
 /// Failure: the process number is read from the wrong part of the name (the attempt for the pid), so a live save reads as dead or a dead one as live; or a
@@ -315,7 +320,7 @@ fn no_trash_never_means_delete() {
 #[test]
 fn a_copy_with_went_back_is_never_offered() {
     let w = world();
-    std::fs::write(w.root().join("session.v1").join("went-back"), b"1").unwrap();
+    std::fs::write(w.root().join("session.damaged.1").join("went-back"), b"1").unwrap();
     let pins = w.pins();
     // Through the survey, which is what a plan is made from: the copy holding it is an artifact core refuses, the other one may be cleared.
     let s = surveyed(&[Store::LegacySession], |lineage, survey| {
@@ -332,9 +337,9 @@ fn a_copy_with_went_back_is_never_offered() {
             .find(|f| f.3 == ArtifactKey::of(Store::LegacySession, name.as_bytes()))
             .map(|f| f.1)
     };
-    assert_eq!(owner_of("session.v1"), Some(Owner::Unknown), "a copy holding went-back refuses");
+    assert_eq!(owner_of("session.damaged.1"), Some(Owner::Unknown), "a copy holding went-back refuses");
     assert_eq!(owner_of("session.damaged"), Some(Owner::Target));
-    let wb = pins.copies.iter().find(|c| c.name == OsStr::new("session.v1")).unwrap();
+    let wb = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged.1")).unwrap();
     assert_eq!(copy_state(wb), CopyState::WentBack);
     let other = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap();
     assert_eq!(copy_state(other), CopyState::Offerable);
@@ -355,7 +360,7 @@ fn a_folder_swapped_for_a_link_after_the_recheck_is_not_followed() {
     let pins = w.pins();
     // The same names as the copy holds, in the folder the link will lead to.
     let decoy = w.outside.join("decoy");
-    copy_tree(&w.root().join("session.v1"), &decoy);
+    copy_tree(&w.root().join("session.damaged.1"), &decoy);
     std::fs::create_dir_all(w.outside.join("update-decoy")).unwrap();
     copy_tree(&w.before(), &w.outside.join("update-decoy").join("before"));
     std::fs::create_dir_all(w.outside.join("docs-decoy")).unwrap();
@@ -378,8 +383,8 @@ fn a_folder_swapped_for_a_link_after_the_recheck_is_not_followed() {
     };
     let outside_before = guarded(&w.outside);
     // The copy itself, then the update's folder, then the documents folder: renamed away, a link in the place.
-    std::fs::rename(w.root().join("session.v1"), w.root().join("moved-copy")).unwrap();
-    std::os::unix::fs::symlink(&decoy, w.root().join("session.v1")).unwrap();
+    std::fs::rename(w.root().join("session.damaged.1"), w.root().join("moved-copy")).unwrap();
+    std::os::unix::fs::symlink(&decoy, w.root().join("session.damaged.1")).unwrap();
     std::fs::rename(w.root().join("update"), w.root().join("moved-update")).unwrap();
     std::os::unix::fs::symlink(w.outside.join("update-decoy"), w.root().join("update")).unwrap();
     let docs_path = w.docs.path().to_path_buf();
@@ -393,7 +398,7 @@ fn a_folder_swapped_for_a_link_after_the_recheck_is_not_followed() {
             || pins
                 .copies
                 .iter()
-                .any(|c| c.key == key && (c.name == OsStr::new("session.v1") || c.name == OsStr::new("before")));
+                .any(|c| c.key == key && (c.name == OsStr::new("session.damaged.1") || c.name == OsStr::new("before")));
         if swapped {
             assert!(matches!(report.stopped, Some((_, Why::Changed(_)))), "{report:?}");
         }
@@ -413,12 +418,12 @@ fn a_folder_swapped_for_a_link_after_the_recheck_is_not_followed() {
 #[test]
 fn a_link_inside_a_copy_is_unlinked_not_followed() {
     let w = world();
-    let copy = w.root().join("session.v1");
+    let copy = w.root().join("session.damaged.1");
     std::os::unix::fs::symlink(w.outside.path(), copy.join("to-a-folder")).unwrap();
     std::os::unix::fs::symlink(w.outside.join("sentinel"), copy.join("to-a-file")).unwrap();
     std::os::unix::fs::symlink(w.outside.path(), copy.join("journals").join("to-a-folder-too")).unwrap();
     let pins = w.pins();
-    let key = key_of(&pins, Store::LegacySession, "session.v1");
+    let key = key_of(&pins, Store::LegacySession, "session.damaged.1");
     let report = run(&pins, &[key], &FolderTrash::at(&w.trash), &|_| false, &mut super::act::Unwatched);
     assert!(report.stopped.is_none(), "{report:?}");
     assert!(!copy.exists(), "the copy is gone");
@@ -526,7 +531,7 @@ fn a_whole_clear_takes_what_was_pinned_and_nothing_else() {
         );
         assert!(!w.docs.join(&name).exists());
     }
-    for gone in ["session.v1", "session.damaged", "update/before"] {
+    for gone in ["session.damaged.1", "session.damaged", "update/before"] {
         assert!(!w.root().join(gone).exists(), "{gone}");
     }
     assert_eq!(tree_bytes(&w.state.session()), live_before, "the live record");
@@ -550,10 +555,10 @@ fn a_key_nobody_pinned_is_refused_before_anything_is_done() {
     assert!(report.done.is_empty());
     assert_eq!(w.listing(), before);
     // Four folders below the copy are more than can be pinned: the copy is not pinned, and so not cleared.
-    let deep = w.root().join("session.v2").join("a").join("b").join("c").join("d");
+    let deep = w.root().join("session.damaged.7").join("a").join("b").join("c").join("d");
     std::fs::create_dir_all(&deep).unwrap();
     let pins = w.pins();
-    assert!(pins.copies.iter().all(|c| c.name != OsStr::new("session.v2")));
+    assert!(pins.copies.iter().all(|c| c.name != OsStr::new("session.damaged.7")));
 }
 
 /// A Trash that moves the item into its folder and then says something else than the truth, for the failures a real one can have after it moved.
@@ -641,7 +646,7 @@ fn a_dead_pid_on_a_volume_that_isnt_local_proves_nothing() {
         trash: &trash,
         alive: &|_| false,
         local: &|_| false,
-        live: None,
+        live: no_live(),
     };
     let report = clear(&pins, &[key], &env, &mut super::act::Unwatched);
     assert!(matches!(report.stopped, Some((k, Why::BeingWritten)) if k == key), "{report:?}");
@@ -689,6 +694,17 @@ fn a_copy_has_one_entry_budget_across_all_its_folders() {
     let w = world();
     let pins = w.pins();
     let total = entries_of(&pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap().tree);
+    let copy = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap();
+    let journals = copy
+        .tree
+        .entries
+        .iter()
+        .find(|e| e.name == OsStr::new("journals"))
+        .expect("the copy has a journals folder");
+    assert!(
+        !journals.below.as_ref().unwrap().entries.is_empty(),
+        "journals holds something, so the budget counts a second level"
+    );
     assert!(total >= 3, "the copy has a journals folder with something in it: {total}");
     let owners = |n: usize| {
         let s = surveyed(&[Store::LegacySession], |lineage, survey| {
@@ -717,36 +733,11 @@ fn a_copy_has_one_entry_budget_across_all_its_folders() {
 #[test]
 fn any_entry_named_went_back_makes_the_copy_unknown() {
     let w = world();
-    std::os::unix::fs::symlink(w.outside.path(), w.root().join("session.v1").join("went-back")).unwrap();
+    std::os::unix::fs::symlink(w.outside.path(), w.root().join("session.damaged.1").join("went-back")).unwrap();
     let pins = w.pins();
-    let wb = pins.copies.iter().find(|c| c.name == OsStr::new("session.v1")).unwrap();
+    let wb = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged.1")).unwrap();
     assert!(wb.went_back);
     assert_eq!(copy_state(wb), CopyState::WentBack);
-}
-
-/// Failure (review 9): beside a newer record the live store is `session.v<CURRENT>`, which a survey finds as a copy, and a clear deletes the live record and
-/// its unsaved journals. The act is told the live folder's identity and refuses a copy that is it, before anything is done.
-#[test]
-fn the_live_record_is_never_deleted_even_if_planned() {
-    let w = world();
-    let pins = w.pins();
-    let live = {
-        let copy = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap();
-        copy.tree.id
-    };
-    let trash = FolderTrash::at(&w.trash);
-    let before = w.listing();
-    let env = Env {
-        trash: &trash,
-        alive: &|_| false,
-        local: &|_| true,
-        live: Some(live),
-    };
-    let report = clear(&pins, &keys(&pins), &env, &mut super::act::Unwatched);
-    assert!(matches!(report.stopped, Some((_, Why::LiveRecord))), "{report:?}");
-    assert!(report.done.is_empty());
-    assert_eq!(w.listing(), before, "nothing was done, not even to the others");
-    let _: Identity = live;
 }
 
 /// Failure (review 10): between the last entry going and the folder being taken out by its name, another folder is put in its place (the copy moved
@@ -771,4 +762,63 @@ fn a_folder_put_in_the_copys_place_at_the_last_moment_is_not_taken() {
     let report = run(&pins, &[key], &FolderTrash::at(&w.trash), &|_| false, &mut Swap(at.clone()));
     assert!(matches!(report.stopped, Some((_, Why::Changed(_)))), "{report:?}");
     assert!(at.is_dir(), "the folder that was put there is still there");
+}
+
+/// Failure (review 2.1): the live record's folder is planned as a copy (beside a newer record, `session.v<CURRENT>` is the live store) and a clear deletes it
+/// with its unsaved journals. A copy that is one of the two live folders is refused, by what each is when it is looked at.
+#[test]
+fn a_copy_that_is_a_live_folder_is_refused() {
+    let w = world();
+    let pins = w.pins();
+    let (copy, live_session) = (w.root().join("session.damaged"), w.root().join("session"));
+    let trash = FolderTrash::at(&w.trash);
+    let before = w.listing();
+    for live in [[live_session.as_path(), copy.as_path()], [copy.as_path(), live_session.as_path()]] {
+        let env = Env {
+            trash: &trash,
+            alive: &|_| false,
+            local: &|_| true,
+            live,
+        };
+        let report = clear(&pins, &keys(&pins), &env, &mut super::act::Unwatched);
+        assert!(matches!(report.stopped, Some((_, Why::LiveRecord))), "{report:?}");
+        assert!(report.done.is_empty());
+        assert_eq!(w.listing(), before, "nothing was done, not even to the others");
+    }
+}
+
+/// Failure (review 2.1): until the live folders are told for real, a copy named `<flavor>.v<CURRENT_VERSION>` is deleted: beside a newer record that is the
+/// live store. Both flavors' names are refused.
+#[test]
+fn a_copy_named_for_the_current_version_is_refused() {
+    let w = world();
+    for flavor in ["session", "session-windowless"] {
+        copy_tree(
+            &w.state.session(),
+            &w.root().join(format!("{flavor}.v{}", recto_session::record::CURRENT_VERSION)),
+        );
+    }
+    let pins = w.pins();
+    assert_eq!(pins.copies.len(), 5);
+    let before = w.listing();
+    for flavor in ["session", "session-windowless"] {
+        let name = format!("{flavor}.v{}", recto_session::record::CURRENT_VERSION);
+        let key = pins.copies.iter().find(|c| c.name == OsStr::new(&name)).unwrap().key;
+        let report = run(&pins, &[key], &FolderTrash::at(&w.trash), &|_| false, &mut super::act::Unwatched);
+        assert!(matches!(report.stopped, Some((k, Why::LiveRecord)) if k == key), "{name}: {report:?}");
+    }
+    assert_eq!(w.listing(), before);
+}
+
+/// Failure (review 2.4): a volume mounted inside a copy (an entry on another device) is deleted into with the copy. The comparison is against the copy's own
+/// device, at every level; the real case needs a mount, so this holds the comparison by giving the walk another device than the folder's own.
+#[test]
+fn an_entry_on_another_device_than_the_copy_makes_it_unpinnable() {
+    let w = world();
+    let Opened::Folder(copy) = Folder::open(&w.root().join("session.damaged")) else {
+        panic!("the copy opens")
+    };
+    let dev = copy.identity().unwrap().dev;
+    assert!(tree_of(&copy, 0, &mut 100, dev).is_some(), "its own device is fine at every level");
+    assert!(tree_of(&copy, 0, &mut 100, dev + 1).is_none(), "another device than the copy's");
 }

@@ -20,46 +20,89 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// A crashed save's temporary, as it was listed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempPin {
-    pub key: ArtifactKey,
+    pub(crate) key: ArtifactKey,
     /// Where its folder was when listed: to open it again by its path, and never to act by.
-    pub folder: PathBuf,
-    pub folder_id: Identity,
-    pub name: OsString,
-    pub id: Identity,
+    pub(crate) folder: PathBuf,
+    pub(crate) folder_id: Identity,
+    pub(crate) name: OsString,
+    pub(crate) id: Identity,
     /// The process number in its name. `None` when the name's number is no process number: the temp is then taken as still being written.
-    pub pid: Option<u32>,
+    pub(crate) pid: Option<u32>,
 }
 
 /// A copy of the session record, whole, as it was listed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyPin {
-    pub key: ArtifactKey,
-    pub store: Store,
+    pub(crate) key: ArtifactKey,
+    pub(crate) store: Store,
     /// The state root, and what it was.
-    pub root: PathBuf,
-    pub root_id: Identity,
+    pub(crate) root: PathBuf,
+    pub(crate) root_id: Identity,
     /// The folders from the root to the copy's own parent (none for a session copy, `update` for the update's), each with what it was.
-    pub chain: Vec<(OsString, Identity)>,
+    pub(crate) chain: Vec<(OsString, Identity)>,
     /// The copy folder's name in its parent.
-    pub name: OsString,
-    pub tree: Tree,
+    pub(crate) name: OsString,
+    pub(crate) tree: Tree,
     /// It holds `went-back`: an earlier version worked in it after going back, and its work has not been brought forward.
-    pub went_back: bool,
+    pub(crate) went_back: bool,
 }
 
 /// Everything the surveys pinned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PinSet {
     /// Unfinished saves that may go to the Trash now (their process has ended and their volume has a Trash): the artifacts of `Store::WriterTemp`.
-    pub temps: Vec<TempPin>,
-    pub copies: Vec<CopyPin>,
+    pub(crate) temps: Vec<TempPin>,
+    pub(crate) copies: Vec<CopyPin>,
     /// Unfinished saves whose process may still be running: not artifacts, so they don't stop a clear, and said as "still being written".
-    pub waiting: Vec<TempPin>,
+    pub(crate) waiting: Vec<TempPin>,
     /// Unfinished saves on a volume that has no Trash: not artifacts, and said as "stays".
-    pub no_trash: Vec<TempPin>,
+    pub(crate) no_trash: Vec<TempPin>,
+}
+
+impl TempPin {
+    pub fn key(&self) -> &ArtifactKey {
+        &self.key
+    }
+    pub fn folder(&self) -> &Path {
+        &self.folder
+    }
+    pub fn name(&self) -> &OsStr {
+        &self.name
+    }
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+}
+
+impl CopyPin {
+    pub fn key(&self) -> &ArtifactKey {
+        &self.key
+    }
+    pub fn store(&self) -> Store {
+        self.store
+    }
+    pub fn name(&self) -> &OsStr {
+        &self.name
+    }
+    pub fn went_back(&self) -> bool {
+        self.went_back
+    }
 }
 
 impl PinSet {
+    pub fn temps(&self) -> &[TempPin] {
+        &self.temps
+    }
+    pub fn copies(&self) -> &[CopyPin] {
+        &self.copies
+    }
+    pub fn waiting(&self) -> &[TempPin] {
+        &self.waiting
+    }
+    pub fn no_trash(&self) -> &[TempPin] {
+        &self.no_trash
+    }
+
     pub fn temp(&self, key: &ArtifactKey) -> Option<&TempPin> {
         self.temps.iter().find(|pin| pin.key == *key)
     }
@@ -168,7 +211,12 @@ impl Pins {
         max_entries: usize,
     ) -> Owner {
         let mut budget = max_entries;
-        let Some(tree) = tree_of(copy, 0, &mut budget) else { return Owner::Unknown };
+        let Some(device) = copy.identity().ok().map(|id| id.dev) else {
+            return Owner::Unknown;
+        };
+        let Some(tree) = tree_of(copy, 0, &mut budget, device) else {
+            return Owner::Unknown;
+        };
         // Whatever it is: the record store reads the marker by `exists()`, which a link to anything counts as.
         let went_back = store == Store::LegacySession && tree.entries.iter().any(|pinned| pinned.name.as_encoded_bytes() == WENT_BACK_NAME.as_bytes());
         let pin = CopyPin {
@@ -187,9 +235,9 @@ impl Pins {
 }
 
 /// `folder` and everything in it, `depth` folders below the copy's own. `None` when it is deeper than [`MAX_DEPTH`], holds more entries in all, at every
-/// level together, than `budget` (which counts down as it goes: the copy's, not each folder's), can't be listed, or a folder was swapped between its
+/// level together, than `budget`, has an entry on another device than `device` (the copy's own: a volume mounted inside it), (which counts down as it goes: the copy's, not each folder's), can't be listed, or a folder was swapped between its
 /// listing and its opening.
-fn tree_of(folder: &Folder, depth: usize, budget: &mut usize) -> Option<Tree> {
+pub(super) fn tree_of(folder: &Folder, depth: usize, budget: &mut usize, device: u64) -> Option<Tree> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -198,12 +246,16 @@ fn tree_of(folder: &Folder, depth: usize, budget: &mut usize) -> Option<Tree> {
     for entry in folder.entries().ok()? {
         let entry = entry.ok()?;
         *budget = budget.checked_sub(1)?;
+        // A volume mounted inside a copy is another device: it is never part of the copy, and the copy is not pinned.
+        if entry.dev != device {
+            return None;
+        }
         let below = if entry.kind == Kind::Folder {
             let Opened::Folder(inner) = folder.open_in(&entry.name) else { return None };
             if inner.identity().ok()? != entry.identity() {
                 return None;
             }
-            Some(tree_of(&inner, depth + 1, budget)?)
+            Some(tree_of(&inner, depth + 1, budget, device)?)
         } else {
             None
         };

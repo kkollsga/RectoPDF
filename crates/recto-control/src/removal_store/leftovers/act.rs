@@ -10,7 +10,10 @@
 //!   go before `journals/`, then the rest. The parent is flushed once the copy is gone.
 //! - **Order:** temps (the reversible), then the update's copy, then the session copies.
 //!
-//! It never opens `RecordStore::dir()`: only pinned copies, which the surveys take from `<root>/session.v<N>`, `<root>/*.damaged[.k]` and `<root>/update/before`.
+//! **The live record is guarded** by [`is_live`], before the first act of a run and again just before each copy: a copy is refused (`Why::LiveRecord`) if its
+//! folder is, by device and inode looked at then, either of the two live folders `Env::live` names, or if its name is `<flavor>.v<CURRENT_VERSION>` (beside a newer
+//! record that name *is* the live store). Only pinned copies are ever opened: the surveys take them from `<root>/<flavor>.v<N>`, `<root>/<flavor>.damaged[.k]` and
+//! `<root>/update/before`, and the live `<root>/<flavor>` is no name they list.
 
 use super::pin::{CopyPin, PinSet, TempPin};
 use super::trash::Trash;
@@ -18,6 +21,7 @@ use recto_core::removal::{ArtifactKey, Store};
 use recto_platform::folder::remove::{Failure, Walk, remove_tree_in};
 use recto_platform::folder::{Folder, Identity, Kind, Opened, identity_at};
 use recto_platform::trash::Failure as TrashFailure;
+use recto_session::record::CURRENT_VERSION;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -29,13 +33,14 @@ pub struct Env<'a> {
     pub alive: &'a dyn Fn(u32) -> bool,
     /// Whether a path is on a local volume: a process number in a name proves nothing anywhere else. `recto_platform::folder::is_local` on a real run.
     pub local: &'a dyn Fn(&Path) -> bool,
-    /// What the live record's folder (`RecordStore::dir()`) is. A copy that is this is never deleted: beside a newer record the live store is
-    /// `session.v<CURRENT>`, which a survey also finds as a copy. `None` only where there is no live record to guard (a test).
-    pub live: Option<Identity>,
+    /// The live record's folders of both flavors (`session` and `session-windowless`, as `RecordStore::dir()` says). Each is looked at again just before
+    /// each copy, and a copy that is one of them is never deleted: beside a newer record the live store is `session.v<CURRENT>`, which a survey also finds
+    /// as a copy. Always required: a clear that isn't told where the live record is does not run.
+    pub live: [&'a Path; 2],
 }
 
 impl<'a> Env<'a> {
-    pub fn new(trash: &'a dyn Trash, live: Option<Identity>) -> Self {
+    pub fn new(trash: &'a dyn Trash, live: [&'a Path; 2]) -> Self {
         Self {
             trash,
             alive: &recto_platform::local::process_exists,
@@ -149,6 +154,15 @@ pub enum CopyState {
     WentBack,
 }
 
+/// Whether a copy is, or may be, the live record: its folder is the identity one of the two live folders has right now, or its name is
+/// `<flavor>.v<CURRENT_VERSION>`, which beside a newer record is the live store and which nothing may delete until the live folders are told for real.
+pub fn is_live(pin: &CopyPin, env: &Env<'_>) -> bool {
+    let named = ["session", "session-windowless"]
+        .into_iter()
+        .any(|flavor| pin.name.as_encoded_bytes() == format!("{flavor}.v{CURRENT_VERSION}").as_bytes());
+    named || env.live.iter().any(|live| identity_at(live) == Some(pin.tree.id))
+}
+
 pub fn copy_state(pin: &CopyPin) -> CopyState {
     if pin.went_back { CopyState::WentBack } else { CopyState::Offerable }
 }
@@ -170,7 +184,7 @@ pub fn clear(pins: &PinSet, keys: &[ArtifactKey], env: &Env<'_>, hooks: &mut dyn
                 TempState::NoTrash => return stopped(report, *key, Why::NoTrash),
             }
         } else if let Some(pin) = pins.copy(key) {
-            if env.live == Some(pin.tree.id) {
+            if is_live(pin, env) {
                 return stopped(report, *key, Why::LiveRecord);
             }
             match copy_state(pin) {
@@ -226,6 +240,10 @@ fn trash_temp(pin: &TempPin, env: &Env<'_>) -> Result<Done, Why> {
         Opened::Folder(folder) => folder,
         Opened::Missing | Opened::Other => return Err(Why::Changed(pin.folder.clone().into_os_string())),
     };
+    // Asked of the folder just opened, not of a path that may lead elsewhere now.
+    if !folder.is_local() {
+        return Err(Why::BeingWritten);
+    }
     if folder.identity().map_err(|e| Why::Io(pin.name.clone(), e.kind()))? != pin.folder_id {
         return Err(Why::Changed(pin.folder.clone().into_os_string()));
     }
@@ -266,7 +284,7 @@ fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks) -> Result<Do
     if copy_state(pin) != CopyState::Offerable {
         return Err(Why::WentBack);
     }
-    if env.live == Some(pin.tree.id) {
+    if is_live(pin, env) {
         return Err(Why::LiveRecord);
     }
     let changed = |name: &OsStr| Why::Changed(name.to_os_string());
