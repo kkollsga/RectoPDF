@@ -42,10 +42,6 @@ pub fn identity_at(_path: &Path) -> Option<Identity> {
 }
 
 impl Entry {
-    /// Nothing is local off the Mac.
-    pub fn is_local(&self) -> bool {
-        false
-    }
     pub fn identity(&self) -> Identity {
         Identity {
             dev: self.dev,
@@ -78,6 +74,10 @@ impl Folder {
     }
     pub fn identity(&self) -> io::Result<Identity> {
         Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Nothing is local off the Mac.
+    pub fn is_local(&self) -> bool {
+        false
     }
     pub fn look(&self, _name: &OsStr) -> io::Result<Entry> {
         Err(io::ErrorKind::Unsupported.into())
