@@ -185,9 +185,12 @@ fn the_thread_at_rest_wakes_for_a_kept_look_and_takes_the_step() {
     let due = Instant::now() + Duration::from_millis(300);
     rig.renderers.get_mut(&rig.file.0).unwrap().looks.healing.insert(0, due);
     let sleeper = std::thread::current();
+    let (finished, finish) = std::sync::mpsc::channel::<()>();
     let helper = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(3));
-        sleeper.unpark();
+        // Wakes the test's thread at 3 s unless the test is over by then.
+        if finish.recv_timeout(Duration::from_secs(3)).is_err() {
+            sleeper.unpark();
+        }
     });
     let (mut resting_since, began) = (None, Instant::now());
     let seen = rig.engine.shared.round_begins();
@@ -198,5 +201,6 @@ fn the_thread_at_rest_wakes_for_a_kept_look_and_takes_the_step() {
     rest_or_wait_for_a_surface(false, seen, &rig.engine.shared, &mut rig.renderers, &Policy::default(), &mut resting_since);
     let ops = told(&rig.engine);
     assert_eq!(tiles_of(&ops, 0).0, 1, "the step was taken: {ops:?}");
-    drop(helper);
+    drop(finished);
+    helper.join().expect("the helper ends");
 }
