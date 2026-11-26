@@ -2,7 +2,7 @@
 //! added from another PDF, and below Control. The one `recto_core::locator::page_link` makes it, as `recto link` does.
 
 use super::changed_under_edits::pdf_bytes;
-use crate::testkit::headless::HeadlessApp;
+use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::Level;
 use serde_json::{Value, json};
 
@@ -18,14 +18,27 @@ fn search(app: &HeadlessApp, words: &[&str]) -> Value {
 /// tab's page 3 and the file's page 1; a phrase, a pattern and a ranked search all say `#page=1`.
 #[test]
 fn a_hits_link_names_the_files_page_and_the_encoded_name_and_no_folder() {
-    let app = HeadlessApp::start();
-    let file = app.disk().file("a#b: c.pdf", &pdf_bytes("Mine", 5));
-    let folder = app.disk().files().to_string_lossy().into_owned();
+    let disk = Disk::new();
+    let file = disk.file("a#b: c.pdf", &pdf_bytes("Mine", 5));
+    let folder = disk.files().to_string_lossy().into_owned();
+    let app = disk.builder().indexing(true).start();
     app.open(&file);
+    app.recto(Level::Full, &["index"]).expect("asked for");
+    app.wait_until("the index is built", || {
+        app.recto(Level::Full, &["index", "status"]).is_ok_and(|status| status["state"] == "ready")
+    });
     app.person(r##"{"cmd":"page_move","tab":"#1","pages":"1","to":3}"##);
     app.settle();
     let expected = "a%23b%3A%20c.pdf#page=1";
-    for words in [&["Mine page 1"][..], &["Mine page 1", "--regex"], &["Mine page 1", "--rank"]] {
+    // The first is read from the index with the file never opened for it; the others, and the one after, from the file or the same index: all say the same.
+    let indexed = search(&app, &["Mine page 1"]);
+    assert_eq!(indexed["route"], "index", "{indexed}");
+    for words in [
+        &["Mine page 1"][..],
+        &["Mine page 1", "--regex"],
+        &["Mine page 1", "--rank"],
+        &["Mine page 1", "--scan"],
+    ] {
         let said = search(&app, words);
         let hit = &said["hits"][0];
         assert_eq!(hit["page"], 3, "the hit is at the tab's page 3: {said}");

@@ -5,7 +5,7 @@ use super::{Cmd, Cx, row_access};
 use crate::human::text;
 use crate::table::*;
 use crate::*;
-use recto_core::locator::{LinkError, page_link};
+use recto_core::locator::{LinkError, link_of};
 use serde_json::{Value, json};
 
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet, so no link can name it. Save first, or ask for a page of the file.";
@@ -56,8 +56,7 @@ impl Cmd for Link {
                 crate::no_such_page()
             });
         };
-        let name = file.path().file_name().map(|name| name.as_encoded_bytes()).unwrap_or_default();
-        let link = page_link(name, file_page + 1).map_err(|why| match why {
+        let link = link_of(file.path(), file_page + 1).map_err(|why| match why {
             LinkError::Page => crate::no_such_page(),
             LinkError::Name => AgentError::new(Code::NOT_REFERENCEABLE, NAME_REFUSED, exit::FAILED),
         })?;

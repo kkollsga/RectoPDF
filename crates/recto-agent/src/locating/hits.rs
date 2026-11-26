@@ -179,8 +179,7 @@ impl<'f> HitRefs<'f> {
         if added {
             return None;
         }
-        let name = self.path?.file_name()?.as_encoded_bytes();
-        locator::page_link(name, page.checked_add(1)?).ok()
+        locator::link_of(self.path?, page.checked_add(1)?).ok()
     }
 
     /// Checks free things first: the page is of the file, the range is on characters; then the file, then the page.

@@ -15,7 +15,7 @@ mod source;
 mod text;
 
 pub use codec::{decode, encode};
-pub use link::{LinkError, MAX_LINK_BYTES, MAX_NAME_BYTES, page_link};
+pub use link::{LinkError, MAX_LINK_BYTES, MAX_NAME_BYTES, link_of, page_link};
 pub use resolve::{
     DocumentMatch, Looked, MAX_CANDIDATES, Placed, Referrer, Resolution, ScanCaps, Status, TAG_PAGES, Unreferenceable, document_tags, reference, resolve,
 };
