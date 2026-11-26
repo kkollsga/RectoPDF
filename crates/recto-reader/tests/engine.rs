@@ -553,11 +553,16 @@ fn reopening_a_file_that_doesnt_answer_never_passes_the_cap_on_opens() {
     let dead = fifo_in(&folder, "dead.pdf");
     let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
     engine.qa().system_takes_only_when_told();
+    let healthy = document(1);
     show_one(&engine, 1, &dead, &[]);
-    let mut most = watch_opens(&engine, Duration::from_millis(400));
-    // More reopens than the cap, so a leak shows as past it.
+    let mut most = watch_opens(&engine, Duration::from_millis(300));
+    // The reader moves off the dead file (its open stays stuck), it's reopened while it's off, and the reader comes back: more times than the cap, so a leak shows as past it.
     for _ in 0..(MAX_OPENS + 3) {
+        show_one(&engine, 2, &healthy.0, &[1]);
+        watch_opens(&engine, Duration::from_millis(100));
         engine.key_given(&dead);
+        watch_opens(&engine, Duration::from_millis(100));
+        show_one(&engine, 1, &dead, &[2]);
         most = most.max(watch_opens(&engine, Duration::from_millis(300)));
     }
     assert!(
