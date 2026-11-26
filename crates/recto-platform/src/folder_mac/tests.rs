@@ -4,8 +4,6 @@ use super::*;
 use recto_testpdf::TempDir;
 use std::io::Read as _;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::mpsc;
-use std::time::Duration;
 
 fn names(folder: &Folder) -> Vec<String> {
     let mut names: Vec<String> = folder.entries().unwrap().map(|e| e.unwrap().name.to_string_lossy().into_owned()).collect();
