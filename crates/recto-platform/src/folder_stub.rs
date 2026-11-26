@@ -99,6 +99,7 @@ pub mod remove {
         Unpinned(OsString),
         TooDeep,
         Stopped(OsString),
+        NotDurable(OsString),
         Io(OsString, io::Error),
     }
 

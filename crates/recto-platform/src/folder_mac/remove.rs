@@ -22,6 +22,8 @@ pub enum Failure {
     TooDeep,
     /// The gate said stop, before this entry.
     Stopped(OsString),
+    /// This entry was taken out but the folder could not be made durable, so a power loss may bring it back.
+    NotDurable(OsString),
     /// A system call failed on this entry.
     Io(OsString, io::Error),
 }
@@ -38,6 +40,7 @@ pub struct Removed {
 /// The order and the stop of a walk.
 pub struct Walk<'a> {
     /// Lower goes first among the entries of one folder (the depth is that of the entry's folder: 0 for the folder taken away). Equal ranks go by name.
+    /// What has rank 0 is made durable (the folder is flushed) before anything after it is touched, so a stop after it never finds it back.
     pub rank: &'a dyn Fn(usize, &OsStr, Kind) -> u8,
     /// Asked before every entry and folder is unlinked, with its name; `false` stops the walk there.
     pub gate: &'a mut dyn FnMut(&OsStr) -> bool,
@@ -111,6 +114,9 @@ fn remove_folder(parent: &Folder, name: &OsStr, tree: &Tree, depth: usize, walk:
                     Ok(()) => removed.unlinked += 1,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => removed.already_gone += 1,
                     Err(error) => return Err(Failure::Io(pinned.name.clone(), error)),
+                }
+                if (walk.rank)(depth, &pinned.name, pinned.id.kind) == 0 && folder.sync().is_err() {
+                    return Err(Failure::NotDurable(pinned.name.clone()));
                 }
             }
         }

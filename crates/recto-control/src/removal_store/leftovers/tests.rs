@@ -283,6 +283,10 @@ fn no_trash_never_means_delete() {
     let report = run(&pins, &[key], &refusing, &|_| false, &mut super::act::Unwatched);
     assert!(matches!(report.stopped, Some((k, Why::Trash(_))) if k == key), "{report:?}");
     assert!(w.docs.join(&name).exists());
+    assert!(
+        !report.stopped.as_ref().unwrap().1.in_doubt(),
+        "a refused move is a step that failed, with the file where it was"
+    );
 }
 
 /// Failure (T11): a copy an earlier version worked in after going back (`went-back`), whose work has not been brought forward, is offered and deleted,
@@ -414,6 +418,10 @@ fn a_crash_mid_delete_leaves_no_restorable_update_copy() {
         let pins = w.pins();
         let key = key_of(&pins, Store::UpdateCopy, "before");
         let report = run(&pins, &[key], &FolderTrash::at(&w.trash), &|_| false, &mut Stop(after));
+        if after == 1 {
+            // The first thing taken out is `.whole`, and nothing else is yet: a copy cut short here is one `restore_record` leaves alone.
+            assert!(!w.before().join(".whole").exists() && w.before().join("journals").exists());
+        }
         recto_update::install::restore_record(&w.before(), &live);
         assert_eq!(
             tree_bytes(&live),

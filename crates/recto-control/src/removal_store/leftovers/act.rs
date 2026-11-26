@@ -97,6 +97,15 @@ pub enum Why {
     Asked,
 }
 
+impl Why {
+    /// Whether it is unknown if the item is where it was: it moved or was taken out and could not be made durable, or what is in the Trash is not what
+    /// was pinned. A carrier calls the step failed only when this is `false` for a Trash step (the file is where it was), and otherwise says the step is
+    /// done but not durable.
+    pub fn in_doubt(&self) -> bool {
+        matches!(self, Self::NotMoved | Self::NotDurable)
+    }
+}
+
 /// What a run did: each artifact done, in order, and where and why it stopped, if it did.
 #[derive(Debug, Default)]
 pub struct Report {
@@ -276,6 +285,7 @@ fn delete_copy(pin: &CopyPin, hooks: &mut dyn Hooks) -> Result<Done, Why> {
         Err(Failure::Unpinned(name)) => Err(Why::Unpinned(name)),
         Err(Failure::TooDeep) => Err(Why::TooDeep),
         Err(Failure::Stopped(_)) => Err(Why::Asked),
+        Err(Failure::NotDurable(_)) => Err(Why::NotDurable),
         Err(Failure::Io(name, error)) => Err(Why::Io(name, error.kind())),
     }
 }
