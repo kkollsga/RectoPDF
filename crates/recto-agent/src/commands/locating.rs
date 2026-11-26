@@ -17,9 +17,20 @@ macro_rules! example_ref {
     };
 }
 
+/// A made-up reference to characters 0 to 5 of the same page, for the examples of what only takes one (`highlight --ref`).
+macro_rules! example_ref_chars {
+    () => {
+        "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000.c0-5-0c1g60r30c1g6"
+    };
+}
+
 /// [`example_ref!`], for the tests that need it as a value. Holds no words: a token is page numbers and checks.
 #[cfg(any(test, feature = "test-words"))]
 pub const EXAMPLE_REF: &str = example_ref!();
+
+/// [`example_ref_chars!`], for the tests that need it as a value.
+#[cfg(any(test, feature = "test-words"))]
+pub const EXAMPLE_REF_CHARS: &str = example_ref_chars!();
 
 /// A reference to page 1 of a made-up document, with the target given: the one fixture of the tests that need a [`Locator`] (not every one needs to read
 /// a file, and a token is only numbers).
@@ -39,6 +50,42 @@ pub(crate) const TEXT_BOTH: &str = "`text` takes a page or `--ref`, not both.";
 pub(crate) const TEXT_NEITHER: &str = "`text` needs a page or `--ref`.";
 pub(crate) const RENDER_BOTH: &str = "`render` takes a page or `--ref`, not both.";
 pub(crate) const RENDER_NEITHER: &str = "`render` needs a page or `--ref`.";
+pub(crate) const SNAPSHOT_BOTH: &str = "`snapshot` takes a page or `--ref`, not both.";
+pub(crate) const SNAPSHOT_NEITHER: &str = "`snapshot` needs a page or `--ref`.";
+pub(crate) const EXPORT_SVG_BOTH: &str = "`export svg` takes a page or `--ref`, not both.";
+pub(crate) const EXPORT_SVG_NEITHER: &str = "`export svg` needs a page or `--ref`.";
+/// `snapshot --ref` goes to a file or to the answer, never to the person's clipboard, which is their own and is made for the page they saw.
+pub(crate) const SNAPSHOT_REF_NOT_CLIPBOARD: &str = "`snapshot --ref` can't go to the clipboard: that is the person's, of the page they saw.";
+pub(crate) const GOTO_REF_ALONE: &str =
+    "`goto --ref` goes to the page the reference points at, so it takes no page, label, `--entry` or `--link`. `--within` goes with it.";
+/// Shared by `select`, `copy` and `highlight`.
+pub(crate) const PICK_REF_ALONE: &str =
+    "`--ref` is the page or characters the reference points at, so it takes no `--page`, `--to-page`, `--chars`, `--at`, `--to`, `--unit` or `--all`.";
+pub(crate) const HIGHLIGHT_REF_CHARS: &str =
+    "`highlight --ref` takes a reference to characters, as `recto ref --chars` makes one. To highlight a whole page, give `--page`.";
+
+/// The one way a `--ref` token becomes a reference, for every command that takes one: a token that can't be one is refused with constant words that never
+/// repeat it, and a newer RectoPDF's is said to be.
+pub(crate) fn token(word: &str) -> Result<Locator, AgentError> {
+    locator::decode(word).map_err(|error| match error {
+        locator::Error::UnsupportedVersion => locating::reference_too_new(),
+        _ => locating::bad_reference(),
+    })
+}
+
+fn usage(words: &'static str) -> AgentError {
+    AgentError::new(Code::USAGE, words, exit::USAGE)
+}
+
+/// A `--ref` that goes alone, as the commands that take one beside other flags read it: the token is read first (a hostile one is refused as such, before
+/// anything is said of what it was given with), then `others` says whether anything that names a place came with it, which is refused in the command's words.
+pub(crate) fn reference_alone(word: Option<&str>, others: bool, words: &'static str) -> Result<Option<Locator>, AgentError> {
+    let reference = word.map(token).transpose()?;
+    if reference.is_some() && others {
+        return Err(usage(words));
+    }
+    Ok(reference)
+}
 
 /// Where `text` and `render` read: a page by its number, or the page a reference points at now. Built only by [`PageOrRef::of`], so a command that holds
 /// one holds exactly one of the two, and a reference in it is already a reference RectoPDF made.
@@ -53,18 +100,11 @@ impl PageOrRef {
     /// or neither with the command's own: `words` is the command's (both, neither).
     pub(crate) fn of(words: (&'static str, &'static str), page: Option<u32>, reference: Option<&str>) -> Result<Self, AgentError> {
         let (both, neither) = words;
-        let usage = |words: &'static str| AgentError::new(Code::USAGE, words, exit::USAGE);
-        let decoded = |token: &str| {
-            locator::decode(token).map_err(|error| match error {
-                locator::Error::UnsupportedVersion => locating::reference_too_new(),
-                _ => locating::bad_reference(),
-            })
-        };
         match (page, reference) {
             (Some(page), None) => Ok(Self::Page(page)),
-            (None, Some(token)) => Ok(Self::Ref(decoded(token)?)),
-            (Some(_), Some(token)) => {
-                decoded(token)?;
+            (None, Some(word)) => Ok(Self::Ref(token(word)?)),
+            (Some(_), Some(word)) => {
+                token(word)?;
                 Err(usage(both))
             }
             (None, None) => Err(usage(neither)),
@@ -120,6 +160,51 @@ pub(crate) const PAGE_OR_REF: Arg = Arg {
     ..PAGE_OR_BARE
 };
 
+/// Runs a pick of `select`, `copy` or `highlight` on the page a reference points at now. The tab is settled once, in `page_of`, and the pick goes on in it.
+/// It is literally `--page P --chars S-E` for the page `P` found and the characters the reference names (a reference to a page or a spot picks the whole
+/// page), with the page found put in the pick, so the read of that page checks the characters against the text it reads and no other read is made.
+pub(crate) fn picking_by_reference<A: SessionAccess, T>(
+    access: &A,
+    base: crate::selecting::Pick<'_>,
+    reference: &Locator,
+    run: impl FnOnce(&crate::selecting::Pick<'_>) -> Result<T, AgentError>,
+) -> Result<T, AgentError> {
+    let found = locating::page_of(access, base.tab, reference, locating::CharsChecked::AgainstItsText)?;
+    let tab = found.tab_ref();
+    let chars = found.characters().map(|(start, end)| format!("{start}-{end}"));
+    run(&crate::selecting::Pick {
+        tab: &tab,
+        page: Some(found.page),
+        chars: chars.as_deref(),
+        found: Some(&found),
+        ..base
+    })
+}
+
+/// The `--ref` flag of `select` and `copy`, and `highlight`.
+pub(crate) const REF_PICK: Arg = Arg {
+    key: "ref",
+    flag: Some("--ref"),
+    kind: Kind::Reference,
+    required: false,
+    help: "A reference `recto ref` gave, whole: takes the characters it points at, or the whole page if it points at a page or a spot, as that page stands now, even if another program moved it. Instead of `--page`, `--chars`, `--at` and `--all`. It refuses when the page is gone, can't be told from others, wasn't fully looked for, or its characters aren't the same (`recto resolve` says which). `highlight` takes only a reference to characters.",
+};
+
+/// The `--ref` flag of `goto`.
+pub(crate) const REF_GO: Arg = Arg {
+    key: "ref",
+    flag: Some("--ref"),
+    kind: Kind::Reference,
+    required: false,
+    help: "A reference `recto ref` gave, whole: goes to the page it points at now, even if another program moved it. Instead of a page. It refuses when the page is gone, can't be told from others or wasn't fully looked for (`recto resolve` says which). `--within` goes with it.",
+};
+
+pub(crate) const GOTO_REF_EXAMPLE: &str = concat!("recto goto --ref ", example_ref!());
+pub(crate) const SELECT_REF_EXAMPLE: &str = concat!("recto select --ref ", example_ref!());
+pub(crate) const HIGHLIGHT_REF_EXAMPLE: &str = concat!("recto highlight --ref ", example_ref_chars!());
+pub(crate) const COPY_REF_EXAMPLE: &str = concat!("recto copy --ref ", example_ref!());
+pub(crate) const SNAPSHOT_REF_EXAMPLE: &str = concat!("recto snapshot --ref ", example_ref!(), " --rect 72,72,300,200 --as text");
+pub(crate) const EXPORT_SVG_REF_EXAMPLE: &str = concat!("recto export svg --ref ", example_ref!(), " --out page.svg");
 pub(crate) const TEXT_REF_EXAMPLE: &str = concat!("recto text --ref ", example_ref!());
 pub(crate) const RENDER_REF_EXAMPLE: &str = concat!("recto render --ref ", example_ref!(), " --out page.png");
 
@@ -198,10 +283,7 @@ impl TryFrom<line::Resolve> for Resolve {
     type Error = AgentError;
     fn try_from(line: line::Resolve) -> Result<Self, AgentError> {
         let line::Resolve { reference, tab } = line;
-        let reference = locator::decode(&reference).map_err(|error| match error {
-            locator::Error::UnsupportedVersion => locating::reference_too_new(),
-            _ => locating::bad_reference(),
-        })?;
+        let reference = token(&reference)?;
         Ok(Self { reference, tab })
     }
 }
@@ -355,8 +437,10 @@ mod tests {
     /// example is read by its command is `table::tests::every_example_parses_to_its_own_row`.
     #[test]
     fn the_rows_example_token_decodes() {
-        let decoded = locator::decode(EXAMPLE_REF).expect("the example decodes");
-        assert_eq!(locator::encode(&decoded), EXAMPLE_REF, "and is the canonical form of what it names");
+        for example in [EXAMPLE_REF, EXAMPLE_REF_CHARS] {
+            let decoded = locator::decode(example).expect("the example decodes");
+            assert_eq!(locator::encode(&decoded), example, "and is the canonical form of what it names");
+        }
     }
 
     /// Failure: `ref` or `resolve` reads every page of a file with no limit on how many scans run at once, since the server's cap is of the commands that

@@ -298,21 +298,56 @@ pub(crate) fn agree(found: &Located, source: &recto_session::PageSource) -> Resu
     }
 }
 
+impl Located {
+    /// The characters the reference names, as `(start, end)` in characters of the page's text, when they are still to be checked against the text of the
+    /// command's own read ([`CharsChecked::AgainstItsText`]). A command that picks them takes them from here, so it picks exactly what was checked.
+    pub(crate) fn characters(&self) -> Option<(u32, u32)> {
+        self.unchecked.map(|range| range.offsets())
+    }
+
+    /// Checks the reference's characters, if it names any, against the text of the page as the command read it: the characters must be there and the
+    /// same. A reference to a page or a spot has nothing to check.
+    pub(crate) fn held_in(&self, page_text: &str) -> Result<(), AgentError> {
+        match self.unchecked {
+            Some(range) if locator::held_characters(range, page_text).is_none() => Err(unresolved(UNRESOLVED_TEXT_CHANGED)),
+            _ => Ok(()),
+        }
+    }
+
+    /// What the answer says of how the page was found, once its characters (if any) were checked: constant words and numbers, never the token.
+    pub(crate) fn told(&self) -> Value {
+        let mut said = self.said.clone();
+        if let Some((start, end)) = self.characters() {
+            said["text"] = json!("same");
+            said["chars"] = json!([start, end]);
+        }
+        said
+    }
+}
+
 /// After the page was read: the file is still the version it was found in, and the answer says how the page was found.
 pub(crate) fn attach<A: SessionAccess>(access: &A, found: &Located, data: &mut Value) -> Result<(), AgentError> {
     still_located(access, found)?;
-    let mut said = found.said.clone();
     if let Some(range) = found.unchecked {
         // Checked against the very text the answer gives, so the words given are the words that were checked. An answer with no text can't pass: nothing is
         // attached to it.
-        let held = locator::held_characters(range, data["untrusted"]["text"].as_str().unwrap_or("")).map(str::to_owned);
-        let held = held.ok_or_else(|| unresolved(UNRESOLVED_TEXT_CHANGED))?;
-        said["text"] = json!("same");
-        let (start, end) = range.offsets();
-        said["chars"] = json!([start, end]);
+        let text = data["untrusted"]["text"].as_str().unwrap_or("");
+        found.held_in(text)?;
+        let held = locator::held_characters(range, text).map(str::to_owned);
         data["untrusted"]["hit"] = json!(held);
     }
-    data["ref"] = said;
+    data["ref"] = found.told();
+    Ok(())
+}
+
+/// [`attach`] for a command that read the page's text itself and has checked the reference's characters against it (`checked`): the file is still the
+/// version the page was found in, a reference to characters that wasn't checked is refused, and the answer says how the page was found.
+pub(crate) fn attach_checked<A: SessionAccess>(access: &A, found: &Located, checked: bool, data: &mut Value) -> Result<(), AgentError> {
+    still_located(access, found)?;
+    if found.unchecked.is_some() && !checked {
+        return Err(unresolved(UNRESOLVED_TEXT_CHANGED));
+    }
+    data["ref"] = found.told();
     Ok(())
 }
 
