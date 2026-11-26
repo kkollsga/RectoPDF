@@ -463,8 +463,12 @@ fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
     show_one(&engine, 2, &healthy.0, &[]);
     watch(Duration::from_millis(200));
     // More revisits than the page view's cap on opens (4), so a leak shows as the cap and a cap that holds shows as one.
-    for _ in 0..6 {
+    for revisit in 0..6 {
         show_one(&engine, 1, &dead, &[2]);
+        if revisit == 0 {
+            // Until the first open is under way, a late thread would leave nothing to count (and nothing for the writer below to release).
+            wait_opens(&engine, 1);
+        }
         watch(Duration::from_millis(400));
         show_one(&engine, 2, &healthy.0, &[1]);
         watch(Duration::from_millis(200));
