@@ -322,6 +322,19 @@ fn contents_fold_reveal_at_once_and_keep_a_thumb() {
     run.ok(&["qa", "hover", "2"]);
     let shown = run.ok(&["qa", "reveal", "2"]);
     assert_eq!(shown["reveal"]["shown"], true, "{shown}");
+    // Copy Link on a contents row (the row's right-click, by AppKit's own `menu(for:)`, nothing posted): the whole file address and the row's page as the
+    // one text on the clipboard, made by the one `address_of`. "Section 1.1" is contents row 2, the sidebar's row 3.
+    let page = u32::try_from(rows[3]["page"].as_u64().expect("the row's page")).expect("a page");
+    run.ok(&["qa", "contents-context-menu", "2:edit.copy_link"]);
+    run.settled();
+    let clipboard = run.ok(&["qa", "copied"]);
+    let types: Vec<&str> = clipboard["types"].as_array().unwrap().iter().filter_map(|kind| kind["type"].as_str()).collect();
+    assert_eq!(types, ["public.utf8-plain-text"], "{clipboard}");
+    assert_eq!(
+        clipboard["untrusted"]["text"].as_str(),
+        Some(recto_core::locator::address_of(&file.0, page).expect("an address").as_str()),
+        "{clipboard}"
+    );
 }
 
 /// Failure: a QA command works below its level, or a read needs more than Read-only, so the level says nothing about a run an agent drives. Over the real socket, at each level.
