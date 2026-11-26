@@ -500,17 +500,12 @@ pub fn wait_for_within(run: &Run<'_>, limit: Duration, holds: impl Fn(&Value) ->
     }
 }
 
-/// Asks for `qa state` until what it says holds, for up to about 4 s, and fails with the last it said.
+/// How long a state change after a command may take: twice the render service's page deadline (5 s, `page_deadline.rs`), the longest the product lets one page read hold before it gives up and answers, so a read that is killed at its deadline and asked again still lands. Every `wait_for` caller waits for a state a command or a page read brings about; the slower waits name their own bound in `wait_for_within`.
+const STATE_CHANGE_WITHIN: Duration = Duration::from_secs(10);
+
+/// Asks for `qa state` until what it says holds, for up to `STATE_CHANGE_WITHIN` of time (not a count of asks: one `qa state` takes 0.3 s under load, so 400 asks were two minutes, 2026-11-26), and fails with the last it said.
 pub fn wait_for(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
-    let mut last = Value::Null;
-    for _ in 0..400 {
-        last = run.report();
-        if holds(&last) {
-            return last;
-        }
-        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
-    }
-    panic!("it never came to pass: {last}");
+    wait_for_within(run, STATE_CHANGE_WITHIN, holds)
 }
 
 /// `long.pdf`: each page says "Page number N", from 0, and a line of words.
