@@ -189,13 +189,21 @@ struct JobSlot {
     again: Option<Look>,
     made: Option<Clip>,
     taken: Option<Job>,
+    /// **Tickets for what is offered the clipboard,** one counter for every action's start (a snapshot's, a Copy Link's), so the last thing the person asked for
+    /// is what's left on it, whatever order the answers land in ([`Tool::offer_ready`]).
+    tickets: u64,
+    /// The ticket of the snapshot running, and of the one waiting: taken as each was asked for.
+    running_ticket: u64,
+    waiting_ticket: u64,
 }
 
 impl JobSlot {
     /// A new snapshot. With nothing running, it's to start now, with this stop. Otherwise what runs is stopped, a snapshot or a look, and this waits in
     /// its place, replacing any snapshot that was waiting. A look it stops waits behind it to run again, unless a newer look waits already.
     fn offer(&mut self, job: Job) -> Option<(Job, ClipStop)> {
+        let ticket = self.ticket();
         if let Some(running) = &self.running {
+            self.waiting_ticket = ticket;
             running.stop();
             if let Running::Look(look, _) = running
                 && self.looking.is_none()
@@ -208,7 +216,14 @@ impl JobSlot {
         }
         let stop = ClipStop::default();
         self.running = Some(Running::Copy(stop.clone()));
+        self.running_ticket = ticket;
         Some((job, stop))
+    }
+
+    /// The next ticket: taken when a person's action starts.
+    fn ticket(&mut self) -> u64 {
+        self.tickets += 1;
+        self.tickets
     }
 
     /// The running job is done: the snapshot waiting runs next, then a look waiting, or nothing does.
@@ -216,6 +231,7 @@ impl JobSlot {
         self.running = None;
         if let Some(job) = self.waiting.take() {
             self.running = Some(Running::Copy(ClipStop::default()));
+            self.running_ticket = self.waiting_ticket;
             return Next::Copy(job);
         }
         if self.looking.is_some() { Next::Looks } else { Next::Nothing }
@@ -311,6 +327,10 @@ pub struct Tool {
     drawn: Mutex<Option<(usize, u32)>>,
     jobs: Mutex<Box<JobSlot>>,
     pub ready: Mutex<Option<Offered>>,
+    /// The newest ticket that has put something in `ready`, taken or not.
+    ready_ticket: AtomicU64,
+    /// A Copy Link's ticket, taken when the person asked and used when its address lands ([`Tool::offer_link`]).
+    link_ticket: Mutex<Option<u64>>,
     /// What the host has been offered, held until a paste takes it or another copy replaces it.
     pub offered: Mutex<Option<Offered>>,
     pub serial: AtomicU64,
@@ -638,6 +658,32 @@ impl Tool {
         }
     }
 
+    /// **Something for the clipboard, from the action that started at `ticket`:** put in `ready` unless an action that started later has put its own there
+    /// already, so the last thing the person asked for is what they get, not the last answer to land. Whether it was put, for the host to be told.
+    fn offer_ready(&self, ticket: u64, offered: Offered) -> bool {
+        let mut ready = lock(&self.ready);
+        if ticket < self.ready_ticket.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.ready_ticket.store(ticket, Ordering::SeqCst);
+        *ready = Some(offered);
+        true
+    }
+
+    /// The person asks for Copy Link now: its place in the order of what's asked for, kept for [`Self::offer_link`].
+    pub(super) fn link_asked(&self) {
+        let ticket = lock(&self.jobs).ticket();
+        *lock(&self.link_ticket) = Some(ticket);
+    }
+
+    /// The person's Copy Link's address, as text for the clipboard, from the ticket it was asked at (or now, from a route that didn't ask here). Whether it
+    /// was put.
+    fn offer_link(&self, text: String) -> bool {
+        let ticket = lock(&self.link_ticket).take();
+        let ticket = ticket.unwrap_or_else(|| lock(&self.jobs).ticket());
+        self.offer_ready(ticket, self.offer_text(text))
+    }
+
     /// A text copy, as one offer like any other.
     pub fn offer_text(&self, text: String) -> Offered {
         Offered {
@@ -859,13 +905,14 @@ fn answer(tool: &Tool, person: super::person::Person<'_>, ran: &super::person::R
     // Under the slot's lock, so a release now either waits for this or finds the slot free after the answer is in. Nothing here takes the session's lock.
     let mut jobs = lock(&tool.jobs);
     let made = jobs.made.take();
+    let ticket = jobs.running_ticket;
     // A look waiting is started by the app's next look at what's wanted ([`Tool::look_to_start`]).
     if let Next::Copy(next) = jobs.next() {
         drop(jobs);
         send_next(tool, person, next);
         return false;
     }
-    publish(tool, job, ran.result, made)
+    publish(tool, job, ran.result, made, ticket)
 }
 
 /// The snapshot that waited, sent as the person's now; not taken, as the app hands off, nothing runs and nothing's said to be on its way.
@@ -890,7 +937,7 @@ pub(super) fn look_answered(tool: &Tool, person: super::person::Person<'_>, aske
 }
 
 /// The newest job's answer: the notice, and what's for the clipboard. Whether there's something ready for the host.
-fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Option<Clip>) -> bool {
+fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Option<Clip>, ticket: u64) -> bool {
     let Some((text, offers)) = words_for(result) else {
         lock(&tool.notice).take();
         return false;
@@ -915,12 +962,14 @@ fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Opti
         .into_iter()
         .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
         .collect();
-    *lock(&tool.ready) = Some(Offered {
-        serial: 0,
-        items,
-        promise: promise.map(Box::new),
-    });
-    true
+    tool.offer_ready(
+        ticket,
+        Offered {
+            serial: 0,
+            items,
+            promise: promise.map(Box::new),
+        },
+    )
 }
 
 /// **A paste asks for a promised type of the offer with this number** ([`super::controls::UiAction::Pasted`]): the person's `snapshot --as svg
@@ -1000,6 +1049,13 @@ impl recto_agent::clipboard::ClipboardSink for Sink {
     fn offer(&self, clip: Clip) {
         if let Some(app) = self.app.upgrade() {
             lock(&app.tools.tool().jobs).made = Some(clip);
+        }
+    }
+
+    fn text(&self, text: String) {
+        let Some(app) = self.app.upgrade() else { return };
+        if app.tools.tool().offer_link(text) {
+            app.listener.copy_ready();
         }
     }
 
@@ -1247,7 +1303,7 @@ mod tests {
             note: String::new(),
         };
         let types = |answer: Value| {
-            assert!(publish(&tool, job, &Ok(answer), Some(clip())), "something's ready");
+            assert!(publish(&tool, job, &Ok(answer), Some(clip()), 0), "something's ready");
             let offered = lock(&tool.ready).take().expect("offered");
             offered.items.iter().map(ClipItem::uti).collect::<Vec<_>>()
         };
@@ -1262,6 +1318,72 @@ mod tests {
             [extract::UTI_PNG],
             "one that doesn't read, no SVG"
         );
+    }
+
+    /// What a snapshot that has answered puts on the clipboard, by the ticket it was asked at; whether it was put.
+    fn snapshot_lands(tool: &Tool, ticket: u64) -> bool {
+        let clip = Clip {
+            items: vec![ClipItem::Ready {
+                uti: extract::UTI_PNG,
+                bytes: vec![1],
+            }],
+            note: String::new(),
+        };
+        publish(tool, job(0.0), &Ok(serde_json::json!({ "says": "Copied." })), Some(clip), ticket)
+    }
+
+    fn on_the_clipboard(tool: &Tool) -> Vec<&'static str> {
+        lock(&tool.ready)
+            .as_ref()
+            .map(|offered| offered.items.iter().map(ClipItem::uti).collect())
+            .unwrap_or_default()
+    }
+
+    /// Failure (the last thing asked for must win): a snapshot asked for first and slow, answering after a Copy Link asked later, puts its picture over the
+    /// link, so the person who asked for the link last pastes a picture; or the host is told of a copy that isn't what's on the clipboard.
+    #[test]
+    fn a_snapshot_asked_before_a_copy_link_doesnt_take_its_place_when_it_lands() {
+        let tool = Tool::default();
+        lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+        let snapshot = lock(&tool.jobs).running_ticket;
+        tool.link_asked();
+        assert!(tool.offer_link("file:///a.pdf#page=1".into()), "the link is put");
+        assert!(!snapshot_lands(&tool, snapshot), "the older snapshot is not, and the host isn't told");
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT]);
+        // Taken by the host already, the older snapshot still doesn't come after it.
+        lock(&tool.ready).take();
+        assert!(!snapshot_lands(&tool, snapshot));
+        assert!(on_the_clipboard(&tool).is_empty());
+    }
+
+    /// Failure: a Copy Link asked first, whose address lands after a newer snapshot has, takes the snapshot's place: the person asked for the picture last.
+    #[test]
+    fn a_copy_link_asked_before_a_snapshot_doesnt_take_its_place_when_it_lands() {
+        let tool = Tool::default();
+        tool.link_asked();
+        lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+        let snapshot = lock(&tool.jobs).running_ticket;
+        assert!(snapshot_lands(&tool, snapshot));
+        assert!(!tool.offer_link("file:///a.pdf#page=1".into()), "the older link is not put");
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_PNG]);
+        // And a newer link, after, is put.
+        tool.link_asked();
+        assert!(tool.offer_link("file:///b.pdf#page=2".into()));
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT]);
+    }
+
+    /// Failure: a snapshot that waited behind another is given the ticket of the one before it, so a Copy Link asked between them is wrongly overwritten.
+    #[test]
+    fn a_waiting_snapshot_keeps_the_ticket_of_when_it_was_asked() {
+        let tool = Tool::default();
+        lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+        tool.link_asked();
+        assert!(lock(&tool.jobs).offer(job(2.0)).is_none(), "it waits");
+        assert!(matches!(lock(&tool.jobs).next(), Next::Copy(_)));
+        let waited = lock(&tool.jobs).running_ticket;
+        assert!(tool.offer_link("file:///a.pdf#page=1".into()));
+        assert!(snapshot_lands(&tool, waited), "asked after the link, so it comes after");
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_PNG]);
     }
 
     /// Failure: the clipboard hands a type's bytes to an offer that's been replaced, or twice, so they're held after the host has them; or a promised SVG is made on the way out, holding up a quit for a worker; or a text copy isn't one offer like a snapshot's.
