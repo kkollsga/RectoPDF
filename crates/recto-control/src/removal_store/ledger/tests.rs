@@ -644,14 +644,16 @@ fn a_backup_under_another_name_is_a_gap() {
     let root = dir.join("state");
     std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
     let right = dir.join(recto_core::save::backup_name(&dir.join("a.pdf")));
-    let landed = |backup: &Path| SaveNote::Landed {
-        path: &dir.join("a.pdf"),
-        to: Some(stamp(&dir.join("a.pdf"))),
-        original: &dir.join("a.pdf"),
+    let (file, wrong) = (dir.join("a.pdf"), dir.join("original-0000.pdf"));
+    let to = Some(stamp(&file));
+    let landed = |backup| SaveNote::Landed {
+        path: &file,
+        to,
+        original: &file,
         backup: Some(backup),
     };
     note_save(&root.join("backups.noindex"), &landed(&right));
     assert_eq!(read(&root).gap, None, "the name the path hashes to is not a mismatch");
-    note_save(&root.join("backups.noindex"), &landed(&dir.join("original-0000.pdf")));
+    note_save(&root.join("backups.noindex"), &landed(&wrong));
     assert_eq!(read(&root).gap, Some(Gap::BackupMismatch));
 }
