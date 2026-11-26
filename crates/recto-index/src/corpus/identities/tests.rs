@@ -509,19 +509,41 @@ fn a_link_or_a_pipe_for_an_identity_file_is_refused_with_no_wait_and_nothing_it_
             make(&place);
         };
         swap(&|place| symlink(&outside, place).unwrap());
-        assert!(matches!(Identities::open(tk(), &temp.0, KEY), Err(Damaged)), "a link at {name}");
+        let root = temp.0.to_path_buf();
+        assert!(
+            within_20_seconds(name, move || matches!(Identities::open(tk(), &root, KEY), Err(Damaged))),
+            "a link at {name}"
+        );
         swap(&|place| assert!(std::process::Command::new("/usr/bin/mkfifo").arg(place).status().unwrap().success()));
-        assert!(matches!(Identities::open(tk(), &temp.0, KEY), Err(Damaged)), "a pipe at {name}");
+        let root = temp.0.to_path_buf();
+        assert!(
+            within_20_seconds(name, move || matches!(Identities::open(tk(), &root, KEY), Err(Damaged))),
+            "a pipe at {name}"
+        );
         // A build over what's there: not followed, not waited on, and the identities are whole again after.
         fs::remove_file(paths(&temp.0).ready).unwrap();
-        let mut feed = Feed::made_up(4);
+        let root = temp.0.to_path_buf();
         assert!(
-            matches!(built(&temp.0, &mut feed, &BuildLimits::default()), BuildOutcome::Ready { .. }),
+            within_20_seconds(name, move || matches!(
+                built(&root, &mut Feed::made_up(4), &BuildLimits::default()),
+                BuildOutcome::Ready { .. }
+            )),
             "{name}"
         );
         assert_eq!(fs::read(&outside).unwrap(), b"keep me", "{name}: what the link pointed at");
         assert_eq!(every_read(&stored(&temp.0)).len(), 4);
     }
+}
+
+/// `work` on a thread, so a regression to an open that blocks on a pipe fails here in 20 s and says so, where nextest would wait out 300 s.
+fn within_20_seconds<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(work());
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .unwrap_or_else(|_| panic!("{what}: blocked on a pipe for 20 s"))
 }
 
 /// Failure: the corpus's state says Ready on a build that wrote identities, but `disk_state` or a later build reads the new files as something else.
