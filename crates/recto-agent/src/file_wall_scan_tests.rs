@@ -103,7 +103,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-control/src/removal_store/record.rs",
         2,
         "the `session` and `session-windowless` folders of the root the caller of `survey_record` names (`pub`, with no production caller yet; the design names the \
-         state folder), opened through the folder helper (no link followed); the two record slots in each read whole, up to 32 MiB, through that folder's \
+         state folder), opened through the folder helper (no link followed); the two record slots in each read at most 32 MiB + 1 byte, then refused, through that folder's \
          descriptor (a plain private file only): never a document",
     ),
     (
