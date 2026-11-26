@@ -19,7 +19,7 @@ use super::pin::{CopyPin, PinSet, TempPin};
 use super::trash::Trash;
 use recto_core::removal::{ArtifactKey, Store};
 use recto_platform::folder::remove::{Failure, Walk, remove_tree_in};
-use recto_platform::folder::{Folder, Identity, Kind, Opened, identity_at};
+use recto_platform::folder::{Folder, Kind, Opened, identity_at};
 use recto_platform::trash::Failure as TrashFailure;
 use recto_session::record::CURRENT_VERSION;
 use std::ffi::{OsStr, OsString};
