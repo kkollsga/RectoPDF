@@ -447,7 +447,10 @@ fn a_sidecar_goes_with_its_journal_and_only_that() {
     assert_eq!(sidecar_alone(magic, true), unknown, "bad magic");
     let mut long = sidecar::MAGIC.to_vec();
     long.push(65);
-    long.extend(std::iter::repeat_n(b'j', 65 + 29 + 4));
+    // Exactly the 110 bytes the adapter reads, with a name length one over `MAX_NAME` (no file can be longer than what is read, so the
+    // check on the length byte is what refuses it, ahead of any slicing).
+    long.resize(sidecar::HEADER_BYTES, b'j');
+    assert_eq!(long.len(), 110);
     assert_eq!(sidecar_alone(long, true), unknown, "a name of 65");
 }
 
