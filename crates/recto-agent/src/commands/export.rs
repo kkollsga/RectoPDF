@@ -697,8 +697,12 @@ impl Cmd for Snapshot {
                 return Err(crate::clipboard::not_for_agents());
             };
             let as_seen = as_seen.ok_or_else(crate::clipboard::unseen)?;
-            // A reference never goes to the clipboard: the line is refused as it's read, so this is a page by number.
-            let (id, _, source) = locate(access, tab, at.hint())?;
+            // A reference never goes to the clipboard. The line is refused as it's read; one built in Rust never passed through it, and is refused here
+            // rather than copying the page its hint names, unresolved.
+            let PageOrRef::Page(page) = at else {
+                return Err(AgentError::new(Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD, exit::USAGE));
+            };
+            let (id, _, source) = locate(access, tab, *page)?;
             let keys = access.persons_keys(cx.actor);
             return extract::box_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *rect, format, (*anyway, as_seen));
         }
@@ -1316,4 +1320,88 @@ It doesn't show the unsaved turn of {degrees} degrees."
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clipboard::ClipboardSink;
+    use crate::extract::{Clip, ClipStop};
+    use std::sync::Mutex;
+
+    /// A window's clipboard that counts what is offered to it.
+    #[derive(Default)]
+    struct Counting {
+        offered: Mutex<usize>,
+    }
+
+    impl ClipboardSink for Counting {
+        fn begin(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn begin_paste(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn offer(&self, _clip: Clip) {
+            *self.offered.lock().unwrap() += 1;
+        }
+        fn made(&self, _bytes: Vec<u8>) {}
+    }
+
+    /// The person's session, with a clipboard.
+    struct AtTheWindow {
+        session: Mutex<recto_session::Session<DrawableLoader>>,
+        clipboard: Counting,
+    }
+
+    impl SessionAccess for AtTheWindow {
+        type Loader = DrawableLoader;
+        fn with<R>(&self, step: impl FnOnce(&mut recto_session::Session<DrawableLoader>) -> R) -> R {
+            self.session.with(step)
+        }
+        fn clipboard(&self, actor: Actor) -> Option<&dyn ClipboardSink> {
+            (actor == Actor::Person).then_some(&self.clipboard as &dyn ClipboardSink)
+        }
+    }
+
+    /// Failure: a `Snapshot` to the clipboard built in Rust with a reference in place of a page never passes through the line's refusal, so it copies the
+    /// page its reference only hints at, unresolved, to the person's clipboard. It is refused when it runs, in the line's words, and nothing is offered.
+    #[test]
+    fn a_snapshot_by_reference_built_in_rust_is_never_copied_to_the_clipboard() {
+        let file = recto_testpdf::TempPdf::new(
+            "one.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))]),
+        );
+        let access = AtTheWindow {
+            session: Mutex::new(recto_session::Session::new(DrawableLoader)),
+            clipboard: Counting::default(),
+        };
+        access.session.lock().unwrap().open(&file.0).unwrap();
+        let snapshot = Snapshot {
+            tab: TabRef::Active,
+            at: PageOrRef::Ref(super::super::locating::made_up_locator(recto_core::locator::Target::Page)),
+            rect: [0.0, 0.0, 100.0, 100.0],
+            format: "png".into(),
+            out: None,
+            scale: 1.0,
+            anyway: false,
+            to_clipboard: true,
+            as_seen: Some(extract::AsSeen {
+                quarter_turns: 0,
+                file_page: 0,
+                own: true,
+            }),
+        };
+        let error = Cmd::run(
+            &snapshot,
+            &mut Cx {
+                access: &access,
+                actor: Actor::Person,
+                events: &mut Vec::new(),
+            },
+        )
+        .expect_err("refused");
+        assert_eq!((error.code, error.message.as_str()), (Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD));
+        assert_eq!(*access.clipboard.offered.lock().unwrap(), 0, "nothing reached the clipboard");
+    }
 }
