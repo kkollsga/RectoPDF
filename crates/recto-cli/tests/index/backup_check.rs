@@ -293,7 +293,10 @@ impl Probe {
         let peer = self.start("peer", other, Some(leader.child.id()));
         let began = Instant::now();
         while !ready.iter().all(|path| path.metadata().is_ok_and(|meta| meta.len() > 0)) {
-            assert!(began.elapsed() < HANG_GUARD, "native probes did not reach their forced waits within the {HANG_GUARD:?} guard");
+            assert!(
+                began.elapsed() < HANG_GUARD,
+                "native probes did not reach their forced waits within the {HANG_GUARD:?} guard"
+            );
             std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
         }
         let stopped = self.finish("forced-hang", leader, Duration::from_millis(20));
