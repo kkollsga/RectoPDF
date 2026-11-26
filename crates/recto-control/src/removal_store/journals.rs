@@ -79,7 +79,6 @@ pub fn survey_journals(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, sur
 
 pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, caps: &Caps) -> Result<(), Refusal> {
     let maps = Maps::of(lineage);
-    let mut buffer = Vec::new();
     for flavor in FLAVORS {
         let session_path = root.join(flavor);
         let session = match Folder::open(&session_path) {
@@ -92,16 +91,9 @@ pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: Tar
             Opened::Other => return Ok(()),
             Opened::Folder(folder) => folder,
         };
-        let run = Run {
-            flavor,
-            #[cfg(test)]
-            path: session_path.join("journals"),
-            folder: &folder,
-            maps: &maps,
-            mode,
-            caps,
-        };
-        if !run.survey(survey, &mut buffer)? {
+        let mut prefix = flavor.as_bytes().to_vec();
+        prefix.extend_from_slice(b"/journals/");
+        if !survey_journals_folder(&folder, &prefix, None, &session_path.join("journals"), &maps, mode, caps, survey)? {
             return Ok(());
         }
     }
@@ -111,9 +103,43 @@ pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: Tar
     Ok(())
 }
 
+/// One `journals` folder's files added to `survey`. Whether it was listed to the end and every entry added (`false` leaves the stores unmarked).
+///
+/// `prefix` is the folder's place under the state root with its closing `/`, such as `session/journals/` (it starts every key, so the same name in two
+/// folders is two artifacts). `store` is the store every entry is in, or `None` to give each entry the store its name says (the live folders). `at`
+/// is where the folder was when opened, for a test's seams; it is never opened.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn survey_journals_folder(
+    folder: &Folder,
+    prefix: &[u8],
+    store: Option<Store>,
+    at: &Path,
+    maps: &Maps,
+    mode: TargetMode,
+    caps: &Caps,
+    survey: &mut Survey,
+) -> Result<bool, Refusal> {
+    #[cfg(not(test))]
+    let _ = at;
+    let run = Run {
+        prefix,
+        store,
+        #[cfg(test)]
+        path: at.to_path_buf(),
+        folder,
+        maps,
+        mode,
+        caps,
+    };
+    run.survey(survey, &mut Vec::new())
+}
+
 /// One folder's survey.
 struct Run<'a> {
-    flavor: &'a str,
+    /// Every key starts with this: the folder's place under the state root.
+    prefix: &'a [u8],
+    /// The store of every entry, or `None` for the store each name says.
+    store: Option<Store>,
     /// Where the folder was when opened, for a test's seams; never opened again.
     #[cfg(test)]
     path: PathBuf,
@@ -179,7 +205,7 @@ impl Run<'_> {
                 };
                 let format = if owner == Owner::Unknown { placed.format } else { Format::Current };
                 survey.add(Found {
-                    store: store_of(kind),
+                    store: self.store_of(kind),
                     key: self.key(entry),
                     owner,
                     format,
@@ -207,11 +233,15 @@ impl Run<'_> {
         Ok(Some(listed))
     }
 
-    /// Root-relative, with the flavor: the same name in both folders is two artifacts.
+    /// Root-relative, with the folder's place: the same name in two folders is two artifacts.
     fn key(&self, entry: &Entry) -> ArtifactKey {
-        let mut name = format!("{}/journals/", self.flavor).into_bytes();
+        let mut name = self.prefix.to_vec();
         name.extend_from_slice(entry.name.as_encoded_bytes());
-        ArtifactKey::of(store_of(names::kind_of(&entry.name)), &name)
+        ArtifactKey::of(self.store_of(names::kind_of(&entry.name)), &name)
+    }
+
+    fn store_of(&self, kind: Kind) -> Store {
+        self.store.unwrap_or_else(|| store_of(kind))
     }
 
     fn place(&self, name: Option<&str>, kind: Kind, journals: &HashMap<String, Option<Sides>>, buffer: &mut Vec<u8>) -> Result<Placed, Gone> {

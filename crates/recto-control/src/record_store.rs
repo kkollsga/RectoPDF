@@ -53,7 +53,9 @@ const MAX_JOURNAL_BYTES_AT_LAUNCH: u64 = 1024 * 1024 * 1024;
 /// How many damaged states are kept.
 const DAMAGED_KEPT: usize = 3;
 /// What says a folder of an older version has work done in it after going back from a newer one, to bring forward.
-const WENT_BACK: &str = "went-back";
+pub(crate) const WENT_BACK_NAME: &str = "went-back";
+/// The word a damaged state's folder is named by: `<flavor>.damaged`, then `<flavor>.damaged.<k>`. Removal's survey of the copies reads the same word.
+pub(crate) const DAMAGED_WORD: &str = "damaged";
 
 /// How long a launch waits for the lock, in case what holds it is the app it's taking over from, on its way out.
 const LOCK_PATIENCE: Duration = Duration::from_millis(600);
@@ -489,9 +491,9 @@ impl RecordStore {
         let name = main.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
         let slot = |at: usize| {
             if at == 0 {
-                self.root.join(format!("{name}.damaged"))
+                self.root.join(format!("{name}.{DAMAGED_WORD}"))
             } else {
-                self.root.join(format!("{name}.damaged.{at}"))
+                self.root.join(format!("{name}.{DAMAGED_WORD}.{at}"))
             }
         };
         let _ = std::fs::remove_dir_all(slot(DAMAGED_KEPT - 1));
@@ -505,7 +507,7 @@ impl RecordStore {
     fn bring_forward_from_going_back(&self, main: &Path) -> bool {
         for version in 1..self.version {
             let folder = self.version_folder(main, version);
-            if !folder.join(WENT_BACK).exists() {
+            if !folder.join(WENT_BACK_NAME).exists() {
                 continue;
             }
             if copy_folder(&folder, main).is_ok() {
@@ -514,8 +516,8 @@ impl RecordStore {
                         let _ = std::fs::remove_file(main.join(name));
                     }
                 }
-                let _ = std::fs::remove_file(folder.join(WENT_BACK));
-                let _ = std::fs::remove_file(main.join(WENT_BACK));
+                let _ = std::fs::remove_file(folder.join(WENT_BACK_NAME));
+                let _ = std::fs::remove_file(main.join(WENT_BACK_NAME));
                 return true;
             }
         }
@@ -741,8 +743,8 @@ impl RecordStore {
 
     /// Working beside a newer app's record, this folder is what going forward has to bring with it.
     fn note_going_back(&self, dir: &Path) {
-        if self.progress().beside_newer && !dir.join(WENT_BACK).exists() {
-            let _ = local::write_private_file_unsynced(&dir.join(WENT_BACK), b"1");
+        if self.progress().beside_newer && !dir.join(WENT_BACK_NAME).exists() {
+            let _ = local::write_private_file_unsynced(&dir.join(WENT_BACK_NAME), b"1");
         }
     }
 
@@ -3177,7 +3179,7 @@ mod tests {
             "with what it was editing"
         );
         assert!(
-            !root.join(format!("session.v{CURRENT_VERSION}")).join(WENT_BACK).exists(),
+            !root.join(format!("session.v{CURRENT_VERSION}")).join(WENT_BACK_NAME).exists(),
             "and that's done with"
         );
         std::fs::remove_dir_all(&root).unwrap();

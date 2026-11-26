@@ -801,6 +801,7 @@ dependencies = [
  "recto-proto",
  "recto-session",
  "recto-testpdf",
+ "recto-update",
  "serde_json",
 ]
 
