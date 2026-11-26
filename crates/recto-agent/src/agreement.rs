@@ -14,7 +14,7 @@ use crate::{AgentError, SessionAccess, select};
 use recto_core::OpenError;
 use recto_core::agreement::{Disagreement, View, compare, compared_pages, structure_view};
 use recto_platform::FileStamp;
-use recto_render_service::{DocRenderer, MAX_BUSY, Policy, RenderFailure, ServiceConfig};
+use recto_render_service::{DocRenderer, KillReason, MAX_BUSY, Policy, RenderFailure, ServiceConfig};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -121,20 +121,33 @@ fn renderer_half(r: &mut impl RendererHalf, structure: &View, deadline: Instant)
     }
 }
 
-/// **Asks again while the Mac is too busy.** A busy answer ([`RenderFailure::TooBusyToStart`], [`RenderFailure::TooBusy`]) says nothing of the file, the
-/// service remembers nothing of it and bounds a run of them itself ([`MAX_BUSY`]), so the look, which has its own `deadline`, asks again until then: a
-/// person on a busy Mac isn't told to save again. No sleep between asks: each costs the service's own start and page deadline. At most `2 * MAX_BUSY`
-/// asks (a start's run and an open's run each have one, as the indexer's), then the last busy answer is the answer, which is `Unchecked`.
+/// **Asks again while the Mac is too busy.** A busy answer ([`RenderFailure::is_busy`]) says nothing of the file, the service remembers nothing of it and
+/// bounds a run of them itself ([`MAX_BUSY`]), so the look, which has its own `deadline`, asks again until then: a person on a busy Mac isn't told to save
+/// again. No sleep between asks: each costs the service's own start and page deadline, so one ask can overrun `deadline` by that much, and a save waits
+/// at most one [`LOOK_DEADLINE`] plus that. At most `2 * MAX_BUSY` asks (a start's run and an open's run each have one, as the indexer's), then the last
+/// busy answer is the answer, which is `Unchecked`.
+///
+/// The service ends its own run of busy answers by giving the file's failure: a starved kill after `MAX_BUSY - 1` busy ones is `OpenFailed` or
+/// `PageReadFailed` with a `Deadline` reason (`host/busy.rs`). Seen after a busy answer, that is still the Mac's doing, so it is the busy answer, which
+/// is about the moment and isn't kept; any other failure is the file's, as without busy answers.
 fn asked<T>(deadline: Instant, mut ask: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
     let mut last = RenderFailure::TooBusyToStart;
+    let mut busy_seen = false;
     for _ in 0..2 * u32::from(MAX_BUSY) {
         match ask() {
             Err(busy) if busy.is_busy() => {
                 last = busy;
+                busy_seen = true;
                 if Instant::now() >= deadline {
                     break;
                 }
             }
+            Err(
+                RenderFailure::OpenFailed { reason: KillReason::Deadline }
+                | RenderFailure::PageReadFailed {
+                    reason: KillReason::Deadline, ..
+                },
+            ) if busy_seen => break,
             other => return other,
         }
     }
@@ -838,12 +851,10 @@ mod tests {
     fn a_deadline_kill_after_busy_answers_is_the_mac_not_the_file() {
         let _lock = test_lock();
         let deadline = Instant::now() + LOOK_DEADLINE;
-        let open = RenderFailure::OpenFailed {
-            reason: recto_render_service::KillReason::Deadline,
-        };
+        let open = RenderFailure::OpenFailed { reason: KillReason::Deadline };
         let read = RenderFailure::PageReadFailed {
             page: 0,
-            reason: recto_render_service::KillReason::Deadline,
+            reason: KillReason::Deadline,
         };
         assert_eq!(renderer_half(&mut starved_out(open), &one_page(), deadline), Some(Disagreement::Unchecked));
         let busy = RenderFailure::TooBusy { page: 0 };
@@ -870,9 +881,7 @@ mod tests {
     #[test]
     fn a_real_failure_after_busy_answers_still_refuses_as_damaged() {
         let _lock = test_lock();
-        let crashed = RenderFailure::OpenFailed {
-            reason: recto_render_service::KillReason::Crashed,
-        };
+        let crashed = RenderFailure::OpenFailed { reason: KillReason::Crashed };
         assert_eq!(
             renderer_half(&mut starved_out(crashed), &one_page(), Instant::now() + LOOK_DEADLINE),
             Some(Disagreement::RendererFailed)
