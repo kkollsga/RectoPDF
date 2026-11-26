@@ -7,7 +7,7 @@ use recto_reader::layout::PageBox;
 use recto_reader::paper::{DARK_PAPER, PageLook};
 use recto_reader::tiles::{Op, PageMap, SleepView, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
-use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, MAX_BUSY, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages_with, text_lines};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -212,9 +212,22 @@ fn renderer(file: &Path) -> DocRenderer {
     DocRenderer::new(file, None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap()
 }
 
+/// **Asks as the product's callers do: again, while the Mac was too busy** (a build or a wake starving the worker). The renderer's contract is that a busy answer remembers nothing and asking again draws it, and only `MAX_BUSY` in a row is the page's own failure; the engine asks again at its next job. Asking once failed this file's tests on a loaded machine (2026-11-26, a draw that took 7.7 s: a start plus a deadline), with a bare `matches!` saying nothing. So at most `MAX_BUSY` asks, with no sleep (each ask costs the product's own start timeout and page deadline); one that still isn't answered panics with the last answer and the renderer's counts.
+fn asked_again<T: std::fmt::Debug>(doc: &mut DocRenderer, what: &str, mut ask: impl FnMut(&mut DocRenderer) -> Result<T, RenderFailure>) -> T {
+    let mut last = None;
+    for _ in 0..MAX_BUSY {
+        match ask(doc) {
+            Err(RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart) => last = Some("too busy".to_string()),
+            Ok(done) => return done,
+            Err(other) => panic!("{what}: {other:?}, {:?}", doc.stats()),
+        }
+    }
+    panic!("{what}: still {} after {MAX_BUSY} asks, {:?}", last.unwrap_or_default(), doc.stats());
+}
+
 /// What's decided for a page from a picture of it whose longest side is `edge`, drawn by `doc`, with the images it's told of, or none if `whole`: dimmed, kept and turned, as a person sees it.
 fn look_of(doc: &mut DocRenderer, page: u32, edge: f32, whole: bool) -> (bool, Vec<[u16; 4]>, Vec<[u16; 4]>) {
-    let (width, height) = doc.page_size(page).unwrap();
+    let (width, height) = asked_again(doc, "the page's size", |doc| doc.page_size(page));
     let scale = edge / width.max(height);
     let (w, h) = device_size(width, height, scale).unwrap();
     let surface = PixelSurface::create(w, h).unwrap();
@@ -230,11 +243,22 @@ fn look_of(doc: &mut DocRenderer, page: u32, edge: f32, whole: bool) -> (bool, V
         stride: surface.stride(),
         generation: 1,
     };
-    assert!(matches!(doc.render_tile(&request, &surface), Ok(TileResult::Done(_))));
+    let drawn = asked_again(doc, "the page's tile", |doc| doc.render_tile(&request, &surface));
+    assert!(matches!(drawn, TileResult::Done(_)), "{drawn:?}, {:?}", doc.stats());
     let boxes = if whole {
         None
     } else {
-        Some(doc.image_boxes(page, 1).expect("its images are known"))
+        // `None` with the busy count moved is the renderer saying the Mac was too busy to tell, which nothing remembers.
+        Some(asked_again(doc, "where the page's images are", |doc| {
+            let busy = doc.stats().too_busy;
+            doc.image_boxes(page, 1).ok_or(()).map_err(|()| {
+                if doc.stats().too_busy > busy {
+                    RenderFailure::TooBusy { page }
+                } else {
+                    RenderFailure::Unavailable
+                }
+            })
+        }))
     };
     let stride = surface.stride() as usize;
     let look = surface.with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, w, h)).unwrap();
