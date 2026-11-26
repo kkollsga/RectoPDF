@@ -6,7 +6,7 @@
 //! different disks apart, and a remounted disk is still the same one. Versions join only when both have the same real volume and a real
 //! inode; one without joins nothing. Joined into one document: `At` links with the same version (a rename or a hard link), the two ends of
 //! a `Saved`, and the current (version, path), which counts as an `At`. A path alone never joins; an `Unplaced` path is read on both
-//! sides, so it is Unknown. The target is everything joined to the current file; the rest is `Other`.
+//! sides, so it is Unknown. A Save As destination is no link at all ([`Lineage::destinations`]). The target is everything joined to the current file; the rest is `Other`.
 //!
 //! **Fork rule.** A block copy of a disk has the original's volume UUID and so can't be told from it. If one version was saved into two
 //! different versions the history has split in two, and the lineage says so (`Gap::Forked`): it is not complete. Nothing here opens a file.

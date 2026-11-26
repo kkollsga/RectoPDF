@@ -2,14 +2,14 @@
 //! (`docs/design/removal.md` §3, §10 "D2c-2b as built").
 //!
 //! **Read-only, and nothing in the person's folder is opened.** The folder of each path the lineage puts on the target's side (an `Unplaced` path
-//! included) is opened once by its descriptor (no link followed at its last part, this user's) and only listed; each entry is looked at by `fstatat`
+//! included), and of each Save As destination nothing was seen at since (`Lineage::destinations`, which no other survey reads), is opened once by its descriptor (no link followed at its last part, this user's) and only listed; each entry is looked at by `fstatat`
 //! without following a link. The naming rule is the writer's own (`recto_core::save::writer_temp_shape`).
 //!
 //! **What an entry is.** Not lopdf's exact shape: the person's own file, ignored (naming it `Unknown` would refuse every removal from a busy
 //! folder). Exact shape and a hash that is a lineage path's file name in this folder: placed by that path's sides, as a backup is. Exact shape and
 //! a hash that is no lineage path's: ignored if it changed after the ledger began, `Unknown` if it changed before or has no time. The
 //! time rule holds because Save, Save As and Replace all record the path the writer names its temp for at `Starting`, before the writer makes anything (a
-//! destination as `Unplaced`, by its canonical folder), or leave a gap that refuses; so a temp that appeared after the ledger began and matches no path is
+//! destination as a `Destination` record, by its canonical folder: a temp named for one that never landed is `Unknown`), or leave a gap that refuses; so a temp that appeared after the ledger began and matches no path is
 //! no save's of this app. **Known limits (the first a false "none found", the second a false refusal):** a Save As started by a build from before this
 //! recording isn't in the ledger, so its temp reads "none found" until it's swept; and a Save As that crashes just after its rename leaves its `.tmp` as a
 //! hard link to the target, which reads `Shared` (a false refusal) until lopdf's `clear_leftover_links` runs. A placed `.tmp` must be a plain file (`Shared` with other hard links); a `.d` must
