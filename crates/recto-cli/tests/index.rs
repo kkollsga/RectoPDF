@@ -955,7 +955,7 @@ fn raw_text_under(folder: &Path) -> String {
 fn text_under(folder: &Path, leave_out_sealed: bool) -> String {
     let sealed = |path: &Path| {
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        matches!(name, "text.pack" | "pages.bin" | "seal.bin") || name.ends_with(".sealed")
+        matches!(name, "text.pack" | "pages.bin" | "seal.bin" | "ids.bin") || name.ends_with(".sealed")
     };
     let mut found = String::new();
     let mut stack = vec![folder.to_path_buf()];

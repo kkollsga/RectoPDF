@@ -379,7 +379,8 @@ fn a_build_resumed_after_a_kill_ends_with_the_identities_of_an_uninterrupted_one
     ));
     let expected = all_reads(&whole.0);
     // What a kill after three pages can leave in `ids.bin`: the three records and a piece of a fourth, or the fourth whole with no text after it, or only two.
-    let cuts: [(&str, fn(&mut Vec<u8>)); 3] = [
+    type Cut = fn(&mut Vec<u8>);
+    let cuts: [(&str, Cut); 3] = [
         ("a record cut in half", |bytes| bytes.extend_from_slice(&[0x55; RECORD_BYTES / 2])),
         ("a whole record with no text after it", |bytes| bytes.extend_from_slice(&[0x55; RECORD_BYTES])),
         ("two records of the three", |bytes| bytes.truncate(2 * RECORD_BYTES)),
