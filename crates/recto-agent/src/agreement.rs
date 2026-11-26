@@ -129,7 +129,7 @@ fn asked<T>(deadline: Instant, mut ask: impl FnMut() -> Result<T, RenderFailure>
     let mut last = RenderFailure::TooBusyToStart;
     for _ in 0..2 * u32::from(MAX_BUSY) {
         match ask() {
-            Err(busy @ (RenderFailure::TooBusyToStart | RenderFailure::TooBusy { .. })) => {
+            Err(busy) if busy.is_busy() => {
                 last = busy;
                 if Instant::now() >= deadline {
                     break;

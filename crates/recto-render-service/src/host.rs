@@ -387,6 +387,11 @@ pub enum PageDrawState {
 }
 
 impl RenderFailure {
+    /// The Mac was too busy to give the worker the processor ([`Self::TooBusy`], [`Self::TooBusyToStart`]): it says nothing of the file, nothing is remembered, and asking again tries again.
+    pub fn is_busy(self) -> bool {
+        matches!(self, Self::TooBusy { .. } | Self::TooBusyToStart)
+    }
+
     /// A stable code for agents.
     pub fn code(self) -> &'static str {
         match self {
