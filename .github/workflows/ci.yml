@@ -52,8 +52,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # What a full check runs as its heavy part (CHECK_PART=heavy, tools/check.sh): the layout, the compile gate, the workspace tests, the app, built, and both tiers
-  # of its tests, then what is left registered. The ratchet, the tools' tests and the per-crate feature check are `light`'s.
+  # What a full check runs as its heavy part (CHECK_PART=heavy, tools/check.sh): the workspace tests, the app, built, and both tiers
+  # of its tests, then what is left registered. The ratchet, the layout, the compile gate (clippy, Windows check, doc links), the tools' tests and the per-crate feature
+  # check are `light`'s (2026-11-26: the gate ran once, in light, was about 55 s off this job).
   check:
     runs-on: macos-26
     timeout-minutes: 45
@@ -176,7 +177,7 @@ jobs:
           path: .git/recto-test-times
           retention-days: 14
           if-no-files-found: ignore
-  # What a full check runs as its light part (CHECK_PART=light): the ratchet, the how-to pages' paths, the tools' own tests when what they test changed since CI's
+  # What a full check runs as its light part (CHECK_PART=light): the ratchet, the layout and compile gate, the how-to pages' paths, the tools' own tests when what they test changed since CI's
   # base (`ci_base` in tools/check-scope.sh, which needs the history: the whole of it is checked out), and `cargo check --tests` of each changed crate. No
   # nextest, no PDFium build, no app. The cache is restored for the check's dependencies and never saved here: one job saves it (`check`).
   light:
