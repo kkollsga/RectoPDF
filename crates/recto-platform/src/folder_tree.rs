@@ -36,5 +36,6 @@ pub struct Pinned {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree {
     pub id: Identity,
+    /// Sorted by name: a walk finds an entry by binary search, and one not found is taken as not pinned.
     pub entries: Vec<Pinned>,
 }

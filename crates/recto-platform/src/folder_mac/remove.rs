@@ -78,9 +78,10 @@ fn remove_folder(parent: &Folder, name: &OsStr, tree: &Tree, depth: usize, walk:
     for entry in folder.entries().map_err(fail(name))? {
         let entry = entry.map_err(fail(name))?;
         listed += 1;
-        let Some(pinned) = tree.entries.iter().find(|p| p.name == entry.name) else {
+        let Ok(at) = tree.entries.binary_search_by(|p| p.name.as_os_str().cmp(&entry.name)) else {
             return Err(Failure::Unpinned(entry.name));
         };
+        let pinned = &tree.entries[at];
         if pinned.id != entry.identity() {
             return Err(Failure::Changed(entry.name));
         }
@@ -123,6 +124,16 @@ fn remove_folder(parent: &Folder, name: &OsStr, tree: &Tree, depth: usize, walk:
     }
     if depth == 0 && !(walk.gate)(name) {
         return Err(Failure::Stopped(name.to_owned()));
+    }
+    // The last look before the folder goes by its name: it is the one that was opened, and not another put in its place since.
+    match parent.look(name) {
+        Ok(now) if now.identity() == tree.id => {}
+        Ok(_) => return Err(Failure::Changed(name.to_owned())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            removed.already_gone += 1;
+            return Ok(());
+        }
+        Err(error) => return Err(Failure::Io(name.to_owned(), error)),
     }
     match parent.unlink_in(name, true) {
         Ok(()) => removed.unlinked += 1,

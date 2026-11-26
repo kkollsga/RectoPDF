@@ -31,6 +31,11 @@ pub struct Entry {
     pub kind: Kind,
 }
 
+/// Nothing is local off the Mac.
+pub fn is_local(_path: &Path) -> bool {
+    false
+}
+
 /// Nothing is looked at off the Mac.
 pub fn identity_at(_path: &Path) -> Option<Identity> {
     None

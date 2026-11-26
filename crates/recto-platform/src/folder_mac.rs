@@ -102,6 +102,19 @@ pub fn identity_at(path: &Path) -> Option<Identity> {
     })
 }
 
+/// Whether `path` is on a local volume (`statfs` flags `MNT_LOCAL`): a process number in a name there is a process of this Mac. `false` for a network share,
+/// where the same number may be another Mac's, and when it can't be asked.
+pub fn is_local(path: &Path) -> bool {
+    let Ok(cpath) = CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: an all-zero `statfs` is plain data the kernel then fills.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `cpath` is NUL-terminated and `fs` is a whole `statfs`.
+    if unsafe { libc::statfs(cpath.as_ptr(), &raw mut fs) } != 0 {
+        return false;
+    }
+    fs.f_flags & libc::MNT_LOCAL as u32 != 0
+}
+
 fn flags() -> libc::c_int {
     libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
 }

@@ -8,6 +8,7 @@ pub enum Failure {
     Unavailable,
     BadPath,
     Refused(isize),
+    MovedUnknown,
 }
 
 pub fn has_trash_for(_path: &Path) -> bool {

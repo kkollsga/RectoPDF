@@ -254,6 +254,41 @@ fn path_follows_the_folder_and_sync_works() {
     folder.sync().unwrap();
 }
 
+/// Failure (review 7): the walk finds a pinned entry by a linear search, which costs a scan of the folder for every entry (quadratic in a big copy). The tree
+/// is sorted and searched by bisection, so a tree that isn't sorted finds nothing and the walk stops, taking nothing out.
+#[test]
+fn a_walk_finds_a_pinned_entry_by_bisection() {
+    use crate::folder::remove::{Failure, Walk, remove_tree_in};
+    let dir = TempDir::new("recto-folder-");
+    std::fs::create_dir(dir.join("copy")).unwrap();
+    for name in ["a", "b", "c"] {
+        std::fs::write(dir.join("copy").join(name), b"x").unwrap();
+    }
+    let parent = opened(dir.path());
+    let copy = opened(&dir.join("copy"));
+    let pinned = |name: &str| Pinned {
+        name: OsString::from(name),
+        id: copy.look(OsStr::new(name)).unwrap().identity(),
+        below: None,
+    };
+    let rank = |_: usize, _: &OsStr, _: Kind| 1u8;
+    let mut go = |_: &OsStr| true;
+    let sorted = Tree {
+        id: copy.identity().unwrap(),
+        entries: vec![pinned("a"), pinned("b"), pinned("c")],
+    };
+    let mut unsorted = sorted.clone();
+    unsorted.entries.reverse();
+    let mut walk = Walk { rank: &rank, gate: &mut go };
+    assert!(matches!(
+        remove_tree_in(&parent, OsStr::new("copy"), &unsorted, &mut walk),
+        Err(Failure::Unpinned(_))
+    ));
+    assert!(dir.join("copy").join("a").exists(), "nothing was taken out");
+    assert!(remove_tree_in(&parent, OsStr::new("copy"), &sorted, &mut walk).is_ok());
+    assert!(!dir.join("copy").exists());
+}
+
 /// Every image this probe attached, detached on drop (a failed assertion included), by the mount folder it made, and only those.
 struct Attached(Vec<std::path::PathBuf>);
 

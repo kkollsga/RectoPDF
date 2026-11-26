@@ -27,6 +27,8 @@ pub enum Failure {
     BadPath,
     /// The system refused: `NSError.code` (`NSFileWriteUnknownError` 512 and its kin).
     Refused(isize),
+    /// The system said the item was moved but not where: it is no longer where it was, and its place in the Trash is not known.
+    MovedUnknown,
 }
 
 /// The calls, opened once and kept for the life of the process.
@@ -235,7 +237,12 @@ pub fn move_to_trash(path: &Path) -> Result<PathBuf, Failure> {
     if !moved {
         return Err(Failure::Refused(code_of(objc, error)));
     }
-    path_of(objc, resulting).ok_or(Failure::Refused(0))
+    finished(path_of(objc, resulting))
+}
+
+/// What a move the system said it made comes to: where it went, or that that isn't known (the item is then in doubt, not still in place).
+fn finished(resulting: Option<PathBuf>) -> Result<PathBuf, Failure> {
+    resulting.ok_or(Failure::MovedUnknown)
 }
 
 /// What the probe measures beside [`has_trash_for`]: the same question with `create:YES`.
@@ -250,6 +257,13 @@ mod tests {
     use super::*;
     use recto_testpdf::TempDir;
     use std::os::unix::fs::MetadataExt;
+
+    /// Failure: a move the system reports as made, with no place given, is called a refusal, so the item is taken to be where it was.
+    #[test]
+    fn a_move_with_no_place_given_is_in_doubt_not_refused() {
+        assert_eq!(finished(None), Err(Failure::MovedUnknown));
+        assert_eq!(finished(Some(PathBuf::from("/x"))), Ok(PathBuf::from("/x")));
+    }
 
     /// Failure: a path that isn't there is "has a Trash" or is moved (a made-up name given to the system), or the call panics on it.
     #[test]
