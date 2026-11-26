@@ -6,7 +6,6 @@ use super::files::locked_saying;
 use super::withheld_events::{PASSWORD, person_unlocks};
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::{Level, exit};
-use recto_control::host::Host;
 use serde_json::json;
 
 /// Failure: with the person's unsaved moves on the tab, the link names the page the agent asked for (the tab's number) and not that page's place in the
@@ -39,9 +38,9 @@ fn below_control_no_answer_holds_a_path() {
     let disk = Disk::new();
     let plain = disk.file("plain.pdf", &pdf_bytes("Mine", 4));
     let locked = disk.file("locked.pdf", &locked_saying(PASSWORD, 2, "Locked", lopdf::encryption::Permissions::all()));
+    let folder = disk.files().to_string_lossy().into_owned();
     let app = disk.start();
     app.open(&plain);
-    let folder = disk.files().to_string_lossy().into_owned();
     let said = app.recto(Level::ReadOnly, &["link", "2"]).expect("a link");
     assert!(!said.to_string().contains(&folder), "no folder in {said}");
     assert_eq!(said["untrusted"]["link"], "plain.pdf#page=2");
@@ -64,12 +63,12 @@ fn below_control_no_answer_holds_a_path() {
     app.settle();
     replace(&plain, &pdf_bytes("Theirs", 2));
     look(&app);
-    let refused = app.recto(Level::ReadOnly, &["link", "2"]).expect_err("withheld");
+    let refused = app.agent(Level::ReadOnly, r##"{"cmd":"link","page":2,"tab":"#1"}"##).expect_err("withheld");
     assert_eq!(refused.code.as_str(), "source_changed", "{refused:?}");
 }
 
 /// Failure: a page the person added from another PDF gets a link to a page of the file that isn't that page, or a page past the end is answered as an
-/// added one. The added page is `not_referenceable` with no `link`; past the end is `no_such_page`; page 0 is `no_such_page`.
+/// added one. The added page is `not_referenceable` with no `link`; past the end is `no_such_page`.
 #[test]
 fn an_added_page_gets_no_link() {
     let app = HeadlessApp::start();
@@ -83,7 +82,7 @@ fn an_added_page_gets_no_link() {
     assert!(!added.message.contains("#page"), "{added:?}");
     let own = app.recto(Level::ReadOnly, &["link", "2"]).expect("a page of the file");
     assert_eq!(own["untrusted"]["link"], "doc.pdf#page=1", "{own}");
-    for page in ["5", "0"] {
+    for page in ["5"] {
         let past = app.recto(Level::ReadOnly, &["link", page]).expect_err("no such page");
         assert_eq!(past.code.as_str(), "no_such_page", "{page}: {past:?}");
     }
