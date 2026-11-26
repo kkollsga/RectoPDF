@@ -17,6 +17,7 @@ use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
+use std::time::Instant;
 
 /// What one search may spend on references: the tag pages and a page for each hit it can show, and 256 MiB of page reads. A full answer of 200 hits
 /// on 200 pages is referred to whole.
@@ -77,7 +78,7 @@ pub(crate) struct HitRefs<'f> {
     referrer: Option<Referrer<'f>>,
     cursor: Cursor,
     /// The search's own deadline: past it no reference is read, and the hit is counted under `caps`.
-    deadline: Option<std::time::Instant>,
+    deadline: Instant,
     /// Characters stepped over, for the test that holds the count linear.
     walked: u64,
     made: u32,
@@ -85,11 +86,11 @@ pub(crate) struct HitRefs<'f> {
 }
 
 impl<'f> HitRefs<'f> {
-    pub(crate) fn new(path: Option<&'f Path>, opened: &'f OnceCell<Option<Opened>>) -> Self {
-        Self::with_caps(path, opened, &HIT_REF_CAPS)
+    pub(crate) fn new(path: Option<&'f Path>, opened: &'f OnceCell<Option<Opened>>, deadline: Instant) -> Self {
+        Self::with_caps(path, opened, &HIT_REF_CAPS, deadline)
     }
 
-    pub(crate) fn with_caps(path: Option<&'f Path>, opened: &'f OnceCell<Option<Opened>>, caps: &'f ScanCaps) -> Self {
+    pub(crate) fn with_caps(path: Option<&'f Path>, opened: &'f OnceCell<Option<Opened>>, caps: &'f ScanCaps, deadline: Instant) -> Self {
         Self {
             path,
             stamp: path.and_then(|path| recto_platform::file_stamp(path).ok()),
@@ -97,16 +98,11 @@ impl<'f> HitRefs<'f> {
             caps,
             referrer: None,
             cursor: Cursor::default(),
-            deadline: None,
+            deadline,
             walked: 0,
             made: 0,
             missing: BTreeMap::new(),
         }
-    }
-
-    pub(crate) fn with_deadline(mut self, deadline: std::time::Instant) -> Self {
-        self.deadline = Some(deadline);
-        self
     }
 
     /// Gives `hit` its `chars` and `ref`, or nulls and a count of why. `page` is the zero-based page of the file, `text` the page's text as the search
@@ -143,7 +139,7 @@ impl<'f> HitRefs<'f> {
 
     /// A reference to the whole page, the file opened and its tags read when this is the first.
     fn page(&mut self, page: u32) -> Result<Locator, Why> {
-        if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        if Instant::now() >= self.deadline {
             return Err(Why::Page(Unreferenceable::Capped));
         }
         if self.referrer.is_none() {
