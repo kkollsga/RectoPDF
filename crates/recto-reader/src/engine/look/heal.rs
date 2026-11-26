@@ -2,39 +2,46 @@
 //!
 //! **One owner, the engine:** the host answers each ask honestly (`Places::NotNow` for a check the Mac was too busy for) and keeps nothing for it. A draw can't reset this clock, as one resets the host's count, since nothing here counts: while the Mac stays busy the file is asked once per [`HEAL_AFTER`], whatever is drawn between. A look decided from answers is never healed again, so a page changes at most once, and every tile of it goes by the one look until then (`page_look` returns the kept look as before).
 
-use super::{HEAL_AFTER, ImagesAsked, LookSource, Looks, NoLook, decided_from};
-use crate::engine::run::{OpenDoc, job_ended_with, seen_replaced};
+use super::{HEAL_AFTER, ImagesAsked, LookSource, Looks};
+use crate::engine::run::{OpenDoc, as_an_added_files, drawable_by, job_ended_with, seen_replaced};
 use crate::engine::{Shared, lock, signal_ops};
+use crate::paper::PageLook;
+use crate::tiles::Outcome;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// What [`heal`] came to.
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::engine) enum Healed {
-    /// The page isn't kept for want of an answer, or its time isn't yet: nothing was asked. Also a busy ask, after which the file's pages wait for their next time.
+pub(super) enum Healed {
+    /// Nothing was asked: the page isn't kept for want of an answer, or its time isn't yet, or the file's worker isn't running (it's never started for this, and the page's next ask is [`HEAL_AFTER`] on).
     NotDue,
+    /// The Mac was too busy to say: every healing page of the file waits for its next time, and a step made at most this one walk.
+    Busy,
     /// The job went stale on the way: the clock is as it was.
     Stale,
-    /// Decided, and the same as what was kept (or a try that failed for a reason that may pass, asked again after [`HEAL_AFTER`]).
-    Same,
-    /// Decided, and not what was kept: every tile of the page drawn so far is of the old look.
-    Changed,
+    /// The images were told. The look that was kept is lifted out (it's this), and the page has none until the preview drawn for it decides it from that picture ([`Looks::put_back`] if that draw doesn't land).
+    Asked(Arc<PageLook>),
 }
 
-/// **Asks a page kept for want of an answer again, if its time has come** at `now`, and decides it as `page_look` does when the answer is there. A busy answer moves every healing page of the file to `now + HEAL_AFTER`, so while the Mac stays busy one walk a file is made per [`HEAL_AFTER`], whatever is drawn between and however many pages wait. A picture that fails for a reason that may pass is tried again after [`HEAL_AFTER`] too, and one that can never be had ends as [`PageLook::undecided`](crate::paper::PageLook::undecided) for a page with no images.
-pub(in crate::engine) fn heal(doc: &mut impl LookSource, looks: &mut Looks, page: u32, generation: u64, now: Instant) -> Healed {
+/// **Asks a page kept for want of an answer again, if its time has come** at `now`, and only of a worker that's running (a heal never starts one, so an idle file costs nothing). A busy answer moves every healing page of the file to `now + HEAL_AFTER`, so while the Mac stays busy one walk a file is made per [`HEAL_AFTER`], whatever is drawn between and however many pages wait. **It draws nothing:** no small picture is drawn for the look, which is decided from the page's preview, the one picture the swap draws anyway (`at_rest`), so a heal holds the thread for at most the one walk's deadline.
+pub(super) fn heal(doc: &mut impl LookSource, looks: &mut Looks, page: u32, generation: u64, now: Instant) -> Healed {
     if doc.take_image_places_cleared() {
         // What was decided from the places is no longer to stand: asked again as any page is, by its next draw.
         looks.clear();
     }
-    if !looks.healing.get(&page).is_some_and(|&due| now >= due) {
+    if !looks.due(page, now) {
         return Healed::NotDue;
     }
     let Some(kept) = looks.decided.get(&page).cloned() else {
         looks.healing.remove(&page);
         return Healed::NotDue;
     };
+    if !doc.worker_alive() {
+        looks.push_back(page, now);
+        return Healed::NotDue;
+    }
     let asked = doc.image_boxes(page, generation);
     if doc.is_stale(generation) {
         return Healed::Stale;
@@ -43,23 +50,13 @@ pub(in crate::engine) fn heal(doc: &mut impl LookSource, looks: &mut Looks, page
         for due in looks.healing.values_mut() {
             *due = now + HEAL_AFTER;
         }
-        return Healed::NotDue;
+        return Healed::Busy;
     }
-    match decided_from(doc, looks, page, generation, asked, None, None, now) {
-        Ok(look) => {
-            if *look == *kept {
-                Healed::Same
-            } else {
-                Healed::Changed
-            }
-        }
-        Err(NoLook::Stale) => Healed::Stale,
-        // The picture failed for a reason that may pass: its tries are the look's own, spaced by [`HEAL_AFTER`] here.
-        Err(NoLook::Again) => {
-            looks.healing.insert(page, now + HEAL_AFTER);
-            Healed::Same
-        }
-    }
+    // The answer is the host's to keep; the look is decided by the draw that comes next.
+    looks.decided.remove(&page);
+    looks.healing.remove(&page);
+    looks.tries.remove(&page);
+    Healed::Asked(kept)
 }
 
 /// How long till the soonest page in `pages` kept for want of an answer is asked again, `Duration::ZERO` if one's due; `None` if none waits or no renderer is open for them (`looks_of` gives a file's looks, if one is). The thread that draws wakes by then.
@@ -71,65 +68,85 @@ pub(in crate::engine) fn next_heal<'a>(pages: &[(PathBuf, u32)], looks_of: impl 
         .min()
 }
 
-/// **One step of healing, between the thread's turns:** for one due page in view of the tab showing on dark paper, by the renderer already open for its file (none is opened for this), asked again, and if its look changed, drawn again once. Says whether it did anything that makes the thread come round again.
+/// **One step of healing, between the thread's turns:** for one due page in view of the tab showing on dark paper, by the renderer already open for its file with its worker running (neither is started for this), asked again, and if the images are told, its preview drawn again by the new look and swapped in. Says whether it did anything that makes the thread come round again; a step makes at most one walk.
 ///
-/// The swap, when a look changed: the page's preview is drawn again by the new look (`do_job`, which makes no walk), and then, under one hold of the page view's lock, every drawn thing of that file page on dark paper in every held tab is dropped and the preview put on the bare page. So the dimmed page turns into its real look in one step: no blank frame and never two looks at once (`tiles/relook.rs`). Where no preview is possible (zoomed out past one, or no surface) the tiles are just dropped, and drawn again by the new look.
+/// In order, before anything is asked: a preview must be at hand to draw (zoomed out past one, or no surface, and the page's next ask is pushed back by [`HEAL_AFTER`]), and the job must be one the ordinary path would draw (`drawable_by`: a withheld tab's pages, a changed added file, a renderer keyed to another tab). Refused, the old look's tiles are dropped and nothing is drawn.
 ///
-/// A walk made here can't be cancelled: while the Mac stays starved it can hold this thread for a page deadline, at most once per [`HEAL_AFTER`] per file, and when the Mac is quiet it takes milliseconds.
+/// The swap: the preview is drawn by `do_job`, which decides the look from that picture, and when it's drawn (and only then) every drawn thing of that file page on dark paper in every held tab is dropped under one hold of the page view's lock as it's put on the bare page, so the dimmed page turns into its real look in one step: no blank frame and never two looks at once (`tiles/relook.rs`). A draw that didn't land leaves the old tiles and the old look, asked again after [`HEAL_AFTER`].
+///
+/// **The bound:** a walk made here can't be cancelled: while the Mac stays starved it holds this thread for one walk's deadline, at most once per [`HEAL_AFTER`] per file, and when the Mac is quiet it takes milliseconds. The preview is an ordinary draw of the page.
 pub(in crate::engine) fn at_rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) -> bool {
     let wanted = crate::tiles::relook::on_dark_paper(&mut lock(&shared.reader));
     let Some((pages, generation)) = wanted else { return false };
     let now = Instant::now();
     for (file, page) in pages {
         let Some(open) = renderers.get_mut(&file) else { continue };
-        if !open.looks.healing.contains_key(&page) {
+        if !open.looks.due(page, now) {
             continue;
         }
-        let healed = heal(&mut open.doc, &mut open.looks, page, generation, now);
-        // Replaced while it was asked: the look may be of either file, and none of it is kept or swapped. The next job takes the replacement up.
-        if seen_replaced(open) {
+        let planned = crate::tiles::relook::stand_in_plan(&mut lock(&shared.reader), &file, page);
+        let Some(job) = planned.and_then(crate::tiles::JobPlan::ready) else {
+            open.looks.push_back(page, now);
+            continue;
+        };
+        let Some(own) = drawable_by(shared, open, &job) else {
+            // What the ordinary path refuses isn't drawn from the open file, nor asked of it: what was drawn of the page goes, as it was a look the refused page can't be shown by.
+            open.looks.push_back(page, now);
+            let mut reader = lock(&shared.reader);
+            crate::tiles::relook::bare(&mut reader, &file, page);
+            let has_ops = reader.host.has_ops();
+            drop(reader);
+            told(shared, has_ops);
             return true;
+        };
+        let healed = heal(&mut open.doc, &mut open.looks, page, generation, now);
+        if !ends_the_step(&healed) {
+            continue;
         }
-        match healed {
-            Healed::NotDue => {}
-            Healed::Stale | Healed::Same => return true,
-            Healed::Changed => {
-                swap(shared, renderers, &file, page);
-                return true;
-            }
+        // Replaced while it was asked: the look may be of either file, and none of it is kept or swapped. The next job takes the replacement up.
+        if let Healed::Asked(kept) = healed
+            && !seen_replaced(open)
+        {
+            draw_anew(shared, open, job, own, kept, now);
         }
+        return true;
     }
     false
 }
 
-/// A page's look changed: its preview drawn by the new look and swapped in with the old tiles' going, as [`at_rest`] says.
-fn swap(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, file: &PathBuf, page: u32) {
-    let planned = crate::tiles::relook::stand_in_plan(&mut lock(&shared.reader), file, page);
-    let job = planned.and_then(crate::tiles::JobPlan::ready);
-    let (Some(job), Some(open)) = (job, renderers.get_mut(file)) else {
-        // No preview to put there: what was drawn of it goes, and its tiles are drawn again as the plan comes to them.
-        let mut reader = lock(&shared.reader);
-        crate::tiles::relook::bare(&mut reader, file, page);
-        let has_ops = reader.host.has_ops();
-        drop(reader);
-        told(shared, has_ops);
-        return;
-    };
+/// Whether a step of healing ends with this: a walk was made (busy, stale or told), and one step makes at most one, as a walk can hold the thread for a page deadline.
+pub(super) fn ends_the_step(healed: &Healed) -> bool {
+    !matches!(healed, Healed::NotDue)
+}
+
+/// A page's images were told: its preview drawn by the new look and swapped in with the old tiles' going, as [`at_rest`] says, or the old look kept as it was if the draw didn't land.
+fn draw_anew(shared: &Shared, open: &mut OpenDoc, job: crate::tiles::Job, own: bool, kept: Arc<PageLook>, now: Instant) {
     {
         let mut reader = lock(&shared.reader);
         reader.work.note_started(&job, None);
+        reader.work.set_cancel(open.doc.cancel_handle());
     }
-    lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
     let outcome = crate::engine::run::do_job(open, &job);
+    let outcome = if own { outcome } else { as_an_added_files(outcome, &job) };
+    landed(shared, open, job, kept, outcome, now);
+}
+
+/// What the preview's draw came to: on [`Outcome::Drawn`] (and only then) the old tiles go as it lands, else nothing is dropped and the kept look is kept again, asked after [`HEAL_AFTER`] (`LookLater`, a failed page, a cancelled job alike: the page is still the old look's).
+pub(super) fn landed(shared: &Shared, open: &mut OpenDoc, job: crate::tiles::Job, kept: Arc<PageLook>, outcome: Outcome, now: Instant) {
     if seen_replaced(open) || open.replaced {
         // Another file's picture: nothing is dropped or put, and the job ends as cancelled. The next job takes the replacement up (`open.replaced`).
-        job_ended_with(shared, job, crate::tiles::Outcome::Cancelled, false, |_| {});
+        job_ended_with(shared, job, Outcome::Cancelled, false, |_| {});
         return;
     }
     let (file, source_page) = (job.file.clone(), job.source_page);
-    job_ended_with(shared, job, outcome, false, |reader| {
-        crate::tiles::relook::drop_look(reader, &file, source_page)
-    });
+    if matches!(outcome, Outcome::Drawn { .. }) {
+        job_ended_with(shared, job, outcome, false, |reader| {
+            crate::tiles::relook::drop_look(reader, &file, source_page)
+        });
+    } else {
+        open.looks.put_back(source_page, kept, now);
+        job_ended_with(shared, job, outcome, false, |_| {});
+    }
 }
 
 /// What's been put on the host's queue is signalled, and whoever waits for the view is woken.

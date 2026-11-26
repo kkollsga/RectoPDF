@@ -76,7 +76,7 @@ pub(super) fn run_guarded(shared: &Shared) {
 
 /// **Nothing to start:** at rest as ever (but for the wait of a page held to be tried again), or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
 /// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
-fn rest_or_wait_for_a_surface(
+pub(super) fn rest_or_wait_for_a_surface(
     planned: bool,
     seen: u64,
     shared: &Shared,
@@ -477,6 +477,18 @@ pub(super) struct OpenDoc {
 }
 
 impl OpenDoc {
+    /// An open file as a test has it, with no pages decided.
+    #[cfg(test)]
+    pub(super) fn for_test(doc: DocRenderer, keyed_for: Option<u32>) -> Self {
+        Self {
+            length_told: false,
+            doc,
+            looks: Looks::default(),
+            replaced: false,
+            keyed_for,
+        }
+    }
+
     /// Whether a job of `tab`'s may use this renderer, `own` saying whether the file is the tab's own: any may, with no password given it; with one, only
     /// the tab it was given for, on its own file.
     fn serves(&self, tab: u32, own: bool) -> bool {
@@ -610,8 +622,14 @@ fn refused_now(shared: &Shared, job: &Job) -> (Option<&'static str>, bool) {
     (changed.then_some(ADDED_FILE_CHANGED), own)
 }
 
+/// **Whether a job may be drawn from a renderer that's already open, by the checks every job meets** ([`refused_now`], [`OpenDoc::serves`]), and if so whether the file is the tab's own. For what's done with an open renderer outside the loop's own jobs (`engine/look/heal.rs`); a draw made so ends as [`as_an_added_files`] makes it.
+pub(super) fn drawable_by(shared: &Shared, open: &OpenDoc, job: &Job) -> Option<bool> {
+    let (refused, own) = refused_now(shared, job);
+    (refused.is_none() && open.serves(job.tab, own)).then_some(own)
+}
+
 /// What a job for a PDF added to the tab came to: a want of a password is the page's, never its document's ([`added_needs_password`]).
-fn as_an_added_files(outcome: Outcome, job: &Job) -> Outcome {
+pub(super) fn as_an_added_files(outcome: Outcome, job: &Job) -> Outcome {
     match outcome {
         Outcome::DocumentFailed { needs_key: true, .. } => added_needs_password(job),
         outcome => outcome,

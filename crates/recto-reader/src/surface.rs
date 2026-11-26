@@ -585,6 +585,7 @@ DocRenderer: LookSource::fn is_stale(&self, generation: u64) -> bool
 DocRenderer: LookSource::fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>
 DocRenderer: LookSource::fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>
 DocRenderer: LookSource::fn take_image_places_cleared(&mut self) -> bool
+DocRenderer: LookSource::fn worker_alive(&mut self) -> bool
 DocView (pub(crate) struct, derives Debug)
 DocView::pub(crate) fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
 DocView::pub(crate) fn fit(&self) -> f64
@@ -660,7 +661,7 @@ EngineConfig.pub keys: Option<Arc<Keyring>>
 EngineConfig.pub policy: Option<Policy>
 EngineConfig.pub service: Option<ServiceConfig>
 Entry (pub(super) struct, derives Debug)
-Healed (pub(in crate::engine) enum, derives Debug, PartialEq, Eq)
+Healed (pub(super) enum, derives Debug, PartialEq, Eq)
 HostQueue (pub(crate) struct, derives Debug)
 HostQueue: Drop (trait impl)
 HostQueue: Drop::fn drop(&mut self)
@@ -964,7 +965,6 @@ fn (pub(crate)) pub(crate) fn stand_in_plan(reader: &mut Reader, file: &Path, so
 fn (pub(crate)) pub(crate) fn system_takes_only_when_told() [qa feature only]
 fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)
 fn (pub(in crate::engine)) pub(in crate::engine) fn at_rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) -> bool
-fn (pub(in crate::engine)) pub(in crate::engine) fn heal(doc: &mut impl LookSource, looks: &mut Looks, page: u32, generation: u64, now: Instant) -> Healed
 fn (pub(in crate::engine)) pub(in crate::engine) fn next_heal<'a>(pages: &[(PathBuf, u32)], looks_of: impl Fn(&Path) -> Option<&'a Looks>, now: Instant) -> Option<Duration>
 fn (pub) pub fn look(paper: PaperKind) -> (u32, bool)
 fn (pub) pub fn place_stamp() -> u64

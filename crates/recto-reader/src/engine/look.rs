@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 mod heal;
 #[cfg(test)]
-use heal::{Healed, heal};
+use heal::{Healed, ends_the_step, heal};
 pub(super) use heal::{at_rest, next_heal};
 
 /// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
@@ -44,6 +44,8 @@ pub(super) trait LookSource {
     fn take_image_places_cleared(&mut self) -> bool;
     fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked;
     fn is_stale(&self, generation: u64) -> bool;
+    /// Whether the renderer's worker is running now. A heal asks only of a worker that is: it never starts one ([`heal`]).
+    fn worker_alive(&mut self) -> bool;
     fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>;
     fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>;
 }
@@ -64,6 +66,10 @@ impl LookSource for DocRenderer {
 
     fn is_stale(&self, generation: u64) -> bool {
         DocRenderer::is_stale(self, generation)
+    }
+
+    fn worker_alive(&mut self) -> bool {
+        self.worker_pid().is_some()
     }
 
     fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure> {
@@ -112,6 +118,25 @@ impl Looks {
         let look = Arc::new(look);
         self.decided.insert(page, Arc::clone(&look));
         look
+    }
+
+    /// Whether a page kept for want of an answer is due to be asked at `now` ([`heal`]).
+    fn due(&self, page: u32, now: Instant) -> bool {
+        self.healing.get(&page).is_some_and(|&due| now >= due)
+    }
+
+    /// A kept page asked no more for now: its next ask is [`HEAL_AFTER`] from `now`.
+    pub(super) fn push_back(&mut self, page: u32, now: Instant) {
+        if let Some(due) = self.healing.get_mut(&page) {
+            *due = now + HEAL_AFTER;
+        }
+    }
+
+    /// A heal that didn't come to a drawn page: the look it lifted out is kept again, with the page's next ask [`HEAL_AFTER`] from `now`, whatever was decided meanwhile (the old tiles are still the page's, so they go by the old look).
+    pub(super) fn put_back(&mut self, page: u32, kept: Arc<PageLook>, now: Instant) {
+        self.tries.remove(&page);
+        self.decided.insert(page, kept);
+        self.healing.insert(page, now + HEAL_AFTER);
     }
 
     /// Whether a page's next try is still to wait at `now`.
@@ -308,5 +333,7 @@ fn covers_page(doc: &mut impl LookSource, page: u32, scale: f32, rect: TileRect)
             == Some((rect.width, rect.height))
 }
 
+#[cfg(test)]
+mod at_rest_tests;
 #[cfg(test)]
 mod tests;

@@ -21,6 +21,11 @@ struct StandIn {
     colour: [u8; 4],
     /// What its page size read fails with, if it does.
     size_fails: Option<RenderFailure>,
+    /// Whether its worker is running.
+    alive: bool,
+    /// Remembers a told answer as the host does (a busy one never), so a second ask of a page is no second walk.
+    remembers: bool,
+    told: bool,
 }
 
 impl StandIn {
@@ -35,6 +40,9 @@ impl StandIn {
             fails_until: None,
             colour: [0, 0, 0, 0xFF],
             size_fails: None,
+            alive: true,
+            remembers: false,
+            told: false,
         }
     }
 
@@ -54,16 +62,24 @@ impl LookSource for StandIn {
     }
 
     fn image_boxes(&mut self, _page: u32, _generation: u64) -> ImagesAsked {
+        if self.remembers && self.told {
+            return self.boxes.clone().map_or(ImagesAsked::Unknown, ImagesAsked::Known);
+        }
         self.image_asks += 1;
         if self.busy_images > 0 {
             self.busy_images -= 1;
             return ImagesAsked::Busy;
         }
+        self.told = true;
         self.boxes.clone().map_or(ImagesAsked::Unknown, ImagesAsked::Known)
     }
 
     fn is_stale(&self, _generation: u64) -> bool {
         false
+    }
+
+    fn worker_alive(&mut self) -> bool {
+        self.alive
     }
 
     fn page_size(&mut self, _page: u32) -> Result<(f32, f32), RenderFailure> {
@@ -351,17 +367,18 @@ fn decided_when_quiet() -> PageLook {
     (*asked(&mut quiet, &mut Looks::default()).unwrap()).clone()
 }
 
-/// Failure (the owner's 2026-11-13 report, long starvation): a page whose image checks stayed busy through the tries was judged whole and kept for the renderer's life, so on dark paper a picture sheet stayed dimmed after the Mac was quiet. It's kept as it was (every tile of the page goes by one look, whatever is asked), asked of nothing before its time, and asked again at [`HEAL_AFTER`], when it's decided from the picture's places, once: the look is then the one a Mac that was never busy gives, and later heals ask nothing. Seen failing with no heal (the look the same at +30 s and for ever) and with a heal that asks before its time (a walk at +29 s).
+/// Failure (the owner's 2026-11-13 report, long starvation): a page whose image checks stayed busy through the tries was judged whole and kept for the renderer's life, so on dark paper a picture sheet stayed dimmed after the Mac was quiet. It's kept as it was (every tile of the page goes by one look, whatever is asked), asked of nothing before its time, and asked again at [`HEAL_AFTER`] with one walk and **no small picture drawn** (the draw count doesn't move: the preview the swap draws is the picture), which lifts the kept look out; the preview then decides it, from the same answer (no second walk), and it's the one a Mac that was never busy gives, once: later heals ask nothing. Seen failing with no heal (the look the same at +30 s and for ever), with a heal that asks before its time (a walk at +29 s), and with a heal that decides through a small picture (`drawn` moves).
 #[test]
 fn a_look_kept_for_busy_checks_heals_once_its_images_are_told() {
     let start = Instant::now();
     let (mut doc, mut looks) = kept_for_busy_checks(start, &[0]);
+    doc.remembers = true;
     let kept_at = start + seconds(60);
     let expected = decided_when_quiet();
     assert_ne!(expected, PageLook::undecided(false), "the test's picture is one that changes the look");
     let provisional = asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap();
     assert_eq!(*provisional, PageLook::undecided(false));
-    let asks = doc.image_asks;
+    let (asks, drawn) = (doc.image_asks, doc.drawn);
     // Whatever a tile asks meanwhile, it goes by the kept look and asks nothing.
     for tenth in [61, 150, 290] {
         let again = asked_at(&mut doc, &mut looks, start, seconds(tenth)).unwrap();
@@ -370,19 +387,60 @@ fn a_look_kept_for_busy_checks_heals_once_its_images_are_told() {
     assert_eq!(doc.image_asks, asks, "and nothing asked of the images");
     assert_eq!(heal(&mut doc, &mut looks, 0, 1, kept_at + HEAL_AFTER - Duration::from_secs(1)), Healed::NotDue);
     assert_eq!(doc.image_asks, asks, "not before its time");
-    assert_eq!(heal(&mut doc, &mut looks, 0, 1, kept_at + HEAL_AFTER), Healed::Changed);
-    assert_eq!(doc.image_asks, asks + 1, "one walk");
-    assert_eq!(
-        *asked_at(&mut doc, &mut looks, start, seconds(400)).unwrap(),
-        expected,
-        "from now on, the look the images give"
-    );
+    let Healed::Asked(lifted) = heal(&mut doc, &mut looks, 0, 1, kept_at + HEAL_AFTER) else {
+        panic!("asked at its time")
+    };
+    assert!(Arc::ptr_eq(&lifted, &provisional), "the look that was kept comes out");
+    assert_eq!((doc.image_asks, doc.drawn), (asks + 1, drawn), "one walk and no small picture");
+    // The preview the swap draws, a picture of the whole page, decides it.
+    let preview = PixelSurface::create(16, 16).unwrap();
+    preview.with_pixels(|pixels| pixels.fill(0xFF)).unwrap();
+    let rect = TileRect {
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+    };
+    let decided = page_look(&mut doc, &mut looks, 0, 1, Some((&preview, rect)), None, kept_at + HEAL_AFTER).unwrap();
+    assert_eq!(*decided, expected, "the look the images give");
+    assert_eq!((doc.image_asks, doc.drawn), (asks + 1, drawn), "from the same answer, and still no small picture");
     assert!(looks.healing.is_empty(), "never healed again: {looks:?}");
     assert_eq!(heal(&mut doc, &mut looks, 0, 1, kept_at + HEAL_AFTER * 4), Healed::NotDue);
     assert_eq!(doc.image_asks, asks + 1, "and nothing is asked again");
 }
 
-/// Failure (the host's count filling at rest, old finding 3): a Mac that stays busy was asked at every step, or at every draw, or once a page, each a walk that costs a page deadline in the product. Whatever is drawn between (a draw that landed is what resets the host's count, and nothing here may depend on one), two healing pages of one file cost one walk per [`HEAL_AFTER`] together. Over 150 simulated seconds in steps of one, each with a draw, the look asked, and a heal of both pages, at most 1 + 150 / 30 walks are made, and both pages are still kept as they were. Seen failing with no due-time check (a walk every step) and with only the page asked pushed back (two walks per period).
+/// Failure (privacy-adjacent, a heal starting what nobody asked for): a heal of a file whose worker was let go at rest asked it anyway, which starts one (a process and a page deadline for an idle file). With no worker running, nothing is asked and the page's next time is [`HEAL_AFTER`] on. Seen failing with the worker check gone (a walk with no worker).
+#[test]
+fn a_heal_asks_only_a_worker_that_is_running() {
+    let start = Instant::now();
+    let (mut doc, mut looks) = kept_for_busy_checks(start, &[0]);
+    doc.alive = false;
+    let (asks, kept_at) = (doc.image_asks, start + seconds(60));
+    let at = kept_at + HEAL_AFTER;
+    assert_eq!(heal(&mut doc, &mut looks, 0, 1, at), Healed::NotDue);
+    assert_eq!(doc.image_asks, asks, "no walk without a worker");
+    assert_eq!(looks.healing[&0], at + HEAL_AFTER, "pushed back");
+    assert_eq!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER - Duration::from_secs(1)), Healed::NotDue);
+    doc.alive = true;
+    assert!(matches!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER), Healed::Asked(_)), "asked once there is one");
+}
+
+/// Failure (a heal whose preview draw didn't land): the lifted look must come back, and its page be asked again after [`HEAL_AFTER`], not decided from nothing. Seen failing with `put_back` not restoring the look (the page has none and the next tile decides it by a small picture while the old tiles stand).
+#[test]
+fn a_look_lifted_for_a_draw_that_failed_is_put_back_and_asked_again_later() {
+    let start = Instant::now();
+    let (mut doc, mut looks) = kept_for_busy_checks(start, &[0]);
+    let at = start + seconds(60) + HEAL_AFTER;
+    let Healed::Asked(kept) = heal(&mut doc, &mut looks, 0, 1, at) else { panic!("asked") };
+    assert!(!looks.decided.contains_key(&0), "lifted while the preview is drawn");
+    looks.put_back(0, Arc::clone(&kept), at);
+    assert!(Arc::ptr_eq(&looks.decided[&0], &kept), "the old look again");
+    assert_eq!(looks.healing[&0], at + HEAL_AFTER);
+    assert_eq!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER - Duration::from_secs(1)), Healed::NotDue);
+    assert!(matches!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER), Healed::Asked(_)));
+}
+
+/// Failure (the host's count filling at rest, old finding 3): a Mac that stays busy was asked at every step, or at every draw, or once a page, each a walk that costs a page deadline in the product. Whatever is drawn between (a draw that landed is what resets the host's count, and nothing here may depend on one), two healing pages of one file cost one walk per [`HEAL_AFTER`] together. Over 150 simulated seconds in steps of one, each with a draw, the look asked, and a heal of both pages, at most 1 + 150 / 30 walks are made, every walk says `Busy` (a step ends on it, [`ends_the_step`]), and both pages are still kept as they were. Seen failing with no due-time check (a walk every step), with only the page asked pushed back (two walks per period), and with a busy walk reported as `NotDue`.
 #[test]
 fn the_heal_is_one_walk_per_file_per_heal_after_whatever_is_drawn_between() {
     let start = Instant::now();
@@ -412,12 +470,33 @@ fn the_heal_is_one_walk_per_file_per_heal_after_whatever_is_drawn_between() {
         for page in [0, 1] {
             let look = page_look(&mut doc, &mut looks, page, 1, None, None, now).unwrap();
             assert!(Arc::ptr_eq(&look, &provisional[page as usize]), "page {page} at +{step} s");
-            assert_ne!(heal(&mut doc, &mut looks, page, 1, now), Healed::Changed, "page {page} at +{step} s");
+            let asks = doc.image_asks;
+            let healed = heal(&mut doc, &mut looks, page, 1, now);
+            assert!(!matches!(healed, Healed::Asked(_)), "page {page} at +{step} s");
+            assert_eq!(healed == Healed::Busy, doc.image_asks == asks + 1, "a walk says so: page {page} at +{step} s");
         }
     }
     assert!(doc.image_asks <= 1 + 150 / 30, "walks: {}", doc.image_asks);
     assert!(doc.image_asks >= 4, "the test asks while it's busy, or it holds nothing: {}", doc.image_asks);
     assert_eq!(looks.healing.len(), 2, "both still waiting: {looks:?}");
+}
+
+/// Failure (one step making a walk for each file, each a page deadline on a starved Mac): the step goes through the pages in view and stops at what [`ends_the_step`] says. With two files each with a due page and the Mac busy, one step makes one walk, not two; a heal that asked nothing doesn't end it. Seen failing with a busy walk reported as `NotDue` (both files asked).
+#[test]
+fn one_step_makes_at_most_one_walk_over_two_files() {
+    let start = Instant::now();
+    let mut files = [kept_for_busy_checks(start, &[0]), kept_for_busy_checks(start, &[0])];
+    let now = start + seconds(60) + HEAL_AFTER;
+    for (doc, _) in &mut files {
+        doc.busy_images = u8::MAX;
+    }
+    let before: usize = files.iter().map(|(doc, _)| doc.image_asks).sum();
+    for (doc, looks) in &mut files {
+        if ends_the_step(&heal(doc, looks, 0, 1, now)) {
+            break;
+        }
+    }
+    assert_eq!(files.iter().map(|(doc, _)| doc.image_asks).sum::<usize>(), before + 1, "one walk in a step");
 }
 
 /// Failure: the thread that draws sleeps past the time a kept look is asked again, or wakes for a page that isn't on show, or for none at all (every wake with nothing to do costs the idle app a thread's turn). It says how long till the soonest page in view that waits, nothing for a file with no renderer, a page that isn't healing or one not in view, and zero for a page that's due.
