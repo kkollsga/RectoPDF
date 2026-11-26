@@ -816,8 +816,15 @@ fn real_pages_answer_the_same_from_the_index() {
     let state = State::at(Level::Full);
     let _serving = state.serve();
     let (mut documents, mut compared, mut compared_regex, mut compared_ranked) = (0, 0, 0, 0);
+    // A quiet run only opens files in the system's temp folders (`outside_quiet_run`), so each is cloned there first (no disk used on APFS). Before this, every
+    // file was refused, "0 documents compared" was printed and the test passed.
+    let copies = recto_testpdf::TempDir::new("recto-real-pages-");
     for file in files {
-        let text = file.to_str().unwrap().to_string();
+        let copy = copies.join(file.file_name().unwrap());
+        if !Command::new("cp").arg("-c").arg(&file).arg(&copy).status().unwrap().success() {
+            std::fs::copy(&file, &copy).unwrap();
+        }
+        let text = copy.to_str().unwrap().to_string();
         let (opened, code) = state.json(&["open", &text]);
         if code != 0 {
             eprintln!("{text} didn't open: {opened}");
@@ -839,8 +846,13 @@ fn real_pages_answer_the_same_from_the_index() {
         compared_regex += patterns;
         compared_ranked += ranked;
         state.json(&["close", &tab]);
+        let _ = std::fs::remove_file(&copy);
     }
     eprintln!("{documents} documents, {compared} plain searches, {compared_regex} patterns and {compared_ranked} ranked searches compared");
+    assert!(
+        documents > 0 && compared > 0 && compared_regex > 0 && compared_ranked > 0,
+        "nothing was compared: a test that compares nothing passes for ever"
+    );
 }
 
 /// Failure: a password-protected file's text ends up on disk, or it reads as "still building" for ever. It's refused, with its own exit code, and nothing's there but the reason.
