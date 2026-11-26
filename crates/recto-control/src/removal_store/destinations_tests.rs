@@ -180,3 +180,67 @@ fn only_a_destination_that_never_landed_has_its_folder_listed() {
         recto_core::removal::Refusal::Incomplete(Store::WriterTemp)
     );
 }
+
+/// What `recto local` and `recto session` do for a Save As: one command at Full in a throwaway session on a test state folder, through `run_here`.
+fn save_as(paths: &crate::state::StatePaths, from: &Path, out: &Path) {
+    use recto_agent::{Command, TabRef, commands};
+    let mut session = recto_session::Session::new(recto_agent::DrawableLoader);
+    let mut log = crate::log::ActivityLog::new(paths);
+    let open = Command::from(commands::tabs::Open {
+        path: from.to_path_buf(),
+        page: None,
+    });
+    crate::local::run_here(&mut session, paths, &mut log, &open).unwrap();
+    let save = Command::from(commands::saving::Save {
+        tab: TabRef::Active,
+        out: Some(out.to_path_buf()),
+        replace: false,
+    });
+    crate::local::run_here(&mut session, paths, &mut log, &save).unwrap();
+}
+
+/// Failure: a Save As through `recto session` or `recto local` (which write the person's real files in a process of their own) is never noted, so a crash
+/// leaves a temp that a later removal calls "none found"; or the route begins a ledger, which a process that ends at once leaves with no adoption of the
+/// older journals for good. It notes into a ledger that has begun, and begins none.
+#[test]
+fn a_save_as_through_local_or_session_is_noted_in_a_ledger_that_has_begun_and_begins_none() {
+    let dir = folder();
+    let paths = crate::state::StatePaths::overridden(&dir.join("state")).unwrap();
+    paths.prepare().unwrap();
+    crate::levels::store(&paths, recto_agent::Level::Full).unwrap();
+    let mine = put(
+        &dir,
+        "mine.pdf",
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["words"]))]),
+    );
+    save_as(&paths, &mine, &dir.join("first.pdf"));
+    assert!(dir.join("first.pdf").exists(), "the save went through");
+    assert!(!paths.root.join("removal").exists(), "no ledger is begun by a process that ends at once");
+    // A ledger the app began: the next Save As is in it, as a destination, and then as the file that landed.
+    notes(
+        &paths.root,
+        &SaveNote::Starting {
+            path: &mine,
+            from: Some(stamp(&mine)),
+            destination: None,
+        },
+    );
+    settled(&paths.root);
+    let second = dir.join("second.pdf");
+    save_as(&paths, &mine, &second);
+    let ledger = read(&paths.root);
+    assert!(
+        ledger.destinations.contains(&second),
+        "the destination at `Starting`: {:?}",
+        ledger.destinations
+    );
+    assert!(
+        ledger
+            .links
+            .iter()
+            .any(|link| matches!(link, recto_core::removal::Link::At { path, .. } if *path == second)),
+        "the copy as it landed: {:?}",
+        ledger.links
+    );
+    assert_eq!(ledger.gap, None);
+}

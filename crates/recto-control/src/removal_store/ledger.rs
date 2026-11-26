@@ -22,7 +22,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod adopt;
+mod support;
 mod tabs;
+
+pub use support::ProvenanceOnly;
 
 pub use tabs::note_tabs;
 #[cfg(any(test, feature = "test-seams"))]

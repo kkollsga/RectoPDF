@@ -498,6 +498,22 @@ impl<L: DocLoader + Clone> SessionAccess for Direct<'_, L> {
     }
 }
 
+/// [`Direct`] with what a save needs of the host: the one thing `recto local` and `recto session` add.
+struct Supported<'a, L>(Direct<'a, L>, &'a dyn saving::SaveSupport);
+
+impl<L: DocLoader + Clone> SessionAccess for Supported<'_, L> {
+    type Loader = L;
+    fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        self.0.with(step)
+    }
+    fn indexing(&self) -> Option<&dyn index::Indexing> {
+        self.0.indexing()
+    }
+    fn saving(&self) -> Option<&dyn saving::SaveSupport> {
+        Some(self.1)
+    }
+}
+
 /// Runs one command against a session, if the level allows it.
 pub fn run<L: DocLoader + Clone>(session: &mut Session<L>, level: Level, command: &Command) -> Result<Value, AgentError> {
     run_indexed(session, level, command, None)
@@ -511,6 +527,22 @@ pub fn run_indexed<L: DocLoader + Clone>(
     indexing: Option<&dyn index::Indexing>,
 ) -> Result<Value, AgentError> {
     execute(&Direct(RefCell::new(session), indexing), Actor::Agent(level), command, &mut Vec::new())
+}
+
+/// The same, with what a save needs of the host (`recto local` and `recto session` give it one that only notes the save's lineage).
+pub fn run_supported<L: DocLoader + Clone>(
+    session: &mut Session<L>,
+    level: Level,
+    command: &Command,
+    indexing: Option<&dyn index::Indexing>,
+    saving: &dyn saving::SaveSupport,
+) -> Result<Value, AgentError> {
+    execute(
+        &Supported(Direct(RefCell::new(session), indexing), saving),
+        Actor::Agent(level),
+        command,
+        &mut Vec::new(),
+    )
 }
 
 /// What's chosen, in a word: `auto` goes with the window.
