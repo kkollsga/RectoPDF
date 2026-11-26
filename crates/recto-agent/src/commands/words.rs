@@ -12,6 +12,9 @@ const CHOICES: &[&[&str]] = &[
     super::view::Shown::WORDS,
     super::view::PaperChoice::WORDS,
     super::view::LAYOUT_WORDS,
+    PickUnit::WORDS,
+    SvgText::WORDS,
+    crate::render::snapshot::Format::WORDS,
 ];
 
 /// The word of a value, from a type's values and its words in the same order.
@@ -23,6 +26,52 @@ pub(crate) fn word_of<T: PartialEq>(all: &[T], words: &[&'static str], value: &T
 pub(crate) fn value_of<T: Copy>(all: &[T], words: &[&str], word: &str) -> Option<T> {
     all.iter().zip(words).find(|(_, each)| **each == word).map(|(value, _)| *value)
 }
+
+/// What a pick's `--at` takes (`select`, `copy` and `highlight`): a character, a word as a double-click does, or a line as a triple-click does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickUnit {
+    Char,
+    Word,
+    Line,
+}
+
+impl PickUnit {
+    /// Every value, in the order of [`PickUnit::WORDS`].
+    pub const ALL: [Self; 3] = [Self::Char, Self::Word, Self::Line];
+    /// Its words on the wire, which the rows offer.
+    pub const WORDS: &'static [&'static str] = &["char", "word", "line"];
+
+    /// The value a word on the wire means, if it's one.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        value_of(&Self::ALL, Self::WORDS, word)
+    }
+}
+
+const _: () = assert!(PickUnit::ALL.len() == PickUnit::WORDS.len(), "a value without a word");
+
+/// How `export svg` writes a page's text: as outlines, as selectable text, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SvgText {
+    Both,
+    Paths,
+    Selectable,
+}
+
+impl SvgText {
+    /// Every value, in the order of [`SvgText::WORDS`].
+    pub const ALL: [Self; 3] = [Self::Both, Self::Paths, Self::Selectable];
+    /// Its words on the wire, which the row offers.
+    pub const WORDS: &'static [&'static str] = &["both", "paths", "selectable"];
+
+    /// The value a word on the wire means, if it's one.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        value_of(&Self::ALL, Self::WORDS, word)
+    }
+}
+
+const _: () = assert!(SvgText::ALL.len() == SvgText::WORDS.len(), "a value without a word");
 
 /// `on` or `off`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +153,10 @@ mod tests {
             assert_eq!(unique.len(), words.len(), "{words:?}");
         }
         use super::super::{contents::Which, view};
+        for (format, word) in crate::render::snapshot::Format::ALL.iter().zip(crate::render::snapshot::Format::WORDS) {
+            assert_eq!(crate::render::snapshot::Format::from_name(word), Some(*format), "{word}");
+            assert_eq!(format.name(), *word, "{format:?}");
+        }
         round(&OnOff::ALL, OnOff::WORDS);
         round(&Which::ALL, Which::WORDS);
         round(&view::Shown::ALL, view::Shown::WORDS);

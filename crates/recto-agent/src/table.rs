@@ -210,7 +210,7 @@ pub(crate) const PICK_TO: Arg = Arg {
 pub(crate) const PICK_UNIT: Arg = Arg {
     key: "unit",
     flag: Some("--unit"),
-    kind: Kind::Choice(&["char", "word", "line"]),
+    kind: Kind::Choice(crate::commands::words::PickUnit::WORDS),
     required: false,
     help: "What `--at` takes: `word` as a double-click does and `line` as a triple-click does, going by those if there's a drag too. `word` for a click and `char` for a drag if left out.",
 };
@@ -1430,7 +1430,8 @@ mod tests {
         let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
         // A row that reads a page either by its number or by `--ref` is refused with neither, so a line without one gets a page.
         let by = |key: &str| given.iter().any(|(each, _)| each.key == key);
-        if spec.args.iter().any(|arg| arg.key == "ref") && spec.args.iter().any(|arg| arg.key == "page") && !by("page") && !by("ref") {
+        let takes_page_flag = spec.args.iter().any(|arg| arg.key == "page" && arg.flag.is_some());
+        if spec.args.iter().any(|arg| arg.key == "ref") && takes_page_flag && !by("page") && !by("ref") {
             words.extend(["--page".to_string(), "1".to_string()]);
         }
         let required = spec
@@ -1475,6 +1476,8 @@ mod tests {
                             if arg.kind == Kind::Switch
                                 && error.code == Code::USAGE
                                 && SWITCHES_THAT_GO_WITH_ANOTHER.contains(&(spec.tag, arg.key, error.message.as_str())) => {}
+                        // A reference alone is refused where the command takes only some (`highlight --ref` takes characters, the sample is a page).
+                        Err(error) if arg.kind == Kind::Reference && crate::commands::refused_for_its_combination(spec.tag, &error) => {}
                         Err(error) => panic!("{} --{} {value}: refused, {:?}: {}", spec.name, arg.key, error.code, error.message),
                         Ok(_) => {}
                     }
@@ -1507,7 +1510,6 @@ mod tests {
             "text --page x",
             "text --page 1.5",
             "text --page +1",
-            "goto",
             "page rotate 1",
             "page rotate 1 --by 45",
             "page rotate 4- --by 90",

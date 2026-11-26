@@ -1,11 +1,13 @@
 //! Going to a page, links within a document, and the trail through them: `goto`, `goto label`, `links`, `follow`, `back` and `forward`.
 
 #![allow(unused_imports)]
+use super::locating::{GOTO_REF_EXAMPLE, REF_GO};
 use super::{Cmd, Cx, row_access};
 use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
+use recto_core::locator::Locator;
 use recto_session::trail::Chosen;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -66,33 +68,106 @@ pub(crate) const ROWS_LINKS: &[Spec] = &[Spec {
     ..BASE
 }];
 
-/// A jump to a page, by its number or by what the file calls it. Back comes here again.
-#[derive(Clone, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// A jump to a page, by its number, by what the file calls it, or by a reference to it. Back comes here again. Read from a `line`, so a token that can't be a
+/// reference, or one beside a page, a label, an entry or a link, is refused as the line is read, before the level or the tab is asked.
+#[derive(Clone, serde::Serialize)]
+#[serde(into = "line::Goto")]
 pub struct Goto {
-    #[serde(default)]
     pub tab: TabRef,
-    #[serde(default)]
     pub page: Option<u32>,
-    #[serde(default)]
     pub label: Option<String>,
     /// How far down the page, from 0, its top, to 1, its bottom, as a link's destination says it (`LinkTarget::Page`'s `within`): a click on a link sends
     /// it. Past either end is that end, as a link's is.
-    #[serde(default)]
     pub within: Option<f64>,
     /// The contents entry this goes to, by its number as `contents` gives it, as a click on its row does: it's the one marked as being read from when the
     /// view lands until the reader scrolls or jumps again, even with another entry at the same place. Refused unless it's an entry of the contents the
     /// sidebar shows for the tab, on that page. Left out of what's sent when there's none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<u32>,
     /// **A link's jump** (the window's click on a link to a page of this document): where it goes is tied to the page it was clicked on, so it's chosen
     /// from where the tab is, and a place withheld from agents stays withheld, whoever sends it ([`recto_session::trail::Chosen::FromPlace`], the fourth
     /// review's item 2). Anyone may send it: it only ever keeps a place withheld. Left out of what's sent when false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub link: bool,
+    /// The page a reference to it points at now, in place of `page`. Never with a page, a label, an entry or a link.
+    pub reference: Option<Locator>,
+}
+
+/// `goto` as it's written on the wire.
+pub mod line {
+    use crate::TabRef;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Goto {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default)]
+        pub page: Option<u32>,
+        #[serde(default)]
+        pub label: Option<String>,
+        #[serde(default)]
+        pub within: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub entry: Option<u32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pub link: bool,
+        /// Last, so a positional line that has always read `[tab, page, label, within, entry, link]` still does.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        pub reference: Option<String>,
+    }
+}
+
+impl TryFrom<line::Goto> for Goto {
+    type Error = AgentError;
+    fn try_from(line: line::Goto) -> Result<Self, AgentError> {
+        let line::Goto {
+            tab,
+            page,
+            label,
+            within,
+            entry,
+            link,
+            reference,
+        } = line;
+        let others = page.is_some() || label.is_some() || entry.is_some() || link;
+        let reference = super::locating::reference_alone(reference.as_deref(), others, super::locating::GOTO_REF_ALONE)?;
+        Ok(Self {
+            tab,
+            page,
+            label,
+            within,
+            entry,
+            link,
+            reference,
+        })
+    }
+}
+
+impl From<Goto> for line::Goto {
+    fn from(asked: Goto) -> Self {
+        let Goto {
+            tab,
+            page,
+            label,
+            within,
+            entry,
+            link,
+            reference,
+        } = asked;
+        Self {
+            tab,
+            page,
+            label,
+            within,
+            entry,
+            link,
+            reference: reference.as_ref().map(recto_core::locator::encode),
+        }
+    }
 }
 
 /// Said as it's sent: `entry` and `link` only when there's one, so a `goto` that names neither reads as it always has, in a log and the wire's golden alike.
+/// A reference shows only the page it hints at, never the token.
 impl std::fmt::Debug for Goto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
@@ -102,6 +177,7 @@ impl std::fmt::Debug for Goto {
             within,
             entry,
             link,
+            reference,
         } = self;
         let mut said = f.debug_struct("Goto");
         said.field("tab", tab).field("page", page).field("label", label).field("within", within);
@@ -110,6 +186,9 @@ impl std::fmt::Debug for Goto {
         }
         if *link {
             said.field("link", link);
+        }
+        if let Some(reference) = reference {
+            said.field("ref_page", &reference.page().number());
         }
         said.finish()
     }
@@ -143,6 +222,7 @@ impl Cmd for Goto {
             within,
             entry,
             link,
+            reference,
         } = self;
         let mut details = json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some(), "within": within });
         if let Some(entry) = entry {
@@ -151,9 +231,27 @@ impl Cmd for Goto {
         if *link {
             details["link"] = json!(true);
         }
+        // The page it hints at, a number, and never the token or any part of its checks.
+        if let Some(reference) = reference {
+            details["ref_page"] = json!(reference.page().number());
+        }
         details
     }
+    /// A jump by reference scans the file's pages (so it takes a place under the draw cap, reads pages, and isn't run on the window's session thread);
+    /// one by number or label reads nothing.
+    fn draws_as_asked(&self) -> bool {
+        self.reference.is_some()
+    }
+    fn waits_as_asked(&self) -> bool {
+        self.reference.is_some()
+    }
+    fn reads_pages_as_asked(&self) -> bool {
+        self.reference.is_some()
+    }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        if let Some(reference) = &self.reference {
+            return self.go_by_reference(cx, reference);
+        }
         cx.access.take_places();
         match (self.page, &self.label) {
             (Some(page), None) => cx.access.with(|s| {
@@ -192,6 +290,28 @@ impl Cmd for Goto {
     }
     fn human(data: &Value) -> String {
         place(data)
+    }
+}
+
+impl Goto {
+    /// Goes to the page a reference points at now, as the tab has it among its edits. Anything but `found` and `moved` is `page_of`'s refusal, and nothing
+    /// is done then: no jump, no notice.
+    fn go_by_reference<A: SessionAccess>(&self, cx: &mut Cx<'_, A>, reference: &Locator) -> Result<Value, AgentError> {
+        cx.access.take_places();
+        let found = locating::page_of(cx.access, &self.tab, reference, locating::CharsChecked::First)?;
+        locating::still_located(cx.access, &found)?;
+        let within = self.within.unwrap_or(0.0);
+        let (actor, events) = (cx.actor, &mut *cx.events);
+        cx.access.with(|s| {
+            let id = found.tab;
+            let source = s.page_source(id, found.page - 1).ok_or_else(no_such_page)?;
+            locating::agree(&found, &source)?;
+            go_to(s, id, found.page, within, actor.author(), Chosen::ByItself)?;
+            events.push(page_now(s, id));
+            let mut data = where_json(s, actor, id);
+            data["ref"] = found.told();
+            Ok(data)
+        })
     }
 }
 
@@ -340,15 +460,16 @@ pub(crate) const ROWS_GOTO: &[Spec] = &[
         tag: "goto",
         group: GROUP_MOVE,
         access: Access::At(Level::Control),
-        summary: "Goes to a page. A page that isn't there is refused. `recto back` comes back to where it was.",
+        summary: "Goes to a page. A page that isn't there is refused. `recto back` comes back to where it was. With `--ref` it goes to the page a reference points at now, even if another program moved it, and `ref` in the answer says how it was found; anything but a page that was found or moved is refused, and nothing moves.",
         args: &[
             Arg {
                 key: "page",
                 flag: None,
                 kind: Kind::Page,
-                required: true,
-                help: "The page, counted from 1.",
+                required: false,
+                help: "The page, counted from 1. Give this or `--ref`, not both.",
             },
+            REF_GO,
             Arg {
                 key: "within",
                 flag: Some("--within"),
@@ -367,7 +488,7 @@ pub(crate) const ROWS_GOTO: &[Spec] = &[
         ],
         data: AGENT_EXITS_PAGE,
         emits: &["page_changed"],
-        examples: &["recto goto 12", "recto goto 12 --tab report", "recto goto 9 --within 0.3"],
+        examples: &["recto goto 12", "recto goto 12 --tab report", "recto goto 9 --within 0.3", GOTO_REF_EXAMPLE],
         ..BASE
     },
     Spec {

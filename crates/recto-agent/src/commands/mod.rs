@@ -360,13 +360,17 @@ family! {
         IndexClear(text::IndexClear),
         #[line(text::line::Text)]
         Text(text::Text),
+        #[line(text::line::Pick)]
         Select(text::Select),
+        #[line(text::line::Pick)]
         Copy(text::Copy),
         #[line(export::line::Render)]
         Render(export::Render),
+        #[line(export::line::ExportSvg)]
         ExportSvg(export::ExportSvg),
         Images(export::Images),
         Image(export::Image),
+        #[line(export::line::Snapshot)]
         Snapshot(export::Snapshot),
         Print(export::Print),
         Signatures(reading::Signatures),
@@ -380,6 +384,7 @@ family! {
     /// Opening and moving around.
     pub enum Move {
         Open(tabs::Open),
+        #[line(linking::line::Goto)]
         Goto(linking::Goto),
         Back(linking::Back),
         Forward(linking::Forward),
@@ -417,6 +422,7 @@ family! {
         Save(saving::Save),
         #[line(edit_mode::line::EditMode)]
         EditMode(edit_mode::EditMode),
+        #[line(highlight::line::Highlight)]
         Highlight(highlight::Highlight),
         #[line(highlight::line::HighlightRemove)]
         HighlightRemove(highlight::HighlightRemove),
@@ -570,6 +576,16 @@ const COMBINATIONS: &[(&str, &str)] = &[
     // Both flags are optional in the table, so the CLI can build the line with neither, and the typed payload refuses it as it's read.
     ("text", locating::TEXT_NEITHER),
     ("render", locating::RENDER_NEITHER),
+    ("snapshot", locating::SNAPSHOT_BOTH),
+    ("snapshot", locating::SNAPSHOT_NEITHER),
+    ("snapshot", locating::SNAPSHOT_REF_NOT_CLIPBOARD),
+    ("export_svg", locating::EXPORT_SVG_BOTH),
+    ("export_svg", locating::EXPORT_SVG_NEITHER),
+    ("goto", locating::GOTO_REF_ALONE),
+    ("select", locating::PICK_REF_ALONE),
+    ("copy", locating::PICK_REF_ALONE),
+    ("highlight", locating::PICK_REF_ALONE),
+    ("highlight", locating::HIGHLIGHT_REF_CHARS),
 ];
 
 /// For tests (the table's and the fuzz target's): whether a line the CLI built, each of whose words its row takes, is refused as it's read only for what its

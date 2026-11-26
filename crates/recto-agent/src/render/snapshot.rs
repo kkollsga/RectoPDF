@@ -27,6 +27,11 @@ pub enum Format {
 }
 
 impl Format {
+    /// Every format, in the order of [`Format::WORDS`].
+    pub const ALL: [Self; 4] = [Self::Png, Self::Jpg, Self::Svg, Self::Text];
+    /// The words `--as` offers, the names [`Format::name`] says: each reads back as its format.
+    pub const WORDS: &'static [&'static str] = &["png", "jpg", "svg", "text"];
+
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "png" => Some(Self::Png),
