@@ -35,7 +35,7 @@ extension QAChannel {
             guard let controller, parts.count == 2, let row = Int(parts[0]), row >= 0 else { return fail(id, "That isn't a contents row and an item.") }
             let table = controller.sidebar.contentsTable
             let place = table.convert(NSPoint(x: table.rect(ofRow: row).midX, y: table.rect(ofRow: row).midY), to: nil)
-            let click = NSEvent.mouseEvent(with: .rightMouseDown, location: place, modifierFlags: [], timestamp: 0, windowNumber: controller.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            guard let click = NSEvent.mouseEvent(with: .rightMouseDown, location: place, modifierFlags: [], timestamp: 0, windowNumber: controller.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return fail(id, "The right-click couldn't be made.") }
             guard let menu = table.menu(for: click) else { return fail(id, "There's no menu for that row.") }
             guard let item = menu.items.first(where: { ($0.representedObject as? String) == parts[1] }), let action = item.action else { return fail(id, "That isn't in the contents row's right-click menu.") }
             NSApp.sendAction(action, to: item.target, from: item)

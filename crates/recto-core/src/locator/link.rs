@@ -210,6 +210,18 @@ mod tests {
         assert_eq!(address, format!("file:///x/{link}"));
     }
 
+    /// Failure: a name that isn't UTF-8 is refused or lossy-converted (U+FFFD), or a decomposed name (`e` and U+0301, as the file system holds it) is
+    /// composed, so the address names another file than the one that's open. Each component's bytes are encoded as they are.
+    #[test]
+    fn a_non_utf8_and_a_decomposed_name_are_encoded_as_their_bytes_are() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"a\xFFb.pdf");
+        let address = address_of(&std::path::Path::new("/d").join(raw), 1).expect("an address");
+        assert_eq!(address, "file:///d/a%FFb.pdf#page=1");
+        let address = address_of(std::path::Path::new("/d/cafe\u{301}.pdf"), 1).expect("an address");
+        assert_eq!(address, "file:///d/cafe%CC%81.pdf#page=1", "not composed to %C3%A9");
+    }
+
     /// Failure: a path that can't be an address gets one anyway (a relative path opens another file, `..` leaves the folder, a NUL ends a name early), or a
     /// limit is off by one.
     #[test]
