@@ -228,6 +228,7 @@ codes! {
     NEEDS_TEMP_STATE = "needs_temp_state", Next::ByExit;
     NEEDS_TERMINAL = "needs_terminal", Next::Says("Ask the user to run this command themselves, in their own terminal.");
     NO_ACTIVE_TAB = "no_active_tab", Next::ByExit;
+    NO_ADDRESS = "no_address", Next::ByExit;
     NO_ANSWER = "no_answer", Next::ByExit;
     NO_GENERATED_CONTENTS = "no_generated_contents", Next::ByExit;
     NO_HANDOVER_FOLDER = "no_handover_folder", Next::ByExit;

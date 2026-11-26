@@ -80,6 +80,10 @@ impl<'a> RowParts<'a> {
         if super::image_select::copy(self.person, anyway) {
             return;
         }
+        // Asked only for a selection that has some text to copy: nothing selected takes no place, and so drops nothing in flight.
+        if self.selected().is_some_and(|(_, range)| range.is_some_and(|range| range.start != range.end)) {
+            self.tools.tool().text_asked();
+        }
         self.panes.reading_engine(self.engine).selection().copy(anyway);
     }
 
@@ -116,6 +120,16 @@ impl<'a> RowParts<'a> {
     /// The zoom's own: the person's `view --zoom`, run here and now on the thread that asked ([`super::zoom::for_person`]).
     pub fn zoom_for_person(&self, zoom: Zoom) -> bool {
         super::zoom::for_person(self.host, self.serving, zoom)
+    }
+
+    /// The person asks for Copy Link now: its place among what's asked of the clipboard, kept for its address when it lands ([`super::snapshot_tool::Tool::link_asked`]).
+    pub fn link_asked(&self) {
+        self.tools.tool().link_asked();
+    }
+
+    /// The person's Copy Link wasn't taken (past a hand-off's last look): its place is given back ([`super::snapshot_tool::Tool::link_not_taken`]).
+    pub fn link_not_taken(&self) {
+        self.tools.tool().link_not_taken();
     }
 
     /// The tools panel open or shut.

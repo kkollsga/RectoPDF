@@ -5,11 +5,13 @@ use super::{Cmd, Cx, row_access};
 use crate::human::text;
 use crate::table::*;
 use crate::*;
-use recto_core::locator::{LinkError, link_of};
+use recto_core::locator::{LinkError, address_of, link_of};
 use serde_json::{Value, json};
 
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet, so no link can name it. Save first, or ask for a page of the file.";
 const NAME_REFUSED: &str = "This file's name can't be made into a link.";
+const NOT_FOR_AGENTS: &str = "The file's address is the person's alone, for their clipboard. Ask for the link, which names no folder.";
+const ADDRESS_REFUSED: &str = "This file's location can't be made into a link.";
 const UNSAVED_NOTE: &str =
     "This tab has unsaved edits, so the link names the page's place in the file on disk, not in the tab. The link's page is `file_page`.";
 
@@ -20,6 +22,10 @@ pub struct Link {
     pub page: u32,
     #[serde(default)]
     pub tab: TabRef,
+    /// **The person's Copy Link:** the file's whole address, with the page, as text for the window's clipboard ([`crate::clipboard`]). Wire-only: no flag, no
+    /// row argument. Anyone but the actor at the window is refused, before any tab is read, and the answer holds no address and no path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_clipboard: bool,
 }
 
 impl Cmd for Link {
@@ -46,6 +52,16 @@ impl Cmd for Link {
         json!({ "tab": super::log_tab(&self.tab), "page": self.page })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        // The person's alone, said before any tab is read, so an agent learns nothing of the tabs by asking.
+        let sink = if self.to_clipboard {
+            Some(
+                cx.access
+                    .clipboard(cx.actor)
+                    .ok_or_else(|| AgentError::new(Code::PERMISSION_DENIED, NOT_FOR_AGENTS, exit::PERMISSION))?,
+            )
+        } else {
+            None
+        };
         let wanted = crate::one_based(self.page)?;
         let file = crate::reading::tab_file(cx.access, &self.tab)?;
         file.require_pages_shown()?;
@@ -56,6 +72,20 @@ impl Cmd for Link {
                 crate::no_such_page()
             });
         };
+        if let Some(sink) = sink {
+            let address = address_of(file.path(), file_page + 1).map_err(|why| match why {
+                LinkError::Page => crate::no_such_page(),
+                LinkError::Name => AgentError::new(Code::NO_ADDRESS, ADDRESS_REFUSED, exit::FAILED),
+            })?;
+            sink.text(address);
+            return Ok(json!({
+                "tab": file.id(),
+                "page": self.page,
+                "file_page": file_page + 1,
+                "as": "clipboard",
+                "note": (file_page != wanted).then_some(UNSAVED_NOTE),
+            }));
+        }
         let link = link_of(file.path(), file_page + 1).map_err(|why| match why {
             LinkError::Page => crate::no_such_page(),
             LinkError::Name => AgentError::new(Code::NOT_REFERENCEABLE, NAME_REFUSED, exit::FAILED),
@@ -69,6 +99,9 @@ impl Cmd for Link {
         }))
     }
     fn human(data: &Value) -> String {
+        if data["as"] == "clipboard" {
+            return format!("Copied a link to page {} to the clipboard.", crate::human::number(&data["file_page"]));
+        }
         format!(
             "A link to page {}: {}",
             crate::human::number(&data["file_page"]),
@@ -97,3 +130,103 @@ pub(crate) const ROWS_LINK: &[Spec] = &[Spec {
     examples: &["recto link 3", "recto link 3 --tab \"#2\" --json"],
     ..BASE
 }];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clipboard::ClipboardSink;
+    use crate::extract::{Clip, ClipStop};
+    use std::sync::Mutex;
+
+    /// A window's clipboard that keeps the text given it and counts everything else.
+    #[derive(Default)]
+    struct Kept {
+        texts: Mutex<Vec<String>>,
+    }
+
+    impl ClipboardSink for Kept {
+        fn begin(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn begin_paste(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn offer(&self, _clip: Clip) {}
+        fn made(&self, _bytes: Vec<u8>) {}
+        fn text(&self, text: String) {
+            self.texts.lock().unwrap().push(text);
+        }
+    }
+
+    /// A session whose clipboard is the person's alone, as the host gives it.
+    struct AtTheWindow {
+        session: Mutex<recto_session::Session<crate::DrawableLoader>>,
+        clipboard: Kept,
+    }
+
+    impl SessionAccess for AtTheWindow {
+        type Loader = crate::DrawableLoader;
+        fn with<R>(&self, step: impl FnOnce(&mut recto_session::Session<crate::DrawableLoader>) -> R) -> R {
+            self.session.with(step)
+        }
+        fn clipboard(&self, actor: Actor) -> Option<&dyn ClipboardSink> {
+            (actor == Actor::Person).then_some(&self.clipboard as &dyn ClipboardSink)
+        }
+    }
+
+    fn at_the_window(name: &str) -> (AtTheWindow, recto_testpdf::TempPdf) {
+        let file = recto_testpdf::TempPdf::new(name, &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))]));
+        let access = AtTheWindow {
+            session: Mutex::new(recto_session::Session::new(crate::DrawableLoader)),
+            clipboard: Kept::default(),
+        };
+        access.session.lock().unwrap().open(&file.0).unwrap();
+        (access, file)
+    }
+
+    fn run(access: &AtTheWindow, actor: Actor, tab: TabRef, to_clipboard: bool) -> Result<Value, AgentError> {
+        Cmd::run(
+            &Link { page: 1, tab, to_clipboard },
+            &mut Cx {
+                access,
+                actor,
+                events: &mut Vec::new(),
+            },
+        )
+    }
+
+    /// Failure: the person's Copy Link gives the clipboard another text than the file's whole address and page (a name with no folder, a raw `#`), or puts
+    /// the address or the folder in the command's answer, where the log and an agent's lane could read it. The sink gets exactly the address; the answer holds
+    /// neither it nor the folder, and says it went to the clipboard.
+    #[test]
+    fn the_person_gets_the_address_on_the_clipboard_and_the_answer_holds_none() {
+        let (access, file) = at_the_window("a b#1.pdf");
+        let said = run(&access, Actor::Person, TabRef::Active, true).expect("copied");
+        let folder = file.0.parent().unwrap().to_string_lossy().into_owned();
+        let texts = access.clipboard.texts.lock().unwrap().clone();
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].starts_with("file:///") && texts[0].ends_with("/a%20b%231.pdf#page=1"), "{texts:?}");
+        let said_text = said.to_string();
+        assert_eq!(said["as"], "clipboard");
+        assert!(
+            !said_text.contains(&folder) && !said_text.contains("file://") && !said_text.contains("untrusted"),
+            "{said_text}"
+        );
+    }
+
+    /// Failure: an agent at any level asking for the clipboard gets the address, or reads the tabs first (a `no_such_tab` before the refusal tells it which
+    /// tabs exist), or touches the person's clipboard. All four levels are refused as `permission_denied`, before the tab is looked for, and the sink is untouched.
+    #[test]
+    fn an_agent_is_refused_at_every_level_before_any_tab_is_read() {
+        let (access, _file) = at_the_window("plain.pdf");
+        for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+            let error = run(&access, Actor::Agent(level), TabRef::Id(recto_session::TabId(9999)), true).expect_err("refused");
+            assert_eq!((error.code, error.exit), (Code::PERMISSION_DENIED, exit::PERMISSION), "{level:?}: {error:?}");
+        }
+        assert!(access.clipboard.texts.lock().unwrap().is_empty());
+        // A plain link is as it was: the name only, and the sink never given it.
+        let plain = run(&access, Actor::Agent(Level::ReadOnly), TabRef::Active, false).expect("a link");
+        assert_eq!(plain["untrusted"]["link"], "plain.pdf#page=1");
+        assert!(access.clipboard.texts.lock().unwrap().is_empty());
+    }
+}

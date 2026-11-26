@@ -18,6 +18,8 @@ pub enum UiAction {
     Menu { id: String },
     /// A sidebar row tapped, or ⌘- or ⌃-clicked (`adding`).
     Row { row: SidebarRow, adding: bool },
+    /// A contents row's right-click, Copy Link: the address of the page a tap on it goes to, to the clipboard ([`super::copy_link`]).
+    CopyLink { row: SidebarRow },
     /// The reader's moved into another pane, by the pointer or a scroll, as the page views report it: that pane's tab.
     PaneRead { tab: u32 },
     /// A contents row's chevron, by the row's place in the contents.
@@ -82,6 +84,7 @@ impl UiAction {
         match self {
             Self::Menu { .. } => "Menu",
             Self::Row { .. } => "Row",
+            Self::CopyLink { .. } => "CopyLink",
             Self::PaneRead { .. } => "PaneRead",
             Self::Chevron { .. } => "Chevron",
             Self::Open { .. } => "Open",
@@ -144,6 +147,10 @@ impl Inner {
                 // The list is cloned out, so nothing else is taken under the published lock.
                 let contents = Arc::clone(&lock(&self.published).contents);
                 super::opening::row_command(row, adding, &self.panes, &self.engine, &contents)
+            }
+            UiAction::CopyLink { row } => {
+                super::copy_link::of_row(super::person::Person::of(self), &self.tools, &self.panes, &self.engine, &row);
+                return Acted::DONE;
             }
             UiAction::PaneRead { tab } => Some(super::comparison::reading(TabId(tab))),
             UiAction::Chevron { first } => super::contents::chevron(&lock(&self.published).contents, first),

@@ -14,6 +14,8 @@ pub enum UiAction {
     Menu { id: String },
     /// A sidebar row tapped, or ⌘- or ⌃-clicked (`adding`).
     Row { row: SidebarRow, adding: bool },
+    /// A contents row's right-click, Copy Link.
+    CopyLink { row: SidebarRow },
     /// The reader's moved into another pane, by the pointer or a scroll, as the page views report it: that pane's tab.
     PaneRead { tab: u32 },
     /// A contents row's chevron, by the row's place in the contents.

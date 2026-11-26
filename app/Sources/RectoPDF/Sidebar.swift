@@ -392,12 +392,21 @@ final class TabTable: NSTableView {
     }
 }
 
+/// The contents' table, whose right-click menu is made by the sidebar (Rust's words), for the row under the pointer.
+final class ContentsTable: NSTableView {
+    var menuForRow: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuForRow?(row(at: convert(event.locationInWindow, from: nil)))
+    }
+}
+
 @MainActor final class SidebarPane: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let view = FlippedView()
     let scroll = NSScrollView()
     let table = TabTable()
     let contentsScroll = ContentsScrollView()
-    let contentsTable = NSTableView()
+    let contentsTable = ContentsTable()
     let contentsThumb = ThumbView()
     let tabsThumb = ThumbView()
     let addButton = NSButton(title: "", target: nil, action: nil)
@@ -420,6 +429,8 @@ final class TabTable: NSTableView {
     private var activeIndex: Int?
     private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false, noteHeight: 0, findBlock: 0, findList: 0, findRow: 24, findField: 28, findStatus: 20)
     private(set) var hoveredRow: Int?
+    /// The contents row a right-click menu was last made for, which its item acts on.
+    private var menuRow: SidebarRow?
     var addPressed: (() -> Void)?
     private var tracking: NSTrackingArea?
     private var frames: FrameRunner?
@@ -478,6 +489,7 @@ final class TabTable: NSTableView {
         // Clicks still come as actions. Neither takes the focus, so ⌘A and ⌘C go on reaching the page after a click on a row: a table with the focus answers Select All itself, and greys it out.
         table.refusesFirstResponder = true
         contentsTable.refusesFirstResponder = true
+        contentsTable.menuForRow = { [weak self] row in self?.contentsMenu(row: row) }
         table.action = #selector(tabClicked)
         table.controlClicked = { [weak self] row in MainActor.assumeIsolated { self?.compareTab(row) } }
         contentsTable.action = #selector(contentsClicked)
@@ -1160,6 +1172,26 @@ final class TabTable: NSTableView {
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+
+    /// A contents row's right-click: Rust's list for the row, drawn. Nothing for a place with no row, or a row Rust offers nothing for.
+    func contentsMenu(row: Int) -> NSMenu? {
+        guard row >= 0, let chosen = core.contentsRows(first: UInt32(row), count: 1).first else { return nil }
+        let entries = core.contentsMenu(row: chosen)
+        if entries.isEmpty { return nil }
+        let menu = NSMenu()
+        for entry in entries {
+            let item = menu.addItem(withTitle: entry.title, action: #selector(contentsMenuChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.id
+        }
+        menuRow = chosen
+        return menu
+    }
+
+    @objc func contentsMenuChosen(_ sender: NSMenuItem) {
+        guard let row = menuRow else { return }
+        _ = core.act(action: .copyLink(row: row))
+    }
 }
 
 

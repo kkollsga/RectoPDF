@@ -532,7 +532,7 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "click_row" => {
+            "click_row" | "contents_context_menu" => {
                 check_drive_value(verb, value)?;
                 if let Some(row) = value.strip_prefix("fold:").and_then(|row| row.parse().ok()) {
                     let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;

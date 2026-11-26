@@ -1436,6 +1436,7 @@ mod tests {
             *self.offered.lock().unwrap() += 1;
         }
         fn made(&self, _bytes: Vec<u8>) {}
+        fn text(&self, _text: String) {}
     }
 
     /// The person's session, with a clipboard.

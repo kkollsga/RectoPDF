@@ -119,6 +119,9 @@ pub(super) fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentErro
                     .iter()
                     .any(|entry| !entry.id.is_empty() && entry.id == item)
         }),
+        "contents_context_menu" => value
+            .split_once(':')
+            .is_some_and(|(row, item)| row.parse::<u32>().is_ok() && item == crate::core::copy_link::COPY_LINK_ID),
         "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
         "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| {
             pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
@@ -261,6 +264,7 @@ mod tests {
             ("reveal", "3", "x"),
             ("click_row", "0", "none"),
             ("contents_scroll", "9", "1.5"),
+            ("contents_context_menu", "2:edit.copy_link", "2:edit.copy"),
             ("resize", "800x600", "10x10"),
         ] {
             assert!(check_drive_value(verb, good).is_ok(), "{verb} {good}");

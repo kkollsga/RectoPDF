@@ -115,6 +115,7 @@ fn edit_entries() -> Vec<MenuEntry> {
             system_action: "copy:".into(),
             ..entry("edit.copy", "Copy", "c")
         },
+        entry("edit.copy_link", crate::core::copy_link::TITLE, ""),
         MenuEntry {
             system_action: "selectAll:".into(),
             ..entry("edit.select_all", "Select All", "a")
@@ -235,7 +236,7 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         "view.paper" | "paper.white" | "paper.warm" | "paper.dark" => Enable::Always,
         "view.zoom_in" | "view.zoom_out" | "view.actual_size" | "view.fit" | "view.sidebar" | "view.agent_icon" | "palette.open" => Enable::Always,
         "compare.separate" | "compare.synced" => Enable::Always,
-        "edit.copy" | "edit.copy_anyway" => Enable::Selection,
+        "edit.copy" | "edit.copy_anyway" | "edit.copy_link" => Enable::Selection,
         "edit.select_all"
         | "edit.clear_history"
         | "go.page"
@@ -500,6 +501,8 @@ pub fn action(id: &str) -> Option<Action> {
         "edit.copy" => Action::Copy { anyway: false },
         "edit.copy_anyway" => Action::Copy { anyway: true },
         "edit.select_all" => Action::SelectAll,
+        // Its row sends the person's `recto link` ([`crate::core::copy_link`]); nothing here is left for the host.
+        "edit.copy_link" => Action::Host(HostAction::None),
         "edit.clear_history" => Action::ClearEditHistory,
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
@@ -690,6 +693,10 @@ mod tests {
     fn copy_and_select_all_are_enabled_as_on_any_mac_app() {
         assert!(!enabled("edit.copy", true, false));
         assert!(enabled("edit.copy", true, true));
+        assert!(
+            !enabled("edit.copy_link", true, false) && enabled("edit.copy_link", true, true),
+            "Copy Link goes with a selection"
+        );
         assert!(!enabled("edit.select_all", false, false));
         assert!(enabled("edit.select_all", true, false));
         assert!(enabled("view.zoom_in", false, false));
@@ -870,8 +877,8 @@ mod tests {
         for comparing in [None, Some(false), Some(true)] {
             let ids: Vec<String> = context_menu(Some(Spread::Single), comparing).into_iter().map(|item| item.id).collect();
             assert_eq!(
-                ids[..5],
-                ["edit.copy", "edit.select_all", "tools.capture", "", "layout.single"],
+                ids[..6],
+                ["edit.copy", "edit.copy_link", "edit.select_all", "tools.capture", "", "layout.single"],
                 "{comparing:?}"
             );
         }

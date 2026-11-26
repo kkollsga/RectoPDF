@@ -167,6 +167,25 @@ pub(crate) const ROWS: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "qa contents-context-menu",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Control),
+        summary: "Right-clicks a row of the sidebar's contents, by what AppKit calls for a right-click, and chooses an item, as a person would: Copy Link puts the row's page address on the clipboard, which `qa copied` then reads. Nothing is posted.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Text,
+            required: true,
+            help: "`ROW:ITEM`, the row from 0 in the contents, such as `2:edit.copy_link`.",
+        }],
+        fixed: &[("verb", "contents_context_menu")],
+        data: "`qa state`'s `app`.",
+        examples: &["recto qa contents-context-menu 2:edit.copy_link"],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
         name: "qa pane-focus",
         tag: "qa_drive",
         group: GROUP_QA,
@@ -945,6 +964,7 @@ pub(super) const VERBS: &[QaVerb] = &[
     verb("hover", HostInput, Some(Pointer)),
     verb("pane_scroll", HostInput, Some(Panes)),
     verb("pane_context_menu", HostInput, Some(Panes)),
+    verb("contents_context_menu", HostInput, Some(Panes)),
     verb("pane_focus", HostInput, Some(Panes)),
     verb("compare_click", HostInput, Some(Sidebar)),
     verb("click_row", HostInput, Some(Sidebar)),

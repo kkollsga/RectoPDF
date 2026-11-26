@@ -1705,11 +1705,11 @@
 {"cmd":"link"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"link","page":3}
-    ok link Link { page: 3, tab: "active" }
+    ok link Link { page: 3, tab: "active", to_clipboard: false }
 {"cmd":"link","page":3,"tab":"#2"}
-    ok link Link { page: 3, tab: "#2" }
+    ok link Link { page: 3, tab: "#2", to_clipboard: false }
 {"cmd":"link","page":0}
-    ok link Link { page: 0, tab: "active" }
+    ok link Link { page: 0, tab: "active", to_clipboard: false }
 {"cmd":"link","page":3,"extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"link","page":null}

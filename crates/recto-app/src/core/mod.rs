@@ -2,6 +2,7 @@
 //! runs on, and the window's features with state of their own, a file per concern. The bridge forwards to it.
 
 pub mod actions;
+pub mod copy_link;
 pub mod find;
 pub mod generated_contents;
 pub mod highlight;

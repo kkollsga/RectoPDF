@@ -42,7 +42,9 @@ pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
         let turn = lane.turn_for(&command);
         let mut run = PersonCommand::input(command);
         run.turn = turn;
-        inner.core.push(CoreCall::Run(run));
+        // One look at the freeze, as the queue's: one a hand-off froze since the look above is given back, and said not taken, so a feature that's kept a place
+        // for its answer (a Copy Link's) gives it up.
+        return inner.core.push_persons(run).is_ok();
     }
     true
 }
@@ -278,6 +280,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::comparison::answered,
     super::find::answered,
     super::highlight::answered,
+    super::copy_link::answered,
     super::updates::answered,
     super::printing::answered,
     super::snapshot_tool::answered,

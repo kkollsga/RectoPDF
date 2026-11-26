@@ -8,6 +8,7 @@ compare.synced | sent [{"cmd":"compare","tabs":null,"sync":"on","off":false,"tog
 edit.clear_history | sent [{"cmd":"clear_history","tab":"active"}] | host None understood true | heard nothing
 edit.copy | sent [] | host None understood true | heard nothing
 edit.copy_anyway | sent [] | host None understood true | heard nothing
+edit.copy_link | sent [] | host None understood true | heard nothing
 edit.redo | sent [{"cmd":"redo","tab":"active"}] | host None understood true | heard nothing
 edit.select_all | sent [] | host None understood true | heard nothing
 edit.undo | sent [{"cmd":"undo","tab":"active"}] | host None understood true | heard nothing
@@ -55,6 +56,7 @@ palette app.settings | sent [] | host ShowSettings understood true | heard nothi
 palette app.update | sent [{"cmd":"update_check"}] | host None understood true | heard nothing
 palette edit.clear_history | sent [{"cmd":"clear_history","tab":"active"}] | host None understood true | heard nothing
 palette edit.copy | sent [] | host None understood true | heard nothing
+palette edit.copy_link | sent [] | host None understood true | heard nothing
 palette edit.redo | sent [{"cmd":"redo","tab":"active"}] | host None understood true | heard nothing
 palette edit.select_all | sent [] | host None understood true | heard nothing
 palette edit.undo | sent [{"cmd":"undo","tab":"active"}] | host None understood true | heard nothing
@@ -93,6 +95,7 @@ palette view.zoom_out | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_i
 UiAction::Menu | sent [{"cmd":"view","paper":null,"sidebar":"toggle","agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
 UiAction::Row(tab) | sent [{"cmd":"tap","tab":"#2"}] | host None understood true | heard ops_ready model_changed
 UiAction::Row(contents) | sent [{"cmd":"goto","tab":"#2","page":2,"label":null,"within":null}] | host None understood true | heard nothing
+UiAction::CopyLink | sent [{"cmd":"link","page":2,"tab":"#2","to_clipboard":true}] | host None understood true | heard copy_ready model_changed
 UiAction::Row(contents, adding) | sent [{"cmd":"goto","tab":"#2","page":3,"label":null,"within":null}] | host None understood true | heard nothing
 UiAction::Row(tab, adding) | sent [{"cmd":"compare","tabs":null,"sync":null,"off":false,"toggle":"#3","reading":null}] | host None understood true | heard nothing
 UiAction::Row(note) | sent [{"cmd":"contents_show","which":"generated","tab":"#3"}] | host None understood true | heard nothing

@@ -130,6 +130,7 @@ const ROWS: &[(&str, Rows)] = &[
     ("navigation", super::navigation::row),
     ("find", super::find::row),
     ("highlight", super::highlight::row),
+    ("copy_link", super::copy_link::row),
     ("comparison", super::comparison::row),
     ("closing", super::closing::row),
     ("saving", super::saving::row),
