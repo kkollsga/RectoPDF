@@ -15,7 +15,7 @@
 
 #[cfg(test)]
 use super::testing::Hook;
-use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Store, Survey, TargetMode};
+use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Store, Survey};
 use recto_core::save::writer_temp_shape;
 use recto_platform::folder::{Folder, Opened};
 use std::collections::HashSet;
@@ -54,11 +54,11 @@ impl Default for TempCaps {
 /// listed or an entry that can't be looked at leaves the store unmarked, so the plan says `Incomplete` rather than "none found". The adapter does
 /// not check the lineage's gap: the plan's `HistoryIncomplete` gate (`Survey::history`) does. More than 64 folders that open, or 65,536 entries in one, is
 /// `TooLarge`. `add`'s refusal passes through.
-pub fn survey_writer_temps(lineage: &Lineage<'_>, _mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
-    survey_writer_temps_with(lineage, _mode, survey, &TempCaps::default())
+pub fn survey_writer_temps(lineage: &Lineage<'_>, survey: &mut Survey) -> Result<(), Refusal> {
+    survey_writer_temps_with(lineage, survey, &TempCaps::default())
 }
 
-pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, _mode: TargetMode, survey: &mut Survey, caps: &TempCaps) -> Result<(), Refusal> {
+pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, survey: &mut Survey, caps: &TempCaps) -> Result<(), Refusal> {
     let folders = folders_of(lineage);
     // Only a folder that opens counts toward the cap: one that isn't there holds no file, so no temp can be in it (a Save As to a folder made later, or
     // removed since, costs nothing), and the cap is on what is listed, which is the work.
@@ -86,7 +86,7 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, _mode: TargetMode,
                 return Err(Refusal::TooLarge);
             }
             // Exact shape and nothing else: whose it is can't be told safely.
-            if writer_temp_shape(entry.name.as_encoded_bytes()).is_none() {
+            if !writer_temp_shape(entry.name.as_encoded_bytes()) {
                 continue;
             }
             let mut key = path.as_os_str().as_encoded_bytes().to_vec();

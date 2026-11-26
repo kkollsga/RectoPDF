@@ -7,7 +7,7 @@ use recto_testpdf::TempDir;
 use std::cell::RefCell;
 
 /// The entries of `dir` while a save is in the middle of its work, as (name, shape read by the rule, whether it is a folder holding `clone`).
-fn temps_during(existing: bool, name: &str) -> (std::path::PathBuf, Vec<(String, Option<TempShape>, bool)>) {
+fn temps_during(existing: bool, name: &str) -> (std::path::PathBuf, Vec<(String, bool, bool)>) {
     let dir = TempDir::new("recto-temps-");
     let path = dir.join(name);
     if existing {
@@ -38,7 +38,7 @@ fn temps_during(existing: bool, name: &str) -> (std::path::PathBuf, Vec<(String,
                 if name == "source.pdf" || Path::new(&name) == Path::new(path.file_name().unwrap()) {
                     continue;
                 }
-                let shape = writer_temp_shape(name.as_bytes()).map(|(_, shape)| shape);
+                let shape = writer_temp_shape(name.as_bytes());
                 let holds_clone = entry.path().join("clone").exists();
                 seen.borrow_mut().push((name, shape, holds_clone));
             }
@@ -55,12 +55,15 @@ fn the_rule_reads_what_the_pinned_append_makes() {
     let (path, same) = temps_during(true, "mine.pdf");
     assert_eq!(same.len(), 1, "one temporary while a save over the file runs: {same:?}");
     assert!(same[0].0.starts_with(&writer_temp_prefix(&path)), "the target's prefix: {}", same[0].0);
-    assert_eq!(same[0].1, Some(TempShape::Folder), "a save over the file works in a folder");
+    assert!(
+        same[0].1 && same[0].0.ends_with(".d"),
+        "a save over the file works in a folder of the exact shape"
+    );
     assert!(same[0].2, "holding the clone");
     let (path, new) = temps_during(false, "copy.pdf");
     assert_eq!(new.len(), 1, "one temporary for a Save As: {new:?}");
     assert!(new[0].0.starts_with(&writer_temp_prefix(&path)), "the target's prefix: {}", new[0].0);
-    assert_eq!(new[0].1, Some(TempShape::File));
+    assert!(new[0].1 && new[0].0.ends_with(".tmp"), "a Save As works in a file of the exact shape");
 }
 
 /// Failure: the hash is taken from the whole path, so two saves of one name in different folders name different temps (or one folder's temps
@@ -77,17 +80,16 @@ fn the_prefix_is_of_the_file_name_alone() {
     );
     assert_eq!(a.len(), ".append-".len() + 16 + 1);
     let name = format!("{a}12-0.tmp");
-    let (hash, shape) = writer_temp_shape(name.as_bytes()).unwrap();
-    assert_eq!((hash, shape), (&a[".append-".len()..a.len() - 1], TempShape::File));
+    assert!(writer_temp_shape(name.as_bytes()), "the prefix and a plain tail read as a temporary");
 }
 
 /// Failure: a person's own file with a similar name is taken for a temporary (every removal then refuses on it), or lopdf's own is missed.
 #[test]
 fn only_the_exact_shape_reads_as_a_temporary() {
     let hash = "0123456789abcdef";
-    let ok = |name: String| writer_temp_shape(name.as_bytes()).map(|(_, shape)| shape);
-    assert_eq!(ok(format!(".append-{hash}-123-4.tmp")), Some(TempShape::File));
-    assert_eq!(ok(format!(".append-{hash}-1-0.d")), Some(TempShape::Folder));
+    let ok = |name: String| writer_temp_shape(name.as_bytes());
+    assert!(ok(format!(".append-{hash}-123-4.tmp")));
+    assert!(ok(format!(".append-{hash}-1-0.d")));
     for bad in [
         format!(".append-{hash}-123-4"),
         format!(".append-{hash}-123-4.TMP"),
@@ -107,7 +109,7 @@ fn only_the_exact_shape_reads_as_a_temporary() {
         "report.pdf".to_string(),
         String::new(),
     ] {
-        assert_eq!(ok(bad.clone()), None, "{bad}");
+        assert!(!ok(bad.clone()), "{bad}");
     }
-    assert_eq!(writer_temp_shape(b".append-0123456789abcdef-1-2.tmp\xff"), None, "bytes that are not text");
+    assert!(!writer_temp_shape(b".append-0123456789abcdef-1-2.tmp\xff"), "bytes that are not text");
 }

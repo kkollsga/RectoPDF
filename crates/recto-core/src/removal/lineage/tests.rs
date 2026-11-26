@@ -227,8 +227,8 @@ fn a_gap_in_the_ledger_is_the_lineages_gap() {
     assert_eq!((l.complete(), l.gap(), l.began_ns()), (false, Some(Gap::Torn), 77));
 }
 
-/// Failure: a Save As destination is read as a link (a path on both sides), so every journal and backup of the copy reads Unknown. (Which destinations are
-/// still never landed is the reader's, by order: `a_destination_is_dropped_only_by_a_file_seen_after_it` in the ledger's tests.)
+/// Failure: a Save As destination is read as a link (a path on both sides), so every journal and backup of the copy reads Unknown. (A destination is kept
+/// whatever is seen at its path later: `a_destination_is_kept_whatever_is_seen_at_it_later` in the ledger's tests.)
 #[test]
 fn a_destination_is_no_link_and_is_offered_as_it_is_read() {
     let s0 = stamp(7, 100, 1);

@@ -1,5 +1,5 @@
-//! **The names of the writer's temporary files**, so a survey can tell a crashed save's leftover from a person's own file (`docs/design/removal.md`
-//! §3, §10 "D2c-2b as built").
+//! **The names of the writer's temporary files**, so a survey can tell a crashed save's leftover from a person's own file by shape alone (`docs/design/removal.md`
+//! §3, §10 "D2c-2b as built": any lopdf temp in a listed folder refuses, whatever its hash).
 //!
 //! `lopdf::append_atomically` makes a temporary beside the target: a file `.append-<16 hex>-<pid>-<attempt>.tmp` (a Save As, or an empty start), or for a
 //! Save over the same file a folder `….d` holding a copy-on-write `clone` of it. The 16 hex are the first 8 bytes of SHA-256 of the target's file name, so
@@ -10,16 +10,9 @@
 use sha2::Digest;
 use std::path::Path;
 
-/// What a temporary name says it is: the file of a Save As or empty start, or the folder of a Save over the same file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TempShape {
-    File,
-    Folder,
-}
-
 const PREFIX: &[u8] = b".append-";
 
-/// The start of every temporary name for `real`: `.append-<16 hex>-`, the hash being of its file name alone (`document` if the path has none), as lopdf's
+/// **Used by tests only** (a survey reads shape alone; the tests of the survey and of the pinned writer name a temp by it). The start of every temporary name for `real`: `.append-<16 hex>-`, the hash being of its file name alone (`document` if the path has none), as lopdf's
 /// `temporary_prefix` makes it.
 pub fn writer_temp_prefix(real: &Path) -> String {
     let name = real.file_name().map_or(&b"document"[..], std::ffi::OsStr::as_encoded_bytes);
@@ -32,27 +25,22 @@ pub fn writer_temp_prefix(real: &Path) -> String {
     prefix
 }
 
-/// Reads `name` as exactly `.append-<16 hex>-<digits>-<digits>` followed by `.tmp` (a file) or `.d` (a folder): the 16 hex and what the name is. Anything
-/// else is `None`: a person's own file is never taken for a temporary. It says nothing of whether the process number could be a process (lopdf's sweep
-/// asks that; a survey doesn't care).
-pub fn writer_temp_shape(name: &[u8]) -> Option<(&str, TempShape)> {
-    let rest = name.strip_prefix(PREFIX)?;
-    let (rest, shape) = if let Some(rest) = rest.strip_suffix(b".tmp") {
-        (rest, TempShape::File)
-    } else {
-        (rest.strip_suffix(b".d")?, TempShape::Folder)
+/// Whether `name` is exactly `.append-<16 hex>-<digits>-<digits>` followed by `.tmp` (the file of a Save As or empty start) or `.d` (the folder of a Save over
+/// the same file). Anything else is a person's own file, never taken for a temporary. It says nothing of whose temporary it is (any lopdf temp in a listed
+/// folder refuses a removal, whatever its hash) nor of whether the process number could be a process (lopdf's sweep asks that).
+pub fn writer_temp_shape(name: &[u8]) -> bool {
+    let Some(rest) = name.strip_prefix(PREFIX) else { return false };
+    let Some(rest) = rest.strip_suffix(b".tmp").or_else(|| rest.strip_suffix(b".d")) else {
+        return false;
     };
-    let (hash, numbers) = rest.split_at_checked(16)?;
+    let Some((hash, numbers)) = rest.split_at_checked(16) else { return false };
     if !hash.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-        return None;
+        return false;
     }
-    let mut numbers = numbers.strip_prefix(b"-")?.split(|b| *b == b'-');
+    let Some(numbers) = numbers.strip_prefix(b"-") else { return false };
+    let mut numbers = numbers.split(|b| *b == b'-');
     let digits = |text: Option<&[u8]>| text.is_some_and(|text| !text.is_empty() && text.iter().all(u8::is_ascii_digit));
-    if !digits(numbers.next()) || !digits(numbers.next()) || numbers.next().is_some() {
-        return None;
-    }
-    // The hash is ASCII hex, so it is text.
-    Some((std::str::from_utf8(hash).ok()?, shape))
+    digits(numbers.next()) && digits(numbers.next()) && numbers.next().is_none()
 }
 
 #[cfg(test)]

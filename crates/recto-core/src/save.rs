@@ -145,7 +145,7 @@ pub use backups::{backup_name, backup_of, keep_backup, prune_backups};
 use catalog::{catalog_additions, update_catalog};
 use copying::*;
 use streams::{EncodedRead, LazyStream};
-pub use temps::{TempShape, writer_temp_prefix, writer_temp_shape};
+pub use temps::{writer_temp_prefix, writer_temp_shape};
 
 pub(crate) fn catalog(reader: &IndexedReader) -> Option<Dictionary> {
     match reader.trailer_entry_owned(b"Root").ok()?? {

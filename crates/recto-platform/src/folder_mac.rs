@@ -34,13 +34,11 @@ pub enum Opened {
     Folder(Folder),
 }
 
-/// One entry of a folder, as `fstatat` without following a link says: a link, a pipe or a folder is not `is_file`, and only a real folder (never a link
-/// to one) is `is_dir`.
+/// One entry of a folder, as `fstatat` without following a link says: a link, a pipe or a folder is not `is_file`.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: OsString,
     pub is_file: bool,
-    pub is_dir: bool,
     pub links: u64,
     /// Nanoseconds since 1970, if the system gives one.
     pub modified_ns: Option<i64>,
@@ -186,7 +184,6 @@ impl Entries<'_> {
         Ok(Entry {
             name: OsString::from_vec(name.to_bytes().to_vec()),
             is_file: st.st_mode & libc::S_IFMT == libc::S_IFREG,
-            is_dir: st.st_mode & libc::S_IFMT == libc::S_IFDIR,
             links: u64::from(st.st_nlink),
             modified_ns,
         })

@@ -168,7 +168,7 @@ fn two_listings_at_once_do_not_disturb_each_other() {
 /// Failure: a folder entry isn't told from a file (lopdf's `.d` clone folder, or a person's folder, read as a plain file), or a link to a folder or a
 /// pipe is told as a folder (a link followed, so a `.d` that is a link to someone's folder is looked into as lopdf's own).
 #[test]
-fn entries_say_which_is_a_folder_and_never_follow_a_link_to_one() {
+fn entries_say_which_is_a_file_and_never_follow_a_link() {
     let dir = TempDir::new("recto-folder-");
     std::fs::create_dir(dir.join("sub")).unwrap();
     std::fs::write(dir.join("plain"), b"x").unwrap();
@@ -181,11 +181,11 @@ fn entries_say_which_is_a_folder_and_never_follow_a_link_to_one() {
         .map(|e| e.unwrap())
         .map(|e| (e.name.to_string_lossy().into_owned(), e))
         .collect();
-    assert!(found["sub"].is_dir && !found["sub"].is_file, "a real folder");
-    for name in ["link", "pipe", "plain"] {
-        assert!(!found[name].is_dir, "{name} is not a folder");
-    }
-    assert!(!found["link"].is_file && !found["pipe"].is_file, "a link to a folder and a pipe are neither");
+    assert!(found["plain"].is_file, "a plain file");
+    assert!(
+        !found["sub"].is_file && !found["link"].is_file && !found["pipe"].is_file,
+        "a folder, a link to one and a pipe are not files"
+    );
 }
 
 /// Every image this probe attached, detached on drop (a failed assertion included), by the mount folder it made, and only those.

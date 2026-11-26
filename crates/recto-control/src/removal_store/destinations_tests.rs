@@ -68,7 +68,7 @@ fn planned(root: &Path, path: &Path, mode: TargetMode) -> Result<Plan, recto_cor
     survey.history(&lineage);
     survey_journals(root, &lineage, mode, &mut survey)?;
     survey_backups(&root.join("backups.noindex"), &lineage, mode, &mut survey)?;
-    survey_writer_temps(&lineage, mode, &mut survey)?;
+    survey_writer_temps(&lineage, &mut survey)?;
     let surveyed = survey.finish()?;
     plan(
         &Request::new(Kinds::from_bits(Kinds::METADATA).unwrap(), mode, false),

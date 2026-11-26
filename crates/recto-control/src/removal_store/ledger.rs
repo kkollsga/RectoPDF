@@ -131,7 +131,7 @@ fn destination_entries(destination: &Path) -> Vec<Entry> {
 /// is canonicalized and the missing parts and the file name appended: a folder made between this note and the write is still the one recorded.
 ///
 /// It is a [`Entry::Destination`], not a link: it joins no version, so the copy's own journals and backups place as they would for any file, and the survey of
-/// the writer's temporaries alone reads it (only while no file has been seen at the path). A path the writer fails on at once (a part of the parent that is
+/// the writer's temporaries alone reads it (for good: no landing or later sighting of the path drops it). A path the writer fails on at once (a part of the parent that is
 /// a file, a name too long, a loop of links) records nothing and is no gap: it can make no temp. Any other failure to resolve it (no permission, an I/O
 /// error) records nothing and leaves a gap, the safe direction: a temp may be there that nobody can list, so every removal refuses.
 fn destination_entry(destination: &Path) -> Option<Entry> {

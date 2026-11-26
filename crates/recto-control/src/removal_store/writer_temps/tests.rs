@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::removal_store::testing::{Restore, bounded, limits, mkfifo, mode, put, version};
-use recto_core::removal::{DESIGN_LIMITS, Kinds, LEDGER_LIMITS, Ledger, Link, Plan, Request, Surveyed, lineage};
+use recto_core::removal::{DESIGN_LIMITS, Kinds, LEDGER_LIMITS, Ledger, Link, Plan, Request, Surveyed, TargetMode, lineage};
 use recto_core::save::writer_temp_prefix;
 use recto_testpdf::TempDir;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ fn temp(_dir: &Path, name: &str, tail: &str) -> String {
 }
 
 /// A survey of the lineage of `ledger` with every store but `WriterTemp` marked complete, so the plan decides on the temps alone.
-fn survey_of(ledger: &Ledger, dir: &Path, mode: TargetMode, max: u32, caps: &TempCaps) -> Result<Surveyed, Refusal> {
+fn survey_of(ledger: &Ledger, dir: &Path, _mode: TargetMode, max: u32, caps: &TempCaps) -> Result<Surveyed, Refusal> {
     let current = dir.join("mine.pdf");
     let lineage = lineage(ledger, version(7), &current, &LEDGER_LIMITS).unwrap();
     let mut survey = Survey::new(&limits(max));
@@ -42,7 +42,7 @@ fn survey_of(ledger: &Ledger, dir: &Path, mode: TargetMode, max: u32, caps: &Tem
         survey.mark_complete(store);
     }
     survey.history(&lineage);
-    survey_writer_temps_with(&lineage, mode, &mut survey, caps)?;
+    survey_writer_temps_with(&lineage, &mut survey, caps)?;
     survey.finish()
 }
 
@@ -325,7 +325,7 @@ fn survey_of_root(root: &Path, source: &Path) -> Surveyed {
         survey.mark_complete(store);
     }
     survey.history(&lineage);
-    survey_writer_temps_with(&lineage, TargetMode::Save, &mut survey, &TempCaps::default()).unwrap();
+    survey_writer_temps_with(&lineage, &mut survey, &TempCaps::default()).unwrap();
     survey.finish().unwrap()
 }
 
