@@ -31,6 +31,8 @@ recto-platform = { workspace = true, features = ["test-seams"] }
 recto-agent = { workspace = true, features = ["test-words"] }
 recto-testpdf.workspace = true
 recto-proto.workspace = true
+# Test-only: the installer's own `copy_record`, so a survey of the update's copy reads what the installer writes.
+recto-update.workspace = true
 
 # For a test only, never in the app: the indexer asked for the Find key on a real main thread (`tests/main_thread.rs`).
 [[bin]]

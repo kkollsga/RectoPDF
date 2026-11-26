@@ -100,11 +100,26 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the first line (at most 8 KiB) of a journal in the state folder, a plain file only, read once when the ledger is first made: never a document",
     ),
     (
+        "recto-control/src/removal_store/legacy_session.rs",
+        1,
+        "the state folder the caller of `survey_legacy_sessions` names (`pub`, with no production caller yet; the design names the state folder), opened through the \
+         folder helper (no link followed) and listed: a copy of the session record (`session.v<N>`, `<flavor>.damaged[.k]`) is opened by name from it with no link \
+         followed and listed, and its `journals` folder through the journals survey (a journal's first 8 KiB and a sidecar's 110 bytes, a plain private file only). A copy's \
+         record slots, `places.log` and every other entry are placed by name and never opened: never a document",
+    ),
+    (
         "recto-control/src/removal_store/record.rs",
         2,
         "the `session` and `session-windowless` folders of the root the caller of `survey_record` names (`pub`, with no production caller yet; the design names the \
          state folder), opened through the folder helper (no link followed); the two record slots in each read at most 32 MiB + 1 byte, then refused, through that folder's \
          descriptor (a plain private file only): never a document",
+    ),
+    (
+        "recto-control/src/removal_store/update_copy.rs",
+        1,
+        "the state folder the caller of `survey_update_copy` names (`pub`, with no production caller yet), opened through the folder helper (no link followed), then \
+         `update` and `before` opened one from the other with no link followed and listed (at most three descriptors open), and `before/journals` through the journals \
+         survey. The copy's slots, `places.log`, `.whole` and every other entry are placed by name and never opened: never a document",
     ),
     (
         "recto-control/src/removal_store/writer_temps.rs",
@@ -174,7 +189,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the five opens of `Folder`, which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
          a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
          `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used today \
-         only by removal's four surveys (`journals.rs`, `backups.rs`, `record.rs` and `writer_temps.rs`); a new caller is counted where it calls",
+         only by removal's six surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, `legacy_session.rs` and `update_copy.rs`); a new caller is counted where it calls",
     ),
     (
         "recto-platform/src/folder_stub.rs",
