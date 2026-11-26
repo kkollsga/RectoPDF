@@ -73,19 +73,10 @@ fn wait_for(root: &Path, what: &str, ready: impl Fn(&Ledger) -> bool) -> Ledger 
     }
 }
 
-/// Waits, up to 10 s, for the `recto-ledger` thread of `root` to end: adoption is done by it, after the append that began the ledger has returned.
-fn wait_idle(root: &Path) {
-    wait_idle_by(root, running);
-}
-
-/// [`wait_idle`] for a test with a set of its own.
+/// Waits, up to 10 s, for the `recto-ledger` thread of `root` in `set` to end: adoption is done by it, after the append that began the ledger has returned.
 fn wait_idle_in(set: &Roots, root: &Path) {
-    wait_idle_by(root, |root| set.running(root));
-}
-
-fn wait_idle_by(root: &Path, running: impl Fn(&Path) -> bool) {
     let until = Instant::now() + Duration::from_secs(10);
-    while running(root) {
+    while set.running(root) {
         assert!(Instant::now() < until, "the ledger's thread didn't end");
         std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
