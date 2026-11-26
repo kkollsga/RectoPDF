@@ -278,3 +278,11 @@ fn references_stop_at_the_searchs_deadline_and_are_counted_caps() {
     assert_eq!(missing(refs, &mut hits), (0, json!({ "caps": 3 })));
     assert!(opened.get().is_none(), "no file was opened after the deadline");
 }
+
+/// Failure: a stored read that doesn't hold up is counted under a code of its own, or under `no_identity` or `caps`, which are claims about the page or the
+/// search's room. It is counted as the existing `file_unreadable`, which says only that the pages couldn't be read just now.
+#[test]
+fn a_source_that_cannot_answer_is_counted_as_file_unreadable() {
+    assert_eq!(Why::Page(Unreferenceable::Unreadable).code(), "file_unreadable");
+    assert_eq!(Why::Page(Unreferenceable::Unreadable).code(), Why::File.code());
+}
