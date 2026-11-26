@@ -251,7 +251,9 @@ fn a_corpus_without_identities_still_answers_and_has_none() {
 #[test]
 fn the_header_comes_after_the_last_look_at_the_file_and_every_read_before_it() {
     let temp = Temp::new();
-    let mut feed = Feed::made_up(130);
+    // The map is longer than the renderer's count, so the 30 pages past it are read by `complete()` alone: a `complete()` moved after the last look shows here.
+    let mut feed = Feed::made_up(100);
+    feed.map = Some(130);
     feed.watch = Some(paths(&temp.0));
     assert!(matches!(built(&temp.0, &mut feed, &BuildLimits::default()), BuildOutcome::Ready { .. }));
     assert_eq!(feed.last_look, Some((false, 130)), "no header yet, and all 130 reads made");
