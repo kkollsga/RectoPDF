@@ -13,7 +13,7 @@
 
 use super::ledger::{FileVersion, Gap, Ledger};
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// One thing the ledger saw.
@@ -87,6 +87,8 @@ impl Sides {
 #[derive(Debug)]
 pub struct Lineage<'a> {
     links: &'a [Link],
+    /// Where saves were going that no link names (never landed): not links, so not in [`Lineage::paths`].
+    destinations: Vec<&'a Path>,
     path: &'a Path,
     current: FileVersion,
     target: Vec<bool>,
@@ -101,7 +103,7 @@ fn path_bytes(path: &Path) -> usize {
 /// Splits `ledger`'s links by whether each joins the document that is now `current` at `path`, or refuses with `TooLarge` over a cap.
 pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, limits: &LedgerLimits) -> Result<Lineage<'a>, Refusal> {
     let links = ledger.links.as_slice();
-    if links.len() > limits.max_links as usize {
+    if links.len() + ledger.destinations.len() > limits.max_links as usize {
         return Err(Refusal::TooLarge);
     }
     let mut total = path_bytes(path);
@@ -112,6 +114,11 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
             longest = longest.max(len);
             total = total.saturating_add(len);
         }
+    }
+    for path in &ledger.destinations {
+        let len = path_bytes(path);
+        longest = longest.max(len);
+        total = total.saturating_add(len);
     }
     if longest > limits.max_path_bytes as usize || total > limits.max_total_path_bytes as usize {
         return Err(Refusal::TooLarge);
@@ -142,8 +149,18 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
     let root = joined.find(current);
     let forked = forks.into_iter().any(|n| joined.find(n) == root);
     let target = nodes.into_iter().map(|n| joined.find(n) == root).collect();
+    // A destination a file was later seen at (`At`, or `Unplaced` as a file that was there) has landed, or was there already: it is that link's path, as before.
+    let named: HashSet<&Path> = links
+        .iter()
+        .filter_map(|link| match link {
+            Link::At { path, .. } | Link::Unplaced { path } => Some(path.as_path()),
+            Link::Saved { .. } => None,
+        })
+        .collect();
+    let destinations = ledger.destinations.iter().map(PathBuf::as_path).filter(|path| !named.contains(path)).collect();
     Ok(Lineage {
         links,
+        destinations,
         path,
         current: current_version,
         target,
@@ -205,6 +222,13 @@ impl Lineage<'_> {
             };
             sides.into_iter().flatten().filter_map(move |s| path.map(|p| (p, s)))
         }))
+    }
+
+    /// The paths a save was going to that no file has been seen at since: a Save As that never landed (it failed, or crashed). Not links: no version, no side
+    /// and no journal or backup is placed by one. Only the survey of the writer's temporaries reads them, to list their folders and read a temp named for one
+    /// as unknown.
+    pub fn destinations(&self) -> impl Iterator<Item = &Path> {
+        self.destinations.iter().copied()
     }
 
     /// Each `At` version and both ends of each `Saved`, in input order.

@@ -22,6 +22,7 @@ fn at(version: FileVersion, path: &str) -> Link {
 fn ledger(links: &[Link]) -> Ledger {
     Ledger {
         links: links.to_vec(),
+        destinations: Vec::new(),
         began_ns: 0,
         gap: None,
         stopped: None,
@@ -223,4 +224,22 @@ fn a_gap_in_the_ledger_is_the_lineages_gap() {
     gapped.began_ns = 77;
     let l = lineage(&gapped, stamp(7, 100, 1), Path::new("/p"), &LEDGER_LIMITS).unwrap();
     assert_eq!((l.complete(), l.gap(), l.began_ns()), (false, Some(Gap::Torn), 77));
+}
+
+/// Failure: a Save As destination is read as a link (a path on both sides), so every journal and backup of the copy reads Unknown; or one that landed is
+/// still listed as never landed, so its folder is listed in every survey.
+#[test]
+fn a_destination_is_no_link_and_only_one_nothing_was_seen_at_is_offered() {
+    let s0 = stamp(7, 100, 1);
+    let mut led = ledger(&[at(s0, "/docs/mine.pdf"), at(stamp(8, 100, 1), "/docs/landed.pdf")]);
+    led.destinations = vec!["/docs/landed.pdf".into(), "/elsewhere/lost.pdf".into()];
+    let l = lineage(&led, s0, Path::new("/docs/mine.pdf"), &LEDGER_LIMITS).unwrap();
+    assert!(sides_of(&l).iter().all(|(p, _)| !p.contains("lost")), "no side for a destination: {:?}", sides_of(&l));
+    assert_eq!(l.destinations().collect::<Vec<_>>(), [Path::new("/elsewhere/lost.pdf")]);
+    // Destinations count against the caps like any path.
+    let small = LedgerLimits {
+        max_links: 3,
+        ..LEDGER_LIMITS
+    };
+    assert!(lineage(&led, s0, Path::new("/docs/mine.pdf"), &small).is_err(), "2 links and 2 destinations are over 3 frames");
 }

@@ -116,22 +116,37 @@ fn folders_of(lineage: &Lineage<'_>) -> Vec<(PathBuf, Hashes)> {
     let mut folders: Vec<(PathBuf, Hashes)> = Vec::new();
     let mut at: HashMap<PathBuf, usize> = HashMap::new();
     for (path, side) in lineage.paths() {
-        let Some(parent) = path.parent() else { continue };
-        // The writer's own rule for a path with no folder part.
-        let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
-        let index = *at.entry(parent.to_path_buf()).or_insert_with(|| {
-            folders.push((parent.to_path_buf(), Hashes::default()));
-            folders.len() - 1
-        });
-        let hashes = &mut folders[index].1;
+        let Some(hashes) = hashes_of(&mut folders, &mut at, path) else { continue };
         hashes.listed |= side == Side::Target;
-        // `.append-` and the `-` after the 16 hex frame the hash.
-        let prefix = writer_temp_prefix(path);
-        let hash = prefix[".append-".len()..prefix.len() - 1].to_string();
-        let sides = hashes.sides.entry(hash).or_default();
+        let sides = hashes.sides.entry(hash_of(path)).or_default();
         *sides = sides.with(side);
     }
+    // A save that was going to a path and never landed may have left its temp there, named for it: the folder is listed, and that temp is no one's to place.
+    for path in lineage.destinations() {
+        let Some(hashes) = hashes_of(&mut folders, &mut at, path) else { continue };
+        hashes.listed = true;
+        let sides = hashes.sides.entry(hash_of(path)).or_default();
+        *sides = sides.with(Side::Target).with(Side::Other);
+    }
     folders
+}
+
+/// The record of the folder `path` is in, made if it is the first of that folder.
+fn hashes_of<'a>(folders: &'a mut Vec<(PathBuf, Hashes)>, at: &mut HashMap<PathBuf, usize>, path: &Path) -> Option<&'a mut Hashes> {
+    let parent = path.parent()?;
+    // The writer's own rule for a path with no folder part.
+    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+    let index = *at.entry(parent.to_path_buf()).or_insert_with(|| {
+        folders.push((parent.to_path_buf(), Hashes::default()));
+        folders.len() - 1
+    });
+    Some(&mut folders[index].1)
+}
+
+/// The 16 hex of a path's file name that its temporaries carry (`.append-` and the `-` after them frame it).
+fn hash_of(path: &Path) -> String {
+    let prefix = writer_temp_prefix(path);
+    prefix[".append-".len()..prefix.len() - 1].to_string()
 }
 
 /// What an entry of the person's folder is, or `None` if it isn't the survey's business.

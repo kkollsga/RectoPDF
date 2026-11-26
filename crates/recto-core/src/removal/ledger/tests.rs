@@ -356,3 +356,19 @@ fn an_implausible_beginning_makes_everything_older() {
     let ledger = read(&encode_header(1_767_225_600_000_000_000), &LEDGER_LIMITS);
     assert_eq!(ledger.began_ns, 1_767_225_600_000_000_000);
 }
+
+/// Failure: a destination frame is read as a link (it would then be placed on both sides again), or isn't read back, or a flipped length in it is taken for a
+/// cut-short tail instead of damage.
+#[test]
+fn a_destination_reads_back_as_a_destination_and_no_link() {
+    let entries = [Entry::Link(at(7, "/docs/a.pdf")), Entry::Destination("/docs/copy.pdf".into())];
+    let bytes = file_of(&entries);
+    let ledger = read(&bytes, &LEDGER_LIMITS);
+    assert_eq!((ledger.links.len(), ledger.destinations.clone(), ledger.gap), (1, vec![PathBuf::from("/docs/copy.pdf")], None));
+    assert_eq!(ledger.frames, 2, "a destination is a frame, so it counts against the cap on frames");
+    // One byte of a destination's length flipped: damage, never a link.
+    let mut bad = bytes.clone();
+    let at_frame = bytes.len() - (2 + 1 + 2 + "/docs/copy.pdf".len() + 4);
+    bad[at_frame] ^= 1;
+    assert_eq!(read(&bad, &LEDGER_LIMITS).stopped, Some(Gap::Damaged));
+}

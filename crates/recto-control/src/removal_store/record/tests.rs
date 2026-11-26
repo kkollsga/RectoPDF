@@ -21,6 +21,7 @@ fn ledger() -> Ledger {
     };
     Ledger {
         links: vec![at(7, MINE), at(8, THEIRS)],
+        destinations: Vec::new(),
         began_ns: 0,
         gap: None,
         stopped: None,

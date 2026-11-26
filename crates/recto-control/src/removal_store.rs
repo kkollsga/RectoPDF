@@ -3,6 +3,8 @@
 //! content, and nothing is wired to a command yet.
 
 mod backups;
+#[cfg(test)]
+mod destinations_tests;
 mod journals;
 pub mod ledger;
 mod placing;

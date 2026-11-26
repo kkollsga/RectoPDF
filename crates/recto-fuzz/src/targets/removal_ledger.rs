@@ -90,6 +90,11 @@ fn held(ledger: &Ledger, limits: &LedgerLimits, input_len: usize) {
             total += len;
         }
     }
+    for path in &ledger.destinations {
+        let len = path.as_os_str().as_encoded_bytes().len();
+        assert!((1..=limits.max_path_bytes as usize).contains(&len) && len <= MAX_PATH_BYTES && path.is_absolute());
+        total += len;
+    }
     assert!(total <= limits.max_total_path_bytes as usize, "a cap on paths holds");
     if input_len > MAX_LEDGER_BYTES {
         assert_eq!(ledger.gap, Some(Gap::Damaged));
@@ -113,6 +118,9 @@ fn one(bytes: &[u8]) {
         let mut again = encode_header(ledger.began_ns).to_vec();
         for link in &ledger.links {
             again.extend(encode(&Entry::Link(link.clone())).expect("a link that was read encodes"));
+        }
+        for path in &ledger.destinations {
+            again.extend(encode(&Entry::Destination(path.clone())).expect("a destination that was read encodes"));
         }
         let back = read_ledger(&again, &LEDGER_LIMITS);
         assert_eq!((&back.links, back.gap), (&ledger.links, None), "a ledger read encodes and reads back as it was");

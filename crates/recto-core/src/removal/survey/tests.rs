@@ -22,6 +22,7 @@ fn limits(max: u32) -> Limits {
 fn whole() -> Ledger {
     Ledger {
         links: Vec::new(),
+        destinations: Vec::new(),
         began_ns: 0,
         gap: None,
         stopped: None,

@@ -16,6 +16,7 @@ fn ledger(dir: &Path) -> Ledger {
     };
     Ledger {
         links: vec![at(7, "mine.pdf"), at(8, "theirs.pdf")],
+        destinations: Vec::new(),
         began_ns: 0,
         gap: None,
         stopped: None,

@@ -34,6 +34,7 @@ fn ledger() -> Ledger {
                 path: PathBuf::from(THEIRS),
             },
         ],
+        destinations: Vec::new(),
         began_ns: 0,
         gap: None,
         stopped: None,

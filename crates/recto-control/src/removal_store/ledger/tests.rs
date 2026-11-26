@@ -861,10 +861,16 @@ fn after_a_save_as_the_sources_backup_is_unrelated() {
     let now = FileVersion::new(stamp(&copy), recto_platform::volume::volume_identity(&copy));
     let outcome = plan_for(&s.paths.root, &s.backups(), now, &copy, TargetMode::Save).unwrap();
     assert_eq!(outcome.0, 0, "the source's backup is not the copy's to purge: {outcome:?}");
-    // The destination is noted when the save starts (the writer's temp is made in its folder before anything lands), not only when the copy is there.
+    // The destination was noted when the save started (the writer's temp is made in its folder before anything lands), as a destination and no link; the
+    // file landed since, so a link names it and the survey needs the destination no more.
     assert!(
-        ledger.links.contains(&Link::Unplaced { path: copy.clone() }),
+        ledger.destinations.contains(&copy),
         "the Save As's destination at `Starting`: {:?}",
+        ledger.destinations
+    );
+    assert!(
+        !ledger.links.iter().any(|link| matches!(link, Link::Unplaced { path } if *path == copy)),
+        "never a link: {:?}",
         ledger.links
     );
 }
@@ -893,9 +899,9 @@ fn a_backup_under_another_name_is_a_gap() {
 
 /// Failure (review round 1): a Save As or Replace destination is recorded by the path it was typed with (a link in its folder, a file that isn't there yet),
 /// so the folder the survey lists is not the folder the writer's temp is in; or a destination whose folder can't be resolved is dropped with no sign, and
-/// the lineage reads as the whole story.
+/// the lineage reads as the whole story. (Round 2: it is a `Destination`, never a link.)
 #[test]
-fn a_destination_is_recorded_unplaced_by_its_canonical_folder_a_missing_one_is_no_gap_and_an_unreadable_one_is() {
+fn a_destination_is_recorded_by_its_canonical_folder_a_missing_one_is_no_gap_and_an_unreadable_one_is() {
     let dir = temp();
     let root = dir.join("state");
     let real = dir.join("real");
@@ -915,17 +921,17 @@ fn a_destination_is_recorded_unplaced_by_its_canonical_folder_a_missing_one_is_n
     };
     start(&link.join("copy.pdf"));
     let ledger = read(&root);
-    assert_eq!(ledger.links.len(), 2, "{:?}", ledger.links);
+    assert_eq!(ledger.links.len(), 1, "the destination is no link: {:?}", ledger.links);
     assert_eq!(
-        ledger.links[1],
-        Link::Unplaced { path: real.join("copy.pdf") },
+        ledger.destinations,
+        vec![real.join("copy.pdf")],
         "the folder is canonical and the file isn't there"
     );
     assert_eq!(ledger.gap, None);
     // A folder that isn't there: the save fails and no temp can exist, so nothing is recorded and nothing is doubtful.
     start(&dir.join("no-such-folder").join("copy.pdf"));
     let ledger = read(&root);
-    assert_eq!(ledger.links.len(), 2, "nothing is recorded for a folder that isn't there");
+    assert_eq!(ledger.destinations.len(), 1, "nothing is recorded for a folder that isn't there");
     assert_eq!(ledger.gap, None, "a missing folder is no gap");
     // A folder that can't be looked into: a temp may be there that nobody can list, so the lineage is not the whole story.
     let locked = dir.join("locked");
@@ -934,6 +940,6 @@ fn a_destination_is_recorded_unplaced_by_its_canonical_folder_a_missing_one_is_n
     let _restore = crate::removal_store::testing::Restore(locked.clone());
     start(&locked.join("sub").join("copy.pdf"));
     let ledger = read(&root);
-    assert_eq!(ledger.links.len(), 2, "nothing is recorded for a folder that can't be resolved");
+    assert_eq!(ledger.destinations.len(), 1, "nothing is recorded for a folder that can't be resolved");
     assert_eq!(ledger.gap, Some(Gap::WriteFailed));
 }
