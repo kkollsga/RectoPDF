@@ -889,11 +889,10 @@ fn a_search_hits_ref_follows_its_words_after_another_program_put_a_cover_in_fron
     assert!(!read.to_string().contains(&token), "the token is never in the answer");
 }
 
-/// Failure: a ranked hit's `ref` or `chars` point somewhere other than the word its line shows (a page's start, another word, the page position instead of
-/// the file's page), or stop following the page when another program moves it, or `references` doesn't count them. The hit for "page 3" has `chars` that
-/// read `page` in `text`, and after a cover is put in front `resolve` says moved with the same words and `text --ref` gives `page` at page 4.
+/// Failure: a ranked hit's `chars` point somewhere other than the word its line shows (a page's start, another word), or `references` doesn't count them.
+/// The hit for "page 3" has `chars` that read `page` in `text`. That its `ref` follows a moved page is held by the phrase test above and the edits tests.
 #[test]
-fn a_ranked_hits_ref_is_of_its_first_shown_word_and_follows_the_page_another_program_moved() {
+fn a_ranked_hits_chars_are_of_its_first_shown_word_and_counted() {
     let app = HeadlessApp::start();
     let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
     app.open(&file);
@@ -908,18 +907,4 @@ fn a_ranked_hits_ref_is_of_its_first_shown_word_and_follows_the_page_another_pro
     );
     let words: String = page_text(&app, 3).chars().skip(start).take(end - start).collect();
     assert_eq!(words, "page", "the word the hit's line shows: {}", hits[0]);
-    let token = hits[0]["ref"].as_str().expect("a reference").to_owned();
-    replace(
-        &file,
-        &pages_saying(&["Cover", "Mine page 1", "Mine page 2", "Mine page 3", "Mine page 4", "Mine page 5"]),
-    );
-    look(&app);
-    let resolved = resolve(&app, Level::ReadOnly, &token).expect("resolve");
-    assert_eq!(
-        (resolved["status"].as_str(), resolved["target"]["text"].as_str()),
-        (Some("moved"), Some("same")),
-        "{resolved}"
-    );
-    let read = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect("text --ref");
-    assert_eq!((read["untrusted"]["hit"].as_str(), read["page"].as_u64()), (Some("page"), Some(4)), "{read}");
 }
