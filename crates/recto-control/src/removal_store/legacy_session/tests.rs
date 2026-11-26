@@ -317,6 +317,8 @@ fn a_copy_swapped_for_a_link_after_the_listing_is_never_followed() {
     let state = state();
     let away = recto_testpdf::TempDir::new("recto-away-");
     put(away.path(), "record.a.json", b"{}");
+    // Two files there, so a link that was followed is told from the one artifact the link itself is.
+    put(away.path(), "record.b.json", b"{}");
     let copy = state.root().join(format!("session.v{VERSION}"));
     std::fs::create_dir(&copy).unwrap();
     let target = away.path().to_path_buf();
