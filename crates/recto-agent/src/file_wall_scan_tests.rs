@@ -79,13 +79,15 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-control/src/removal_store/backups.rs",
         1,
-        "the original-backup folder of the state folder, opened through the folder helper (no link followed) and only listed: a backup's name is read, never its bytes",
+        "the original-backup folder the caller of `survey_backups` names (`pub`, with no production caller yet; the design names the state folder's), opened \
+         through the folder helper (no link followed) and only listed: a backup's name is read, never its bytes",
     ),
     (
         "recto-control/src/removal_store/journals.rs",
         2,
-        "the state folder's `session` and `session-windowless` folders, opened through the folder helper (no link followed), and the first line of a journal in \
-         them read through that folder's descriptor (a plain private file only): never a document",
+        "the `session` and `session-windowless` folders of the root the caller of `survey_journals` names (`pub`, with no production caller yet; the design names \
+         the state folder), opened through the folder helper (no link followed), and the `journals` folder in each; the first line of a journal (at most 8 KiB) and \
+         a sidecar's 110-byte header read in `session*/journals` through that folder's descriptor (a plain private file only): never a document",
     ),
     (
         "recto-control/src/removal_store/ledger.rs",
@@ -144,9 +146,10 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-platform/src/folder_mac.rs",
         5,
-        "a folder the caller names, opened without following its last link (`O_DIRECTORY | O_NOFOLLOW`), and files in it opened through its descriptor \
-         (`openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder): for removal's \
-         surveys of RectoPDF's own state folders, never a document",
+        "the five opens of `Folder`, which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
+         a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
+         `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used today \
+         only by removal's surveys (`journals.rs`, `backups.rs`); a new caller is counted where it calls",
     ),
     (
         "recto-platform/src/folder_stub.rs",

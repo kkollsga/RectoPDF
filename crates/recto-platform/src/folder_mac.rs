@@ -7,7 +7,7 @@
 //! root the app made is never resolved by path again.
 //!
 //! **Measured on this Mac (macOS 27, APFS, 2026-11-26; the tests below hold each line).** `open(link, O_DIRECTORY|O_NOFOLLOW)` fails (`ELOOP` or
-//! `ENOTDIR`, never a descriptor); a missing name is `ENOENT`; `fdopendir` on a duplicate of the descriptor lists the folder that was opened even
+//! `ENOTDIR`, never a descriptor); a missing name is `ENOENT`; `fdopendir` on a fresh `openat(fd, ".")` of the descriptor lists the folder that was opened even
 //! after its path was renamed away and a link put in its place; `fstatat(AT_SYMLINK_NOFOLLOW)` on a link entry says "link", not "file"; `openat`
 //! with `O_NOFOLLOW` on a link entry fails and on a pipe with no writer returns at once (`O_NONBLOCK`), as a pipe, which is then refused.
 
@@ -192,7 +192,7 @@ impl Entries<'_> {
 
 impl Drop for Entries<'_> {
     fn drop(&mut self) {
-        // SAFETY: `dir` is a live stream, closed once; this closes the duplicate descriptor it owns.
+        // SAFETY: `dir` is a live stream, closed once; this closes the descriptor it owns (the fresh `openat(fd, ".")` of its listing).
         unsafe { libc::closedir(self.dir) };
     }
 }
