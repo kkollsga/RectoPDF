@@ -631,3 +631,14 @@ What went wrong and what changes:
 - **Self-matching waits recurred twice** despite the rule; both were caught by the worker itself. The rule stays in the brief.
 - **Five workers ran for a while** (above three) to take a regression on main first; the queue held (load 8–23), with no stall.
 - A permission refusal was surfaced to the owner, not worked around (writing an agent level into a test folder); the owner approved it and it is recorded in `OWNER-RULES.md`.
+
+## 2026-11-26, early morning: locator slice 3, removal D2b, CI time
+
+Five merges since the batch F review (locator slice 3, the duplicate update test, the cache prune, the gate in light, removal D2b), each with two review rounds or a coordinator check of the last fix. CI's five-run median went 19:53 → 18:08 against 21:00, from fixed costs found by an audit, not from cutting test concerns.
+
+What went wrong and what changes:
+- **A check ran on an unresolved merge** (`ci.yml` conflict, the script carried on and ran `check-test.sh` and `--full` on a tree with conflict markers). Caught by reading the output's first lines; re-run with `--why`. Merge-then-check commands now stop on a non-empty conflict list before checking.
+- **Two branches pushed in one `git push` got one CI run** (the other push event was lost, as once on 2026-11-25). Push branches one at a time and confirm a run started for each.
+- **A worker exceeded a brief's timing threshold without calling back** (ranked refs +123 ms at 200 hits against the slice-2 call-back of 100 ms); the review judged it acceptable. Briefs carry the threshold forward explicitly.
+- **Reviews kept finding the same class of hole** in new file-handling code (an open that follows a link or waits on a FIFO, an error that leaves no mark): three times tonight in the ledger alone. Briefs for code that opens files in app-owned folders now name `open_private_file` / `append_private_file` and a FIFO/link test up front.
+- **Workers' self-matching waits did not recur**, and destructive git commands were chained once (a worker's own throwaway seed); both rules stay in the brief.
