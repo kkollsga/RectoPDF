@@ -3,19 +3,9 @@
 use super::{DocRenderer, JobFailure, KillReason, MAX_ASKING_KILLS, MAX_FAILED_PAGES, PageDrawState, RenderFailure, WorkerClass, busy, file_stamp};
 use recto_proto::{self as proto, Kind, ProtoError};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 /// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
 const MAX_IMAGE_PLACES: usize = 4096;
-
-/// How long dark paper's image checks that stayed starved for `MAX_BUSY` in a row are remembered as unknown, before one fresh walk is made. A walk costs a page deadline, so a worker that hangs on a page costs one a minute at most, and a Mac busy for a long while (a build, a wake) has its pages decided from their images soon after it's quiet.
-const BUSY_REASK: Duration = Duration::from_secs(60);
-
-/// A test's own length for [`BUSY_REASK`], returning the one it had.
-#[cfg(feature = "test-seams")]
-pub(crate) fn set_busy_reask(doc: &mut DocRenderer, pause: Option<Duration>) -> Option<Duration> {
-    std::mem::replace(&mut doc.images.busy_reask, pause)
-}
 
 /// **What's known of pages' images,** for those asked about (out of `DocRenderer`'s fields unchanged, R4.3, to make room for the hidden highlights).
 #[derive(Debug, Default)]
@@ -26,10 +16,6 @@ pub(super) struct Known {
     places: HashMap<u32, Option<Vec<[u16; 4]>>>,
     /// `places` has been forgotten, past its cap, and nobody's been told.
     places_cleared: bool,
-    /// Pages whose `None` in `places` is a run of starved checks, not the page's own failure: when one fresh walk may be made. Only where `places` has the page.
-    busy_unknown: HashMap<u32, Instant>,
-    /// A test's length for [`BUSY_REASK`].
-    busy_reask: Option<Duration>,
     /// Where each page's images may be, for a click (`DocRenderer::image_boxes_for_a_click`): apart from dark paper's, so its answer is never this one.
     /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each (520 a page): the pages on show that the tab's worker was asked about at rest ([`prefetch_click_places`], called from `recto-reader`'s `engine/run.rs`) and those clicked on.
     click_places: HashMap<u32, Option<proto::ClickPlaces>>,
@@ -49,7 +35,6 @@ impl Known {
     pub(super) fn forget(&mut self) {
         self.traits.clear();
         self.places.clear();
-        self.busy_unknown.clear();
         self.click_places.clear();
         self.prefetched.clear();
     }
@@ -107,13 +92,7 @@ impl DocRenderer {
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
         forget_places_of_a_replaced_file(self);
         if let Some(known) = self.images.places.get(&page) {
-            if !self.images.busy_unknown.get(&page).is_some_and(|at| Instant::now() >= *at) {
-                return known.clone();
-            }
-            // Its time: one fresh walk, with a new run of busy ones should it be starved again.
-            self.images.places.remove(&page);
-            self.images.busy_unknown.remove(&page);
-            busy::landed(self, page);
+            return known.clone();
         }
         // Stale says nothing about the page, so nothing's remembered.
         let boxes = places_asked(self, page, generation, Ask::Dark, |payload| {
@@ -122,7 +101,6 @@ impl DocRenderer {
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.images.places.len() >= MAX_IMAGE_PLACES {
             self.images.places.clear();
-            self.images.busy_unknown.clear();
             self.images.places_cleared = true;
         }
         self.images.places.insert(page, boxes.clone());
@@ -271,10 +249,6 @@ fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, 
     }
     if reply.is_ok() {
         busy::landed(doc, page);
-    } else if ask == Ask::Dark && busy::walk_was_starved(&reply, busy_before, doc) {
-        // The run reached its bound: unknown, but only for a while.
-        let pause = doc.images.busy_reask.unwrap_or(BUSY_REASK);
-        doc.images.busy_unknown.insert(page, Instant::now() + pause);
     }
     Some(reply.ok())
 }

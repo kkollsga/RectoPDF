@@ -47,7 +47,7 @@ pub use host::{
 };
 pub use recto_proto::{CharRecord, TILE_EDGE, TileKind, TileRect};
 #[cfg(feature = "test-seams")]
-pub use test_deadline::{page_deadline_for_this_process, under_busy_reask_for_test, under_page_deadline_for_test, under_start_timeout_for_test};
+pub use test_deadline::{page_deadline_for_this_process, under_page_deadline_for_test, under_start_timeout_for_test};
 
 /// Exit codes the worker uses to say why it left. Anything else, or a signal, reads as a crash.
 pub mod exit_code {
