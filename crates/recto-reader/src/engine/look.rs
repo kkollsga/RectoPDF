@@ -74,6 +74,8 @@ impl LookSource for DocRenderer {
 pub(super) struct Looks {
     decided: HashMap<u32, Arc<PageLook>>,
     tries: HashMap<u32, Tries>,
+    /// Pages whose kept look was decided only because every try at the images was busy ([`PageLook::undecided`]), a guess: when it may be checked again, once the images are told it's forgotten.
+    provisional: HashMap<u32, Instant>,
 }
 
 /// A page's tries at a picture that failed for a reason that may pass.
@@ -90,6 +92,7 @@ impl Looks {
     pub(super) fn clear(&mut self) {
         self.decided.clear();
         self.tries.clear();
+        self.provisional.clear();
     }
 
     /// Keeps a page's look, at most [`MAX_LOOKS`] of them.
@@ -98,8 +101,19 @@ impl Looks {
             self.decided.clear();
         }
         self.tries.remove(&page);
+        self.provisional.remove(&page);
         let look = Arc::new(look);
         self.decided.insert(page, Arc::clone(&look));
+        look
+    }
+
+    /// Keeps the guess a page takes when its images stayed busy for every try, to be checked again from `next`.
+    fn keep_provisional(&mut self, page: u32, look: PageLook, next: Instant) -> Arc<PageLook> {
+        let look = self.keep(page, look);
+        if self.provisional.len() >= MAX_LOOKS {
+            self.provisional.clear();
+        }
+        self.provisional.insert(page, next);
         look
     }
 
@@ -162,7 +176,7 @@ pub(super) fn tile_look(
     })
 }
 
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long. Only a look decided from answers is kept: one whose picture failed for a reason that may pass is tried again once its wait is over, `now` being when this is asked ([`NoLook::Again`], [`LOOK_TRIES`]); a picture that can't be had at all gives [`PageLook::undecided`], kept.
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long. Only a look decided from answers is kept: one whose picture failed for a reason that may pass is tried again once its wait is over, `now` being when this is asked ([`NoLook::Again`], [`LOOK_TRIES`]); a picture that can't be had at all gives [`PageLook::undecided`], kept. The guess taken when every try at the images was busy is provisional: it's checked again each wait and forgotten once the images are told.
 pub(super) fn page_look(
     doc: &mut impl LookSource,
     looks: &mut Looks,
@@ -176,14 +190,32 @@ pub(super) fn page_look(
     if doc.take_image_places_cleared() {
         looks.clear();
     }
+    let mut told = None;
     if let Some(known) = looks.decided.get(&page) {
-        return Ok(Arc::clone(known));
+        // A guess made of busy checks is looked at again once its time comes, and goes only when the images are told; any other look stands.
+        if looks.provisional.get(&page).is_none_or(|&next| now < next) {
+            return Ok(Arc::clone(known));
+        }
+        let guess = Arc::clone(known);
+        let asked = doc.image_boxes(page, generation);
+        if doc.is_stale(generation) {
+            return Err(NoLook::Stale);
+        }
+        if !matches!(asked, ImagesAsked::Known(_)) {
+            // Still not told: the guess stands, and the next look at it is a wait away. Never more than a check a wait.
+            looks.provisional.insert(page, now + TRY_AGAIN_AFTER);
+            return Ok(guess);
+        }
+        // Told: the page is decided from the images once, as a page never busy is.
+        looks.decided.remove(&page);
+        looks.provisional.remove(&page);
+        told = Some(asked);
     }
     // Asked before its wait is over (a second tab on the same file): nothing's asked, as nothing's drawn for a page still waiting.
     if looks.waiting_after_busy(page, now) {
         return Err(NoLook::Again);
     }
-    let asked = doc.image_boxes(page, generation);
+    let asked = told.unwrap_or_else(|| doc.image_boxes(page, generation));
     if doc.is_stale(generation) {
         return Err(NoLook::Stale);
     }
@@ -192,7 +224,7 @@ pub(super) fn page_look(
         if looks.try_again(page, now, true) {
             return Err(NoLook::Again);
         }
-        return Ok(looks.keep(page, PageLook::undecided(false)));
+        return Ok(looks.keep_provisional(page, PageLook::undecided(false), now + TRY_AGAIN_AFTER));
     }
     let boxes = match asked {
         ImagesAsked::Known(boxes) => Some(boxes),

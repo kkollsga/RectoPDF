@@ -325,3 +325,36 @@ fn asks_inside_the_wait_after_a_busy_check_start_no_new_walk() {
     assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(30)), Err(NoLook::Again));
     assert_eq!(doc.image_asks, 2, "asked again once the wait is over");
 }
+
+/// Failure (review round 1, item 4; the owner's 2026-11-13 symptom for long starvation): a look decided only because the image check stayed busy for every try is a guess, `PageLook::undecided`, dimmed, and it was kept for the renderer's life: a map sheet on white paper stayed grey after the Mac was quiet again. It's provisional: when the images are later told (a walk landed), the page is decided from them, turned over, once. Seen failing with the provisional look kept for good (still dimmed).
+#[test]
+fn a_look_decided_only_by_busy_checks_is_decided_again_when_the_images_are_told() {
+    let start = Instant::now();
+    let picture = vec![[0, 0, 65_535, 65_535]];
+    let mut doc = StandIn {
+        colour: [0xFF, 0xFF, 0xFF, 0xFF],
+        ..StandIn::new(Some(picture.clone()), [])
+    };
+    doc.busy_images = u8::MAX;
+    let mut looks = Looks::default();
+    for tenth in [0, 30] {
+        assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again));
+    }
+    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), PageLook::unknown(), "dimmed while busy");
+    // Still busy: still the guess, with no walk before its time.
+    let asks = doc.image_asks;
+    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(61)).unwrap(), PageLook::unknown());
+    assert_eq!(doc.image_asks, asks, "not asked again before its time");
+    // The Mac is quiet and the images are told.
+    doc.busy_images = 0;
+    let mut quiet = StandIn {
+        colour: [0xFF, 0xFF, 0xFF, 0xFF],
+        ..StandIn::new(Some(picture), [])
+    };
+    let expected = asked(&mut quiet, &mut Looks::default()).unwrap();
+    assert_ne!(*expected, PageLook::unknown(), "the page isn't one the guess happens to fit");
+    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(100)).unwrap(), expected, "decided from the images");
+    let asks = doc.image_asks;
+    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(400)).unwrap(), expected, "kept once decided");
+    assert_eq!(doc.image_asks, asks, "and asked of no more");
+}
