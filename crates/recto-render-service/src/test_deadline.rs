@@ -52,9 +52,12 @@ fn short_for<T, R>(
     done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
+/// Jobs still to let go by, the deadline of the one after them, and what to do as it starts.
+type OneJob = (u32, Duration, Box<dyn FnOnce()>);
+
 thread_local! {
     /// Which job's wait on this thread is to have which deadline, once: jobs still to let go by, the deadline, and what to do as that job starts.
-    static ONE_JOB: RefCell<Option<(u32, Duration, Box<dyn FnOnce()>)>> = const { RefCell::new(None) };
+    static ONE_JOB: RefCell<Option<OneJob>> = const { RefCell::new(None) };
 }
 
 /// The deadline for the job whose wait starts now, if a test set one for it: counts a job by, or takes the one-shot and runs its action.

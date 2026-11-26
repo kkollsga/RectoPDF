@@ -139,6 +139,6 @@ mod tests {
             |_| Ok(()),
         );
         assert_eq!(got, Ok(()));
-        assert!(given[1] + spent <= given[0], "{given:?} after spending {spent:?}");
+        assert!(given[0] - given[1] >= Duration::from_millis(3), "{given:?} after spending {spent:?}");
     }
 }

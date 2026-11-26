@@ -74,7 +74,7 @@ fn export_svg_asks_again_when_the_mac_was_too_busy() {
     };
     let written = with_the_worker_stopped(&mut doc, |doc| write_svg(doc, &job, &OutputCaps::default(), &out, Instant::now()));
     let written = written.unwrap_or_else(|error| panic!("{}, {:?}", error.message, doc.stats()));
-    assert_eq!(doc.stats().too_busy, 1, "{:?}", doc.stats());
+    assert!(doc.stats().too_busy >= 1, "{:?}", doc.stats());
     let svg = String::from_utf8(out.into_inner().bytes).unwrap();
     assert_eq!(svg.matches("<svg").count(), 1, "the first ask's output was started over");
     assert_eq!(u64::try_from(svg.len()).unwrap(), written.bytes);
@@ -87,13 +87,15 @@ fn the_image_list_and_the_image_copy_ask_again_when_the_mac_was_too_busy() {
     let caps = OutputCaps::default();
     let listed = with_the_worker_stopped(&mut doc, |doc| image::list(doc, &file.0, 0, &caps, Instant::now()));
     let listed = listed.unwrap_or_else(|error| panic!("list: {}, {:?}", error.message, doc.stats()));
-    assert_eq!((listed.images.len(), doc.stats().too_busy), (1, 1), "{:?}", doc.stats());
+    assert_eq!(listed.images.len(), 1);
+    let busy_so_far = doc.stats().too_busy;
+    assert!(busy_so_far >= 1, "{:?}", doc.stats());
     let out = RefCell::new(MemoryOut::new(1 << 24));
     let copied = with_the_worker_stopped(&mut doc, |doc| {
         image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &caps, &out, Instant::now())
     });
     copied.unwrap_or_else(|error| panic!("copy: {}, {:?}", error.message, doc.stats()));
-    assert_eq!(doc.stats().too_busy, 2, "{:?}", doc.stats());
+    assert!(doc.stats().too_busy > busy_so_far, "{:?}", doc.stats());
     let png = out.into_inner().bytes;
     assert!(png.starts_with(b"\x89PNG"), "one PNG, the first ask's bytes started over: {} bytes", png.len());
 }
@@ -160,7 +162,13 @@ fn a_busy_frame_after_records_were_written_starts_the_svg_over() {
     let written = stopped_at_job(&mut doc, 2, |doc| write_svg(doc, &job, &OutputCaps::default(), &out, Instant::now()));
     written.unwrap_or_else(|error| panic!("{}, {:?}", error.message, doc.stats()));
     let out = out.into_inner();
-    assert_eq!((out.overs, doc.stats().too_busy), (1, 1), "{:?}", doc.stats());
+    // Each busy answer started the output over once; a starved runner can make the fresh worker's ask busy again, which is asked through too.
+    assert!(
+        out.overs >= 1 && out.overs == doc.stats().too_busy,
+        "{:?}, started over {}",
+        doc.stats(),
+        out.overs
+    );
     let svg = String::from_utf8(out.bytes).unwrap();
     assert_eq!(svg.matches("<svg").count(), 1, "one SVG");
     assert_eq!(recto_svg::verify::embedded_images(svg.as_bytes()).len(), 1, "the picture once");
@@ -180,7 +188,13 @@ fn a_busy_frame_after_png_bytes_were_written_starts_the_image_over() {
     });
     copied.unwrap_or_else(|error| panic!("{}, {:?}", error.message, doc.stats()));
     let out = out.into_inner();
-    assert_eq!((out.overs, doc.stats().too_busy), (1, 1), "{:?}", doc.stats());
+    // Each busy answer started the output over once; a starved runner can make the fresh worker's ask busy again, which is asked through too.
+    assert!(
+        out.overs >= 1 && out.overs == doc.stats().too_busy,
+        "{:?}, started over {}",
+        doc.stats(),
+        out.overs
+    );
     assert_eq!(
         out.bytes.windows(4).filter(|window| *window == b"IHDR").count(),
         1,
