@@ -1301,6 +1301,10 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
 
 **A test's patience is the product's own bound, not a round number.** A fixed 20 s or 5 s in a test kit pins the machine's speed: a print the product allows 35 s for, or a cold start under load, passes it, and the test blames the product. Derive the wait from the product's limits (start timeout, page deadline, ready wait), wait on the thing's own signal (its exit, its file's deletion, its job's end) rather than polling, and fail past the bound naming where it stopped. Found three times on 2026-11-25 (print settle, copy cleanup, helper priority), each first called "flaky" by the worker that saw it.
 
+**In code that decides what may be deleted, an exception to "unknown means refuse" needs a proof about what deletes the thing, not about what was recorded.** A survey of a writer's leftover temporary files went through five holes in one day, each an exception ("its hash names nothing", "it changed after the ledger began", "its save landed", "it landed after it", "the link's folder") beaten by a sequence nobody had listed: a crash then a retry, the same name twice, a link. The writer only swept its temps an hour after their owner died, so no record of ours could prove one gone. Start from "anything of the writer's exact shape refuses", ship that, and add an exception only with the proof; a reviewer is told to try the same thing twice and in every order.
+
+**A second route into a guarded step gets the one function first.** A healing pass that redrew a page called the drawing function directly and skipped, in turn, the job path's refusals and then the tab's set of hidden highlights: each found by a review, each patched, until every pre-draw step moved into one function with a source guard on every call of the draw. When a feature needs a new way into a step that has checks before it, move the checks and the step into one function, guard its callers, then build the feature.
+
 ### 6.3 Tests that hold on slower machines
 
 - **A test waits for the condition it checks,** polling with a bound and failing with what it saw. It never sleeps and
