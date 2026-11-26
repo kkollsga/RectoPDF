@@ -5,7 +5,7 @@
 
 use recto_agent::saving::SaveNote;
 use recto_control::record_store::{Flavor, RecordStore};
-use recto_control::removal_store::ledger::{note_save, note_tabs, read, running};
+use recto_control::removal_store::ledger::{finish, note_save, note_tabs, read, running, take_new};
 use recto_control::state::StatePaths;
 use recto_session::record::{PlaceDelta, SessionRecord, TabEntry};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -54,22 +54,18 @@ fn tabs(n: u32, salt: u64) -> Vec<TabEntry> {
 }
 
 /// Failure: what `note_tabs` keeps grows with the tabs opened over a session (a set per tab, or a set that is never cleared), against rule 1. Filled to its
-/// cap on eight state folders (the most it holds, a ninth pushing the first out), the set holds under 1 MiB in all, counted on the calling thread, which is
-/// where it is built; and a tab known already costs it nothing to hold again.
+/// cap on eight state folders (the most it holds, a ninth pushing the first out), the set holds under 1 MiB in all (live bytes of the process, the set being all
+/// that is kept).
 #[test]
 fn held_bytes_are_capped() {
     let roots: Vec<_> = (0..9).map(|_| temp()).collect();
     let before = live();
     for (n, root) in roots.iter().enumerate() {
-        // 4,096 hashes a root: sixty-four calls of sixty-four new pairs, each waited for (one thread at a time), then the same tabs again.
+        // 4,096 hashes a root: sixty-four calls of sixty-four new pairs.
         for round in 0..64u64 {
             let batch: Vec<TabEntry> = (0..64u64).map(|i| tab(1, "/d/x.pdf", (n as u64 + 1) * 1_000_000 + round * 64 + i)).collect();
-            note_tabs(root, &batch);
-            let until = Instant::now() + Duration::from_secs(10);
-            while running(root) {
-                assert!(Instant::now() < until, "the ledger's thread ended");
-                std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
-            }
+            assert_eq!(take_new(root, &batch).len(), 64);
+            finish(root);
         }
     }
     let held = live() - before;

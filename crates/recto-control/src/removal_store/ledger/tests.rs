@@ -337,6 +337,35 @@ fn a_lock_that_doesnt_come_leaves_a_gap_mark_and_returns_in_time() {
     assert_eq!(read(&root).links.len(), 1, "nothing was written without the lock");
 }
 
+/// A config whose adoption time can't run out on a starved machine: the cut by time has a test of its own.
+fn patient() -> Config {
+    Config {
+        adoption_time: Duration::from_secs(600),
+        ..Config::default()
+    }
+}
+
+/// Failure: adoption has no time bound (a slow disk or a folder of a thousand journals holds the first save's thread for as long as it takes), or it runs out
+/// of time and says nothing (the removal then reads a ledger that is missing links as the whole story). With no time, nothing is read and it says so.
+#[test]
+fn adoption_out_of_time_says_so() {
+    let dir = temp();
+    let root = dir.join("state");
+    let file = dir.join("a.pdf");
+    std::fs::write(&file, pdf("a")).unwrap();
+    journal(&root, "session", 1, &file, Some(stamp(&file)), None);
+    append(
+        &root,
+        &Config {
+            adoption_time: Duration::ZERO,
+            ..Config::default()
+        },
+        Vec::new(),
+    );
+    let ledger = read(&root);
+    assert_eq!((ledger.links.len(), ledger.gap), (0, Some(Gap::AdoptionCut)));
+}
+
 /// Writes a journal whose header says `path` was `file` and a save was about to make it `saving`.
 fn journal(root: &Path, session: &str, n: u32, path: &Path, file: Option<FileStamp>, saving: Option<FileStamp>) {
     let folder = root.join(session).join("journals");
@@ -375,7 +404,7 @@ fn adoption_takes_what_the_journals_prove_and_nothing_else() {
     journal(&root, "session", 4, Path::new("relative/x.pdf"), Some(was), None);
     // A journal that is a link to a file elsewhere is not read.
     std::os::unix::fs::symlink(&still, root.join("session/journals/journal-0000000000000005.log")).unwrap();
-    append(&root, &Config::default(), Vec::new());
+    append(&root, &patient(), Vec::new());
     note_save(&root.join("backups.noindex"), &SaveNote::Starting { path: &still, from: None });
     let ledger = read(&root);
     let paths: Vec<&Path> = ledger
@@ -495,12 +524,8 @@ fn the_seen_set_is_capped() {
                 t
             })
             .collect();
-        note_tabs(&root, &tabs);
-        let until = Instant::now() + Duration::from_secs(10);
-        while running(&root) {
-            assert!(Instant::now() < until, "the thread ended");
-            std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
-        }
+        assert_eq!(take_new(&root, &tabs).len(), 64, "sixty-four new pairs, all at once");
+        finish(&root);
         assert!(held(&root).1 <= 4_096, "round {round}: {}", held(&root).1);
     }
     assert!(held(&root).1 < 4_480, "cleared when full");

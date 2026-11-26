@@ -24,9 +24,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod adopt;
 mod tabs;
 
+pub use tabs::{finish, note_tabs, running, take_new};
 #[cfg(test)]
 pub(crate) use tabs::{held, note_tabs_with};
-pub use tabs::{note_tabs, running};
 
 const DIR: &str = "removal";
 const FILE: &str = "ledger.v1";

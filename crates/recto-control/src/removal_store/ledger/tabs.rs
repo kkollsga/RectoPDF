@@ -58,6 +58,27 @@ pub fn note_tabs(root: &Path, tabs: &[TabEntry]) {
 }
 
 pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
+    let new = take_new(root, tabs);
+    if new.is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("recto-ledger".into()).spawn({
+        let (root, config) = (root.to_path_buf(), config.clone());
+        move || {
+            let _done = Done(root.clone());
+            note_all(&root, &config, new);
+        }
+    });
+    if spawned.is_err() {
+        finish(root);
+    }
+}
+
+/// **The set's whole work, apart from the thread:** the pairs of `tabs` that `root`'s set hasn't seen (at most 64), put in the set, and the root marked as
+/// having a thread out; nothing if one is already, or nothing is new. The caller starts the thread and calls [`finish`] when it ends. Public, and hidden, so
+/// that the set's bounds can be tested and measured without a thread to wait for.
+#[doc(hidden)]
+pub fn take_new(root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)> {
     let mut held = roots();
     let at = match held.iter().position(|seen| seen.root == root) {
         Some(at) => at,
@@ -74,7 +95,7 @@ pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
     };
     let seen = &mut held[at];
     if seen.running {
-        return;
+        return Vec::new();
     }
     let mut new = Vec::new();
     for tab in tabs {
@@ -83,7 +104,7 @@ pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
             continue;
         };
         let hash = hash_of(&path, file);
-        if seen.hashes.contains(&hash) {
+        if seen.hashes.contains(&hash) || new.iter().any(|(known, ..)| *known == hash) {
             continue;
         }
         if new.len() >= MAX_PER_CALL {
@@ -92,25 +113,14 @@ pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
         new.push((hash, path, FileStamp::from(file)));
     }
     if new.is_empty() {
-        return;
+        return new;
     }
     if seen.hashes.len() + new.len() > MAX_SEEN {
         seen.hashes.clear();
     }
     seen.hashes.extend(new.iter().map(|(hash, ..)| *hash));
     seen.running = true;
-    drop(held);
-    let (root_owned, config) = (root.to_path_buf(), config.clone());
-    let spawned = std::thread::Builder::new().name("recto-ledger".into()).spawn({
-        let root = root_owned.clone();
-        move || {
-            let _done = Done(root.clone());
-            note_all(&root, &config, new);
-        }
-    });
-    if spawned.is_err() {
-        finish(&root_owned);
-    }
+    new
 }
 
 /// Says the thread is over however it ended, a panic included.
@@ -122,7 +132,9 @@ impl Drop for Done {
     }
 }
 
-fn finish(root: &Path) {
+/// Says the thread of [`take_new`] is over.
+#[doc(hidden)]
+pub fn finish(root: &Path) {
     if let Some(seen) = roots().iter_mut().find(|seen| seen.root == root) {
         seen.running = false;
     }
