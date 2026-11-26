@@ -36,7 +36,7 @@ const _: () = {
             listed |= RETENTION_ORDER[i] as u8 == store as u8;
             i += 1;
         }
-        let acted_on = matches!(store.class(), Class::Purge | Class::Rewrite) || store as u8 == Store::FindText as u8;
+        let acted_on = matches!(store.class(), Class::Purge | Class::Rewrite | Class::Trash) || store as u8 == Store::FindText as u8;
         assert!(listed == acted_on, "RETENTION_ORDER and the stores acted on disagree");
         s += 1;
     }
@@ -49,6 +49,9 @@ pub fn plan(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Re
     if artifacts.len() > limits.max_artifacts as usize {
         return Err(Refusal::TooLarge);
     }
+    if request.scope() == Scope::Leftovers {
+        return leftovers::build_plan(request, inventory, limits);
+    }
     if request.mode() == TargetMode::Save && request.signed_source() {
         return Err(Refusal::SignedOriginal);
     }
@@ -58,7 +61,7 @@ pub fn plan(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Re
     check_coverage(inventory.complete())?;
     check_artifacts(request, artifacts)?;
     check_unique(artifacts)?;
-    Ok(build(request, artifacts, limits))
+    Ok(build(request, inventory, limits))
 }
 
 /// An empty store is not "nothing to do": it must be declared searched, or the plan cannot say so.
@@ -94,7 +97,7 @@ fn check_artifacts(request: &Request, artifacts: &[Artifact]) -> Result<(), Refu
 }
 
 /// Two artifacts with one id would be acted on twice or hide each other. The cap bounds the copy.
-fn check_unique(artifacts: &[Artifact]) -> Result<(), Refusal> {
+pub(super) fn check_unique(artifacts: &[Artifact]) -> Result<(), Refusal> {
     let mut ids: Vec<u32> = artifacts.iter().map(|a| a.id.0).collect();
     ids.sort_unstable();
     if ids.windows(2).any(|w| w[0] == w[1]) {
@@ -104,27 +107,36 @@ fn check_unique(artifacts: &[Artifact]) -> Result<(), Refusal> {
     }
 }
 
-struct Builder {
-    steps: Vec<Step>,
-    ids: Vec<ArtifactId>,
+pub(super) struct Builder {
+    pub(super) steps: Vec<Step>,
+    pub(super) ids: Vec<ArtifactId>,
 }
 
 impl Builder {
-    fn push(&mut self, effect: Effect) {
+    pub(super) fn push(&mut self, effect: Effect) {
         self.steps.push(Step { effect, start: 0, len: 0 });
     }
 
     /// The store's target artifacts, in input order, in steps of at most `batch`.
     fn push_store(&mut self, store: Store, artifacts: &[Artifact], batch: usize) {
-        let effect = if store.class() == Class::Rewrite {
-            Effect::Rewrite(store)
-        } else {
-            Effect::Purge(store)
+        let effect = match store.class() {
+            Class::Rewrite => Effect::Rewrite(store),
+            Class::Trash => Effect::Trash(store),
+            _ => Effect::Purge(store),
         };
-        let mut targets = artifacts.iter().filter(|a| a.store == store && a.owner == Owner::Target);
+        self.push_ids(
+            effect,
+            artifacts.iter().filter(|a| a.store == store && a.owner == Owner::Target).map(|a| a.id),
+            batch,
+        );
+    }
+
+    /// `ids` in order, in steps of `effect` of at most `batch`.
+    pub(super) fn push_ids(&mut self, effect: Effect, ids: impl Iterator<Item = ArtifactId>, batch: usize) {
+        let mut targets = ids;
         loop {
             let start = self.ids.len();
-            self.ids.extend(targets.by_ref().take(batch).map(|a| a.id));
+            self.ids.extend(targets.by_ref().take(batch));
             let len = self.ids.len() - start;
             if len == 0 {
                 return;
@@ -139,7 +151,8 @@ impl Builder {
     }
 }
 
-fn build(request: &Request, artifacts: &[Artifact], limits: &Limits) -> Plan {
+fn build(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Plan {
+    let artifacts = inventory.artifacts();
     let batch = usize::from(limits.max_batch.get());
     let mut b = Builder {
         steps: Vec::new(),
@@ -175,7 +188,12 @@ fn build(request: &Request, artifacts: &[Artifact], limits: &Limits) -> Plan {
     }
     let signed_copy = request.signed_source() && request.mode() == TargetMode::SaveAs;
     let lines = lines(request, artifacts);
-    let digest = digest::of(request, &b.steps, &b.ids, &lines);
+    finish(request, b, lines, inventory, signed_copy)
+}
+
+/// The plan, with its digest made from everything it is bound to, the inventory's artifacts and keys included.
+pub(super) fn finish(request: &Request, b: Builder, lines: [StoreLine; Store::COUNT], inventory: &Inventory<'_>, signed_copy: bool) -> Plan {
+    let digest = digest::of(request, &b.steps, &b.ids, &lines, inventory);
     Plan {
         request: *request,
         steps: b.steps,
@@ -227,6 +245,7 @@ fn disposition(request: &Request, store: Store, acted: u32, kept: u32) -> Dispos
         _ if acted == 0 && kept > 0 => Disposition::KeptAsSource,
         _ if acted == 0 => Disposition::NoneFound,
         _ if store.class() == Class::Rewrite => Disposition::Rewritten,
+        _ if store.class() == Class::Trash => Disposition::Trashed,
         _ => Disposition::Purged,
     }
 }

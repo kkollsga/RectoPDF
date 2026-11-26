@@ -27,6 +27,9 @@ pub enum Outcome {
     SanitizedCleanupPending,
     /// Every step of the plan is acknowledged.
     Complete,
+    /// Clearing leftovers only: at least one act has run (a save moved to the Trash, a copy deleted, or one that failed part way), so it is never
+    /// "nothing changed", and not every step is acknowledged. What is left is found by looking again.
+    PartlyCleared,
 }
 
 impl Outcome {
@@ -60,6 +63,8 @@ pub struct Progress {
     digest: PlanDigest,
     acked: u32,
     stopped: bool,
+    /// Leftovers only: an act has run, or may have part way. Never reset.
+    acted: bool,
 }
 
 /// The index of the first step with `effect`. Every plan contains each of the markers once.
@@ -77,6 +82,7 @@ impl Progress {
             digest: plan.digest,
             acked: 0,
             stopped: false,
+            acted: false,
         })
     }
 
@@ -89,10 +95,19 @@ impl Progress {
         if digest != plan.digest {
             return Err(OrderError::WrongPlan);
         }
+        // Nothing in a leftovers plan is a point of no return that a record could hold: the next run looks again and the person confirms what remains.
+        if plan.request.scope() == Scope::Leftovers {
+            return Err(OrderError::NotResumable);
+        }
         if acked as usize > plan.steps.len() || acked <= index_of(plan, Effect::PersistBarrier) {
             return Err(OrderError::NotResumable);
         }
-        Ok(Self { digest, acked, stopped: false })
+        Ok(Self {
+            digest,
+            acked,
+            stopped: false,
+            acted: false,
+        })
     }
 
     /// The step to do next, or none when finished, stopped or made for another plan.
@@ -122,6 +137,13 @@ impl Progress {
             Ack::DoneNotDurable => effect.needs_durable(),
             Ack::Failed => true,
         };
+        // A copy deleted part way is changed though the step failed; a move to the Trash is whole or not at all, and one that finished but was not
+        // synced (`DoneNotDurable`) did happen.
+        self.acted |= match effect {
+            Effect::Trash(_) => ack != Ack::Failed,
+            Effect::Purge(_) => true,
+            _ => false,
+        };
         if failed {
             self.stopped = true;
         } else {
@@ -134,6 +156,16 @@ impl Progress {
     pub fn outcome(&self, plan: &Plan) -> Result<Outcome, OrderError> {
         if self.digest != plan.digest {
             return Err(OrderError::WrongPlan);
+        }
+        if plan.request.scope() == Scope::Leftovers {
+            // No barrier to read here (a removal's markers are not in this plan, and `index_of` would say "unchanged" for ever).
+            return Ok(if self.acked as usize >= plan.steps.len() {
+                Outcome::Complete
+            } else if self.acted {
+                Outcome::PartlyCleared
+            } else {
+                Outcome::Unchanged
+            });
         }
         Ok(if self.acked <= index_of(plan, Effect::PersistBarrier) {
             Outcome::Unchanged

@@ -12,6 +12,7 @@
 mod confirm;
 mod digest;
 mod ledger;
+mod leftovers;
 mod lineage;
 mod plan;
 mod progress;
@@ -38,6 +39,8 @@ pub enum Class {
     Purge,
     /// A container shared with other documents: the target's entries are removed, the file stays.
     Rewrite,
+    /// A file moved to the Trash, never deleted: the owner's decision for a leftover save (`OWNER-RULES.md`, 2026-11-26).
+    Trash,
     /// Cannot take part yet; target material refuses the plan.
     Unsupported,
 }
@@ -103,9 +106,9 @@ impl Store {
     pub const fn class(self) -> Class {
         match self {
             Store::SourcePdf | Store::FindText | Store::LiveViews | Store::HelperJobs => Class::Fixed,
+            Store::WriterTemp => Class::Trash,
             Store::Logs | Store::Clipboard | Store::External => Class::Fixed,
-            Store::WriterTemp
-            | Store::Backup
+            Store::Backup
             | Store::Journal
             | Store::JournalVariant
             | Store::KeptPages
@@ -183,6 +186,9 @@ pub struct Artifact {
 pub struct Inventory<'a> {
     complete: StoreSet,
     artifacts: &'a [Artifact],
+    /// One per artifact, in the same order, from `Surveyed`. The digest covers them, so a different file with the same counts is a different plan.
+    /// Empty only in core's own pure tests.
+    keys: &'a [ArtifactKey],
     history: bool,
 }
 
@@ -190,12 +196,17 @@ impl<'a> Inventory<'a> {
     /// An inventory whose history is whole: for the pure tests in core.
     #[cfg(test)]
     pub(crate) const fn new(complete: StoreSet, artifacts: &'a [Artifact]) -> Self {
-        Self::with_history(complete, artifacts, true)
+        Self::with_history(complete, artifacts, &[], true)
     }
 
     /// `history` is whether the survey was made against a lineage that was whole (`Survey::history`).
-    pub(crate) const fn with_history(complete: StoreSet, artifacts: &'a [Artifact], history: bool) -> Self {
-        Self { complete, artifacts, history }
+    pub(crate) const fn with_history(complete: StoreSet, artifacts: &'a [Artifact], keys: &'a [ArtifactKey], history: bool) -> Self {
+        Self {
+            complete,
+            artifacts,
+            keys,
+            history,
+        }
     }
 
     /// Whether the survey noted a whole lineage. A survey that never noted one reads `false`, so an adapter that forgets can't pass.
@@ -209,6 +220,11 @@ impl<'a> Inventory<'a> {
 
     pub const fn artifacts(&self) -> &'a [Artifact] {
         self.artifacts
+    }
+
+    /// The key of the artifact at position `at`, if the inventory has keys.
+    pub(crate) fn key_at(&self, at: usize) -> Option<&'a ArtifactKey> {
+        self.keys.get(at)
     }
 }
 
@@ -245,16 +261,47 @@ pub enum TargetMode {
     SaveAs,
 }
 
+/// What a plan is for. It is part of the request, so it is in the digest: a confirmation of one cannot start the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The whole safe removal (`docs/design/removal.md` §6).
+    Removal,
+    /// Only what removal would refuse over today: unfinished saves beside a document (to the Trash) and the session copies kept for going back
+    /// (deleted whole). A confirmed step of its own; it never writes or moves a document, a journal, a backup or the live record.
+    Leftovers,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Request {
     kinds: Kinds,
     mode: TargetMode,
     signed_source: bool,
+    scope: Scope,
 }
 
 impl Request {
     pub const fn new(kinds: Kinds, mode: TargetMode, signed_source: bool) -> Self {
-        Self { kinds, mode, signed_source }
+        Self {
+            kinds,
+            mode,
+            signed_source,
+            scope: Scope::Removal,
+        }
+    }
+
+    /// Clearing leftovers. No kinds are asked for (the bits are 0, which `Kinds::from_bits` refuses for a removal), the target is the document
+    /// itself (`Same`) and it is never signed: nothing is written to it.
+    pub const fn leftovers() -> Self {
+        Self {
+            kinds: Kinds(0),
+            mode: TargetMode::Save,
+            signed_source: false,
+            scope: Scope::Leftovers,
+        }
+    }
+
+    pub const fn scope(&self) -> Scope {
+        self.scope
     }
 
     pub const fn kinds(&self) -> Kinds {
@@ -358,6 +405,8 @@ pub enum Effect {
     Rewrite(Store),
     ClearFindText,
     Purge(Store),
+    /// Move the store's artifacts to the Trash; never deletes.
+    Trash(Store),
     VerifyRetired,
     MarkNoReturn,
     InstallTarget,
@@ -377,7 +426,7 @@ impl Effect {
             Effect::Quiesce(_) => Phase::Quiescing,
             Effect::WriteCandidate | Effect::VerifyCandidate => Phase::CandidateReady,
             Effect::PersistBarrier => Phase::BarrierDurable,
-            Effect::Rewrite(_) | Effect::ClearFindText | Effect::Purge(_) => Phase::Purging,
+            Effect::Rewrite(_) | Effect::ClearFindText | Effect::Purge(_) | Effect::Trash(_) => Phase::Purging,
             Effect::VerifyRetired | Effect::MarkNoReturn => Phase::Purged,
             Effect::InstallTarget => Phase::Replacing,
             Effect::ReadBackTarget | Effect::CleanSession => Phase::Replaced,
@@ -394,6 +443,7 @@ impl Effect {
                 | Effect::Rewrite(_)
                 | Effect::ClearFindText
                 | Effect::Purge(_)
+                | Effect::Trash(_)
                 | Effect::MarkNoReturn
                 | Effect::InstallTarget
                 | Effect::CleanSession
@@ -442,6 +492,8 @@ pub enum Disposition {
     Purged,
     Rewritten,
     Cleared,
+    /// Moved to the Trash: the person can still put it back.
+    Trashed,
     Quiesced,
     Invalidated,
     Replaced,
