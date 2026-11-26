@@ -487,7 +487,6 @@ pub fn wait_for_long(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
 }
 
 /// The same, for up to `limit`: for what takes as long as the work it waits on, such as Find through hundreds of pages, each a worker's job.
-#[allow(dead_code)] // Not every test binary waits this long.
 pub fn wait_for_within(run: &Run<'_>, limit: Duration, holds: impl Fn(&Value) -> bool) -> Value {
     let began = Instant::now();
     loop {
@@ -500,12 +499,28 @@ pub fn wait_for_within(run: &Run<'_>, limit: Duration, holds: impl Fn(&Value) ->
     }
 }
 
-/// How long a state change after a command may take: twice the render service's page deadline (5 s, `page_deadline.rs`), the longest the product lets one page read hold before it gives up and answers, so a read that is killed at its deadline and asked again still lands. Every `wait_for` caller waits for a state a command or a page read brings about; the slower waits name their own bound in `wait_for_within`.
-const STATE_CHANGE_WITHIN: Duration = Duration::from_secs(10);
+/// How long a state change after a command may take, by the renderer's own bounds: a worker that starts within its start timeout, then a read that is killed at its page deadline and asked again, which needs a new worker and a second deadline (`start_timeout + 2 * page_deadline`, 20 s today). Every `wait_for` caller waits for a state a command or a page read brings about; a wait the product allows longer names its own bound in `wait_for_within` (`save_within`, `print_patience`, the update check).
+pub fn state_change_within() -> Duration {
+    let policy = recto_render_service::Policy::default();
+    policy.start_timeout + 2 * policy.page_deadline
+}
 
-/// Asks for `qa state` until what it says holds, for up to `STATE_CHANGE_WITHIN` of time (not a count of asks: one `qa state` takes 0.3 s under load, so 400 asks were two minutes, 2026-11-26), and fails with the last it said.
+/// How long a save that doesn't settle first may take: the gate's look at the document (`LOOK_DEADLINE`, 30 s) and then a state change.
+#[allow(dead_code)] // Not every test binary saves.
+pub fn save_within() -> Duration {
+    recto_agent::agreement::LOOK_DEADLINE + state_change_within()
+}
+
+/// How long a print or a Find over `pages` pages may take, by the renderer's bounds: a fresh worker starts within its start timeout, then the open and each page get a page deadline (the same sum as `print_patience` in `recto-app`'s testkit, which these tests can't reach; Find builds its renderer from `Policy::default()` too, `recto-agent/src/search.rs`).
+#[allow(dead_code)] // Not every test binary prints or searches.
+pub fn print_patience(pages: u32) -> Duration {
+    let policy = recto_render_service::Policy::default();
+    policy.start_timeout + policy.page_deadline * (pages + 1)
+}
+
+/// Asks for `qa state` until what it says holds, for up to `state_change_within()` of time (not a count of asks: one `qa state` takes 0.3 s under load, so 400 asks were two minutes, 2026-11-26), and fails with the last it said.
 pub fn wait_for(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
-    wait_for_within(run, STATE_CHANGE_WITHIN, holds)
+    wait_for_within(run, state_change_within(), holds)
 }
 
 /// `long.pdf`: each page says "Page number N", from 0, and a line of words.
