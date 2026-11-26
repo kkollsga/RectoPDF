@@ -7,7 +7,7 @@
 //!
 //! Where no preview is possible (zoomed out past one, so the page is a few tiles) nothing is asked and nothing dropped: the page keeps its look until it is zoomed in.
 
-use super::{DrawKind, JobPlan, MAX_ATTACH_PER_TURN, PageMap, PlanKind, Reader};
+use super::{DrawKind, JobPlan, PageMap, PlanKind, Reader};
 use crate::paper::PaperKind;
 use std::path::{Path, PathBuf};
 
