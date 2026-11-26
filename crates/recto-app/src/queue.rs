@@ -219,6 +219,8 @@ struct Calls {
     turns: u64,
     /// Times the session thread has parked: a wait for what's off it to come back wakes as the thread next parks ([`CoreQueue::wait_next_park`]).
     parks: u64,
+    /// Times a wait for a deadline ran out by the clock with no call to take: the thread woken by the clock alone. At rest it's at most once a second, and one in a minute is the saver's.
+    timeouts: u64,
     doing: Doing,
 }
 
@@ -467,6 +469,11 @@ impl CoreQueue {
         true
     }
 
+    /// How many times the wait for a deadline has run out on the session thread, for what a resting app reports of its wake-ups.
+    pub fn timeouts(&self) -> u64 {
+        lock(&self.calls).timeouts
+    }
+
     /// How many times the session thread has parked, for [`Self::wait_next_park`].
     pub fn parks(&self) -> u64 {
         lock(&self.calls).parks
@@ -550,7 +557,9 @@ impl CoreQueue {
                     };
                     calls.parks += 1;
                     self.parked.notify_all();
-                    self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner).0
+                    let (mut calls, waited) = self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner);
+                    calls.timeouts += u64::from(waited.timed_out());
+                    calls
                 }
             };
         }

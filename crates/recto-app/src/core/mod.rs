@@ -372,7 +372,7 @@ impl Inner {
         // store, whose writer holds its own lock across a flush to the disk) is waited on holding the lock the window takes as it's shown.
         let first_shown = self.life.first_shown();
         let pages = page_ids::report(&self.host, self.tools.page_ids());
-        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.on_disk.sleeper().report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed(), "pages": pages })
+        json!({ "first_shown": first_shown, "session_thread": { "parks": self.core.parks(), "timeouts": self.core.timeouts() }, "remade": self.life.remade(), "sleep": self.on_disk.sleeper().report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed(), "pages": pages })
     }
 
     /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.
