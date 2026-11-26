@@ -96,6 +96,7 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
         DEFAULT_SCALE,
         &caps,
         &written,
+        started,
     )?;
     if as_jpeg && !copied.coded.is_jpeg() {
         return Err(image::not_a_jpeg(index, number));
@@ -103,7 +104,7 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
     drop(written);
     // Which image it was, as `images` lists it, so a caller that listed the page can check it got the one it listed: another program may have changed the page's
     // crop, its layers or the forms two deep since, and the numbers with them.
-    let placed = image::placed(&mut doc, path, index, number, &caps)?;
+    let placed = image::placed(&mut doc, path, index, number, &caps, started)?;
     publish_picture(&temp.path, out)?;
     drop(temp);
     Ok(json!({
@@ -382,7 +383,9 @@ fn image_clip_for(path: &Path, page: u32, (x, y): (f32, f32), (anyway, whose): (
         let mut doc = whose.open(path)?;
         stop.attach(&doc);
         let caps = OutputCaps::default();
-        let list = image::list(&mut doc, path, page, &caps)?;
+        // One deadline for the click's calls: the list, the copy and the PNG beside a JPEG.
+        let started = Instant::now();
+        let list = image::list(&mut doc, path, page, &caps, started)?;
         let Some(hit) = list.at(x, y) else { return Ok(ClipOutcome::NoImage) };
         if stop.is_stopped() {
             return Ok(ClipOutcome::Stopped);
@@ -390,7 +393,17 @@ fn image_clip_for(path: &Path, page: u32, (x, y): (f32, f32), (anyway, whose): (
         let mut copied: Option<CopiedImage> = None;
         let mut clip = Clip::default();
         let first = in_memory(clip.room(), |out| {
-            copied = Some(image::copy_into(&mut doc, path, page, hit.number, Want::AsItIs, DEFAULT_SCALE, &caps, out)?);
+            copied = Some(image::copy_into(
+                &mut doc,
+                path,
+                page,
+                hit.number,
+                Want::AsItIs,
+                DEFAULT_SCALE,
+                &caps,
+                out,
+                started,
+            )?);
             Ok(())
         })?;
         let Some(copied) = copied else { return Ok(ClipOutcome::NoImage) };
@@ -404,7 +417,7 @@ fn image_clip_for(path: &Path, page: u32, (x, y): (f32, f32), (anyway, whose): (
                 return Ok(ClipOutcome::Stopped);
             }
             match in_memory(clip.room(), |out| {
-                image::copy_into(&mut doc, path, page, hit.number, Want::Png, DEFAULT_SCALE, &caps, out).map(drop)
+                image::copy_into(&mut doc, path, page, hit.number, Want::Png, DEFAULT_SCALE, &caps, out, started).map(drop)
             }) {
                 Ok(bytes) => clip.items.push(ClipItem::Ready { uti: UTI_PNG, bytes }),
                 Err(_) => left_off.push("PNG"),

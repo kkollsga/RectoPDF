@@ -584,7 +584,7 @@ pub(crate) fn write_svg<O: Output>(
     // The size is the first ask of a fresh worker, so a Mac too busy to run it is met here first: asked again as the contents are.
     let deadline = started + caps.max_time;
     let (width_points, height_points) =
-        asked_again(deadline, &mut (), |_| doc.page_size(page), |_| Ok(())).map_err(|failure| with_time_taken(failure.into(), started))?;
+        asked_again(deadline, &mut (), |_, _| doc.page_size(page), |_| Ok(())).map_err(|failure| with_time_taken(failure.into(), started))?;
     if let Some([x, y, _, _]) = job.rect
         && (x >= width_points || y >= height_points)
     {
@@ -635,8 +635,8 @@ pub(crate) fn write_svg<O: Output>(
     let read = asked_again(
         deadline,
         &mut run,
-        |run| {
-            doc.read_contents(&request, |event| {
+        |run, left| {
+            doc.read_contents(&ContentsRequest { max_time: left, ..request }, |event| {
                 let written = match event {
                     ContentsEvent::Restart => {
                         // A worker was stopped and a larger one is starting over, so all of this goes.

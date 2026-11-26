@@ -85,11 +85,13 @@ fn export_svg_asks_again_when_the_mac_was_too_busy() {
 fn the_image_list_and_the_image_copy_ask_again_when_the_mac_was_too_busy() {
     let (file, mut doc) = started("busy-image.pdf", &picture_page());
     let caps = OutputCaps::default();
-    let listed = with_the_worker_stopped(&mut doc, |doc| image::list(doc, &file.0, 0, &caps));
+    let listed = with_the_worker_stopped(&mut doc, |doc| image::list(doc, &file.0, 0, &caps, Instant::now()));
     let listed = listed.unwrap_or_else(|error| panic!("list: {}, {:?}", error.message, doc.stats()));
     assert_eq!((listed.images.len(), doc.stats().too_busy), (1, 1), "{:?}", doc.stats());
     let out = RefCell::new(MemoryOut::new(1 << 24));
-    let copied = with_the_worker_stopped(&mut doc, |doc| image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &caps, &out));
+    let copied = with_the_worker_stopped(&mut doc, |doc| {
+        image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &caps, &out, Instant::now())
+    });
     copied.unwrap_or_else(|error| panic!("copy: {}, {:?}", error.message, doc.stats()));
     assert_eq!(doc.stats().too_busy, 2, "{:?}", doc.stats());
     let png = out.into_inner().bytes;
@@ -174,7 +176,7 @@ fn a_busy_frame_after_png_bytes_were_written_starts_the_image_over() {
         fails_to_start_over: false,
     });
     let copied = stopped_at_job(&mut doc, 1, |doc| {
-        image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &OutputCaps::default(), &out)
+        image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &OutputCaps::default(), &out, Instant::now())
     });
     copied.unwrap_or_else(|error| panic!("{}, {:?}", error.message, doc.stats()));
     let out = out.into_inner();
@@ -197,7 +199,7 @@ fn an_output_that_cant_start_over_is_a_write_failure_for_the_image_too() {
         fails_to_start_over: true,
     });
     let copied = with_the_worker_stopped(&mut doc, |doc| {
-        image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &OutputCaps::default(), &out)
+        image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &OutputCaps::default(), &out, Instant::now())
     });
     assert_eq!(copied.unwrap_err().code, "write_failed");
 }

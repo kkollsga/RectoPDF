@@ -73,7 +73,7 @@ pub(crate) fn shown_box(image: &[f32; 6], page: &[f32; 6], (width, height): (f32
 }
 
 /// Lists a page's images. A page whose drawing needs the larger limit waits for it, as any export does, so never on a UI thread. `page` is from 0.
-pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputCaps) -> Result<ImageList, AgentError> {
+pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputCaps, started: Instant) -> Result<ImageList, AgentError> {
     let request = ContentsRequest {
         page,
         generation: 0,
@@ -87,10 +87,10 @@ pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputC
     // The list and the page's matrix are what a failed ask leaves, which a new ask starts without.
     let mut run = (ImageList::default(), [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
     asked_again(
-        Instant::now() + caps.max_time,
+        started + caps.max_time,
         &mut run,
-        |(list, root)| {
-            doc.read_contents(&request, |event| {
+        |(list, root), left| {
+            doc.read_contents(&ContentsRequest { max_time: left, ..request }, |event| {
                 match event {
                     ContentsEvent::Restart => *list = ImageList::default(),
                     ContentsEvent::Record(Record::Page { width, height, matrix }) => {
@@ -229,6 +229,7 @@ pub(crate) fn copy_into<O: Output>(
     scale: f32,
     caps: &OutputCaps,
     out: &RefCell<O>,
+    started: Instant,
 ) -> Result<CopiedImage, AgentError> {
     if number == 0 || number == IMAGES_LIST {
         return Err(no_such_image(page, number));
@@ -251,10 +252,10 @@ pub(crate) fn copy_into<O: Output>(
     // What a failed ask leaves, which a new ask starts without.
     let mut run: (Writing<'_, O>, Option<CopiedImage>, Option<io::Error>) = (Writing::Nothing, None, None);
     let read = asked_again(
-        Instant::now() + caps.max_time,
+        started + caps.max_time,
         &mut run,
-        |(writing, copied, sink_error)| {
-            doc.read_contents(&request, |event| {
+        |(writing, copied, sink_error), left| {
+            doc.read_contents(&ContentsRequest { max_time: left, ..request }, |event| {
                 let step = (|| -> io::Result<()> {
                     match event {
                         ContentsEvent::Restart => {
@@ -348,7 +349,7 @@ pub(crate) fn copy_into<O: Output>(
 /// tool's click finds it), or none.
 pub(crate) fn list_command(doc: &mut DocRenderer, path: &Path, page: u32, at: Option<[f32; 2]>) -> Result<serde_json::Value, AgentError> {
     let index = page_index(page)?;
-    let list = list(doc, path, index, &OutputCaps::default())?;
+    let list = list(doc, path, index, &OutputCaps::default(), Instant::now())?;
     let picked: Vec<PlacedImage> = match at {
         Some([x, y]) => list.at(x, y).into_iter().collect(),
         None => list.images.clone(),
@@ -366,8 +367,15 @@ pub(crate) fn list_command(doc: &mut DocRenderer, path: &Path, page: u32, at: Op
 
 /// Where image `number` of a page is, and its own size, as `images` lists it (the same read, the same box), for the answer of `image`. None if the page's
 /// box for it can't be shown, which `images` doesn't list either. `page` is from 0.
-pub(crate) fn placed(doc: &mut DocRenderer, path: &Path, page: u32, number: u32, caps: &OutputCaps) -> Result<Option<PlacedImage>, AgentError> {
-    Ok(list(doc, path, page, caps)?.images.into_iter().find(|image| image.number == number))
+pub(crate) fn placed(
+    doc: &mut DocRenderer,
+    path: &Path,
+    page: u32,
+    number: u32,
+    caps: &OutputCaps,
+    started: Instant,
+) -> Result<Option<PlacedImage>, AgentError> {
+    Ok(list(doc, path, page, caps, started)?.images.into_iter().find(|image| image.number == number))
 }
 
 /// Points to a hundredth, so a list reads as numbers a person would write.
