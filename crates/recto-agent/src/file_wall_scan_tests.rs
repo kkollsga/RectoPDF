@@ -196,7 +196,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-platform/src/folder_mac.rs",
         5,
-        "the five opens of `Folder`, which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
+        "the four opens of `Folder` (five are counted: the scan also counts `open_private_in`'s definition), which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
          a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
          `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used by removal's six \
          surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, `legacy_session.rs` and `update_copy.rs`) and by Clear leftovers (`leftovers/pin.rs` \
