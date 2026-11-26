@@ -646,6 +646,10 @@ impl AppCore {
         rail_rows(&contents, rail_filled, current, first, count)
     }
 
+    pub fn contents_menu(&self, row: SidebarRow) -> Vec<MenuEntry> {
+        copy_link::contents_menu(&row)
+    }
+
     /// The scroll thumb's look, the same for the sidebar's lists and the page area.
     pub fn scroll_thumb(&self) -> ScrollThumbLook {
         let thumb = recto_session::SCROLL_THUMB;

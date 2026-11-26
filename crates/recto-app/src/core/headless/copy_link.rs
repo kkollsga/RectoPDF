@@ -169,3 +169,20 @@ fn copy_link_is_in_the_context_menu_after_copy() {
     let at = edit.iter().position(|id| id == "edit.copy").expect("Copy");
     assert_eq!(edit[at + 1], ID);
 }
+
+/// Failure: a contents row with no page offers Copy Link (the menu for a row that goes nowhere), or one with a page offers nothing or more than Rust's list:
+/// the host drew what Rust decided, and Rust decides here.
+#[test]
+fn a_contents_rows_menu_is_rusts_copy_link_for_a_row_with_a_page_and_nothing_otherwise() {
+    let (app, _file) = open_with("menu.pdf", 2);
+    let with = crate::core::copy_link::contents_menu(&contents_row(&app, 1));
+    assert_eq!(
+        with.iter().map(|entry| (entry.id.as_str(), entry.title.as_str())).collect::<Vec<_>>(),
+        [(ID, "Copy Link")]
+    );
+    let without = SidebarRow {
+        page: None,
+        ..contents_row(&app, 1)
+    };
+    assert!(crate::core::copy_link::contents_menu(&without).is_empty());
+}

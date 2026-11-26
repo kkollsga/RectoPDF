@@ -1173,12 +1173,13 @@ final class ContentsTable: NSTableView {
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
 
-    /// A contents row's right-click: Rust's list (Copy Link), for the row's page. Nothing for a row with no page, or a place with no row.
+    /// A contents row's right-click: Rust's list for the row, drawn. Nothing for a place with no row, or a row Rust offers nothing for.
     func contentsMenu(row: Int) -> NSMenu? {
-        guard row >= 0, let chosen = core.contentsRows(first: UInt32(row), count: 1).first, chosen.page != nil else { return nil }
+        guard row >= 0, let chosen = core.contentsRows(first: UInt32(row), count: 1).first else { return nil }
+        let entries = core.contentsMenu(row: chosen)
+        if entries.isEmpty { return nil }
         let menu = NSMenu()
-        // Rust's own item, by its id, from the list a page's right-click has.
-        for entry in core.contextMenu(pane: core.readingPane()) where entry.id == "edit.copy_link" {
+        for entry in entries {
             let item = menu.addItem(withTitle: entry.title, action: #selector(contentsMenuChosen(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = entry.id
