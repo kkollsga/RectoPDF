@@ -234,7 +234,11 @@ pub(crate) fn every_command() -> Vec<Command> {
             chars: None,
             tab: tab(),
         }),
-        Command::from(crate::commands::page_link::Link { page: 1, tab: tab() }),
+        Command::from(crate::commands::page_link::Link {
+            page: 1,
+            tab: tab(),
+            to_clipboard: false,
+        }),
         // The reading of a page's text, for a range of characters: `ref --chars`, and `resolve` and `text --ref` of a reference that holds one.
         Command::from(crate::commands::locating::Ref {
             page: 1,

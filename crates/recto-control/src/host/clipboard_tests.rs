@@ -30,6 +30,7 @@ impl ClipboardSink for Counting {
     fn made(&self, _bytes: Vec<u8>) {
         self.made.fetch_add(1, Ordering::SeqCst);
     }
+    fn text(&self, _text: String) {}
 }
 
 /// Failure: the access every route of the server's builds holds the window's clipboard, so a snapshot the server runs (whatever actor it names, the

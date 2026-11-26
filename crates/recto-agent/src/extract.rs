@@ -799,6 +799,7 @@ mod tests {
         fn made(&self, bytes: Vec<u8>) {
             *self.made.lock().unwrap() = Some(bytes);
         }
+        fn text(&self, _text: String) {}
     }
 
     /// One box of `file`'s page 1, drawn to each destination: a PNG and an SVG to a new file, the person's box to the clipboard (its PNG) and the paste

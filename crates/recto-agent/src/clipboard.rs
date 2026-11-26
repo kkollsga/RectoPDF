@@ -61,6 +61,9 @@ pub trait ClipboardSink: Send + Sync {
     fn offer(&self, clip: Clip);
     /// A promised type, made for the paste waiting for it.
     fn made(&self, bytes: Vec<u8>);
+    /// **The person's Copy Link:** the file address of a page (`recto link --to-clipboard`), as plain text for the window to offer the clipboard. Given only
+    /// to the person, as every part of this sink is, and never put in an answer.
+    fn text(&self, text: String);
     /// **The person's look for a click's image begins** (the window's `images --at x,y` with the page as seen, on `tab`'s page from 1): the stop for it,
     /// which a newer click, a copy, the click let go or a quit sets. Asked only for that form, never for a plain `images`. One that's never stopped, for a
     /// sink with no looks of its own.
