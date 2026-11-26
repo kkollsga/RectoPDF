@@ -9,24 +9,23 @@ use recto_control::removal_store::ledger::{note_save, note_tabs, read, running};
 use recto_control::state::StatePaths;
 use recto_session::record::{PlaceDelta, SessionRecord, TabEntry};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 struct Counting;
 
-thread_local! {
-    /// The measuring thread's own live bytes: allocated less freed on it, so a test counts what its calls keep and nothing another thread does meanwhile.
-    static LIVE: Cell<isize> = const { Cell::new(0) };
-}
+/// Live bytes of the whole process: allocated less freed, by any thread. (One thread's own count would miss a block made here and freed on the ledger's
+/// thread.) Only this binary's one measuring test runs at a time, with `--test-threads=1` for the measurement.
+static LIVE: AtomicIsize = AtomicIsize::new(0);
 
-// SAFETY: forwards every call to the system allocator unchanged and only adds to a thread-local with a constant initialiser and no destructor.
+// SAFETY: forwards every call to the system allocator unchanged and only adds to an atomic.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = LIVE.try_with(|live| live.set(live.get() + layout.size() as isize));
+        LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _ = LIVE.try_with(|live| live.set(live.get() - layout.size() as isize));
+        LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -35,7 +34,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 fn live() -> isize {
-    LIVE.with(Cell::get)
+    LIVE.load(Ordering::Relaxed)
 }
 
 fn temp() -> recto_testpdf::TempDir {
@@ -74,6 +73,7 @@ fn held_bytes_are_capped() {
         }
     }
     let held = live() - before;
+    println!("held by the seen sets at their cap, 8 roots: {held} bytes");
     assert!(held < 1 << 20, "held {held} bytes");
 }
 
@@ -102,6 +102,17 @@ fn costs() {
     while running(&paths.root) {
         std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
     }
+    // Sixty-four new pairs a call go to the thread: until every one is known (a call that starts no thread).
+    loop {
+        note_tabs(&paths.root, &thousand);
+        let started = running(&paths.root);
+        while running(&paths.root) {
+            std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
+        }
+        if !started {
+            break;
+        }
+    }
     let known = mean(2_000, || note_tabs(&paths.root, &thousand));
     println!("note_tabs, 1000 known tabs: {known:?} a call");
     let store = RecordStore::open(&paths, Flavor::App);
@@ -124,13 +135,8 @@ fn costs() {
         let backups = state.join("backups.noindex");
         for n in 0..links {
             let other = dir.join(format!("o{n}.pdf"));
-            let at = SaveNote::Landed {
-                path: &other,
-                to: None,
-                original: &other,
-                backup: None,
-            };
-            note_save(&backups, &at); // nothing to record: seeds the folder only
+            std::fs::write(&other, b"x").unwrap();
+            note_save(&backups, &SaveNote::Starting { path: &other, from: None });
         }
         let (mut now, mut to) = (from, from);
         to.inode += 1;
@@ -140,7 +146,8 @@ fn costs() {
             let again = mean(20, || note_save(&backups, note));
             println!("  {label}: {again:?} (already there)");
         };
-        println!("a save's notes, ledger of {links} links so far:");
+        let seeded = read(&state);
+        println!("a save's notes, ledger of {} links so far (gap {:?}):", seeded.links.len(), seeded.gap);
         notes("starting", &SaveNote::Starting { path: &file, from: Some(from) });
         notes(
             "prepared",
