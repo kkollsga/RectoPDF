@@ -6,7 +6,7 @@ use crate::record_store::{Flavor, RecordStore};
 use crate::removal_store::copy_fixtures::{
     MINE, complete, copy_tree, find, found_of, journal_bytes, journal_name, session_record, state, surveyed, write_session,
 };
-use crate::removal_store::testing::{bounded, mkfifo, put};
+use crate::removal_store::testing::{mkfifo, put};
 use recto_core::removal::Surveyed;
 use recto_session::record::CURRENT_VERSION as VERSION;
 use std::sync::Arc;
@@ -157,7 +157,7 @@ fn a_newer_builds_copy_is_one_foreign_artifact_and_nothing_inside_is_opened() {
     mkfifo(&newer.join("record.a.json"));
     mkfifo(&newer.join("journals").join(journal_name(7)));
     let root = state.root().to_path_buf();
-    let s = bounded(move || survey(&root)).unwrap();
+    let s = returns_in_time("the survey waited on something", move || survey(&root)).unwrap();
     assert!(complete(&s, Store::LegacySession));
     assert_eq!(names(&s), vec![(Owner::Unknown, Format::Foreign)]);
     assert!(find(&s, Store::LegacySession, &format!("session.v{}", VERSION + 1)).is_some());

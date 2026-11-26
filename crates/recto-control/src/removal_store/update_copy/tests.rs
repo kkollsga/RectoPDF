@@ -4,7 +4,7 @@ use super::*;
 use crate::removal_store::copy_fixtures::{State, complete, copy_tree, find, found_of, journal_name, state, surveyed, write_session};
 use crate::removal_store::journals::survey_journals;
 use crate::removal_store::legacy_session::survey_legacy_sessions;
-use crate::removal_store::testing::{bounded, put};
+use crate::removal_store::testing::put;
 use recto_core::removal::{Format, Owner, Surveyed};
 use std::sync::Arc;
 
@@ -199,7 +199,7 @@ fn a_before_swapped_for_a_link_between_the_steps_is_never_followed() {
         ..UpdateCaps::default()
     };
     let root = state.root().to_path_buf();
-    let s = bounded(move || survey_with(&root, &caps)).unwrap();
+    let s = returns_in_time("the survey waited on something", move || survey_with(&root, &caps)).unwrap();
     assert!(!complete(&s, Store::UpdateCopy));
     assert!(found_of(&s).is_empty());
 }
