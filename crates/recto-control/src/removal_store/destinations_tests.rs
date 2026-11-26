@@ -431,3 +431,38 @@ fn a_crashed_replace_then_a_sighting_of_the_unchanged_file_still_refuses() {
         recto_core::removal::Refusal::Incomplete(Store::WriterTemp)
     );
 }
+
+/// Failure (verification): a Replace onto a symbolic link `C` in folder X that points to `Y/real.pdf`. lopdf resolves the whole path, so its temp is made in Y
+/// and named for `real.pdf`; only X (the link's own folder) was listed, so a crashed Replace left the source's whole document in Y and removal said none found.
+#[cfg(unix)]
+#[test]
+fn a_crashed_replace_onto_a_link_into_another_folder_refuses() {
+    let dir = folder();
+    let root = dir.join("state");
+    let mine = put(&dir, "mine.pdf", b"%PDF-1.4 mine");
+    let (x, y) = (dir.join("x"), dir.join("y"));
+    std::fs::create_dir_all(&x).unwrap();
+    std::fs::create_dir_all(&y).unwrap();
+    let real = put(&y, "real.pdf", b"%PDF-1.4 the file the link names");
+    let link = x.join("c.pdf");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    notes(
+        &root,
+        &SaveNote::Starting {
+            path: &mine,
+            from: Some(stamp(&mine)),
+            destination: Some(&link),
+        },
+    );
+    settled(&root);
+    // What the crashed writer leaves: its temp, named for the file the link resolves to, in that file's folder.
+    put(
+        &y,
+        &format!("{}9-1.tmp", writer_temp_prefix(Path::new("real.pdf"))),
+        b"the whole document and its edits",
+    );
+    assert_eq!(
+        planned(&root, &mine, TargetMode::Save).unwrap_err(),
+        recto_core::removal::Refusal::Incomplete(Store::WriterTemp)
+    );
+}
