@@ -3,6 +3,8 @@ use crate::removal::LEDGER_LIMITS;
 use std::path::PathBuf;
 
 const A: [u8; 16] = [0xA; 16];
+/// A plausible beginning (2027-01-15).
+const BEGAN: i64 = 1_800_000_000_000_000_000;
 
 fn version(inode: u64) -> FileVersion {
     FileVersion {
@@ -21,7 +23,7 @@ fn at(inode: u64, path: &str) -> Link {
 }
 
 fn file_of(entries: &[Entry]) -> Vec<u8> {
-    let mut bytes = encode_header(42).to_vec();
+    let mut bytes = encode_header(BEGAN).to_vec();
     for e in entries {
         bytes.extend(encode(e).unwrap());
     }
@@ -52,7 +54,7 @@ fn what_is_encoded_reads_back() {
     let ledger = read(&bytes, &LEDGER_LIMITS);
     let links: Vec<Entry> = ledger.links.iter().cloned().map(Entry::Link).collect();
     assert_eq!(links, sample()[..3]);
-    assert_eq!((ledger.began_ns, ledger.gap, ledger.good_len), (42, Some(Gap::BackupMismatch), bytes.len()));
+    assert_eq!((ledger.began_ns, ledger.gap, ledger.good_len), (BEGAN, Some(Gap::BackupMismatch), bytes.len()));
 }
 
 /// Failure: the format drifts without anyone choosing it, and an older build can't read the file a newer one wrote (or the reverse): the
@@ -109,8 +111,8 @@ fn a_torn_tail_keeps_the_links_before_it() {
     assert_eq!(read(&whole[..10], &LEDGER_LIMITS).gap, Some(Gap::Torn));
 }
 
-/// Failure: a flipped bit in the middle is read as a torn tail (and so repaired by cutting off everything after it, which loses links),
-/// or its later links are trusted.
+/// Failure: a body byte flipped in a frame that has frames after it is read as a torn tail (and so repaired by cutting off everything after
+/// it, which loses good links), or its later links are trusted.
 #[test]
 fn a_bad_checksum_mid_file_is_damage() {
     let mut bytes = file_of(&sample());
@@ -288,4 +290,68 @@ fn a_ledger_full_at_every_cap_fits_under_the_file_cap() {
     bytes.extend(encode(&Entry::Gap(Gap::Overflowed)).unwrap());
     let ledger = read(&bytes, &l);
     assert_eq!((ledger.links.len(), ledger.gap), (rest, Some(Gap::Overflowed)));
+}
+
+/// Failure: a frame length flipped mid-file past the end of the file reads as a cut-short tail (`Torn`), and the writer, which repairs a torn
+/// tail by cutting back to `good_len`, throws away the good frames after it. A length that can't be its kind's is damage, whatever the file's size.
+#[test]
+fn a_length_flipped_mid_file_is_damage_not_a_torn_tail() {
+    let bytes = file_of(&sample());
+    // The first frame's length, then the later frames' (each frame's length is two bytes at the frame's start).
+    let mut at = HEADER_LEN;
+    while at < bytes.len() {
+        let len = usize::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
+        let mut flipped = bytes.clone();
+        flipped[at + 1] ^= 0x7F;
+        let ledger = read(&flipped, &LEDGER_LIMITS);
+        assert_eq!((ledger.stopped, ledger.good_len), (Some(Gap::Damaged), at), "length at {at}");
+        at += 3 + len + 4;
+    }
+    // A length that is another valid size of the kind (a longer path than the bytes say) is damage as well.
+    let mut one_off = bytes.clone();
+    one_off[HEADER_LEN] += 1;
+    assert_eq!(read(&one_off, &LEDGER_LIMITS).stopped, Some(Gap::Damaged));
+}
+
+/// Failure: why the read stopped is hidden by a gap an earlier frame recorded, so a damaged file looks like a merely gapped one and the writer
+/// appends to it. `stopped` is the stop alone; `gap` is the first reason of any.
+#[test]
+fn why_the_read_stopped_is_not_hidden_by_an_earlier_gap() {
+    let mut entries = vec![Entry::Gap(Gap::BackupMismatch)];
+    entries.extend(sample().into_iter().take(2));
+    let mut bytes = file_of(&entries);
+    let ok = read(&bytes, &LEDGER_LIMITS);
+    assert_eq!((ok.gap, ok.stopped), (Some(Gap::BackupMismatch), None), "a frame's gap is not a stop");
+    bytes[HEADER_LEN + 3 + 1 + 4 + 6] ^= 1;
+    let damaged = read(&bytes, &LEDGER_LIMITS);
+    assert_eq!((damaged.gap, damaged.stopped), (Some(Gap::BackupMismatch), Some(Gap::Damaged)));
+    let torn = read(&bytes[..bytes.len() - 2], &LEDGER_LIMITS);
+    assert_eq!(torn.stopped, Some(Gap::Damaged), "the damage comes first");
+    let cut = read(&file_of(&entries)[..file_of(&entries).len() - 2], &LEDGER_LIMITS);
+    assert_eq!((cut.gap, cut.stopped), (Some(Gap::BackupMismatch), Some(Gap::Torn)));
+}
+
+/// Failure: a file of ten bytes of anything is called a torn ledger, and the writer, which repairs a torn tail, writes a header over it.
+/// Only a true prefix of the header (an empty file included) is torn.
+#[test]
+fn a_short_file_is_torn_only_if_it_starts_like_a_ledger() {
+    let header = encode_header(BEGAN);
+    for cut in 0..HEADER_LEN {
+        assert_eq!(read(&header[..cut], &LEDGER_LIMITS).stopped, Some(Gap::Torn), "{cut} bytes of a header");
+    }
+    for garbage in [&b"0123456789"[..], b"RECTOLEDGEX", b"\0\0\0"] {
+        assert_eq!(read(garbage, &LEDGER_LIMITS).stopped, Some(Gap::Damaged), "{garbage:?}");
+    }
+}
+
+/// Failure: a header with a time of zero, or from before this code existed, makes every backup read as made after the ledger began, so one
+/// made before anything was recorded is placed by a path the ledger only saw later.
+#[test]
+fn an_implausible_beginning_makes_everything_older() {
+    for began in [0, -5, 1_000, 1_767_225_599_999_999_999] {
+        let ledger = read(&encode_header(began), &LEDGER_LIMITS);
+        assert_eq!((ledger.gap, ledger.began_ns), (None, i64::MAX), "began {began}");
+    }
+    let ledger = read(&encode_header(1_767_225_600_000_000_000), &LEDGER_LIMITS);
+    assert_eq!(ledger.began_ns, 1_767_225_600_000_000_000);
 }

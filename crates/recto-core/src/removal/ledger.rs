@@ -22,6 +22,8 @@ pub const HEADER_LEN: usize = 36;
 /// The longest path a frame holds.
 pub const MAX_PATH_BYTES: usize = 4_096;
 
+/// 2026-01-01T00:00:00Z in nanoseconds: no ledger began before it.
+const EARLIEST_BEGAN_NS: i64 = 1_767_225_600_000_000_000;
 const MAGIC: &[u8; 12] = b"RECTOLEDGER\0";
 const VERSION: u32 = 1;
 /// A frame's fixed bytes around its body: length, kind and checksum.
@@ -114,7 +116,12 @@ pub struct Ledger {
     pub links: Vec<Link>,
     /// When the file was made. `i64::MAX` where it can't be known, so everything reads as older than it.
     pub began_ns: i64,
+    /// The first reason the whole story is not there: a `Gap` frame the file holds, or why the read stopped. Not complete if any.
     pub gap: Option<Gap>,
+    /// Why the read ended before the end of the file, apart from any `Gap` frames in it: `Torn` (a cut-short tail), `Damaged`, `TooNew`, or
+    /// `Missing` for no file. **The writer repairs only on `Some(Torn)`** (cuts back to `good_len`, then appends) **and never writes on
+    /// `Damaged` or `TooNew`.** A frame gap such as `Overflowed` is in `gap` and leaves this `None`.
+    pub stopped: Option<Gap>,
     /// The bytes that are the header and whole good frames: a torn tail is cut back to here.
     pub good_len: usize,
 }
@@ -130,6 +137,7 @@ impl Ledger {
             links: Vec::new(),
             began_ns: i64::MAX,
             gap: Some(gap),
+            stopped: Some(gap),
             good_len: 0,
         }
     }
@@ -285,6 +293,20 @@ fn decode(kind: u8, body: &[u8], limits: &LedgerLimits) -> Option<Entry> {
     b.done().then_some(entry)
 }
 
+/// Whether a frame of this `kind` can have a body of `len` bytes. Checked before the frame's own bounds, so a length flipped mid-file is
+/// damage, not a tail cut short: a `Saved` is exactly two versions, a `Gap` one byte, and an `At` or `Unplaced` is its fixed part and its
+/// path, whose own length (when the bytes holding it are there) must agree.
+fn length_fits(kind: u8, len: usize, frame: &[u8]) -> bool {
+    let path_len_at = |at: usize| frame.get(3 + at..3 + at + 2).map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])));
+    match kind {
+        2 => len == 2 * VERSION_LEN,
+        4 => len == 1,
+        1 => len > VERSION_LEN + 2 && len <= MAX_BODY && path_len_at(VERSION_LEN).is_none_or(|p| len == VERSION_LEN + 2 + p),
+        3 => len > 2 && len <= MAX_BODY - VERSION_LEN && path_len_at(0).is_none_or(|p| len == 2 + p),
+        _ => false,
+    }
+}
+
 /// Reads a ledger, stopping at the first bad frame.
 ///
 /// A file over [`MAX_LEDGER_BYTES`], a bad header or a frame that fails its checks inside the file is `Damaged`; a header from a newer
@@ -296,7 +318,9 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
         return Ledger::empty(Gap::Damaged);
     }
     let Some(header) = bytes.get(..HEADER_LEN) else {
-        return Ledger::empty(Gap::Torn);
+        // A header being written is cut short, so it is a prefix of what it will be; anything else is not a ledger.
+        let seen = bytes.len().min(MAGIC.len());
+        return Ledger::empty(if bytes[..seen] == MAGIC[..seen] { Gap::Torn } else { Gap::Damaged });
     };
     let version = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
     if &header[..12] != MAGIC {
@@ -309,11 +333,14 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
     if version != VERSION || crc32fast::hash(&header[..32]) != stored || header[24..32] != [0; 8] {
         return Ledger::empty(Gap::Damaged);
     }
-    let began_ns = i64::from_le_bytes([header[16], header[17], header[18], header[19], header[20], header[21], header[22], header[23]]);
+    let began = i64::from_le_bytes([header[16], header[17], header[18], header[19], header[20], header[21], header[22], header[23]]);
+    // A time before this code existed was not written by it: every backup then reads as older than the ledger.
+    let began_ns = if began < EARLIEST_BEGAN_NS { i64::MAX } else { began };
     let mut out = Ledger {
         links: Vec::new(),
         began_ns,
         gap: None,
+        stopped: None,
         good_len: HEADER_LEN,
     };
     let (mut frames, mut path_total) = (0usize, 0usize);
@@ -324,7 +351,7 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
             return stop(out, Gap::Torn);
         };
         let len = usize::from(u16::from_le_bytes([head[0], head[1]]));
-        if len > MAX_BODY {
+        if !length_fits(head[2], len, rest) {
             return stop(out, Gap::Damaged);
         }
         let end = 3 + len + 4;
@@ -362,6 +389,7 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
 }
 
 fn stop(mut ledger: Ledger, gap: Gap) -> Ledger {
+    ledger.stopped = Some(gap);
     ledger.gap = ledger.gap.or(Some(gap));
     ledger
 }

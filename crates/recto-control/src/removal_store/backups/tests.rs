@@ -36,6 +36,7 @@ fn ledger() -> Ledger {
         ],
         began_ns: 0,
         gap: None,
+        stopped: None,
         good_len: 0,
     }
 }

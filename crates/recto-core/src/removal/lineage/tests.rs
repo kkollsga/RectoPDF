@@ -24,6 +24,7 @@ fn ledger(links: &[Link]) -> Ledger {
         links: links.to_vec(),
         began_ns: 0,
         gap: None,
+        stopped: None,
         good_len: 0,
     }
 }
