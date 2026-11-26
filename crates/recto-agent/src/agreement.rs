@@ -365,6 +365,10 @@ fn check_until(path: &Path, stamp: FileStamp, deadline: Instant, looker: Box<Loo
         }
         held = LOOKED.wait_timeout(held, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
     }
+    // Waited out its deadline: no worker is started for an answer nobody can wait for.
+    if Instant::now() >= deadline {
+        return Some(Disagreement::Unchecked);
+    }
     held.looking.push(stamp);
     drop(held);
     run_look(path, stamp, looker, None, deadline)
