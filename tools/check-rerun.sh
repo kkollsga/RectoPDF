@@ -121,4 +121,5 @@ evidence_report() {
     [ ! -f "$folder/rerun.txt" ] || echo "    run it again here as it ran: $(cat "$folder/rerun.txt")" >&2
   done
   [ "$n" -le 20 ] || echo "  and $((n - 20)) more" >&2
+  [ ! -d "$CHECK_EVIDENCE_ROOT.previous" ] || echo "  the run before's evidence is kept in $CHECK_EVIDENCE_ROOT.previous" >&2
 }
