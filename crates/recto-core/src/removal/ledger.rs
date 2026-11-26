@@ -124,12 +124,21 @@ pub struct Ledger {
     pub stopped: Option<Gap>,
     /// The bytes that are the header and whole good frames: a torn tail is cut back to here.
     pub good_len: usize,
+    /// How many whole frames were read, links and gaps alike: what the cap on frames counts, so the writer knows what room is left.
+    pub frames: usize,
+    /// A `Gap { Overflowed }` frame is in the file: the writer stopped there, and appends nothing more.
+    pub overflowed: bool,
 }
 
 impl Ledger {
     /// No ledger file.
     pub fn missing() -> Self {
         Self::empty(Gap::Missing)
+    }
+
+    /// A file that is no ledger: not a plain file, or over [`MAX_LEDGER_BYTES`]. Never written to.
+    pub fn damaged() -> Self {
+        Self::empty(Gap::Damaged)
     }
 
     fn empty(gap: Gap) -> Self {
@@ -139,6 +148,8 @@ impl Ledger {
             gap: Some(gap),
             stopped: Some(gap),
             good_len: 0,
+            frames: 0,
+            overflowed: false,
         }
     }
 }
@@ -342,6 +353,8 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
         gap: None,
         stopped: None,
         good_len: HEADER_LEN,
+        frames: 0,
+        overflowed: false,
     };
     let (mut frames, mut path_total) = (0usize, 0usize);
     let mut pos = HEADER_LEN;
@@ -371,7 +384,10 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
             return stop(out, Gap::Damaged);
         };
         match entry {
-            Entry::Gap(gap) => out.gap = out.gap.or(Some(gap)),
+            Entry::Gap(gap) => {
+                out.gap = out.gap.or(Some(gap));
+                out.overflowed |= gap == Gap::Overflowed;
+            }
             Entry::Link(link) => {
                 if let Link::At { path, .. } | Link::Unplaced { path } = &link {
                     path_total += path.as_os_str().as_encoded_bytes().len();
@@ -384,6 +400,7 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
         }
         pos += end;
         out.good_len = pos;
+        out.frames = frames;
     }
     out
 }

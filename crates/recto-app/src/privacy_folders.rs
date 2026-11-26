@@ -43,6 +43,12 @@ const FOLDERS: &[Folder] = &[
         named_in_notice_as: "the backups",
     },
     Folder {
+        at: "removal",
+        claimed_out_of_backups: true,
+        claimed_out_of_spotlight: false,
+        named_in_notice_as: "which files RectoPDF opened and saved",
+    },
+    Folder {
         at: "corpus.noindex",
         claimed_out_of_backups: true,
         claimed_out_of_spotlight: true,

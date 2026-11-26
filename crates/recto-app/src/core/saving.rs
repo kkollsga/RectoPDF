@@ -27,6 +27,10 @@ impl SaveSupport for AppSaving {
         Some(self.backups.clone())
     }
 
+    fn provenance(&self, note: &recto_agent::saving::SaveNote<'_>) {
+        recto_control::removal_store::ledger::note_save(&self.backups, note);
+    }
+
     fn before_writing(&self, _tab: TabId) {
         // The person's Save has begun, its tab held for it: their next edit goes on now (an agent's save holds no turn here).
         crate::queue::lane::pass_here();

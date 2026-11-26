@@ -71,6 +71,16 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         1,
         "the state folder's own list kept beside a tab after a copy went back, its first line read (no link followed) to say whose it is",
     ),
+    (
+        "recto-control/src/removal_store/ledger.rs",
+        2,
+        "the provenance ledger's own file in the state folder, read with a cap (a plain file only; the writer opens it with no link followed): paths and numbers, never a document",
+    ),
+    (
+        "recto-control/src/removal_store/ledger/adopt.rs",
+        1,
+        "the first line (at most 8 KiB) of a journal in the state folder, a plain file only, read once when the ledger is first made: never a document",
+    ),
     ("recto-control/src/server.rs", 1, "the socket's lock file in the state folder, named by the app"),
     (
         "recto-control/src/terminal.rs",

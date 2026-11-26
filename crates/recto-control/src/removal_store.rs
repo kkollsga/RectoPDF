@@ -3,5 +3,6 @@
 //! content, and nothing is wired to a command yet.
 
 mod backups;
+pub mod ledger;
 
 pub use backups::survey_backups;

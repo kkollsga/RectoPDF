@@ -38,6 +38,8 @@ fn ledger() -> Ledger {
         gap: None,
         stopped: None,
         good_len: 0,
+        frames: 0,
+        overflowed: false,
     }
 }
 

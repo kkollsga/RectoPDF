@@ -842,6 +842,8 @@ impl RecordStore {
         progress.places_bytes = 0;
         progress.wrote_bytes += bytes.len() as u64;
         progress.writes += 1;
+        drop(progress);
+        crate::removal_store::ledger::note_tabs(&self.root, &record.tabs);
         Ok(bytes.len() as u64)
     }
 
