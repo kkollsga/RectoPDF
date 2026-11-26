@@ -204,6 +204,18 @@ impl Folder {
         stat_at(self.fd.as_raw_fd(), &plain).map(|st| entry_of(name.to_owned(), &st))
     }
 
+    /// Whether this folder is on a local volume, asked of the folder itself (`fstatfs` on the descriptor): the volume it is on now, whatever its path now
+    /// says. `false` for a network share, where a process number may be another Mac's, and when it can't be asked.
+    pub fn is_local(&self) -> bool {
+        // SAFETY: an all-zero `statfs` is plain data the kernel then fills.
+        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is open for as long as `self`, and `fs` is a whole `statfs`.
+        if unsafe { libc::fstatfs(self.fd.as_raw_fd(), &raw mut fs) } != 0 {
+            return false;
+        }
+        fs.f_flags & libc::MNT_LOCAL as u32 != 0
+    }
+
     /// Takes the entry `name` out of this folder: a folder with `folder` set (it must be empty), anything else, a link included, without following
     /// it (`unlinkat`). `NotFound` if it is already gone.
     pub fn unlink_in(&self, name: &OsStr, folder: bool) -> io::Result<()> {

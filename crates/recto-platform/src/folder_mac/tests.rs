@@ -208,6 +208,15 @@ fn identity_and_look_say_what_a_name_is_without_following() {
     assert!(folder.look(OsStr::new("../x")).is_err());
 }
 
+/// Failure: a folder is said not to be on a local volume (so a dead process number in it is taken as another Mac's and nothing in it is ever moved), or is
+/// asked by its path and not by itself. A temp folder is local, asked of the opened folder. (The stand-in off the Mac answers `false` by its code, which
+/// is what puts a dead process number there in `waiting`; it can't run here.)
+#[test]
+fn a_folder_asked_for_itself_is_local_on_this_disk() {
+    let dir = TempDir::new("recto-folder-");
+    assert!(opened(dir.path()).is_local());
+}
+
 /// Failure: `unlink_in` follows a link and removes what it leads to, removes a folder with something in it, takes a name that leaves the folder, or a
 /// missing name is not `NotFound`.
 #[test]

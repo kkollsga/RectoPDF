@@ -42,6 +42,10 @@ pub fn identity_at(_path: &Path) -> Option<Identity> {
 }
 
 impl Entry {
+    /// Nothing is local off the Mac.
+    pub fn is_local(&self) -> bool {
+        false
+    }
     pub fn identity(&self) -> Identity {
         Identity {
             dev: self.dev,
