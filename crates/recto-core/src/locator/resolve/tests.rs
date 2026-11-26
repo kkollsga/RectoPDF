@@ -531,7 +531,7 @@ fn the_stored_rules_tag_is_pinned_so_a_change_to_the_rules_is_meant() {
     assert_eq!(stored_rules_tag(), stored_rules_tag());
     let hex: String = stored_rules_tag().iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(
-        hex, "3cf043730d294fd9e13511621692ef37",
-        "the tag of recto-page/1, the standard caps, 16 tag pages and recto-doc-c/1"
+        hex, "40ec1fd5c292a7efe1d305fe4e2a395b",
+        "the tag of recto-page/1, the standard caps, 16 tag pages, the decoders' and scan's limits and recto-doc-c/1"
     );
 }

@@ -74,7 +74,7 @@ pub(super) fn first_eight(bytes: &[u8]) -> [u8; 8] {
 }
 
 /// **What a stored read is only good for:** a hash of everything that decides what [`page_id::read_page`] answers under [`Caps::STANDARD`] and what a
-/// document tag is made of: the digest's name, every field of the standard caps, how many pages a tag looks at and the tag's own name. A stored read
+/// document tag is made of: the digest's name, every field of the standard caps, the decoders' and the scan's own limits ([`page_id::rule_limits`]), how many pages a tag looks at and the tag's own name. A stored read
 /// carries it, and is trusted only where it equals this build's: a caps change (the names cap went from 256 to 8,192 on 2026-11-25) would otherwise leave
 /// stored "no identity" under the same digest name. Every field is named below, so a new cap field doesn't compile until it is here.
 pub fn stored_rules_tag() -> [u8; 16] {
@@ -102,7 +102,10 @@ pub fn stored_rules_tag() -> [u8; 16] {
         page_read,
         decode_work,
         TAG_PAGES as u64,
-    ] {
+    ]
+    .into_iter()
+    .chain(page_id::rule_limits())
+    {
         hasher.update(number.to_le_bytes());
     }
     hasher.update(super::resolve::CONTENT_TAG_NAME);

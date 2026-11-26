@@ -98,6 +98,13 @@ use std::path::Path;
 use std::rc::Rc;
 use work::Meter;
 
+/// The limits inside the decoders and the scan that decide whether a page has an identity, outside [`Caps`]: how much each stage reads at a time, the longest
+/// predictor row, the most filters in a chain and the longest name taken. A stored read is only good for the values it was made under, so
+/// [`crate::locator::stored_rules_tag`] hashes these; a constant added to this list is one more value the tag follows.
+pub(crate) fn rule_limits() -> [u64; 4] {
+    [decode::CHUNK as u64, decode::MAX_ROW as u64, decode::MAX_FILTERS as u64, scan::MAX_NAME as u64]
+}
+
 /// The digest's name, and the first bytes hashed.
 pub const DIGEST_NAME: &str = "recto-page/1";
 
