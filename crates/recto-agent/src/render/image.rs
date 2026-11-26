@@ -2,6 +2,7 @@
 //!
 //! **Losslessly** (SPEC section 6, "Click an image to copy it losslessly"): a JPEG goes as its own bytes, with only what's around its picture corrected where the page would read it differently (`JpegHeaderFixed`), and anything else as PNG at the image's own resolution, its pixels as PDFium decodes them. A masked image goes as PNG with its mask as alpha. An image PDFium can draw but not hand over is drawn alone at the scale asked for, and says so.
 
+use super::ask_again::asked_again;
 use super::{Output, Shared, page_index};
 use crate::Code;
 use crate::{AgentError, exit};
@@ -11,6 +12,7 @@ use recto_svg::{PngChannels, PngWriter};
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Instant;
 
 /// The most images a list keeps. A page with more says how many it has, and these are the first, in the order they're drawn.
 pub(crate) const MAX_LISTED: usize = 4096;
@@ -71,7 +73,7 @@ pub(crate) fn shown_box(image: &[f32; 6], page: &[f32; 6], (width, height): (f32
 }
 
 /// Lists a page's images. A page whose drawing needs the larger limit waits for it, as any export does, so never on a UI thread. `page` is from 0.
-pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputCaps) -> Result<ImageList, AgentError> {
+pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputCaps, started: Instant) -> Result<ImageList, AgentError> {
     let request = ContentsRequest {
         page,
         generation: 0,
@@ -82,35 +84,45 @@ pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputC
         images: IMAGES_LIST,
         max_time: caps.max_time,
     };
-    let mut list = ImageList::default();
-    let mut root = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    doc.read_contents(&request, |event| {
-        match event {
-            ContentsEvent::Restart => list = ImageList::default(),
-            ContentsEvent::Record(Record::Page { width, height, matrix }) => {
-                list.page_size = (width, height);
-                root = matrix;
-            }
-            ContentsEvent::Record(Record::ImagePlace { width, height, jpeg, matrix }) => {
-                list.total = list.total.saturating_add(1);
-                // One the walk drew (off the page and hidden layers never reach here) whose box the page can't show keeps its number, and can't be clicked.
-                if list.images.len() < MAX_LISTED
-                    && let Some(rect) = shown_box(&matrix, &root, list.page_size)
-                {
-                    list.images.push(PlacedImage {
-                        number: list.total,
-                        rect,
-                        width,
-                        height,
-                        jpeg,
-                    });
+    // The list and the page's matrix are what a failed ask leaves, which a new ask starts without.
+    let mut run = (ImageList::default(), [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    asked_again(
+        started + caps.max_time,
+        &mut run,
+        |(list, root), left| {
+            doc.read_contents(&ContentsRequest { max_time: left, ..request }, |event| {
+                match event {
+                    ContentsEvent::Restart => *list = ImageList::default(),
+                    ContentsEvent::Record(Record::Page { width, height, matrix }) => {
+                        list.page_size = (width, height);
+                        *root = matrix;
+                    }
+                    ContentsEvent::Record(Record::ImagePlace { width, height, jpeg, matrix }) => {
+                        list.total = list.total.saturating_add(1);
+                        // One the walk drew (off the page and hidden layers never reach here) whose box the page can't show keeps its number, and can't be clicked.
+                        if list.images.len() < MAX_LISTED
+                            && let Some(rect) = shown_box(&matrix, root, list.page_size)
+                        {
+                            list.images.push(PlacedImage {
+                                number: list.total,
+                                rect,
+                                width,
+                                height,
+                                jpeg,
+                            });
+                        }
+                    }
+                    ContentsEvent::Record(_) => {}
                 }
-            }
-            ContentsEvent::Record(_) => {}
-        }
-        Ok(())
-    })?;
-    Ok(list)
+                Ok(())
+            })
+        },
+        |(list, _)| {
+            *list = ImageList::default();
+            Ok(())
+        },
+    )?;
+    Ok(run.0)
 }
 
 /// How an image is wanted.
@@ -217,6 +229,7 @@ pub(crate) fn copy_into<O: Output>(
     scale: f32,
     caps: &OutputCaps,
     out: &RefCell<O>,
+    started: Instant,
 ) -> Result<CopiedImage, AgentError> {
     if number == 0 || number == IMAGES_LIST {
         return Err(no_such_image(page, number));
@@ -236,69 +249,86 @@ pub(crate) fn copy_into<O: Output>(
         images: number,
         max_time: caps.max_time,
     };
-    let mut writing: Writing<'_, O> = Writing::Nothing;
-    let mut copied: Option<CopiedImage> = None;
-    let mut sink_error: Option<io::Error> = None;
-    let read = doc.read_contents(&request, |event| {
-        let step = (|| -> io::Result<()> {
-            match event {
-                ContentsEvent::Restart => {
-                    writing = Writing::Nothing;
-                    copied = None;
-                    out.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.start_over()?;
-                }
-                ContentsEvent::Record(Record::ImageBegin {
-                    coding, why, width, height, ..
-                }) => {
-                    if why == Why::JpegMask {
-                        writing = Writing::Mask;
-                        return Ok(());
-                    }
-                    if want == Want::JpegOnly && !matches!(coding, ImageCoding::Jpeg) {
-                        return Err(io::ErrorKind::Unsupported.into());
-                    }
-                    let coded = match (coding, why) {
-                        (ImageCoding::Jpeg, Why::JpegHeaderFixed) => Coded::JpegHeaderFixed,
-                        (ImageCoding::Jpeg, _) => Coded::OriginalJpeg,
-                        (_, Why::Image) => Coded::Png,
-                        (_, Why::ImageWithMask) => Coded::PngWithMask,
-                        _ => Coded::PngDrawn,
-                    };
-                    writing = match coding {
-                        ImageCoding::Jpeg => Writing::Jpeg,
-                        ImageCoding::Pixels { channels } => {
-                            let channels = match channels {
-                                1 => PngChannels::Grey,
-                                3 => PngChannels::Rgb,
-                                _ => PngChannels::Rgba,
-                            };
-                            Writing::Png(PngWriter::new(Shared(out), width, height, channels)?)
+    // What a failed ask leaves, which a new ask starts without.
+    let mut run: (Writing<'_, O>, Option<CopiedImage>, Option<io::Error>) = (Writing::Nothing, None, None);
+    let read = asked_again(
+        started + caps.max_time,
+        &mut run,
+        |(writing, copied, sink_error), left| {
+            doc.read_contents(&ContentsRequest { max_time: left, ..request }, |event| {
+                let step = (|| -> io::Result<()> {
+                    match event {
+                        ContentsEvent::Restart => {
+                            *writing = Writing::Nothing;
+                            *copied = None;
+                            out.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.start_over()?;
                         }
-                    };
-                    copied = Some(CopiedImage { coded, width, height });
-                }
-                ContentsEvent::Record(Record::ImageBytes(bytes)) => match &mut writing {
-                    Writing::Jpeg => Shared(out).write_all(bytes)?,
-                    Writing::Png(png) => png.write_all(bytes)?,
-                    Writing::Mask => {}
-                    Writing::Nothing | Writing::Done => return Err(io::ErrorKind::InvalidData.into()),
-                },
-                ContentsEvent::Record(Record::ImageEnd) => match std::mem::replace(&mut writing, Writing::Done) {
-                    Writing::Png(png) => {
-                        png.finish()?;
+                        ContentsEvent::Record(Record::ImageBegin {
+                            coding, why, width, height, ..
+                        }) => {
+                            if why == Why::JpegMask {
+                                *writing = Writing::Mask;
+                                return Ok(());
+                            }
+                            if want == Want::JpegOnly && !matches!(coding, ImageCoding::Jpeg) {
+                                return Err(io::ErrorKind::Unsupported.into());
+                            }
+                            let coded = match (coding, why) {
+                                (ImageCoding::Jpeg, Why::JpegHeaderFixed) => Coded::JpegHeaderFixed,
+                                (ImageCoding::Jpeg, _) => Coded::OriginalJpeg,
+                                (_, Why::Image) => Coded::Png,
+                                (_, Why::ImageWithMask) => Coded::PngWithMask,
+                                _ => Coded::PngDrawn,
+                            };
+                            *writing = match coding {
+                                ImageCoding::Jpeg => Writing::Jpeg,
+                                ImageCoding::Pixels { channels } => {
+                                    let channels = match channels {
+                                        1 => PngChannels::Grey,
+                                        3 => PngChannels::Rgb,
+                                        _ => PngChannels::Rgba,
+                                    };
+                                    Writing::Png(PngWriter::new(Shared(out), width, height, channels)?)
+                                }
+                            };
+                            *copied = Some(CopiedImage { coded, width, height });
+                        }
+                        ContentsEvent::Record(Record::ImageBytes(bytes)) => match &mut *writing {
+                            Writing::Jpeg => Shared(out).write_all(bytes)?,
+                            Writing::Png(png) => png.write_all(bytes)?,
+                            Writing::Mask => {}
+                            Writing::Nothing | Writing::Done => return Err(io::ErrorKind::InvalidData.into()),
+                        },
+                        ContentsEvent::Record(Record::ImageEnd) => match std::mem::replace(writing, Writing::Done) {
+                            Writing::Png(png) => {
+                                png.finish()?;
+                            }
+                            Writing::Mask => *writing = Writing::Nothing,
+                            _ => {}
+                        },
+                        ContentsEvent::Record(_) => {}
                     }
-                    Writing::Mask => writing = Writing::Nothing,
-                    _ => {}
-                },
-                ContentsEvent::Record(_) => {}
-            }
-            Ok(())
-        })();
-        step.map_err(|error| {
-            sink_error = Some(error);
-            RenderFailure::Unavailable
-        })
-    });
+                    Ok(())
+                })();
+                step.map_err(|error| {
+                    *sink_error = Some(error);
+                    RenderFailure::Unavailable
+                })
+            })
+        },
+        |(writing, copied, sink_error)| {
+            *writing = Writing::Nothing;
+            *copied = None;
+            out.try_borrow_mut()
+                .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))
+                .and_then(|mut out| out.start_over())
+                .map_err(|error| {
+                    *sink_error = Some(error);
+                    RenderFailure::Unavailable
+                })
+        },
+    );
+    let (writing, copied, sink_error) = run;
     if let Err(failure) = read {
         return Err(match sink_error {
             Some(error) if error.kind() == io::ErrorKind::Unsupported => not_a_jpeg(page, number),
@@ -319,7 +349,7 @@ pub(crate) fn copy_into<O: Output>(
 /// tool's click finds it), or none.
 pub(crate) fn list_command(doc: &mut DocRenderer, path: &Path, page: u32, at: Option<[f32; 2]>) -> Result<serde_json::Value, AgentError> {
     let index = page_index(page)?;
-    let list = list(doc, path, index, &OutputCaps::default())?;
+    let list = list(doc, path, index, &OutputCaps::default(), Instant::now())?;
     let picked: Vec<PlacedImage> = match at {
         Some([x, y]) => list.at(x, y).into_iter().collect(),
         None => list.images.clone(),
@@ -337,8 +367,15 @@ pub(crate) fn list_command(doc: &mut DocRenderer, path: &Path, page: u32, at: Op
 
 /// Where image `number` of a page is, and its own size, as `images` lists it (the same read, the same box), for the answer of `image`. None if the page's
 /// box for it can't be shown, which `images` doesn't list either. `page` is from 0.
-pub(crate) fn placed(doc: &mut DocRenderer, path: &Path, page: u32, number: u32, caps: &OutputCaps) -> Result<Option<PlacedImage>, AgentError> {
-    Ok(list(doc, path, page, caps)?.images.into_iter().find(|image| image.number == number))
+pub(crate) fn placed(
+    doc: &mut DocRenderer,
+    path: &Path,
+    page: u32,
+    number: u32,
+    caps: &OutputCaps,
+    started: Instant,
+) -> Result<Option<PlacedImage>, AgentError> {
+    Ok(list(doc, path, page, caps, started)?.images.into_iter().find(|image| image.number == number))
 }
 
 /// Points to a hundredth, so a list reads as numbers a person would write.

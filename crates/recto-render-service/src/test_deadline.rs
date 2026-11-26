@@ -2,6 +2,7 @@
 //! crate's own tests turn on: a release build has no such function.
 
 use crate::{DocRenderer, Policy};
+use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -48,5 +49,33 @@ fn short_for<T, R>(
     let own = std::mem::replace(which(&mut renderer(holder).policy), short);
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
     *which(&mut renderer(holder).policy) = own;
+    done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Jobs still to let go by, the deadline of the one after them, and what to do as it starts.
+type OneJob = (u32, Duration, Box<dyn FnOnce()>);
+
+thread_local! {
+    /// Which job's wait on this thread is to have which deadline, once: jobs still to let go by, the deadline, and what to do as that job starts.
+    static ONE_JOB: RefCell<Option<OneJob>> = const { RefCell::new(None) };
+}
+
+/// The deadline for the job whose wait starts now, if a test set one for it: counts a job by, or takes the one-shot and runs its action.
+pub(crate) fn take_job() -> Option<Duration> {
+    let (skip, deadline, action) = ONE_JOB.with(|one| one.borrow_mut().take())?;
+    if skip > 0 {
+        ONE_JOB.with(|one| *one.borrow_mut() = Some((skip - 1, deadline, action)));
+        return None;
+    }
+    action();
+    Some(deadline)
+}
+
+/// **For tests: runs `job` with `deadline` as the page deadline of ONE job it asks of a worker on this thread, the `nth` from 0, and the policy's own for every other; `as_it_starts` runs as that job's wait begins** (a test stops the worker there, so exactly that job, and not an earlier one, is the one the Mac was too busy for). [`under_page_deadline_for_test`] short-changes every ask `job` makes, so an export that asked again after a busy answer asked again under it too, and a loaded runner starved the asks after the one a test meant to starve. Here the stopped worker's job is the one that runs out of time, and the fresh worker the ask again starts has the ordinary deadline. `nth` reaches a later frame of a page's contents (job 0 of an export is its page's size, then one a frame). Taken back after `job`, used or not.
+#[doc(hidden)]
+pub fn under_job_deadline_for_test<R>(nth: u32, deadline: Duration, as_it_starts: impl FnOnce() + 'static, job: impl FnOnce() -> R) -> R {
+    ONE_JOB.with(|one| *one.borrow_mut() = Some((nth, deadline, Box::new(as_it_starts))));
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+    ONE_JOB.with(|one| one.borrow_mut().take());
     done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }

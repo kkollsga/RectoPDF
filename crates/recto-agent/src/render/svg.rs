@@ -1,5 +1,6 @@
 //! `export svg`: a page, or a box on it, as a new SVG file, written as it's read. Nothing is held: records come from the worker a frame at a time, and go straight through `recto-svg` to a temp file that's only published if the whole page got there. So a worker that's stopped, or a limit that's hit, leaves nothing behind under the real name.
 
+use super::ask_again::asked_again;
 use super::{
     FileOut, Output, OwnTemp, Shared, hidden_text_facts, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken,
 };
@@ -580,7 +581,10 @@ pub(crate) fn write_svg<O: Output>(
 ) -> Result<SvgWritten, AgentError> {
     let page = job.page;
     let limit = Policy::default().heavy_limit_bytes;
-    let (width_points, height_points) = doc.page_size(page).map_err(|failure| with_time_taken(failure.into(), started))?;
+    // The size is the first ask of a fresh worker, so a Mac too busy to run it is met here first: asked again as the contents are.
+    let deadline = started + caps.max_time;
+    let (width_points, height_points) =
+        asked_again(deadline, &mut (), |_, _| doc.page_size(page), |_| Ok(())).map_err(|failure| with_time_taken(failure.into(), started))?;
     if let Some([x, y, _, _]) = job.rect
         && (x >= width_points || y >= height_points)
     {
@@ -616,34 +620,65 @@ pub(crate) fn write_svg<O: Output>(
     } else {
         recto_core::document_title(job.path)
     };
-    let mut tally = Tally::default();
-    let mut sink_error = None;
-    let mut svg: Option<SvgWriter<Capped<'_, O>>> = None;
-    let read = doc.read_contents(&request, |event| {
-        let written = match event {
-            ContentsEvent::Restart => {
-                // A worker was stopped and a larger one is starting over, so all of this goes.
-                svg = None;
-                tally = Tally::default();
-                out.try_borrow_mut()
-                    .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))
-                    .and_then(|mut out| out.start_over())
-            }
-            ContentsEvent::Record(record) => write_record(
-                &mut svg,
-                out,
-                caps.max_bytes,
-                title.as_deref(),
-                (job.strip_metadata, job.quarter_turns),
-                &mut tally,
-                &record,
-            ),
-        };
-        written.map_err(|error| {
-            sink_error = Some(from_io(&error));
-            RenderFailure::Unavailable
-        })
-    });
+    /// What a failed ask leaves, which a new ask starts without.
+    struct Run<'file, O: Output> {
+        tally: Tally,
+        sink_error: Option<AgentError>,
+        svg: Option<SvgWriter<Capped<'file, O>>>,
+    }
+    let mut run = Run {
+        tally: Tally::default(),
+        sink_error: None,
+        svg: None,
+    };
+    // A busy answer starts the output over and asks again, within the command's own time.
+    let read = asked_again(
+        deadline,
+        &mut run,
+        |run, left| {
+            doc.read_contents(&ContentsRequest { max_time: left, ..request }, |event| {
+                let written = match event {
+                    ContentsEvent::Restart => {
+                        // A worker was stopped and a larger one is starting over, so all of this goes.
+                        run.svg = None;
+                        run.tally = Tally::default();
+                        out.try_borrow_mut()
+                            .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))
+                            .and_then(|mut out| out.start_over())
+                    }
+                    ContentsEvent::Record(record) => write_record(
+                        &mut run.svg,
+                        out,
+                        caps.max_bytes,
+                        title.as_deref(),
+                        (job.strip_metadata, job.quarter_turns),
+                        &mut run.tally,
+                        &record,
+                    ),
+                };
+                written.map_err(|error| {
+                    run.sink_error = Some(from_io(&error));
+                    RenderFailure::Unavailable
+                })
+            })
+        },
+        |run| {
+            run.svg = None;
+            run.tally = Tally::default();
+            out.try_borrow_mut()
+                .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))
+                .and_then(|mut out| out.start_over())
+                .map_err(|error| {
+                    run.sink_error = Some(from_io(&error));
+                    RenderFailure::Unavailable
+                })
+        },
+    );
+    let Run {
+        mut tally,
+        mut sink_error,
+        mut svg,
+    } = run;
     let done = read.map_err(|failure| {
         let error = sink_error.take().unwrap_or_else(|| match failure {
             RenderFailure::ExportRefused {

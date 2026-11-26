@@ -2031,7 +2031,7 @@ impl Worker {
     fn exchange_watched(&mut self, frame: &[u8], handles: &[&Handle], watch: &Watch<'_>) -> Result<Frame, Stop> {
         watch.job_cpu.begin(self.child.memory().map(|memory| (self.child.pid(), memory.cpu_ns)));
         let started = Instant::now();
-        let deadline = started + watch.policy.page_deadline;
+        let deadline = started + crate::page_deadline::for_this_job(watch.policy.page_deadline);
         let mut sent = 0;
         let mut stale_since: Option<Instant> = None;
         loop {
