@@ -99,6 +99,32 @@ fn verified(real: &Path, expect: FileStamp) -> Option<FileVersion> {
     (now == expect).then(|| FileVersion::new(now, recto_platform::volume::volume_identity(real)))
 }
 
+/// The destination's frames: where it is by name ([`destination_entry`]) and, if something is there already, where the writer resolves it to. lopdf's
+/// `real_path` follows the whole path of an existing destination (a link too) and makes its temp in that file's folder, named for that file: a Replace
+/// onto a link into another folder works there. Both are recorded, so both folders are listed. At most two frames.
+fn destination_entries(destination: &Path) -> Vec<Entry> {
+    let by_name = destination_entry(destination);
+    let mut out: Vec<Entry> = by_name.iter().cloned().collect();
+    if !matches!(by_name, Some(Entry::Destination(_))) || std::fs::symlink_metadata(destination).is_err() {
+        return out;
+    }
+    match destination.canonicalize() {
+        Ok(real) => {
+            let entry = Entry::Destination(real);
+            if !out.contains(&entry) {
+                // Too long to hold is a note lost without a word.
+                let too_long = matches!(&entry, Entry::Destination(p) if p.as_os_str().as_encoded_bytes().len() > recto_core::removal::MAX_PATH_BYTES);
+                out.push(if too_long { Entry::Gap(Gap::WriteFailed) } else { entry });
+            }
+        }
+        // The writer fails the same way at once (a link that names nothing, a loop of links): it can make no temp.
+        Err(error) if writer_fails_here(&error) || error.kind() == std::io::ErrorKind::NotFound => {}
+        // Any other error: a temp may be where nobody can list.
+        Err(_) => out.push(Entry::Gap(Gap::WriteFailed)),
+    }
+    out
+}
+
 /// **Where a Save As or a Replace is going, before it is there.** The writer makes its temporary, named for the destination's file name, in the
 /// destination's folder before anything lands, so a crash leaves it there with the whole document in it, and the survey can only list that folder if the
 /// ledger names a path in it. The file may not be there yet, nor its folder, so the nearest folder that exists (the destination's parent, `.` for a bare name)
@@ -162,7 +188,7 @@ fn entries_for(note: &SaveNote<'_>) -> Vec<Entry> {
                     None => Link::Unplaced { path: real },
                 }));
             }
-            out.extend(destination.and_then(destination_entry));
+            out.extend(destination.map(destination_entries).unwrap_or_default());
             out
         }
         // A Save As starts a history of its own: the new file is recorded when it lands, and nothing joins it to the one it was made from.
