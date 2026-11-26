@@ -145,7 +145,7 @@ pub struct Surveyed {
 
 impl Surveyed {
     pub fn inventory(&self) -> Inventory<'_> {
-        Inventory::with_history(self.complete, &self.artifacts, self.history)
+        Inventory::with_history(self.complete, &self.artifacts, &self.keys, self.history)
     }
 
     /// The store and key an id was given for; `None` for 0 or past the end.

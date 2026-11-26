@@ -1,7 +1,13 @@
 use super::*;
 
+/// An id no other call of a test has made. Core takes the caller's ids; a test draws them from a counter.
+pub(super) fn fresh_id() -> PlanId {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
+    PlanId::from_raw(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)).unwrap()
+}
+
 const PROGRESS_SIZE: usize = 40;
-const GOLDEN_DIGEST: &str = "8b62bf83e330589cabad272329a1331ecd4f87f028e94d2f67e2ffba585e991b";
+const GOLDEN_DIGEST: &str = "c1e51c821613e684031f2e4acb927e1ddb91db3c8ac40244efd2fde2c50e54a8";
 
 const LIMITS: Limits = Limits {
     max_artifacts: 4,
@@ -65,7 +71,7 @@ pub(super) fn confirmed(plan: &Plan) -> Confirmed {
         target: TargetKey::new(std::path::Path::new("/doc.pdf"), target_for(plan)),
     };
     let now = std::time::Instant::now();
-    let id = store.offer(binding, plan, now).unwrap();
+    let id = store.offer(binding, plan, now, fresh_id()).unwrap();
     store.take(id, &binding, plan, now).unwrap()
 }
 
@@ -136,6 +142,21 @@ fn unrelated_and_source_artifacts_never_appear_in_steps() {
     assert_eq!((j.acted, j.kept, j.untouched), (1, 0, 1));
     let b = p.line(Store::Backup);
     assert_eq!((b.disposition, b.acted, b.kept), (Disposition::KeptAsSource, 0, 1));
+}
+
+/// Catches a removal plan batching moves to the Trash: a step with several temps that fails on the second would leave the first in the Trash while
+/// the walk says nothing moved. Each temp is a step of its own, as in the leftovers plan.
+#[test]
+fn a_removal_plan_moves_one_temp_a_step() {
+    let temps: Vec<Artifact> = (1..=3).map(|n| art(n, Store::WriterTemp, Owner::Target)).collect();
+    let p = ok(&temps);
+    let moves: Vec<usize> = p
+        .steps()
+        .iter()
+        .filter(|s| s.effect() == Effect::Trash(Store::WriterTemp))
+        .map(|s| p.artifacts(s).len())
+        .collect();
+    assert_eq!(moves, [1, 1, 1]);
 }
 
 /// Catches a store missing from the report, or one the report acts on though it is excluded.
@@ -213,9 +234,12 @@ fn crash_states_follow_phase_order() {
         assert!(at[0] < candidate);
     }
     let barrier = position(&p, Effect::PersistBarrier);
-    let last_purge = e.iter().rposition(|x| matches!(x, Effect::Purge(_) | Effect::Rewrite(_))).unwrap();
+    let last_purge = e
+        .iter()
+        .rposition(|x| matches!(x, Effect::Purge(_) | Effect::Trash(_) | Effect::Rewrite(_)))
+        .unwrap();
     for (i, x) in e.iter().enumerate() {
-        if matches!(x, Effect::Purge(_) | Effect::Rewrite(_) | Effect::ClearFindText) {
+        if matches!(x, Effect::Purge(_) | Effect::Trash(_) | Effect::Rewrite(_) | Effect::ClearFindText) {
             assert!(i > barrier);
         }
     }
@@ -289,7 +313,7 @@ fn outcome_for_every_prefix_keeps_the_contract() {
             assert!(
                 p.steps()[..acked as usize]
                     .iter()
-                    .all(|s| !matches!(s.effect(), Effect::Purge(_) | Effect::Rewrite(_) | Effect::ClearFindText)),
+                    .all(|s| !matches!(s.effect(), Effect::Purge(_) | Effect::Trash(_) | Effect::Rewrite(_) | Effect::ClearFindText)),
                 "acked {acked}"
             );
         }

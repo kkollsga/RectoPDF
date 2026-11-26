@@ -6,7 +6,7 @@
 use super::*;
 use recto_platform::FileStamp;
 use sha2::{Digest, Sha256};
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroU64};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -32,17 +32,19 @@ pub const CONFIRM_LIMITS: ConfirmLimits = ConfirmLimits {
     ttl: Duration::from_secs(600),
 };
 
-/// Names one pending plan. A counter from 1, never reused within a store.
+/// Names one pending plan. The caller makes it, from a random 64-bit number: a counter would repeat after a restart, and every agent at one level
+/// is one actor, so an old agent's id 1 would match a new offer made for another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlanId(u64);
+pub struct PlanId(NonZeroU64);
 
 impl PlanId {
     pub fn get(self) -> u64 {
-        self.0
+        self.0.get()
     }
 
-    pub fn from_raw(raw: u64) -> Self {
-        Self(raw)
+    /// `None` for 0: a zeroed or unset id is never a plan's name.
+    pub fn from_raw(raw: u64) -> Option<Self> {
+        NonZeroU64::new(raw).map(Self)
     }
 }
 
@@ -104,8 +106,10 @@ pub enum ConfirmRefusal {
     OtherTarget,
     Stale,
     PlanChanged,
-    /// Full of other actors' plans, or out of ids.
+    /// Full of other actors' plans.
     Full,
+    /// The id is one already pending. Nothing changed; the caller tries a new random id.
+    Collision,
     /// The target's mode is not the one the plan was made for.
     Mismatched,
 }
@@ -132,17 +136,12 @@ struct Pending<A> {
 /// The plans waiting for a yes. Allocates nothing until the first offer; at most `max_pending` entries.
 pub struct Confirmations<A> {
     limits: ConfirmLimits,
-    next: u64,
     pending: Vec<Pending<A>>,
 }
 
 impl<A: Copy + Eq> Confirmations<A> {
     pub fn new(limits: ConfirmLimits) -> Self {
-        Self {
-            limits,
-            next: 1,
-            pending: Vec::new(),
-        }
+        Self { limits, pending: Vec::new() }
     }
 
     fn expired(&self, p: &Pending<A>, now: Instant) -> bool {
@@ -153,15 +152,18 @@ impl<A: Copy + Eq> Confirmations<A> {
     /// (`per_actor`), or any asker when the store is full, replaces its own oldest plan; if the asker has none, nobody else's is
     /// pushed out and this is `Full`. So no actor holds more than its share, and a person is locked out only when every slot is held
     /// by other actors at their shares: with the real limits (2 each, 8 in all) that takes four other actors holding two each.
-    pub fn offer(&mut self, binding: Binding<A>, plan: &Plan, now: Instant) -> Result<PlanId, ConfirmRefusal> {
+    ///
+    /// `id` is the caller's, random; one already pending is `Collision` and nothing else changes (an expired plan is dropped first, so its
+    /// id is free).
+    pub fn offer(&mut self, binding: Binding<A>, plan: &Plan, now: Instant, id: PlanId) -> Result<PlanId, ConfirmRefusal> {
         if binding.target.mode() != plan.request().mode() {
             return Err(ConfirmRefusal::Mismatched);
         }
-        if self.next == u64::MAX {
-            return Err(ConfirmRefusal::Full);
-        }
         let ttl = self.limits.ttl;
         self.pending.retain(|p| now.saturating_duration_since(p.created) < ttl);
+        if self.pending.iter().any(|p| p.id == id.get()) {
+            return Err(ConfirmRefusal::Collision);
+        }
         self.pending
             .retain(|p| !(p.binding.actor == binding.actor && p.binding.target == binding.target));
         let mine = self.pending.iter().filter(|p| p.binding.actor == binding.actor).count();
@@ -170,15 +172,13 @@ impl<A: Copy + Eq> Confirmations<A> {
             let own = self.pending.iter().position(|p| p.binding.actor == binding.actor);
             self.pending.remove(own.ok_or(ConfirmRefusal::Full)?);
         }
-        let id = self.next;
-        self.next += 1;
         self.pending.push(Pending {
-            id,
+            id: id.get(),
             binding,
             digest: plan.digest(),
             created: now,
         });
-        Ok(PlanId(id))
+        Ok(id)
     }
 
     /// Confirms a plan. Checked in order: unknown id or another actor's id (the same answer, `Unknown`, and nothing changes, so an id
@@ -188,7 +188,7 @@ impl<A: Copy + Eq> Confirmations<A> {
         let at = self
             .pending
             .iter()
-            .position(|p| p.id == id.0 && p.binding.actor == binding.actor)
+            .position(|p| p.id == id.get() && p.binding.actor == binding.actor)
             .ok_or(ConfirmRefusal::Unknown)?;
         let p = &self.pending[at];
         let verdict = if self.expired(p, now) {
