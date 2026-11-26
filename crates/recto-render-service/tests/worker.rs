@@ -842,8 +842,12 @@ fn starved_dark_checks_are_never_kept_or_counted_as_busy_draws() {
     for round in 0..=MAX_BUSY as u64 {
         doc.page_size(round as u32 + 1).unwrap();
         stop_worker(&mut doc);
-        let asked =
-            recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.image_boxes_asked(0, round + 1));
+        let asked = recto_render_service::under_page_deadline_for_test(
+            &mut doc,
+            |doc| doc,
+            Duration::from_millis(250),
+            |doc| recto_render_service::image_boxes_asked(doc, 0, round + 1),
+        );
         assert_eq!(asked, Places::NotNow, "round {round}: {:?}", doc.stats());
         assert_eq!(
             doc.stats().too_busy,
@@ -866,7 +870,7 @@ fn starved_dark_checks_are_never_kept_or_counted_as_busy_draws() {
         "a starved draw is still only busy: {drawn:?}, {:?}",
         doc.stats()
     );
-    let found = doc.image_boxes_asked(0, 9);
+    let found = recto_render_service::image_boxes_asked(&mut doc, 0, 9);
     assert!(
         matches!(&found, Places::Known(Some(boxes)) if !boxes.is_empty()),
         "a quiet ask finds the picture: {found:?}, {:?}",
@@ -889,11 +893,11 @@ fn an_unstartable_worker_is_not_now_for_a_dark_check_never_an_answer() {
     doc.page_size(0).unwrap();
     doc.kill_worker();
     for round in 0..=MAX_BUSY {
-        let asked = under_start_timeout_for_test(&mut doc, |doc| doc, Duration::ZERO, |doc| doc.image_boxes_asked(0, 1));
+        let asked = under_start_timeout_for_test(&mut doc, |doc| doc, Duration::ZERO, |doc| recto_render_service::image_boxes_asked(doc, 0, 1));
         assert_eq!(asked, Places::NotNow, "ask {round}: {:?}", doc.stats());
     }
     doc.forget_failures();
-    let found = doc.image_boxes_asked(0, 2);
+    let found = recto_render_service::image_boxes_asked(&mut doc, 0, 2);
     assert!(
         matches!(&found, Places::Known(Some(boxes)) if !boxes.is_empty()),
         "a quiet ask finds the picture: {found:?}, {:?}",

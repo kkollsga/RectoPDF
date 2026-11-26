@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 /// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
 const MAX_IMAGE_PLACES: usize = 4096;
 
-/// **What asking where a page's images are, for dark paper, came to** ([`DocRenderer::image_boxes_asked`]).
+/// **What asking where a page's images are, for dark paper, came to** ([`image_boxes_asked`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Places {
     /// An answer, remembered: where the images are, or `None` if that can't be told (the page couldn't be asked, the asking failed or was refused, or this job went stale, which says nothing of the page and isn't remembered).
@@ -109,32 +109,10 @@ impl DocRenderer {
 
     /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. A check the Mac was too busy for (starved, or not started) is also `None` and is NOT remembered, so it's asked again, until `MAX_BUSY` of them in a row, after which it's an answer.
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
-        match self.image_boxes_asked(page, generation) {
+        match image_boxes_asked(self, page, generation) {
             Places::Known(boxes) => boxes,
             Places::NotNow => None,
         }
-    }
-
-    /// The same, saying which `None` it is: a check the Mac was too busy for is [`Places::NotNow`], and is never remembered or counted in a page's busy draws (it is the engine's to ask again, on its own clock), where any other `None` is an answer ([`Places::Known`]).
-    pub fn image_boxes_asked(&mut self, page: u32, generation: u64) -> Places {
-        forget_places_of_a_replaced_file(self);
-        if let Some(known) = self.images.places.get(&page) {
-            return Places::Known(known.clone());
-        }
-        let boxes = match places_asked(self, page, generation, Ask::Dark, |payload| {
-            proto::PageImages::decode(payload).map(|images| (images.job_id, images.boxes))
-        }) {
-            Walk::Stale => return Places::Known(None),
-            Walk::NotNow => return Places::NotNow,
-            Walk::Answer(boxes) => boxes,
-        };
-        // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
-        if self.images.places.len() >= MAX_IMAGE_PLACES {
-            self.images.places.clear();
-            self.images.places_cleared = true;
-        }
-        self.images.places.insert(page, boxes.clone());
-        Places::Known(boxes)
     }
 
     /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, the walk's answer to a request
@@ -163,6 +141,28 @@ impl DocRenderer {
     pub fn take_image_places_cleared(&mut self) -> bool {
         std::mem::take(&mut self.images.places_cleared)
     }
+}
+
+/// [`DocRenderer::image_boxes`], saying which `None` it is: a check the Mac was too busy for is [`Places::NotNow`], and is never remembered or counted in a page's busy draws (it is the engine's to ask again, on its own clock), where any other `None` is an answer ([`Places::Known`]). A function of the renderer's, not one of its methods, which are many.
+pub fn image_boxes_asked(doc: &mut DocRenderer, page: u32, generation: u64) -> Places {
+    forget_places_of_a_replaced_file(doc);
+    if let Some(known) = doc.images.places.get(&page) {
+        return Places::Known(known.clone());
+    }
+    let boxes = match places_asked(doc, page, generation, Ask::Dark, |payload| {
+        proto::PageImages::decode(payload).map(|images| (images.job_id, images.boxes))
+    }) {
+        Walk::Stale => return Places::Known(None),
+        Walk::NotNow => return Places::NotNow,
+        Walk::Answer(boxes) => boxes,
+    };
+    // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
+    if doc.images.places.len() >= MAX_IMAGE_PLACES {
+        doc.images.places.clear();
+        doc.images.places_cleared = true;
+    }
+    doc.images.places.insert(page, boxes.clone());
+    Places::Known(boxes)
 }
 
 /// **What's kept of the file's pictures isn't served for a file another app has rewritten.** An answer kept is given with no job, so the stamp check every job makes

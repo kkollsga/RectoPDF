@@ -54,7 +54,7 @@ impl LookSource for DocRenderer {
     }
 
     fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked {
-        match self.image_boxes_asked(page, generation) {
+        match recto_render_service::image_boxes_asked(self, page, generation) {
             Places::Known(Some(boxes)) => ImagesAsked::Known(boxes),
             Places::Known(None) => ImagesAsked::Unknown,
             // The host says so itself, whatever the Mac was too busy for: a starved check, one not started, a worker it gave up starting.
