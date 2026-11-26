@@ -336,6 +336,11 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
     );
 }
 
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x0004;
+#[cfg(not(target_os = "macos"))]
+const O_NONBLOCK: i32 = 0o4000;
+
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
 #[test]
 fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
@@ -415,8 +420,17 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(engine.note().is_some_and(|note| note.contains("answering")), "{:?}", engine.note());
-    // Lets its thread go.
-    drop(std::fs::OpenOptions::new().write(true).open(&dead));
+    // Its open is still under way, and the engine says so.
+    assert_eq!(engine.report().0["opens_waiting"], 1, "{}", engine.report().0);
+    // Lets its thread go. Not a blocking open: with no reader that would wait for ever (CI run 45789292698); no reader is an error here.
+    use std::os::unix::fs::OpenOptionsExt;
+    let writer = std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(&dead).expect("nothing is reading the fifo");
+    let deadline = Instant::now() + HANG;
+    while engine.report().0["opens_waiting"] != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(engine.report().0["opens_waiting"], 0, "{}", engine.report().0);
+    drop(writer);
     let _ = std::fs::remove_dir_all(&folder);
 }
 
