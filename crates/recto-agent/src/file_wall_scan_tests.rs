@@ -118,7 +118,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-control/src/removal_store/update_copy.rs",
         1,
         "the state folder the caller of `survey_update_copy` names (`pub`, with no production caller yet), opened through the folder helper (no link followed), then \
-         `update` and `before` opened one from the other with no link followed and listed (two descriptors at a time), and `before/journals` through the journals \
+         `update` and `before` opened one from the other with no link followed and listed (the parent is dropped as the next is opened: at most three descriptors, `before`, its `journals` and a journal file), and `before/journals` through the journals \
          survey. The copy's slots, `places.log`, `.whole` and every other entry are placed by name and never opened: never a document",
     ),
     (

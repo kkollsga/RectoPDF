@@ -69,6 +69,10 @@ fn the_names_of_the_copies_are_exactly_the_ones_the_store_writes() {
         ("Session.v1".into(), Name::Other),
         ("SESSION".into(), Name::Other),
         ("Session-Windowless.damaged".into(), Name::Other),
+        ("session.V1".into(), Name::Other),
+        ("SeSsIoN-windowless.DAMAGED.2".into(), Name::Other),
+        // A false refusal by design: it starts with `session` and is no name the app writes.
+        ("Sessions.txt".into(), Name::Other),
         ("sessio".into(), Name::NotOurs),
         (String::new(), Name::NotOurs),
     ];

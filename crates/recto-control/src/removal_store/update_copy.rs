@@ -7,7 +7,7 @@
 //! exactly as a whole one is.
 //!
 //! **Read-only.** The root, `update` and `before` are opened one from the other without following a link, each parent dropped as the next is opened, so
-//! at most three descriptors are open. A step that isn't there is complete and empty; one that is anything but a folder of this user's leaves the store
+//! at most three descriptors are open (`before`, its `journals` and the journal file whose header is being read). A step that isn't there is complete and empty; one that is anything but a folder of this user's leaves the store
 //! unmarked.
 
 use super::journals::Caps;

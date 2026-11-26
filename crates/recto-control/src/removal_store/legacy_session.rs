@@ -14,7 +14,7 @@ use super::journals::{self, Caps};
 use super::placing::Maps;
 #[cfg(test)]
 use super::testing::Hook;
-use crate::record_store::{DAMAGED, WENT_BACK};
+use crate::record_store::{DAMAGED_WORD, WENT_BACK_NAME};
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Store, Survey, TargetMode};
 use recto_platform::folder::{Entry, Folder, Opened};
 use recto_session::record::CURRENT_VERSION;
@@ -98,8 +98,11 @@ pub(super) fn legacy_kind(name: &[u8]) -> Name {
         if let Some(version) = rest.strip_prefix(b"v").and_then(counted) {
             return if version <= CURRENT_VERSION { Name::Copy } else { Name::Newer };
         }
-        let numbered = rest.strip_prefix(DAMAGED.as_bytes()).and_then(|rest| rest.strip_prefix(b".")).and_then(counted);
-        if rest == DAMAGED.as_bytes() || numbered.is_some() {
+        let numbered = rest
+            .strip_prefix(DAMAGED_WORD.as_bytes())
+            .and_then(|rest| rest.strip_prefix(b"."))
+            .and_then(counted);
+        if rest == DAMAGED_WORD.as_bytes() || numbered.is_some() {
             return Name::Copy;
         }
     }
@@ -110,7 +113,8 @@ pub(super) fn legacy_kind(name: &[u8]) -> Name {
 /// were listed to the end.
 ///
 /// A root that isn't there is complete and empty. A root that isn't a real folder of this user's (a link, a file), one that can't be listed, a copy
-/// that vanishes between the listing and its opening, a copy's `journals` that is no folder, and a folder that can't be listed leave the store
+/// that vanishes between the listing and its opening, a copy's `journals` that is no folder or that was listed and has vanished when opened, and a
+/// folder that can't be listed leave the store
 /// unmarked, so the plan says `Incomplete` rather than "none found". A root of more than 8,192 entries, or more than 64 copies, is `TooLarge`.
 /// `add`'s refusal passes through.
 pub fn survey_legacy_sessions(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
@@ -168,7 +172,7 @@ pub(crate) fn survey_legacy_sessions_with(root: &Path, lineage: &Lineage<'_>, mo
                         &copy,
                         &prefix,
                         Store::LegacySession,
-                        Some(WENT_BACK.as_bytes()),
+                        Some(WENT_BACK_NAME.as_bytes()),
                         &root.join(&entry.name),
                         &maps,
                         mode,
