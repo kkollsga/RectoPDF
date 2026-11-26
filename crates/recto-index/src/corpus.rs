@@ -38,6 +38,13 @@
 
 use crate::seal::{self, CorpusSeal, Purpose};
 mod agent_life;
+mod aux;
+use aux::Aux;
+mod versions;
+pub use versions::{forget_file, keys_of_file};
+use versions::{VERSIONS_FOLDER, note_finished, note_starting, tidy_versions};
+#[cfg(test)]
+use versions::MAX_KEYS_PER_ALIAS;
 mod evict;
 pub(crate) use evict::key_folders;
 use evict::remove_unless_building;
@@ -82,10 +89,6 @@ pub const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 pub const LASTING_KEY_OUT_OF_REACH: &str = "lasting_key_out_of_reach";
 /// Longest one build runs before it stops and leaves the rest for next time.
 pub const MAX_BUILD_TIME: Duration = Duration::from_secs(60 * 60);
-/// Where a file's last key is noted. Not named as a key, so nothing takes it for a corpus.
-const VERSIONS_FOLDER: &str = "by-file";
-/// Most versions noted for one file. Only builds that stop partway leave more than one or two.
-const MAX_KEYS_PER_ALIAS: usize = 32;
 /// How much a full disk gets back, at least.
 const ROOM_ON_A_FULL_DISK: u64 = 64 * 1024 * 1024;
 /// How many times pages that failed for a temporary reason are read again, how far apart, and how many in one go. A hostile file can fail any number of pages, each costing a worker and up to a page's time.
@@ -473,64 +476,6 @@ impl<'a> StoredPage<'a> {
     /// Where the page's hidden text is, in characters of `text`.
     pub fn hidden_spans(&self) -> Vec<(u32, u32)> {
         Aux::read(self.aux).map_or_else(Vec::new, |aux| aux.spans)
-    }
-}
-
-/// What goes beside a page's text: `u16` count of spellings, each a `u16` length and its bytes, then a `u32` count of spans of two `u32`s. Checked when read, because a file on disk can say anything.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Aux<'a> {
-    spelled: Vec<&'a str>,
-    spans: Vec<(u32, u32)>,
-}
-
-impl<'a> Aux<'a> {
-    fn write(spelled: &[String], spans: &[(u32, u32)], out: &mut Vec<u8>) {
-        if spelled.is_empty() && spans.is_empty() {
-            return;
-        }
-        let spelled = &spelled[..spelled.len().min(usize::from(u16::MAX))];
-        out.extend_from_slice(&(spelled.len() as u16).to_le_bytes());
-        for word in spelled {
-            let bytes = &word.as_bytes()[..word.floor_char_boundary(usize::from(u16::MAX))];
-            out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
-            out.extend_from_slice(bytes);
-        }
-        out.extend_from_slice(&(spans.len() as u32).to_le_bytes());
-        for span in spans {
-            out.extend_from_slice(&span.0.to_le_bytes());
-            out.extend_from_slice(&span.1.to_le_bytes());
-        }
-    }
-
-    fn read(mut bytes: &'a [u8]) -> Option<Self> {
-        let mut aux = Self::default();
-        if bytes.is_empty() {
-            return Some(aux);
-        }
-        let take = |bytes: &mut &'a [u8], len: usize| {
-            if bytes.len() < len {
-                return None;
-            }
-            let (now, rest) = bytes.split_at(len);
-            *bytes = rest;
-            Some(now)
-        };
-        let count = u16::from_le_bytes(take(&mut bytes, 2)?.try_into().ok()?);
-        for _ in 0..count {
-            let len = u16::from_le_bytes(take(&mut bytes, 2)?.try_into().ok()?);
-            aux.spelled.push(std::str::from_utf8(take(&mut bytes, usize::from(len))?).ok()?);
-        }
-        let count = u32::from_le_bytes(take(&mut bytes, 4)?.try_into().ok()?) as usize;
-        if bytes.len() != count.checked_mul(8)? {
-            return None;
-        }
-        aux.spans = bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .filter_map(|pair| Some((u32::from_le_bytes(pair[..4].try_into().ok()?), u32::from_le_bytes(pair[4..].try_into().ok()?))))
-            .collect();
-        Some(aux)
     }
 }
 
@@ -969,103 +914,6 @@ pub fn build_for_file(
     outcome
 }
 
-/// What a file's versions are found by. None of them says what the file is.
-fn file_aliases(path: &Path) -> Vec<String> {
-    let hash_of = |kind: &str, bytes: &[u8]| {
-        let mut hash = Sha256::new();
-        hash.update(kind.as_bytes());
-        hash.update([0]);
-        hash.update(bytes);
-        CorpusKey(hash.finalize().into()).hex()
-    };
-    let mut aliases = vec![hash_of("path", path.as_os_str().as_encoded_bytes())];
-    if let Ok(real) = fs::canonicalize(path) {
-        let real = hash_of("path", real.as_os_str().as_encoded_bytes());
-        if !aliases.contains(&real) {
-            aliases.push(real);
-        }
-    }
-    if let Some((device, inode)) = recto_platform::file_device_and_inode(path) {
-        aliases.push(hash_of("inode", &[device.to_le_bytes(), inode.to_le_bytes()].concat()));
-    }
-    aliases
-}
-
-/// The keys a file has had that may still have text on disk, oldest first. Anything that isn't a key is left out.
-fn read_alias(path: &Path) -> Vec<CorpusKey> {
-    let Ok(Some(bytes)) = local::read_private_file(path, MAX_KEYS_PER_ALIAS as u64 * 65) else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&bytes).lines().filter_map(CorpusKey::from_hex).collect()
-}
-
-fn write_alias(path: &Path, keys: &[CorpusKey]) -> io::Result<()> {
-    if keys.is_empty() {
-        return match fs::remove_file(path) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        };
-    }
-    let text: Vec<String> = keys.iter().map(CorpusKey::hex).collect();
-    local::write_private_file_unsynced(path, text.join("\n").as_bytes())
-}
-
-/// Notes a key that's about to have text on disk. If it can't be noted, nothing should be written.
-fn note_starting(root: &Path, file: &Path, key: CorpusKey) -> io::Result<()> {
-    let folder = root.join(VERSIONS_FOLDER);
-    local::ensure_private_dir(&folder)?;
-    for alias in file_aliases(file) {
-        let path = folder.join(alias);
-        let mut keys = read_alias(&path);
-        if keys.contains(&key) {
-            continue;
-        }
-        keys.push(key);
-        // A file that keeps changing under builds never stopped: the oldest of its partial text goes, so this can't grow for ever.
-        while keys.len() > MAX_KEYS_PER_ALIAS {
-            let _ = remove_unless_building(root, keys.remove(0));
-        }
-        write_alias(&path, &keys)?;
-    }
-    Ok(())
-}
-
-/// This key is what the file has now, so what it had goes. A key stays noted if its text couldn't be removed, so it's still found next time, and by a clear.
-fn note_finished(root: &Path, file: &Path, key: CorpusKey) -> io::Result<()> {
-    let folder = root.join(VERSIONS_FOLDER);
-    for alias in file_aliases(file) {
-        let path = folder.join(alias);
-        let mut keys = read_alias(&path);
-        keys.retain(|old| *old == key || matches!(remove_unless_building(root, *old), Err(error) if error.kind() != io::ErrorKind::NotFound));
-        if !keys.contains(&key) {
-            keys.push(key);
-        }
-        write_alias(&path, &keys)?;
-    }
-    Ok(())
-}
-
-/// Every version of a file there's a corpus for, as far as can be told, even if the file itself has gone. In no order, and each once.
-pub fn keys_of_file(root: &Path, path: &Path) -> Vec<CorpusKey> {
-    let folder = root.join(VERSIONS_FOLDER);
-    let mut keys: Vec<CorpusKey> = CorpusKey::of_file(path).into_iter().collect();
-    for alias in file_aliases(path) {
-        for key in read_alias(&folder.join(alias)) {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-    }
-    keys
-}
-
-/// Forgets which versions a file had. They've been thrown away.
-pub fn forget_file(root: &Path, path: &Path) {
-    for alias in file_aliases(path) {
-        let _ = fs::remove_file(root.join(VERSIONS_FOLDER).join(alias));
-    }
-}
-
 /// An older build's folder, `corpus` beside `corpus.noindex`, with plain text outside everything that looks after this one. Nothing else: not a link there, nor a folder of another name.
 fn old_folder(root: &Path) -> Option<PathBuf> {
     (root.file_name()? == "corpus.noindex").then(|| root.with_file_name("corpus"))
@@ -1082,18 +930,6 @@ pub fn remove_old_folder(root: &Path) {
         && let Some(old) = old_folder(root)
     {
         let _ = fs::remove_dir_all(old);
-    }
-}
-
-/// Clears out notes about corpora that are gone, so these can't pile up.
-fn tidy_versions(root: &Path) {
-    let Ok(entries) = fs::read_dir(root.join(VERSIONS_FOLDER)) else { return };
-    for entry in entries.flatten() {
-        let keys = read_alias(&entry.path());
-        let left: Vec<CorpusKey> = keys.iter().copied().filter(|key| root.join(key.hex()).exists()).collect();
-        if left.len() != keys.len() || keys.is_empty() {
-            let _ = write_alias(&entry.path(), &left);
-        }
     }
 }
 
