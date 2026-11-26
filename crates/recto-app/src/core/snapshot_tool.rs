@@ -317,8 +317,9 @@ impl Paste {
 }
 
 /// **The one lock order** (rule 3: a thread that holds one and waits for another that is held the other way round stops the window for good): `jobs`, then
-/// `ready`, then `notice` and `refused` (a notice is made and cleared under either). `links` is held alone, never with another. `take_offer` takes `ready`,
-/// then the page view's selection, then `offered`; none of them takes `jobs`. A ticket is taken from `jobs` before `ready` is held ([`Tool::text_asked`]).
+/// `ready`, and `refused` before `notice` (as `take_refused` takes them); a notice is made and cleared under `jobs`, never under `ready`. `links` is held alone,
+/// never with another. `take_offer` takes `ready` and lets it go, then the page view's selection, then `offered`; none of them takes `jobs`. A ticket is taken
+/// from `jobs` before `ready` is held ([`Tool::text_asked`]).
 #[derive(Default)]
 pub struct Tool {
     state: Mutex<SnapshotTool>,
@@ -629,7 +630,8 @@ impl Tool {
 
     /// [`Self::take_offer`], with `copied` giving the selection's text when `ready` has nothing (taken from the page view, so it's asked only then).
     fn take_offer_with(&self, copied: impl FnOnce() -> Option<String>) -> Option<ClipboardOffer> {
-        let mut offered = lock(&self.ready).take().or_else(|| {
+        let ready = lock(&self.ready).take();
+        let mut offered = ready.or_else(|| {
             let text = copied()?;
             // A Copy asked before something that has landed since, however late its text is made, is not what the person asked for last.
             (self.text_ticket.load(Ordering::SeqCst) >= self.ready_ticket.load(Ordering::SeqCst)).then(|| self.offer_text(text))
@@ -707,7 +709,13 @@ impl Tool {
         self.text_ticket.fetch_max(ticket, Ordering::SeqCst);
         let mut ready = lock(&self.ready);
         self.ready_ticket.fetch_max(ticket, Ordering::SeqCst);
-        ready.take();
+        let replaced = ready.take().is_some();
+        drop(ready);
+        // An offer already put and said ("Copied.") is gone from the clipboard now, so its line goes too; taken alone, never under `ready`.
+        if replaced {
+            lock(&self.refused).take();
+            lock(&self.notice).take();
+        }
     }
 
     /// The oldest Copy Link's command has been answered: whether its address was put, for what's said ([`super::copy_link::answered`]).
@@ -1538,6 +1546,18 @@ mod tests {
             lander.join().expect("the lander");
             copier.join().expect("the copier");
         });
+    }
+
+    /// Failure: a plain Copy that takes out an offer already put and said leaves its "Copied." showing, for a picture that isn't on the clipboard any more.
+    #[test]
+    fn a_plain_copy_that_replaces_a_put_offer_clears_its_line() {
+        let tool = Tool::default();
+        lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+        let snapshot = lock(&tool.jobs).running_ticket;
+        assert!(snapshot_lands(&tool, snapshot));
+        assert!(lock(&tool.notice).is_some(), "said when put");
+        tool.text_asked();
+        assert!(lock(&tool.notice).is_none());
     }
 
     /// Failure: a snapshot whose picture a newer ask has taken the clipboard from still says "Copied.", and the person is told of a copy that isn't there; or its
