@@ -146,6 +146,37 @@ impl PageOrRef {
     }
 }
 
+/// **The page a command that reads one is on, found:** what [`PageOrRef::locate`] gives. `found` is what finding by reference said (none for a number), and
+/// the rest is the tab's own answer for the page, in the tab the reference was found in.
+pub(crate) struct Where {
+    pub page: u32,
+    pub found: Option<locating::Located>,
+    pub id: recto_session::TabId,
+    pub position: u32,
+    pub source: recto_session::PageSource,
+}
+
+impl PageOrRef {
+    /// Finds the page, settles the tab once (where a reference was found, whatever is active by the time the page is read), reads where it sits and checks
+    /// that what was found is what is read. The one block that `render`, `export svg`, `snapshot`, `images` and `image` each carried a copy of.
+    pub(crate) fn locate<A: SessionAccess>(&self, access: &A, tab: &TabRef, when: locating::CharsChecked) -> Result<Where, AgentError> {
+        let (page, found) = self.find(access, tab, when)?;
+        let pinned = found.as_ref().map(locating::Located::tab_ref);
+        let tab = pinned.as_ref().unwrap_or(tab);
+        let (id, position, source) = locate(access, tab, page)?;
+        if let Some(found) = &found {
+            locating::agree(found, &source)?;
+        }
+        Ok(Where {
+            page,
+            found,
+            id,
+            position,
+            source,
+        })
+    }
+}
+
 /// The `--ref` flag of `text` and `render`.
 pub(crate) const REF: Arg = Arg {
     key: "ref",

@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 use super::locating::{
     EXPORT_SVG_BOTH, EXPORT_SVG_NEITHER, EXPORT_SVG_REF_EXAMPLE, PAGE_OR_REF, PageOrRef, REF, RENDER_BOTH, RENDER_NEITHER, RENDER_REF_EXAMPLE, SNAPSHOT_BOTH,
-    SNAPSHOT_NEITHER, SNAPSHOT_REF_EXAMPLE, SNAPSHOT_REF_NOT_CLIPBOARD,
+    SNAPSHOT_NEITHER, SNAPSHOT_REF_EXAMPLE, SNAPSHOT_REF_NOT_CLIPBOARD, Where,
 };
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
@@ -172,14 +172,13 @@ impl Cmd for Render {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
-            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
-            let pinned = found.as_ref().map(locating::Located::tab_ref);
-            let tab = pinned.as_ref().unwrap_or(tab);
-            let (id, position, source) = locate(access, tab, page)?;
-            if let Some(found) = &found {
-                locating::agree(found, &source)?;
-            }
+            let Where {
+                page,
+                found,
+                id,
+                position,
+                source,
+            } = at.locate(access, tab, locating::CharsChecked::First)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let hidden = crate::highlighting::hidden_on(access, id, &source);
             let drawn = render::render(&source.path, source.page + 1, *scale, out, hidden);
@@ -304,14 +303,13 @@ impl Cmd for ExportSvg {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
-            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
-            let pinned = found.as_ref().map(locating::Located::tab_ref);
-            let tab = pinned.as_ref().unwrap_or(tab);
-            let (id, position, source) = locate(access, tab, page)?;
-            if let Some(found) = &found {
-                locating::agree(found, &source)?;
-            }
+            let Where {
+                page,
+                found,
+                id,
+                position,
+                source,
+            } = at.locate(access, tab, locating::CharsChecked::First)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let args = render::SvgArgs {
                 path: &source.path,
@@ -710,14 +708,7 @@ impl Cmd for Snapshot {
             if let Some(out) = out {
                 crate::quiet_files::check_new_file(access, out)?;
             }
-            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
-            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
-            let pinned = found.as_ref().map(locating::Located::tab_ref);
-            let tab = pinned.as_ref().unwrap_or(tab);
-            let (id, _, source) = locate(access, tab, page)?;
-            if let Some(found) = &found {
-                locating::agree(found, &source)?;
-            }
+            let Where { page, found, id, source, .. } = at.locate(access, tab, locating::CharsChecked::First)?;
             let mut data = extract::snapshot_command(&extract::SnapshotAsked {
                 path: &source.path,
                 page: source.page + 1,
