@@ -850,6 +850,12 @@
 {"cmd":"ref","page":3,"extra":1}
 {"cmd":"ref","page":{}}
 {"cmd":"ref","page":null}
+{"cmd":"link"}
+{"cmd":"link","page":3}
+{"cmd":"link","page":3,"tab":"#2"}
+{"cmd":"link","page":0}
+{"cmd":"link","page":3,"extra":1}
+{"cmd":"link","page":null}
 {"cmd":"ref","page":3,"tab":{}}
 {"cmd":"ref","page":3,"tab":null}
 ["ref"]
