@@ -233,6 +233,20 @@ pub fn start_serving(inner: &Arc<Inner>) {
     });
 }
 
+/// The soonest of the state's five deadlines, or `None` with nothing due ever: all the session thread's clock-driven wake-ups come from here, so an idle app that reports one of these every few milliseconds is waking for nothing.
+pub(super) fn next_deadline(saver: &super::saver::Saver, on_disk: &sleeper::OnDisk, life: &Lifecycle, tools: &Tools) -> Option<Duration> {
+    [
+        saver.wait_for_due(),
+        on_disk.sleeper().wait_for_due(),
+        life.due(),
+        life.keeping_due(),
+        tools.printing().completion_due(life.now_ms()),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
 pub fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
     let mut reads = FileReads::default();
@@ -248,18 +262,10 @@ pub fn session_thread(inner: &Arc<Inner>) {
     );
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
-        let Some(call) = inner.core.next_or_due(|| {
-            [
-                inner.saver.wait_for_due(),
-                inner.on_disk.sleeper().wait_for_due(),
-                inner.life.due(),
-                inner.life.keeping_due(),
-                inner.tools.printing().completion_due(inner.life.now_ms()),
-            ]
-            .into_iter()
-            .flatten()
-            .min()
-        }) else {
+        let Some(call) = inner
+            .core
+            .next_or_due(|| next_deadline(&inner.saver, &inner.on_disk, &inner.life, &inner.tools))
+        else {
             if inner.core.has_ended() {
                 return;
             }
