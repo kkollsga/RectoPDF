@@ -12,7 +12,7 @@
 //! be a real folder and is not looked into. Any other kind, or one changed before the ledger began, is `Unknown`.
 
 #[cfg(test)]
-use super::record::Hook;
+use super::testing::Hook;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
 use recto_core::save::{TempShape, writer_temp_prefix, writer_temp_shape};
 use recto_platform::folder::{Entry, Folder, Opened};

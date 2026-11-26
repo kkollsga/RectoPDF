@@ -4,8 +4,11 @@ use recto_core::removal::{FileVersion, Limits};
 use std::num::NonZeroU16;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
+
+/// What a test runs with a path just before it is used: its way to change the path under a survey.
+pub(crate) type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
 
 pub(super) fn version(inode: u64) -> FileVersion {
     FileVersion {

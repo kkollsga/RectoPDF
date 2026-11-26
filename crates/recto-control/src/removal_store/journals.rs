@@ -38,9 +38,8 @@ const MAX_ENTRIES: usize = 8_192;
 /// The two sessions' folders.
 const FLAVORS: [&str; 2] = ["session", "session-windowless"];
 
-/// What a test runs just before a path is opened.
 #[cfg(test)]
-pub(crate) type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
+use super::testing::Hook;
 
 /// The caps, so a test can make them small.
 #[derive(Clone)]

@@ -34,9 +34,8 @@ const PLACES: &str = "places.log";
 /// The one-byte marker the record store writes beside a record after a copy went back.
 const WENT_BACK: &[u8] = b"went-back";
 
-/// What a test runs with a path just before it is used.
 #[cfg(test)]
-pub(crate) type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
+use super::testing::Hook;
 
 /// The caps, so a test can make them small.
 #[derive(Clone)]
