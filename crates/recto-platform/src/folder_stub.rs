@@ -22,6 +22,7 @@ pub enum Opened {
 pub struct Entry {
     pub name: OsString,
     pub is_file: bool,
+    pub is_dir: bool,
     pub links: u64,
     pub modified_ns: Option<i64>,
 }

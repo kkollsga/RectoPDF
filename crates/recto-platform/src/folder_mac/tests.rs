@@ -164,3 +164,117 @@ fn two_listings_at_once_do_not_disturb_each_other() {
         assert_eq!(names.len(), count, "{case}: every entry once");
     }
 }
+
+/// Failure: a folder entry isn't told from a file (lopdf's `.d` clone folder, or a person's folder, read as a plain file), or a link to a folder or a
+/// pipe is told as a folder (a link followed, so a `.d` that is a link to someone's folder is looked into as lopdf's own).
+#[test]
+fn entries_say_which_is_a_folder_and_never_follow_a_link_to_one() {
+    let dir = TempDir::new("recto-folder-");
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("plain"), b"x").unwrap();
+    std::os::unix::fs::symlink(dir.join("sub"), dir.join("link")).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
+    let folder = opened(dir.path());
+    let found: std::collections::HashMap<String, Entry> = folder
+        .entries()
+        .unwrap()
+        .map(|e| e.unwrap())
+        .map(|e| (e.name.to_string_lossy().into_owned(), e))
+        .collect();
+    assert!(found["sub"].is_dir && !found["sub"].is_file, "a real folder");
+    for name in ["link", "pipe", "plain"] {
+        assert!(!found[name].is_dir, "{name} is not a folder");
+    }
+    assert!(!found["link"].is_file && !found["pipe"].is_file, "a link to a folder and a pipe are neither");
+}
+
+/// Every image this probe attached, detached on drop (a failed assertion included), by the mount folder it made, and only those.
+struct Attached(Vec<std::path::PathBuf>);
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        for mount in self.0.drain(..) {
+            let plain = std::process::Command::new("hdiutil").args(["detach", "-quiet"]).arg(&mount).status();
+            if !plain.is_ok_and(|s| s.success()) {
+                let _ = std::process::Command::new("hdiutil").args(["detach", "-quiet", "-force"]).arg(&mount).status();
+            }
+        }
+    }
+}
+
+/// The measurement behind the removal surveys of a document on an external disk (design §10, D2c-2b): does `Folder::open` take a folder on a
+/// volume mounted with ownership off (`hdiutil attach -owners off`, as an external disk often is)? There every file reads as owned by the user
+/// looking, or by someone else, and `Folder::open` checks the owner. Not a regression test: it prints what it found and asserts nothing about
+/// ownership, because the answer is what the design needs. `--ignored`; makes one 20 MiB HFS+ image in `$RECTO_PROBE_DIR` (or the temp folder),
+/// attaches it with `-nobrowse -noautoopen` at a mount folder of its own, and detaches it in a drop guard; it touches no other disk.
+///
+/// **Result, 2026-11-26, macOS 27.0.1 (26A434), 20 MiB HFS+ image, `-owners off`: the folder read as uid 501, ours, and `Folder::open` returned
+/// `Folder` for a folder in it and for the volume's root.** So a document on such a disk is surveyed; a volume that shows another owner (a network or
+/// a foreign disk) still reads `Other` and refuses, which is meant. Not measured: an external physical disk, a network share.
+#[test]
+#[ignore = "attaches a disk image"]
+fn folder_open_on_a_volume_with_ownership_off() {
+    use std::process::Command;
+    let base = std::env::var_os("RECTO_PROBE_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+    let dir = TempDir::new_in(&base, "recto-owners-off-");
+    let image = dir.join("probe.dmg");
+    let mount = dir.join("mount");
+    let run = |program: &str, args: &[&std::ffi::OsStr]| {
+        let out = Command::new(program).args(args).output().expect("run");
+        assert!(
+            out.status.success(),
+            "{program} failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let os = |s: &str| std::ffi::OsString::from(s);
+    run(
+        "hdiutil",
+        &[
+            &os("create"),
+            &os("-quiet"),
+            &os("-size"),
+            &os("20m"),
+            &os("-fs"),
+            &os("HFS+"),
+            &os("-volname"),
+            &os("probe"),
+            image.as_os_str(),
+        ],
+    );
+    run("mkdir", &[mount.as_os_str()]);
+    let mut attached = Attached(Vec::new());
+    run(
+        "hdiutil",
+        &[
+            &os("attach"),
+            &os("-owners"),
+            &os("off"),
+            &os("-nobrowse"),
+            &os("-noautoopen"),
+            &os("-mountpoint"),
+            mount.as_os_str(),
+            image.as_os_str(),
+        ],
+    );
+    attached.0.push(mount.clone());
+    run("mkdir", &[mount.join("docs").as_os_str()]);
+    run("touch", &[mount.join("docs").join("report.pdf").as_os_str()]);
+    let meta = std::fs::metadata(mount.join("docs")).unwrap();
+    let docs = match Folder::open(&mount.join("docs")) {
+        Opened::Folder(_) => "Folder",
+        Opened::Other => "Other",
+        Opened::Missing => "Missing",
+    };
+    let root = match Folder::open(&mount) {
+        Opened::Folder(_) => "Folder",
+        Opened::Other => "Other",
+        Opened::Missing => "Missing",
+    };
+    println!(
+        "owners-off probe: folder uid={} (ours {}) Folder::open(docs)={docs} Folder::open(volume root)={root}",
+        std::os::unix::fs::MetadataExt::uid(&meta),
+        crate::local::current_uid()
+    );
+}
