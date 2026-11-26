@@ -110,10 +110,10 @@ impl Pins {
     /// What the volume of `folder` says: (has a Trash, is local). Asked once for a folder, however many temps it holds.
     fn volume_of(&self, folder: &Path) -> (bool, bool) {
         let mut last = self.volume.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, trash, local)) = &*last {
-            if at == folder {
-                return (*trash, *local);
-            }
+        if let Some((at, trash, local)) = &*last
+            && at == folder
+        {
+            return (*trash, *local);
         }
         let facts = (self.trash.has_trash_for(folder), (self.local)(folder));
         *last = Some((folder.to_path_buf(), facts.0, facts.1));
@@ -140,10 +140,7 @@ impl Pins {
         };
         let mut set = self.set.lock().unwrap_or_else(PoisonError::into_inner);
         let plain = matches!(pin.id.kind, Kind::File | Kind::Folder);
-        if !plain || pin.pid.is_none_or(|pid| (self.alive)(pid)) {
-            set.waiting.push(pin);
-            None
-        } else if !self.volume_of(at).1 {
+        if !plain || pin.pid.is_none_or(|pid| (self.alive)(pid)) || !self.volume_of(at).1 {
             set.waiting.push(pin);
             None
         } else if !self.volume_of(at).0 {
