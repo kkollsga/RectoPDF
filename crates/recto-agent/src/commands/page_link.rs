@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet, so no link can name it. Save first, or ask for a page of the file.";
 const NAME_REFUSED: &str = "This file's name can't be made into a link.";
-const UNSAVED_NOTE: &str = "This tab has unsaved edits, so the link names the page's place in the file on disk, not in the tab. The link's page is `file_page`.";
+const UNSAVED_NOTE: &str =
+    "This tab has unsaved edits, so the link names the page's place in the file on disk, not in the tab. The link's page is `file_page`.";
 
 /// `recto link <page>`: a link to a page of the tab, by the file's own name. Not `links`, which lists what a page's own links point to.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -45,7 +46,6 @@ impl Cmd for Link {
         json!({ "tab": super::log_tab(&self.tab), "page": self.page })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        use std::os::unix::ffi::OsStrExt;
         let wanted = crate::one_based(self.page)?;
         let file = crate::reading::tab_file(cx.access, &self.tab)?;
         file.require_pages_shown()?;
@@ -56,7 +56,7 @@ impl Cmd for Link {
                 crate::no_such_page()
             });
         };
-        let name = file.path().file_name().map(|name| name.as_bytes()).unwrap_or_default();
+        let name = file.path().file_name().map(|name| name.as_encoded_bytes()).unwrap_or_default();
         let link = page_link(name, file_page + 1).map_err(|why| match why {
             LinkError::Page => crate::no_such_page(),
             LinkError::Name => AgentError::new(Code::NOT_REFERENCEABLE, NAME_REFUSED, exit::FAILED),
@@ -70,7 +70,11 @@ impl Cmd for Link {
         }))
     }
     fn human(data: &Value) -> String {
-        format!("A link to page {}: {}", crate::human::number(&data["file_page"]), text(&data["untrusted"]["link"]))
+        format!(
+            "A link to page {}: {}",
+            crate::human::number(&data["file_page"]),
+            text(&data["untrusted"]["link"])
+        )
     }
 }
 

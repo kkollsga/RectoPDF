@@ -56,7 +56,10 @@ mod tests {
         while at < bytes.len() {
             if bytes[at] == b'%' {
                 let pair = &encoded[at + 1..at + 3];
-                assert!(pair.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)), "upper-case hex only: {encoded}");
+                assert!(
+                    pair.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)),
+                    "upper-case hex only: {encoded}"
+                );
                 out.push(u8::from_str_radix(pair, 16).expect("hex"));
                 at += 3;
             } else {
@@ -96,7 +99,12 @@ mod tests {
             let link = page_link(&name, 7).expect("a link");
             let (before, page) = link.split_once('#').expect("a fragment");
             assert_eq!(page, "page=7");
-            assert!(before.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'%' | b'A'..=b'F')), "{link}");
+            assert!(
+                before
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'%' | b'A'..=b'F')),
+                "{link}"
+            );
             assert_eq!(decoded(before), name, "{link}");
         }
     }

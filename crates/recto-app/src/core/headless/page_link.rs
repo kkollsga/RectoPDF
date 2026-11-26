@@ -82,8 +82,6 @@ fn an_added_page_gets_no_link() {
     assert!(!added.message.contains("#page"), "{added:?}");
     let own = app.recto(Level::ReadOnly, &["link", "2"]).expect("a page of the file");
     assert_eq!(own["untrusted"]["link"], "doc.pdf#page=1", "{own}");
-    for page in ["5"] {
-        let past = app.recto(Level::ReadOnly, &["link", page]).expect_err("no such page");
-        assert_eq!(past.code.as_str(), "no_such_page", "{page}: {past:?}");
-    }
+    let past = app.recto(Level::ReadOnly, &["link", "5"]).expect_err("no such page");
+    assert_eq!(past.code.as_str(), "no_such_page", "{past:?}");
 }
