@@ -824,8 +824,11 @@ mod tests {
         let mut found = Vec::new();
         for krate in ["recto-agent", "recto-app", "recto-reader", "recto-ffi", "recto-session", "recto-control"] {
             let mut paths = Vec::new();
-            files(&crates.join(krate).join("src"), &mut paths);
-            for path in paths {
+            let src = crates.join(krate).join("src");
+            files(&src, &mut paths);
+            // A test module's file (declared under `#[cfg(test)]`, as the other scans leave them out) opens renderers of its own, none of them shipping.
+            let tests = crate::actor::scan_tests::test_files(&src, &paths);
+            for path in paths.into_iter().filter(|path| !tests.contains(path)) {
                 let (opens, given) = renderers_in(&std::fs::read_to_string(&path).unwrap());
                 if opens > 0 {
                     let name = path.strip_prefix(crates).unwrap().to_string_lossy().replace('\\', "/");
