@@ -1129,7 +1129,9 @@ fn a_check_from_the_menu_with_no_window_says_so_in_an_alert() {
         .into_bytes(),
     );
     run.ok(&["qa", "menu", "app.update"]);
-    let shown = crate::common::app::wait_for(&run, |state| state["app"]["sheet"]["kind"] == "update_alert");
+    let shown = crate::common::app::wait_for_within(&run, recto_update::fetch::CHECK_LIMIT + crate::common::app::state_change_within(), |state| {
+        state["app"]["sheet"]["kind"] == "update_alert"
+    });
     let message = shown["app"]["sheet"]["message"].as_str().unwrap();
     assert!(message.starts_with("You're up to date"), "{message}");
     assert_eq!(shown["app"]["window_open"], false);
@@ -1141,7 +1143,9 @@ fn a_check_from_the_menu_with_no_window_says_so_in_an_alert() {
     run.settled();
     run.ok(&["qa", "minimise", "on"]);
     run.ok(&["qa", "menu", "app.update"]);
-    let shown = crate::common::app::wait_for(&run, |state| state["app"]["sheet"]["kind"] == "update_alert");
+    let shown = crate::common::app::wait_for_within(&run, recto_update::fetch::CHECK_LIMIT + crate::common::app::state_change_within(), |state| {
+        state["app"]["sheet"]["kind"] == "update_alert"
+    });
     assert_eq!(shown["app"]["window"]["minimised"], true);
     run.ok(&["qa", "sheet-answer", "first"]);
     // With the window open, the margin says it, and nothing's put over the page.

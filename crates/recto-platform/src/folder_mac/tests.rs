@@ -4,8 +4,6 @@ use super::*;
 use recto_testpdf::TempDir;
 use std::io::Read as _;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::mpsc;
-use std::time::Duration;
 
 fn names(folder: &Folder) -> Vec<String> {
     let mut names: Vec<String> = folder.entries().unwrap().map(|e| e.unwrap().name.to_string_lossy().into_owned()).collect();
@@ -36,11 +34,10 @@ fn only_a_real_folder_of_ours_opens() {
     assert!(matches!(Folder::open(&dir.join("file")), Opened::Other), "a file");
     assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
     let pipe = dir.join("pipe");
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(matches!(Folder::open(&pipe), Opened::Other));
-    });
-    assert!(receiver.recv_timeout(Duration::from_secs(10)).expect("a pipe was waited on"), "a pipe");
+    assert!(
+        recto_testpdf::returns_in_time("a pipe was waited on", move || matches!(Folder::open(&pipe), Opened::Other)),
+        "a pipe"
+    );
     assert!(matches!(Folder::open(&dir.join("nowhere")), Opened::Missing));
     let parent = opened(dir.path());
     assert!(matches!(parent.open_in(OsStr::new("real")), Opened::Folder(_)));
@@ -107,15 +104,12 @@ fn open_private_in_refuses_what_it_should_and_never_waits() {
     std::fs::set_permissions(dir.join("open"), std::fs::Permissions::from_mode(0o666)).unwrap();
     assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
     let folder = opened(dir.path());
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let kinds: Vec<bool> = ["plain", "link", "open", "pipe", "absent"]
+    let ok = recto_testpdf::returns_in_time("a pipe was waited on", move || {
+        ["plain", "link", "open", "pipe", "absent"]
             .iter()
             .map(|n| folder.open_private_in(OsStr::new(n)).is_ok())
-            .collect();
-        let _ = sender.send(kinds);
+            .collect::<Vec<bool>>()
     });
-    let ok = receiver.recv_timeout(Duration::from_secs(10)).expect("a pipe was waited on");
     assert_eq!(ok, [true, false, false, false, false]);
 }
 

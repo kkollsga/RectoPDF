@@ -6,7 +6,7 @@ use crate::state::StatePaths;
 use recto_agent::saving::SaveNote;
 use recto_agent::{Actor, Command, DrawableLoader, Level, TabRef};
 use recto_core::removal::{DESIGN_LIMITS, Disposition, Kinds, Limits, Refusal, Request, Store, Survey, TargetMode, lineage, plan};
-use recto_testpdf::TempDir;
+use recto_testpdf::{TempDir, returns_in_time};
 use std::num::NonZeroU16;
 use std::sync::{Mutex, mpsc};
 
@@ -288,18 +288,6 @@ fn a_link_at_the_ledgers_name_is_never_written_through() {
     append(&root, &Config::default(), vec![at(1)]);
     assert_eq!(std::fs::read(&precious).unwrap(), b"keep");
     assert_eq!(read(&root).gap, Some(Gap::Damaged));
-}
-
-/// Runs `work` on a thread and fails, naming `what`, if it hasn't returned in 10 s (a thread blocked for good is left behind, which only a failing run does).
-fn returns_in_time(what: &str, work: impl FnOnce() + Send + 'static) {
-    let (done, returned) = mpsc::channel();
-    std::thread::spawn(move || {
-        work();
-        let _ = done.send(());
-    });
-    returned
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap_or_else(|_| panic!("{what} didn't return"));
 }
 
 /// A write that is lost: the lock is held by someone else for longer than the writer waits.
