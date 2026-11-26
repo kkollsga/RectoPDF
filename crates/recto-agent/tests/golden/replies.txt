@@ -653,11 +653,19 @@
 {"cmd":"images","page":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"images","page":null}
-  refused cmd=unknown code=bad_command
+  refused cmd=images code=usage
 {"cmd":"images"}
-  refused cmd=unknown code=bad_command
+  refused cmd=images code=usage
 ["images"]
-  refused cmd=unknown code=bad_command
+  refused cmd=images code=usage
+{"cmd":"images","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=images code=usage
+{"cmd":"images","ref":null}
+  refused cmd=images code=usage
+{"cmd":"images","ref":"nonsense"}
+  refused cmd=images code=bad_reference
+{"cmd":"images","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","at":[1,2]}
+  refused cmd=images code=usage
 {"cmd":"Images"}
   refused cmd=unknown code=bad_command
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","extra":1}
@@ -669,27 +677,37 @@
 {"cmd":"image","page":{},"number":3,"out":"/d/x.pdf"}
   refused cmd=unknown code=bad_command
 {"cmd":"image","page":null,"number":3,"out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
 {"cmd":"image","number":3,"out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
 {"cmd":"image","page":3,"number":{},"out":"/d/x.pdf"}
   refused cmd=unknown code=bad_command
 {"cmd":"image","page":3,"number":null,"out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
 {"cmd":"image","page":3,"out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
 {"cmd":"image","page":3,"number":3,"out":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"image","page":3,"number":3,"out":null}
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
 {"cmd":"image","page":3,"number":3}
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","anyway":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","anyway":null}
   refused cmd=unknown code=bad_command
 ["image"]
-  refused cmd=unknown code=bad_command
+  refused cmd=image code=usage
+{"cmd":"image","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf"}
+  refused cmd=image code=usage
+{"cmd":"image","ref":null,"number":3,"out":"/d/x.pdf"}
+  refused cmd=image code=usage
+{"cmd":"image","ref":"nonsense","number":3,"out":"/d/x.pdf"}
+  refused cmd=image code=bad_reference
+{"cmd":"image","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf","to_clipboard":true}
+  refused cmd=image code=usage
+{"cmd":"image","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf","at":[1,2]}
+  refused cmd=image code=usage
 {"cmd":"Image"}
   refused cmd=unknown code=bad_command
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","extra":1}

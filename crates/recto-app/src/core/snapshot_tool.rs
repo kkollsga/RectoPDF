@@ -79,7 +79,7 @@ impl Job {
             }),
             Wanted::Image { x, y } => Command::from(Image {
                 tab,
-                page,
+                page: recto_agent::commands::locating::PageOrRef::Page(page),
                 number: None,
                 out: None,
                 anyway: self.anyway,
@@ -101,8 +101,12 @@ impl Job {
                 (&asked.tab, page, asked.as_seen?, Wanted::Box { rect: asked.rect }, asked.anyway)
             }
             (ClipboardKind::Click, Command::Read(Read::Image(asked))) => {
+                // A reference never goes to the clipboard, so a click of the tool's is of a page by number.
+                let recto_agent::commands::locating::PageOrRef::Page(page) = asked.page else {
+                    return None;
+                };
                 let [x, y] = asked.at?;
-                (&asked.tab, asked.page, asked.as_seen?, Wanted::Image { x, y }, asked.anyway)
+                (&asked.tab, page, asked.as_seen?, Wanted::Image { x, y }, asked.anyway)
             }
             _ => return None,
         };

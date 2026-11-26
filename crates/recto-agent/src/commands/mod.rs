@@ -368,7 +368,9 @@ family! {
         Render(export::Render),
         #[line(export::line::ExportSvg)]
         ExportSvg(export::ExportSvg),
+        #[line(export::line::Images)]
         Images(export::Images),
+        #[line(export::line::Image)]
         Image(export::Image),
         #[line(export::line::Snapshot)]
         Snapshot(export::Snapshot),
@@ -579,6 +581,12 @@ const COMBINATIONS: &[(&str, &str)] = &[
     ("snapshot", locating::SNAPSHOT_BOTH),
     ("snapshot", locating::SNAPSHOT_NEITHER),
     ("snapshot", locating::SNAPSHOT_REF_NOT_CLIPBOARD),
+    ("images", locating::IMAGES_BOTH),
+    ("images", locating::IMAGES_NEITHER),
+    ("images", locating::IMAGES_REF_NO_AT),
+    ("image", locating::IMAGE_BOTH),
+    ("image", locating::IMAGE_NEITHER),
+    ("image", locating::IMAGE_REF_NOT_CLIPBOARD),
     ("export_svg", locating::EXPORT_SVG_BOTH),
     ("export_svg", locating::EXPORT_SVG_NEITHER),
     ("goto", locating::GOTO_REF_ALONE),

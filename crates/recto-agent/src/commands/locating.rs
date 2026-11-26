@@ -54,6 +54,14 @@ pub(crate) const SNAPSHOT_BOTH: &str = "`snapshot` takes a page or `--ref`, not 
 pub(crate) const SNAPSHOT_NEITHER: &str = "`snapshot` needs a page or `--ref`.";
 pub(crate) const EXPORT_SVG_BOTH: &str = "`export svg` takes a page or `--ref`, not both.";
 pub(crate) const EXPORT_SVG_NEITHER: &str = "`export svg` needs a page or `--ref`.";
+pub(crate) const IMAGES_BOTH: &str = "`images` takes a page or `--ref`, not both.";
+pub(crate) const IMAGES_NEITHER: &str = "`images` needs a page or `--ref`.";
+pub(crate) const IMAGE_BOTH: &str = "`image` takes a page or `--ref`, not both.";
+pub(crate) const IMAGE_NEITHER: &str = "`image` needs a page or `--ref`.";
+/// `images --ref` lists the page found, whole: a point belongs to the page as it was seen, which a page found by its content may not be.
+pub(crate) const IMAGES_REF_NO_AT: &str = "`images --ref` lists the images of the page the reference points at, so it takes no `--at`.";
+/// `image --ref` goes to a file, never to the person's clipboard, which is their own and is made for the page they saw.
+pub(crate) const IMAGE_REF_NOT_CLIPBOARD: &str = "`image --ref` can't go to the clipboard: that is the person's, of the page they saw.";
 /// `snapshot --ref` goes to a file or to the answer, never to the person's clipboard, which is their own and is made for the page they saw.
 pub(crate) const SNAPSHOT_REF_NOT_CLIPBOARD: &str = "`snapshot --ref` can't go to the clipboard: that is the person's, of the page they saw.";
 /// `goto` with no page, no label and no `--ref`, whatever else it came with.
@@ -239,6 +247,8 @@ pub(crate) const COPY_REF_EXAMPLE: &str = concat!("recto copy --ref ", example_r
 pub(crate) const SNAPSHOT_REF_EXAMPLE: &str = concat!("recto snapshot --ref ", example_ref!(), " --rect 72,72,300,200 --as text");
 pub(crate) const EXPORT_SVG_REF_EXAMPLE: &str = concat!("recto export svg --ref ", example_ref!(), " --out page.svg");
 pub(crate) const TEXT_REF_EXAMPLE: &str = concat!("recto text --ref ", example_ref!());
+pub(crate) const IMAGES_REF_EXAMPLE: &str = concat!("recto images --ref ", example_ref!());
+pub(crate) const IMAGE_REF_EXAMPLE: &str = concat!("recto image --ref ", example_ref!(), " --number 1 --out image.png");
 pub(crate) const RENDER_REF_EXAMPLE: &str = concat!("recto render --ref ", example_ref!(), " --out page.png");
 
 /// `recto ref <page>`: a reference to a page of the tab, to give back to `resolve` later, when the file's page numbers may have changed.

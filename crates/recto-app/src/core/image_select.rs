@@ -30,6 +30,7 @@ use super::snapshot_tool::Tool;
 use crate::panes::Panes;
 use recto_agent::commands::Read;
 use recto_agent::commands::export::Images;
+use recto_agent::commands::locating::PageOrRef;
 use recto_agent::extract::AsSeen;
 use recto_agent::{AgentError, Command, TabRef};
 use recto_index::select::{PagePoint, Rect};
@@ -61,7 +62,7 @@ impl Look {
     fn command(self) -> Command {
         Command::from(Images {
             tab: TabRef::Id(TabId(self.tab)),
-            page: self.point.page + 1,
+            page: PageOrRef::Page(self.point.page + 1),
             at: Some([self.point.x, self.point.y]),
             as_seen: Some(self.seen),
         })
@@ -79,7 +80,9 @@ impl Look {
         let (TabRef::Id(tab), Some([x, y]), Some(_)) = (&asked.tab, asked.at, asked.as_seen) else {
             return None;
         };
-        let page = asked.page.checked_sub(1)?;
+        // A reference lists the page it points at and takes no point, so the look is of a page by number.
+        let PageOrRef::Page(page) = asked.page else { return None };
+        let page = page.checked_sub(1)?;
         Some((tab.0, PagePoint { page, x, y }))
     }
 
@@ -287,11 +290,16 @@ mod tests {
         assert_eq!(Look::asked(&look(5.0).command()), Some((3, look(5.0).point)));
         let agents = Command::from(Images {
             tab: TabRef::Id(TabId(3)),
-            page: 2,
+            page: PageOrRef::Page(2),
             at: Some([5.0, 20.0]),
             as_seen: None,
         });
         assert_eq!(Look::asked(&agents), None);
+        // A page found by a reference is listed whole: its line takes no point and no page as seen, so it is never read back as the person's click.
+        let by_reference: Command =
+            serde_json::from_value(serde_json::json!({ "cmd": "images", "tab": "#3", "ref": recto_agent::commands::locating::EXAMPLE_REF })).unwrap();
+        assert!(matches!(&by_reference, Command::Read(Read::Images(asked)) if matches!(asked.page, PageOrRef::Ref(_))));
+        assert_eq!(Look::asked(&by_reference), None);
     }
 
     /// Failure (rule 6): an answer whose image has no number, a box of the wrong shape or a number past `u32` is taken as some image anyway.
