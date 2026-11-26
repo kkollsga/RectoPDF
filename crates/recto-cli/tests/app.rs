@@ -1579,7 +1579,8 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
         format!(
             "settling {settling:?}, at rest {resting:?}\nstate: {}\n{}",
             run.report(),
-            awake::stack_summary(&common::evidence::sample(pid, 2, std::time::Duration::from_secs(5)))
+            // The tool samples for its own 2 s, then symbolicates, which on a busy Mac takes many more seconds. The bound is the sample's seconds plus a margin, so that a loaded run still gets its attribution.
+            awake::stack_summary(&common::evidence::sample(pid, 2, std::time::Duration::from_secs(2 + 60)))
         )
     });
     // Reduce Motion: it stays in view, with no frames at all.
