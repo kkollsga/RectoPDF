@@ -64,7 +64,7 @@ pub fn qa_needs_app() -> AgentError {
 mod tests {
     use crate::{Runs, parse};
 
-    /// Failure: an update stops waiting for a command that changes the session it carries across (a sleep, a restore, a zoom, a palette's run, an install), so its change is lost past the hand-off's last look; or a look at the state, the record's save or QA is refused as busy while one hands off. Only commands the app or a host's record answers may only ask.
+    /// Failure: an update stops waiting for a command that changes the session it carries across (a sleep, a restore, a zoom, a palette's run, an install), so its change is lost past the hand-off's last look; or a look at the state, the record's save or QA is refused as busy while one hands off. Only commands the app or a host's record answers may only ask (a check of leftovers is a look; its clear is waited for).
     #[test]
     fn only_looks_the_record_save_and_qa_go_past_an_update() {
         let mut asks: Vec<&str> = include_str!("../tests/golden/requests.txt")
@@ -87,6 +87,7 @@ mod tests {
             [
                 "qa_drive",
                 "qa_read",
+                "removal_check",
                 "session_check",
                 "session_save",
                 "session_show",
