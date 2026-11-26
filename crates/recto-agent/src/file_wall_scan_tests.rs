@@ -169,6 +169,13 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the index's own pack under the app's index folder, read to say what it keeps of a document: `opened_text`, for the index tests",
     ),
     (
+        "recto-control/src/removal_store/leftovers/act.rs",
+        2,
+        "Clear leftovers' two `Folder::open` calls, each by a path the surveys pinned (the documents folder of an unfinished save, the app's own state root), \
+         never a path from a command: no link is followed at its last part, and the folder's device and inode are then compared with the pin before anything \
+         is done in it. Everything below is reached by descriptor",
+    ),
+    (
         "recto-platform/src/bin/recto-sandbox-probe.rs",
         4,
         "a test's probe, never in the app: adversarial file attempts, plus capped reads of its own fixture configuration/canary and creation of its exact launch receipt",

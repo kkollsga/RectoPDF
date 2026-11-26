@@ -13,6 +13,7 @@
 //! a Save As started by a build from before the destination was recorded isn't in the ledger, so its temp in a folder nothing else lists reads "none found".
 //! A folder that is missing when listed is complete and empty: a purge must list again before it deletes (a remounted volume).
 
+use super::leftovers::pin::Pins;
 #[cfg(test)]
 use super::testing::Hook;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Store, Survey};
@@ -31,6 +32,8 @@ const MAX_FOLDERS: usize = 64;
 pub(crate) struct TempCaps {
     pub entries: usize,
     pub folders: usize,
+    /// Where each temp found is pinned (its folder's and its own identity), for Clear leftovers. `None` pins nothing.
+    pub pins: Option<Pins>,
     /// Called with a folder's path once it is opened and before it is listed: a test's way to change the path under the survey.
     #[cfg(test)]
     pub before_list: Option<Hook>,
@@ -41,6 +44,7 @@ impl Default for TempCaps {
         Self {
             entries: MAX_ENTRIES,
             folders: MAX_FOLDERS,
+            pins: None,
             #[cfg(test)]
             before_list: None,
         }
@@ -77,6 +81,13 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, survey: &mut Surve
         if let Some(hook) = &caps.before_list {
             hook(path);
         }
+        let folder_id = match &caps.pins {
+            Some(_) => match folder.identity() {
+                Ok(id) => Some(id),
+                Err(_) => return Ok(()),
+            },
+            None => None,
+        };
         let Ok(entries) = folder.entries() else { return Ok(()) };
         let mut seen = 0usize;
         for entry in entries {
@@ -92,12 +103,16 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, survey: &mut Surve
             let mut key = path.as_os_str().as_encoded_bytes().to_vec();
             key.push(b'/');
             key.extend_from_slice(entry.name.as_encoded_bytes());
+            let key = ArtifactKey::of(Store::WriterTemp, &key);
             survey.add(Found {
                 store: Store::WriterTemp,
-                key: ArtifactKey::of(Store::WriterTemp, &key),
+                key,
                 owner: Owner::Unknown,
                 format: Format::Current,
             })?;
+            if let (Some(pins), Some(folder_id)) = (&caps.pins, folder_id) {
+                pins.temp(path, folder_id, &entry, key);
+            }
         }
     }
     survey.mark_complete(Store::WriterTemp);

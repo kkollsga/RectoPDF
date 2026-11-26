@@ -18,7 +18,12 @@ use std::marker::PhantomData;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub use crate::folder_tree::{Identity, Kind, MAX_DEPTH, Pinned, Tree};
+
+#[path = "folder_mac/remove.rs"]
+pub mod remove;
 
 /// An open folder of this user's. Closed on drop.
 #[derive(Debug)]
@@ -42,6 +47,43 @@ pub struct Entry {
     pub links: u64,
     /// Nanoseconds since 1970, if the system gives one.
     pub modified_ns: Option<i64>,
+    /// The device and inode, and what the entry is, as `fstatat` without following a link says.
+    pub dev: u64,
+    pub ino: u64,
+    pub kind: Kind,
+}
+
+impl Entry {
+    /// What this entry was when it was looked at.
+    pub fn identity(&self) -> Identity {
+        Identity {
+            dev: self.dev,
+            ino: self.ino,
+            kind: self.kind,
+        }
+    }
+}
+
+fn kind_of(mode: libc::mode_t) -> Kind {
+    match mode & libc::S_IFMT {
+        libc::S_IFREG => Kind::File,
+        libc::S_IFDIR => Kind::Folder,
+        libc::S_IFLNK => Kind::Link,
+        _ => Kind::Other,
+    }
+}
+
+fn entry_of(name: OsString, st: &libc::stat) -> Entry {
+    let modified_ns = st.st_mtime.checked_mul(1_000_000_000).and_then(|s| s.checked_add(st.st_mtime_nsec));
+    Entry {
+        name,
+        is_file: st.st_mode & libc::S_IFMT == libc::S_IFREG,
+        links: u64::from(st.st_nlink),
+        modified_ns,
+        dev: st.st_dev as u64,
+        ino: st.st_ino,
+        kind: kind_of(st.st_mode),
+    }
 }
 
 fn flags() -> libc::c_int {
@@ -114,6 +156,57 @@ impl Folder {
         })
     }
 
+    /// What this folder is, by `fstat` on its descriptor: the same thing whatever its path now leads to.
+    pub fn identity(&self) -> io::Result<Identity> {
+        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `fd` is open for as long as `self`, and `st` is the size `fstat` writes.
+        let st = unsafe {
+            if libc::fstat(self.fd.as_raw_fd(), st.as_mut_ptr()) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            st.assume_init()
+        };
+        Ok(entry_of(OsString::new(), &st).identity())
+    }
+
+    /// What the entry `name` of this folder is now, without following a link (`fstatat` on the descriptor).
+    pub fn look(&self, name: &OsStr) -> io::Result<Entry> {
+        let plain = name_of(name)?;
+        stat_at(self.fd.as_raw_fd(), &plain).map(|st| entry_of(name.to_owned(), &st))
+    }
+
+    /// Takes the entry `name` out of this folder: a folder with `folder` set (it must be empty), anything else, a link included, without following
+    /// it (`unlinkat`). `NotFound` if it is already gone.
+    pub fn unlink_in(&self, name: &OsStr, folder: bool) -> io::Result<()> {
+        let plain = name_of(name)?;
+        let flag = if folder { libc::AT_REMOVEDIR } else { 0 };
+        // SAFETY: `fd` is open for as long as `self`, and `plain` is a NUL-ended string naming one entry of it.
+        if unsafe { libc::unlinkat(self.fd.as_raw_fd(), plain.as_ptr(), flag) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Where the system says this folder is now (`F_GETPATH` on the descriptor), which is a path to look at and never one to act by.
+    pub fn path(&self) -> io::Result<PathBuf> {
+        let mut buffer = [0u8; libc::PATH_MAX as usize];
+        // SAFETY: `fd` is open for as long as `self`, and `F_GETPATH` writes at most `MAXPATHLEN` bytes into the buffer given.
+        if unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let end = buffer.iter().position(|b| *b == 0).unwrap_or(buffer.len());
+        Ok(PathBuf::from(OsStr::from_bytes(&buffer[..end])))
+    }
+
+    /// Makes what was taken out of, or put into, this folder last through a power loss (`fsync` on the descriptor).
+    pub fn sync(&self) -> io::Result<()> {
+        // SAFETY: `fd` is open for as long as `self`.
+        if unsafe { libc::fsync(self.fd.as_raw_fd()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Opens a file of this folder for reading, only if it's a plain file of this user's that nobody else can write (the checks of
     /// `local::open_private_file`, on a descriptor). A link isn't followed and a pipe doesn't wait for a writer.
     pub fn open_private_in(&self, name: &OsStr) -> io::Result<File> {
@@ -172,21 +265,19 @@ impl Iterator for Entries<'_> {
 
 impl Entries<'_> {
     fn look(&self, name: &CStr) -> io::Result<Entry> {
-        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: `folder` is open while `self` borrows it, `name` is NUL-ended, and `st` is the size `fstatat` writes.
-        let st = unsafe {
-            if libc::fstatat(self.folder, name.as_ptr(), st.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            st.assume_init()
-        };
-        let modified_ns = st.st_mtime.checked_mul(1_000_000_000).and_then(|s| s.checked_add(st.st_mtime_nsec));
-        Ok(Entry {
-            name: OsString::from_vec(name.to_bytes().to_vec()),
-            is_file: st.st_mode & libc::S_IFMT == libc::S_IFREG,
-            links: u64::from(st.st_nlink),
-            modified_ns,
-        })
+        stat_at(self.folder, name).map(|st| entry_of(OsString::from_vec(name.to_bytes().to_vec()), &st))
+    }
+}
+
+/// `fstatat` of `name` in the folder open as `folder`, without following a link.
+fn stat_at(folder: libc::c_int, name: &CStr) -> io::Result<libc::stat> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `folder` is open for the caller's borrow, `name` is NUL-ended, and `st` is the size `fstatat` writes.
+    unsafe {
+        if libc::fstatat(folder, name.as_ptr(), st.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(st.assume_init())
     }
 }
 

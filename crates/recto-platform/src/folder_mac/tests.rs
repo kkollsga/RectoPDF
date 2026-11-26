@@ -3,7 +3,7 @@
 use super::*;
 use recto_testpdf::TempDir;
 use std::io::Read as _;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 fn names(folder: &Folder) -> Vec<String> {
     let mut names: Vec<String> = folder.entries().unwrap().map(|e| e.unwrap().name.to_string_lossy().into_owned()).collect();
@@ -180,6 +180,78 @@ fn entries_say_which_is_a_file_and_never_follow_a_link() {
         !found["sub"].is_file && !found["link"].is_file && !found["pipe"].is_file,
         "a folder, a link to one and a pipe are not files"
     );
+}
+
+/// Failure: what an entry or a folder is, is read by following a link (a link to a folder taken for a folder), or the identity of a name changes when its
+/// file is replaced by another of the same name and nobody can tell (the device and inode are what a later act compares).
+#[test]
+fn identity_and_look_say_what_a_name_is_without_following() {
+    let dir = TempDir::new("recto-folder-");
+    std::fs::write(dir.join("plain"), b"x").unwrap();
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    std::os::unix::fs::symlink(dir.join("sub"), dir.join("link")).unwrap();
+    let folder = opened(dir.path());
+    let meta = std::fs::metadata(dir.path()).unwrap();
+    let id = folder.identity().unwrap();
+    assert_eq!((id.dev, id.ino, id.kind), (meta.dev(), meta.ino(), Kind::Folder));
+    let kinds: Vec<Kind> = ["plain", "sub", "link"].iter().map(|n| folder.look(OsStr::new(n)).unwrap().kind).collect();
+    assert_eq!(kinds, [Kind::File, Kind::Folder, Kind::Link]);
+    let old = folder.look(OsStr::new("plain")).unwrap().identity();
+    std::fs::remove_file(dir.join("plain")).unwrap();
+    std::fs::write(dir.join("plain"), b"y").unwrap();
+    assert_ne!(
+        folder.look(OsStr::new("plain")).unwrap().identity(),
+        old,
+        "another file under the same name is another identity"
+    );
+    assert_eq!(folder.look(OsStr::new("nothing")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert!(folder.look(OsStr::new("../x")).is_err());
+}
+
+/// Failure: `unlink_in` follows a link and removes what it leads to, removes a folder with something in it, takes a name that leaves the folder, or a
+/// missing name is not `NotFound`.
+#[test]
+fn unlink_in_takes_out_one_name_and_never_follows() {
+    let dir = TempDir::new("recto-folder-");
+    let elsewhere = TempDir::new("recto-folder-out-");
+    std::fs::write(elsewhere.join("theirs"), b"theirs").unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), dir.join("link")).unwrap();
+    std::fs::write(dir.join("plain"), b"x").unwrap();
+    std::fs::create_dir(dir.join("full")).unwrap();
+    std::fs::write(dir.join("full").join("in"), b"x").unwrap();
+    std::fs::create_dir(dir.join("empty")).unwrap();
+    let folder = opened(dir.path());
+    folder.unlink_in(OsStr::new("link"), false).unwrap();
+    assert!(std::fs::symlink_metadata(dir.join("link")).is_err());
+    assert_eq!(
+        std::fs::read(elsewhere.join("theirs")).unwrap(),
+        b"theirs",
+        "what the link led to is still there"
+    );
+    folder.unlink_in(OsStr::new("plain"), false).unwrap();
+    assert!(folder.unlink_in(OsStr::new("empty"), false).is_err(), "a folder is taken out as a folder only");
+    folder.unlink_in(OsStr::new("empty"), true).unwrap();
+    assert!(folder.unlink_in(OsStr::new("full"), true).is_err(), "a folder with something in it stays");
+    assert!(dir.join("full").join("in").exists());
+    assert_eq!(folder.unlink_in(OsStr::new("plain"), false).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    for bad in ["", ".", "..", "full/in", "/etc/hosts"] {
+        assert!(folder.unlink_in(OsStr::new(bad), false).is_err(), "{bad:?}");
+    }
+    assert!(dir.join("full").join("in").exists());
+}
+
+/// Failure: `path` says where the folder was opened and not where it is, so a check that the path still leads to the folder compares the old name; or `sync`
+/// of a folder fails.
+#[test]
+fn path_follows_the_folder_and_sync_works() {
+    let dir = TempDir::new("recto-folder-");
+    let real = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(real.join("before")).unwrap();
+    let folder = opened(&real.join("before"));
+    assert_eq!(folder.path().unwrap(), real.join("before"));
+    std::fs::rename(real.join("before"), real.join("after")).unwrap();
+    assert_eq!(folder.path().unwrap(), real.join("after"), "the descriptor's own place now");
+    folder.sync().unwrap();
 }
 
 /// Every image this probe attached, detached on drop (a failed assertion included), by the mount folder it made, and only those.
