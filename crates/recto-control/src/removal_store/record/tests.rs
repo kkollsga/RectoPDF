@@ -179,6 +179,35 @@ fn a_pipe_or_a_link_at_a_slot_or_places_is_unknown_and_never_followed() {
     assert_eq!(refusal(&dir, TargetMode::Save), INCOMPLETE, "session as a link");
 }
 
+/// Failure: a slot that is a plain file at the listing and is swapped for a pipe or a link before it is opened (the listing's look is only a first
+/// one) is opened with a plain `File::open`: the pipe is waited on, or the link is followed to a record that places as the target's. Without the
+/// swap the slot is the target's (asserted first), so only a followed link or a waited-on pipe could change the answer.
+#[test]
+fn a_slot_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
+    for pipe in [true, false] {
+        let dir = root();
+        let outside = TempDir::new("recto-record-out-");
+        let precious = put(&outside, "precious", &record(vec![mine()], 1));
+        put(&folder(&dir), "record.a.json", &record(vec![mine()], 1));
+        assert_eq!(count(&survey(&dir, TargetMode::Save).unwrap(), Owner::Target), 1);
+        let hook: Hook = Arc::new(move |path| {
+            std::fs::remove_file(path).unwrap();
+            if pipe {
+                mkfifo(path);
+            } else {
+                std::os::unix::fs::symlink(&precious, path).unwrap();
+            }
+        });
+        let caps = RecordCaps {
+            before_open: Some(hook),
+            ..RecordCaps::default()
+        };
+        let root = dir.path().to_path_buf();
+        let s = bounded(move || survey_with(&root, TargetMode::Save, 64, &caps).unwrap());
+        assert_eq!(count(&s, Owner::Unknown), 1, "swapped for a {}", if pipe { "pipe" } else { "link" });
+    }
+}
+
 /// Failure: another document's record is rewritten (a record of only other documents' tabs read as the target's), or the target's references
 /// are left (one tab among several not looked at, a Save As source read as the target).
 #[test]
