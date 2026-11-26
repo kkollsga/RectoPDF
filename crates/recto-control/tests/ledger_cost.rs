@@ -136,7 +136,14 @@ fn costs() {
         for n in 0..links {
             let other = dir.join(format!("o{n}.pdf"));
             std::fs::write(&other, b"x").unwrap();
-            note_save(&backups, &SaveNote::Starting { path: &other, from: None });
+            note_save(
+                &backups,
+                &SaveNote::Starting {
+                    path: &other,
+                    from: None,
+                    destination: None,
+                },
+            );
         }
         let (mut now, mut to) = (from, from);
         to.inode += 1;
@@ -148,7 +155,14 @@ fn costs() {
         };
         let seeded = read(&state);
         println!("a save's notes, ledger of {} links so far (gap {:?}):", seeded.links.len(), seeded.gap);
-        notes("starting", &SaveNote::Starting { path: &file, from: Some(from) });
+        notes(
+            "starting",
+            &SaveNote::Starting {
+                path: &file,
+                from: Some(from),
+                destination: None,
+            },
+        );
         notes(
             "prepared",
             &SaveNote::Prepared {

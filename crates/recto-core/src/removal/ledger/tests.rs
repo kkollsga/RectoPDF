@@ -356,3 +356,44 @@ fn an_implausible_beginning_makes_everything_older() {
     let ledger = read(&encode_header(1_767_225_600_000_000_000), &LEDGER_LIMITS);
     assert_eq!(ledger.began_ns, 1_767_225_600_000_000_000);
 }
+
+/// Failure: a destination frame is read as a link (it would then be placed on both sides again), or isn't read back, or a flipped length in it is taken for a
+/// cut-short tail instead of damage.
+#[test]
+fn a_destination_reads_back_as_a_destination_and_no_link() {
+    let entries = [Entry::Link(at(7, "/docs/a.pdf")), Entry::Destination("/docs/copy.pdf".into())];
+    let bytes = file_of(&entries);
+    let ledger = read(&bytes, &LEDGER_LIMITS);
+    assert_eq!(
+        (ledger.links.len(), ledger.destinations.clone(), ledger.gap),
+        (1, vec![PathBuf::from("/docs/copy.pdf")], None)
+    );
+    assert_eq!(ledger.frames, 2, "a destination is a frame, so it counts against the cap on frames");
+    // One byte of a destination's length flipped: damage, never a link.
+    let mut bad = bytes.clone();
+    let at_frame = bytes.len() - (2 + 1 + 2 + "/docs/copy.pdf".len() + 4);
+    bad[at_frame] ^= 1;
+    assert_eq!(read(&bad, &LEDGER_LIMITS).stopped, Some(Gap::Damaged));
+}
+
+/// Failure (fifth hole): a destination is dropped when a file is seen at its path later. A crashed Save As A to C leaves a temp named for C, a retry then
+/// lands C, and lopdf sweeps the first temp only an hour later with a dead owner: so the landing proves nothing, and the destination must stay in whatever
+/// order frames come.
+#[test]
+fn a_destination_is_kept_whatever_is_seen_at_it_later() {
+    let copy = || Entry::Destination("/docs/copy.pdf".into());
+    let landed = || Entry::Link(at(9, "/docs/copy.pdf"));
+    let dests = |entries: &[Entry]| read(&file_of(entries), &LEDGER_LIMITS).destinations;
+    let copy_path = PathBuf::from("/docs/copy.pdf");
+    assert_eq!(dests(&[copy(), landed()]), std::slice::from_ref(&copy_path), "landed after it");
+    assert_eq!(dests(&[landed(), copy()]), std::slice::from_ref(&copy_path));
+    assert_eq!(dests(&[copy(), landed(), copy()]), vec![copy_path.clone(), copy_path.clone()]);
+    assert_eq!(
+        dests(&[copy(), Entry::Link(Link::Unplaced { path: "/docs/copy.pdf".into() })]),
+        std::slice::from_ref(&copy_path),
+        "a file that was there is no proof either"
+    );
+    // The paths count against the cap.
+    let read_back = read(&file_of(&[copy(), landed()]), &LEDGER_LIMITS);
+    assert_eq!(read_back.path_bytes, 2 * "/docs/copy.pdf".len());
+}

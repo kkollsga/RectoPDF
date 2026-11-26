@@ -3,7 +3,7 @@
 use crate::log::ActivityLog;
 use crate::{levels, state::StatePaths};
 use recto_agent::index::ReadOnlyCorpus;
-use recto_agent::{AgentError, Command, Level, Refused, acted_tab, allowed, refusal, run_indexed, table, with_acted_tab};
+use recto_agent::{AgentError, Command, Level, Refused, acted_tab, allowed, refusal, run_supported, table, with_acted_tab};
 use recto_session::{DocLoader, Session};
 use serde_json::Value;
 
@@ -19,7 +19,7 @@ pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePat
         crate::find_keys::load(&crate::find_keys::plan(paths, crate::find_keys::Host::Cli)).key,
     );
     let result = if allowed(level, command.access()) {
-        run_indexed(session, level, command, Some(&corpus))
+        run_supported(session, level, command, Some(&corpus), &crate::removal_store::ledger::ProvenanceOnly::of(paths))
     } else {
         Err(refusal(table::display_name(command.tag()), level, command.access()))
     };

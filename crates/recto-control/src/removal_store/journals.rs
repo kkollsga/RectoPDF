@@ -16,12 +16,12 @@
 mod names;
 
 use super::backups::{self, Finder};
+use super::placing::Maps;
 use names::Kind;
-use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
-use recto_platform::FileStamp;
+use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Sides, Store, Survey, TargetMode};
 use recto_platform::folder::{Entry, Folder, Opened};
 use recto_session::edit::identity::sidecar;
-use recto_session::record::{MARKED_JOURNAL_VERSION, journal_file_name, journal_header};
+use recto_session::record::{MARKED_JOURNAL_VERSION, journal_header};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read as _;
@@ -38,9 +38,8 @@ const MAX_ENTRIES: usize = 8_192;
 /// The two sessions' folders.
 const FLAVORS: [&str; 2] = ["session", "session-windowless"];
 
-/// What a test runs just before a path is opened.
 #[cfg(test)]
-pub(crate) type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
+use super::testing::Hook;
 
 /// The caps, so a test can make them small.
 #[derive(Clone)]
@@ -110,52 +109,6 @@ pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: Tar
         survey.mark_complete(store);
     }
     Ok(())
-}
-
-/// What the lineage says about versions and paths, as the journals name them.
-struct Maps {
-    /// By the 16-digit key a name carries (from inode, size and mtime: the device is a mount number and the journal doesn't hold the volume).
-    versions: HashMap<String, Sides>,
-    /// By the path's bytes.
-    paths: HashMap<Vec<u8>, Sides>,
-}
-
-impl Maps {
-    fn of(lineage: &Lineage<'_>) -> Self {
-        let mut versions: HashMap<String, Sides> = HashMap::new();
-        let current = lineage.current();
-        let all = std::iter::once((current, Side::Target)).chain(lineage.versions());
-        for (version, side) in all.filter(|(version, _)| version.inode != 0) {
-            let sides = versions.entry(key_of(version.inode, version.size, version.mtime_ns)).or_default();
-            *sides = sides.with(side);
-        }
-        let mut paths: HashMap<Vec<u8>, Sides> = HashMap::new();
-        for (path, side) in lineage.paths() {
-            let sides = paths.entry(path.as_os_str().as_encoded_bytes().to_vec()).or_default();
-            *sides = sides.with(side);
-        }
-        Self { versions, paths }
-    }
-
-    /// The sides of the version a header names, if its inode is real and the lineage saw it.
-    fn version(&self, inode: u64, size: u64, mtime_ns: i64) -> Option<Sides> {
-        (inode != 0).then(|| self.versions.get(&key_of(inode, size, mtime_ns)).copied()).flatten()
-    }
-}
-
-/// The key a journal's name carries for a file version, by the one function that names journals.
-fn key_of(inode: u64, size: u64, mtime_ns: i64) -> String {
-    let stamp = FileStamp {
-        size,
-        mtime_ns,
-        device: 0,
-        inode,
-    };
-    let name = journal_file_name(Some(stamp), Path::new(""), None);
-    name.strip_prefix("journal-")
-        .and_then(|rest| rest.strip_suffix(".log"))
-        .unwrap_or_default()
-        .to_string()
 }
 
 /// One folder's survey.
@@ -320,12 +273,9 @@ impl Run<'_> {
         }
         let Some(path) = header.path.to_path() else { return Placed::unknown() };
         let Some(file) = header.file else { return Placed::unknown() };
-        let found = (
-            self.maps.version(file.inode, file.size, file.mtime_ns),
-            self.maps.paths.get(path.as_os_str().as_encoded_bytes()).copied(),
-        );
-        let (Some(version), Some(at)) = found else { return Placed::unknown() };
-        let mut sides = version.union(at);
+        let Some(mut sides) = self.maps.place(path.as_os_str().as_encoded_bytes(), file.inode, file.size, file.mtime_ns) else {
+            return Placed::unknown();
+        };
         // A `saving` version names the file a save was writing when the journal was last written. If the lineage never saw it (the save didn't
         // finish, so no link names it) or its inode is 0 (unknown), it adds nothing: it can't name a side we know of, and the journal is already
         // placed by its own file and path. Adding nothing can only leave a journal less owned, never more, so it fails toward refusing.

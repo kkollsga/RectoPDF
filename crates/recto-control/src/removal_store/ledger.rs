@@ -22,7 +22,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod adopt;
+mod support;
 mod tabs;
+
+pub use support::ProvenanceOnly;
 
 pub use tabs::note_tabs;
 #[cfg(any(test, feature = "test-seams"))]
@@ -96,17 +99,97 @@ fn verified(real: &Path, expect: FileStamp) -> Option<FileVersion> {
     (now == expect).then(|| FileVersion::new(now, recto_platform::volume::volume_identity(real)))
 }
 
+/// The destination's frames: where it is by name ([`destination_entry`]) and, if something is there already, where the writer resolves it to. lopdf's
+/// `real_path` follows the whole path of an existing destination (a link too) and makes its temp in that file's folder, named for that file: a Replace
+/// onto a link into another folder works there. Both are recorded, so both folders are listed. At most two frames.
+fn destination_entries(destination: &Path) -> Vec<Entry> {
+    let by_name = destination_entry(destination);
+    let mut out: Vec<Entry> = by_name.iter().cloned().collect();
+    if !matches!(by_name, Some(Entry::Destination(_))) || std::fs::symlink_metadata(destination).is_err() {
+        return out;
+    }
+    match destination.canonicalize() {
+        Ok(real) => {
+            let entry = Entry::Destination(real);
+            if !out.contains(&entry) {
+                // Too long to hold is a note lost without a word.
+                let too_long = matches!(&entry, Entry::Destination(p) if p.as_os_str().as_encoded_bytes().len() > recto_core::removal::MAX_PATH_BYTES);
+                out.push(if too_long { Entry::Gap(Gap::WriteFailed) } else { entry });
+            }
+        }
+        // The writer fails the same way at once (a link that names nothing, a loop of links): it can make no temp.
+        Err(error) if writer_fails_here(&error) || error.kind() == std::io::ErrorKind::NotFound => {}
+        // Any other error: a temp may be where nobody can list.
+        Err(_) => out.push(Entry::Gap(Gap::WriteFailed)),
+    }
+    out
+}
+
+/// **Where a Save As or a Replace is going, before it is there.** The writer makes its temporary, named for the destination's file name, in the
+/// destination's folder before anything lands, so a crash leaves it there with the whole document in it, and the survey can only list that folder if the
+/// ledger names a path in it. The file may not be there yet, nor its folder, so the nearest folder that exists (the destination's parent, `.` for a bare name)
+/// is canonicalized and the missing parts and the file name appended: a folder made between this note and the write is still the one recorded.
+///
+/// It is a [`Entry::Destination`], not a link: it joins no version, so the copy's own journals and backups place as they would for any file, and the survey of
+/// the writer's temporaries alone reads it (for good: no landing or later sighting of the path drops it). A path the writer fails on at once (a part of the parent that is
+/// a file, a name too long, a loop of links) records nothing and is no gap: it can make no temp. Any other failure to resolve it (no permission, an I/O
+/// error) records nothing and leaves a gap, the safe direction: a temp may be there that nobody can list, so every removal refuses.
+fn destination_entry(destination: &Path) -> Option<Entry> {
+    let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Some(name) = destination.file_name() else {
+        return Some(Entry::Gap(Gap::WriteFailed));
+    };
+    // From the whole parent up, one part at a time: at most the path's own components.
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut at = parent;
+    let real = loop {
+        match if at.as_os_str().is_empty() { Path::new(".") } else { at }.canonicalize() {
+            Ok(real) => break real,
+            Err(error) if writer_fails_here(&error) => return None,
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Some(Entry::Gap(Gap::WriteFailed)),
+            Err(_) => {}
+        }
+        // Only a plain name is a part that may yet be made; `..` and the root can't be missing.
+        match (at.file_name(), at.parent()) {
+            (Some(part), Some(up)) => {
+                missing.push(part);
+                at = up;
+            }
+            _ => return None,
+        }
+    };
+    let mut path = real;
+    path.extend(missing.iter().rev());
+    path.push(name);
+    // A path the ledger can't hold would be a note that was lost without a word.
+    if path.as_os_str().as_encoded_bytes().len() > recto_core::removal::MAX_PATH_BYTES {
+        return Some(Entry::Gap(Gap::WriteFailed));
+    }
+    Some(Entry::Destination(path))
+}
+
+/// Whether the writer, given this error for a part of the path, fails there and can make no temporary.
+fn writer_fails_here(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{InvalidFilename, NotADirectory};
+    // `ErrorKind` has no stable name for a loop of links.
+    matches!(error.kind(), NotADirectory | InvalidFilename) || error.raw_os_error() == Some(libc::ELOOP)
+}
+
 /// What a save's step adds to the ledger. Pure over the files' stats.
 fn entries_for(note: &SaveNote<'_>) -> Vec<Entry> {
     match note {
-        SaveNote::Starting { path, from } => {
-            let Ok(real) = path.canonicalize() else { return Vec::new() };
-            // A version that can't be proven is still a file that was here: its path reads on both sides.
-            let found = from.and_then(|from| verified(&real, from));
-            vec![Entry::Link(match found {
-                Some(version) => Link::At { version, path: real },
-                None => Link::Unplaced { path: real },
-            })]
+        SaveNote::Starting { path, from, destination } => {
+            let mut out = Vec::new();
+            if let Ok(real) = path.canonicalize() {
+                // A version that can't be proven is still a file that was here: its path reads on both sides.
+                let found = from.and_then(|from| verified(&real, from));
+                out.push(Entry::Link(match found {
+                    Some(version) => Link::At { version, path: real },
+                    None => Link::Unplaced { path: real },
+                }));
+            }
+            out.extend(destination.map(destination_entries).unwrap_or_default());
+            out
         }
         // A Save As starts a history of its own: the new file is recorded when it lands, and nothing joins it to the one it was made from.
         SaveNote::Prepared { over_itself: false, .. } => Vec::new(),
@@ -234,17 +317,9 @@ struct Room {
 
 impl Room {
     fn of(ledger: &Ledger, limits: &LedgerLimits) -> Self {
-        let path_total = ledger
-            .links
-            .iter()
-            .map(|link| match link {
-                Link::At { path, .. } | Link::Unplaced { path } => path.as_os_str().as_encoded_bytes().len(),
-                Link::Saved { .. } => 0,
-            })
-            .sum();
         Self {
             frames: ledger.frames,
-            path_total,
+            path_total: ledger.path_bytes,
             overflowed: ledger.overflowed,
             max_links: limits.max_links as usize,
             max_paths: limits.max_total_path_bytes as usize,
@@ -257,7 +332,7 @@ impl Room {
             return;
         }
         let paths = match entry {
-            Entry::Link(Link::At { path, .. } | Link::Unplaced { path }) => path.as_os_str().as_encoded_bytes().len(),
+            Entry::Link(Link::At { path, .. } | Link::Unplaced { path }) | Entry::Destination(path) => path.as_os_str().as_encoded_bytes().len(),
             _ => 0,
         };
         if self.frames + 2 > self.max_links || self.path_total + paths > self.max_paths {
@@ -366,6 +441,7 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<bool,
         out.extend_from_slice(&encode_header(now_ns()));
     }
     let mut seen: Vec<&Link> = ledger.links.iter().collect();
+    let mut seen_destinations: Vec<&PathBuf> = ledger.destinations.iter().collect();
     for entry in &entries {
         match entry {
             Entry::Link(link) => {
@@ -373,6 +449,13 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<bool,
                     continue;
                 }
                 seen.push(link);
+            }
+            Entry::Destination(path) => {
+                // Once per path, ever: a landing doesn't make the next save to the name a new destination, since the reader keeps each one.
+                if seen_destinations.contains(&path) {
+                    continue;
+                }
+                seen_destinations.push(path);
             }
             Entry::Gap(_) if known_gap => continue,
             Entry::Gap(_) => known_gap = true,

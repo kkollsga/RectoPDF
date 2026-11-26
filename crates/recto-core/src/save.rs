@@ -139,11 +139,13 @@ pub use annotate::{GoneHighlight, HIGHLIGHT_RGB, MAX_EDGE, MAX_GONE, MAX_RECTS, 
 pub use in_memory::{HIGHLIGHTS_DONT_HOLD, highlights_in_memory, plan_in_memory, plan_in_memory_within, rewrite_in_memory, signatures_and_keep_in_memory};
 mod copying;
 mod streams;
+mod temps;
 pub use crate::signatures::{SignatureFacts, persons_signature, signature_facts, signature_facts_of};
 pub use backups::{backup_name, backup_of, keep_backup, prune_backups};
 use catalog::{catalog_additions, update_catalog};
 use copying::*;
 use streams::{EncodedRead, LazyStream};
+pub use temps::{writer_temp_prefix, writer_temp_shape};
 
 pub(crate) fn catalog(reader: &IndexedReader) -> Option<Dictionary> {
     match reader.trailer_entry_owned(b"Root").ok()?? {

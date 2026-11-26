@@ -23,7 +23,8 @@ fn version(inode: u64, volume: bool) -> FileVersion {
     }
 }
 
-/// Valid ledgers: each kind of frame, a fork, a gap, a torn tail.
+/// Valid ledgers: each kind of frame (`At`, `Saved`, `Unplaced`, `Gap` and `Destination`, kinds 1 to 5), a fork, a gap, a torn tail, and a destination before and
+/// after the file that lands it (order counts).
 pub fn seeds() -> Vec<Vec<u8>> {
     let file = |entries: &[Entry]| {
         let mut bytes = encode_header(1_000).to_vec();
@@ -56,6 +57,12 @@ pub fn seeds() -> Vec<Vec<u8>> {
             path: "/n.pdf".into(),
         })]),
         torn,
+        file(&[
+            Entry::Destination("/d/copy.pdf".into()),
+            at(5, "/d/copy.pdf"),
+            Entry::Destination("/d/copy.pdf".into()),
+            Entry::Destination("/e/x.pdf".into()),
+        ]),
     ]
 }
 
@@ -90,7 +97,16 @@ fn held(ledger: &Ledger, limits: &LedgerLimits, input_len: usize) {
             total += len;
         }
     }
+    for path in &ledger.destinations {
+        let len = path.as_os_str().as_encoded_bytes().len();
+        assert!((1..=limits.max_path_bytes as usize).contains(&len) && len <= MAX_PATH_BYTES && path.is_absolute());
+        total += len;
+    }
     assert!(total <= limits.max_total_path_bytes as usize, "a cap on paths holds");
+    assert!(
+        ledger.path_bytes <= limits.max_total_path_bytes as usize && ledger.path_bytes >= total,
+        "every frame's path counts"
+    );
     if input_len > MAX_LEDGER_BYTES {
         assert_eq!(ledger.gap, Some(Gap::Damaged));
     }
@@ -114,8 +130,15 @@ fn one(bytes: &[u8]) {
         for link in &ledger.links {
             again.extend(encode(&Entry::Link(link.clone())).expect("a link that was read encodes"));
         }
+        for path in &ledger.destinations {
+            again.extend(encode(&Entry::Destination(path.clone())).expect("a destination that was read encodes"));
+        }
         let back = read_ledger(&again, &LEDGER_LIMITS);
         assert_eq!((&back.links, back.gap), (&ledger.links, None), "a ledger read encodes and reads back as it was");
+        assert_eq!(
+            back.destinations, ledger.destinations,
+            "and its destinations too: every one is kept, in order, whatever links come after"
+        );
         // Lineage over it: never a panic, and never complete when there is a gap.
         let current = ledger
             .links

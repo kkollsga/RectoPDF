@@ -6,7 +6,7 @@
 //! different disks apart, and a remounted disk is still the same one. Versions join only when both have the same real volume and a real
 //! inode; one without joins nothing. Joined into one document: `At` links with the same version (a rename or a hard link), the two ends of
 //! a `Saved`, and the current (version, path), which counts as an `At`. A path alone never joins; an `Unplaced` path is read on both
-//! sides, so it is Unknown. The target is everything joined to the current file; the rest is `Other`.
+//! sides, so it is Unknown. A Save As destination is no link at all ([`Lineage::destinations`]). The target is everything joined to the current file; the rest is `Other`.
 //!
 //! **Fork rule.** A block copy of a disk has the original's volume UUID and so can't be told from it. If one version was saved into two
 //! different versions the history has split in two, and the lineage says so (`Gap::Forked`): it is not complete. Nothing here opens a file.
@@ -87,6 +87,8 @@ impl Sides {
 #[derive(Debug)]
 pub struct Lineage<'a> {
     links: &'a [Link],
+    /// Where saves were going: not links, so not in [`Lineage::paths`].
+    destinations: Vec<&'a Path>,
     path: &'a Path,
     current: FileVersion,
     target: Vec<bool>,
@@ -101,7 +103,7 @@ fn path_bytes(path: &Path) -> usize {
 /// Splits `ledger`'s links by whether each joins the document that is now `current` at `path`, or refuses with `TooLarge` over a cap.
 pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, limits: &LedgerLimits) -> Result<Lineage<'a>, Refusal> {
     let links = ledger.links.as_slice();
-    if links.len() > limits.max_links as usize {
+    if links.len() + ledger.destinations.len() > limits.max_links as usize {
         return Err(Refusal::TooLarge);
     }
     let mut total = path_bytes(path);
@@ -112,6 +114,11 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
             longest = longest.max(len);
             total = total.saturating_add(len);
         }
+    }
+    for path in &ledger.destinations {
+        let len = path_bytes(path);
+        longest = longest.max(len);
+        total = total.saturating_add(len);
     }
     if longest > limits.max_path_bytes as usize || total > limits.max_total_path_bytes as usize {
         return Err(Refusal::TooLarge);
@@ -142,8 +149,11 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
     let root = joined.find(current);
     let forked = forks.into_iter().any(|n| joined.find(n) == root);
     let target = nodes.into_iter().map(|n| joined.find(n) == root).collect();
+    // Every destination the ledger recorded, in its order.
+    let destinations = ledger.destinations.iter().map(PathBuf::as_path).collect();
     Ok(Lineage {
         links,
+        destinations,
         path,
         current: current_version,
         target,
@@ -205,6 +215,12 @@ impl Lineage<'_> {
             };
             sides.into_iter().flatten().filter_map(move |s| path.map(|p| (p, s)))
         }))
+    }
+
+    /// Every path a Save As or Replace was going to, landed or not (a landing proves nothing about an earlier crashed save's temp). Not links: no version, no
+    /// side and no journal or backup is placed by one. Only the survey of the writer's temporaries reads them, to list their folders.
+    pub fn destinations(&self) -> impl Iterator<Item = &Path> {
+        self.destinations.iter().copied()
     }
 
     /// Each `At` version and both ends of each `Saved`, in input order.

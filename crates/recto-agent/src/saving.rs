@@ -25,8 +25,13 @@ use std::path::{Path, PathBuf};
 
 /// A save's steps a host may keep the lineage by: where the file was, what it became, and where its one backup went.
 pub enum SaveNote<'a> {
-    /// The save is about to write: the file at `path` is `from`, if its stamp is known.
-    Starting { path: &'a Path, from: Option<FileStamp> },
+    /// The save is about to write: the file at `path` is `from`, if its stamp is known. `destination` is where a Save As or a Replace is going (the
+    /// file may not be there yet): the writer makes its temporary beside it, named for it, before anything lands, so it is noted before the write.
+    Starting {
+        path: &'a Path,
+        from: Option<FileStamp>,
+        destination: Option<&'a Path>,
+    },
     /// The new file is written and is about to be moved into place: `from` (the file at `path`) turns into `to`. `over_itself` is a Save, not a Save As.
     Prepared {
         path: &'a Path,
@@ -329,10 +334,9 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     let ending = Ending::new(access, id);
     if let Some(support) = access.saving() {
         support.before_writing(id);
-        support.provenance(&SaveNote::Starting {
-            path: &snapshot.path,
-            from: snapshot.stamp,
-        });
+        // The source is noted now, before the save keeps its backup (a ledger that begins after a backup reads that backup as older than itself). Where a
+        // Save As is going is noted later, at the writer's first step, so a save refused before it records no destination.
+        note_starting(support, &snapshot.path, snapshot.stamp, &SaveTo::Same);
     }
     // The agreement gate again, now the tab's held: anything added since is looked at, the rest is what was kept.
     if let Some(refusal) = crate::agreement::save_refusal(&snapshot) {
@@ -373,6 +377,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         original: &snapshot.path,
         from: snapshot.stamp,
         over_itself: matches!(to, SaveTo::Same),
+        to,
         needed,
         kept: None,
         actor,
@@ -423,6 +428,16 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     Ok(data)
 }
 
+/// Tells the host the save is about to write (`SaveNote::Starting`), naming where a Save As or a Replace is going (sent twice for those: the source first, then with
+/// the destination, which a host reads as one more note of the same file, a link it has already being no new one), kept out of `save` for its length.
+fn note_starting(support: &dyn SaveSupport, path: &Path, from: Option<FileStamp>, to: &SaveTo) {
+    let destination = match to {
+        SaveTo::Same => None,
+        SaveTo::As { out, .. } => Some(out.as_path()),
+    };
+    support.provenance(&SaveNote::Starting { path, from, destination });
+}
+
 /// Tells the host the file is in place (`SaveNote::Landed`), kept out of `save` for its length.
 fn note_landed(support: &dyn SaveSupport, original: &Path, saved_as: Option<&Path>, to: Option<FileStamp>, backup: Option<&Path>) {
     support.provenance(&SaveNote::Landed {
@@ -456,6 +471,8 @@ struct Hooks<'a, A: SessionAccess> {
     /// The file at `original` as the save began, and whether the save is over it (a Save), for the lineage.
     from: Option<FileStamp>,
     over_itself: bool,
+    /// Where the save goes: a Save As or a Replace has its destination noted for the lineage when the writer is about to make its temporary (`SaveStep::Writing`).
+    to: &'a SaveTo,
     /// The file's pages the history can put back, which a copy keeps.
     needed: Vec<u32>,
     /// That copy, once it's made.
@@ -470,6 +487,11 @@ impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
 
     fn step(&mut self, step: SaveStep) {
         if let Some(support) = self.support {
+            // `Writing` comes after every refusal the save has (agreement, level, signed, rewrite, a changed file) and just before the writer makes its
+            // temporary: a save refused before it recorded nothing, so a refused Save As to a new name leaves no destination in the ledger.
+            if step == SaveStep::Writing && matches!(self.to, SaveTo::As { .. }) {
+                note_starting(support, self.original, self.from, self.to);
+            }
             support.step(self.id, step);
         }
     }

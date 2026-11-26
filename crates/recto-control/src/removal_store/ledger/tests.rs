@@ -99,6 +99,7 @@ fn a_path_through_a_link_records_what_the_backup_is_named_by() {
         &SaveNote::Starting {
             path: &link.join("a.pdf"),
             from: Some(seen),
+            destination: None,
         },
     );
     let ledger = read(&root);
@@ -124,6 +125,7 @@ fn a_path_through_a_link_records_what_the_backup_is_named_by() {
         &SaveNote::Starting {
             path: &link.join("a.pdf"),
             from: Some(seen),
+            destination: None,
         },
     );
     let ledger = read(&root);
@@ -147,6 +149,7 @@ fn a_save_start_that_cant_be_verified_records_the_path_unplaced() {
         &SaveNote::Starting {
             path: &dir.join("a.pdf"),
             from: None,
+            destination: None,
         },
     );
     assert_eq!(read(&root).links, vec![Link::Unplaced { path: dir.join("a.pdf") }]);
@@ -161,6 +164,7 @@ fn the_same_note_twice_is_one_link() {
     let note = SaveNote::Starting {
         path: &dir.join("a.pdf"),
         from: Some(stamp(&dir.join("a.pdf"))),
+        destination: None,
     };
     note_save(&root.join("backups.noindex"), &note);
     let once = len(&root);
@@ -473,7 +477,15 @@ fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
     let own = dir.join("own.pdf");
     std::fs::write(&own, pdf("own")).unwrap();
     // The save's own call, on this thread: it returns with the thread's seam not yet passed.
-    note_save_with(&root.join("backups.noindex"), &SaveNote::Starting { path: &own, from: None }, &config);
+    note_save_with(
+        &root.join("backups.noindex"),
+        &SaveNote::Starting {
+            path: &own,
+            from: None,
+            destination: None,
+        },
+        &config,
+    );
     at_seam
         .recv_timeout(Duration::from_secs(10))
         .expect("adoption was handed to the ledger's thread");
@@ -546,7 +558,14 @@ fn adoption_takes_what_the_journals_prove_and_nothing_else() {
     std::os::unix::fs::symlink(&still, root.join("session/journals/journal-0000000000000005.log")).unwrap();
     append(&root, &patient(), Vec::new());
     wait_idle(&root);
-    note_save(&root.join("backups.noindex"), &SaveNote::Starting { path: &still, from: None });
+    note_save(
+        &root.join("backups.noindex"),
+        &SaveNote::Starting {
+            path: &still,
+            from: None,
+            destination: None,
+        },
+    );
     let ledger = read(&root);
     let paths: Vec<&Path> = ledger
         .links
@@ -582,7 +601,8 @@ fn adoption_stops_at_its_cap_and_says_so() {
             &root,
             &Config {
                 adoption_headers: 3,
-                ..Config::default()
+                // The count is what is tested: under a starved machine the default time cap ended adoption before the third header (--like-ci, 1 of 20).
+                ..patient()
             },
             Vec::new(),
         );
@@ -842,6 +862,17 @@ fn after_a_save_as_the_sources_backup_is_unrelated() {
     let now = FileVersion::new(stamp(&copy), recto_platform::volume::volume_identity(&copy));
     let outcome = plan_for(&s.paths.root, &s.backups(), now, &copy, TargetMode::Save).unwrap();
     assert_eq!(outcome.0, 0, "the source's backup is not the copy's to purge: {outcome:?}");
+    // The destination was noted when the writer was about to make its temp (a destination frame, no link); the file landed since, and the reader keeps the
+    // destination all the same (a landing proves nothing about an earlier crashed save's temp): its path is in the file twice (the frame and the link).
+    assert!(ledger.destinations.contains(&copy), "kept after it landed: {:?}", ledger.destinations);
+    let file_bytes = std::fs::read(ledger_path(&s.paths.root)).unwrap();
+    let path_bytes = copy.as_os_str().as_encoded_bytes();
+    assert_eq!(file_bytes.windows(path_bytes.len()).filter(|w| *w == path_bytes).count(), 2);
+    assert!(
+        !ledger.links.iter().any(|link| matches!(link, Link::Unplaced { path } if *path == copy)),
+        "never a link: {:?}",
+        ledger.links
+    );
 }
 
 /// Failure: a save whose backup isn't under the name its path hashes to (so the survey would never find it) is recorded as nothing, and the removal then
@@ -864,4 +895,119 @@ fn a_backup_under_another_name_is_a_gap() {
     assert_eq!(read(&root).gap, None, "the name the path hashes to is not a mismatch");
     note_save(&root.join("backups.noindex"), &landed(&wrong));
     assert_eq!(read(&root).gap, Some(Gap::BackupMismatch));
+}
+
+/// Failure (review round 1): a Save As or Replace destination is recorded by the path it was typed with (a link in its folder, a file that isn't there yet),
+/// so the folder the survey lists is not the folder the writer's temp is in; or a destination whose folder can't be resolved is dropped with no sign, and
+/// the lineage reads as the whole story. (Round 2: it is a `Destination`, never a link.)
+#[test]
+fn a_destination_is_recorded_by_its_canonical_folder_a_missing_one_is_no_gap_and_an_unreadable_one_is() {
+    let dir = temp();
+    let root = dir.join("state");
+    let real = dir.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
+    let start = |destination: &Path| {
+        note_save(
+            &root.join("backups.noindex"),
+            &SaveNote::Starting {
+                path: &dir.join("a.pdf"),
+                from: Some(stamp(&dir.join("a.pdf"))),
+                destination: Some(destination),
+            },
+        );
+    };
+    start(&link.join("copy.pdf"));
+    let ledger = read(&root);
+    assert_eq!(ledger.links.len(), 1, "the destination is no link: {:?}", ledger.links);
+    assert_eq!(
+        ledger.destinations,
+        vec![real.join("copy.pdf")],
+        "the folder is canonical and the file isn't there"
+    );
+    assert_eq!(ledger.gap, None);
+    // A folder that can't be looked into: a temp may be there that nobody can list, so the lineage is not the whole story.
+    let locked = dir.join("locked");
+    std::fs::create_dir_all(locked.join("sub")).unwrap();
+    crate::removal_store::testing::mode(&locked, 0o000);
+    let _restore = crate::removal_store::testing::Restore(locked.clone());
+    start(&locked.join("sub").join("copy.pdf"));
+    let ledger = read(&root);
+    assert_eq!(ledger.destinations.len(), 1, "nothing is recorded for a folder that can't be resolved");
+    assert_eq!(ledger.gap, Some(Gap::WriteFailed));
+}
+
+/// Failure (review round 2): a destination the writer fails on at once is recorded as a gap, which refuses every removal for a save that made nothing; or a
+/// folder made between the note and the write is not the one recorded, so its temp is never listed. A part of the parent that is a file, a name too long
+/// and a loop of links are nothing (the writer fails there); a missing part is recorded under the nearest folder that is there.
+#[test]
+fn a_destination_the_writer_fails_on_is_nothing_and_one_in_a_folder_not_yet_made_is_kept() {
+    let dir = temp();
+    let root = dir.join("state");
+    let real = dir.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
+    let start = |destination: &Path| {
+        note_save(
+            &root.join("backups.noindex"),
+            &SaveNote::Starting {
+                path: &dir.join("a.pdf"),
+                from: Some(stamp(&dir.join("a.pdf"))),
+                destination: Some(destination),
+            },
+        );
+    };
+    start(&real.join("not").join("yet").join("copy.pdf"));
+    assert_eq!(
+        read(&root).destinations,
+        vec![real.join("not").join("yet").join("copy.pdf")],
+        "kept under the folder that is there"
+    );
+    assert_eq!(read(&root).gap, None);
+    let file = dir.join("plain-file");
+    std::fs::write(&file, b"x").unwrap();
+    let looped = dir.join("looped");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+    let too_long = "n".repeat(300);
+    for (why, destination) in [
+        ("a file where a folder should be", file.join("sub").join("copy.pdf")),
+        ("a name too long", real.join(&too_long).join("copy.pdf")),
+        ("a loop of links", looped.join("copy.pdf")),
+    ] {
+        start(&destination);
+        let ledger = read(&root);
+        assert_eq!(ledger.destinations.len(), 1, "{why}: nothing is recorded");
+        assert_eq!(ledger.gap, None, "{why}: and it is no gap");
+    }
+    // A folder that isn't there at all is as one made later: kept under the nearest that is.
+    start(&dir.join("no-such-folder").join("copy.pdf"));
+    assert_eq!(read(&root).destinations.len(), 2, "a folder that isn't there is kept under the nearest that is");
+}
+
+/// Failure: a destination path over the ledger's 4,096 bytes leaves a gap for a save that made nothing, or is recorded where the ledger can't hold it. On this
+/// system a path over `PATH_MAX` (1,024) is one the writer fails on at once (`ENAMETOOLONG`), so it is nothing: no record and no gap. The `WriteFailed` branch
+/// for a canonical path over 4,096 bytes can't be reached here, and the test doesn't pretend to reach it.
+#[test]
+fn a_destination_over_the_path_limit_is_nothing_because_the_writer_fails_on_it() {
+    let dir = temp();
+    let root = dir.join("state");
+    std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
+    let mut long = dir.path().to_path_buf();
+    for _ in 0..17 {
+        long.push("n".repeat(250)); // each part is under the name limit; the whole is over 4,096 bytes
+    }
+    long.push("copy.pdf");
+    assert!(long.as_os_str().len() > recto_core::removal::MAX_PATH_BYTES);
+    note_save(
+        &root.join("backups.noindex"),
+        &SaveNote::Starting {
+            path: &dir.join("a.pdf"),
+            from: Some(stamp(&dir.join("a.pdf"))),
+            destination: Some(&long),
+        },
+    );
+    let ledger = read(&root);
+    assert_eq!((ledger.destinations.len(), ledger.gap), (0, None));
 }

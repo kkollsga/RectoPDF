@@ -4,7 +4,8 @@
 //! - Header: `RECTOLEDGER\0` (12 bytes), version u32 = 1, `began_ns` i64 (wall clock when the file was made), 8 zero bytes, then the CRC32
 //!   of those 32 bytes.
 //! - Frame: `len u16` (the body's length), `kind u8`, the body, then `CRC32(kind || body) u32`.
-//! - Kinds: 1 `At { version, path }`, 2 `Saved { from, to }`, 3 `Unplaced { path }`, 4 `Gap { reason u8 }`.
+//! - Kinds: 1 `At { version, path }`, 2 `Saved { from, to }`, 3 `Unplaced { path }`, 4 `Gap { reason u8 }`, 5 `Destination { path }`: where a Save As or a
+//!   Replace was going before its file was there. It is no [`Link`]: it joins no version and no lineage, and only the survey of the writer's temporaries reads it.
 //! - A version is flags u8 (bit 0: has a volume), the volume UUID \[16\] (zero when the flag is clear), inode u64, size u64, mtime i64.
 //! - A path is a length u16 and then that many bytes: absolute, no NUL, 1 to 4,096 bytes.
 //!
@@ -108,12 +109,20 @@ impl Gap {
 pub enum Entry {
     Link(Link),
     Gap(Gap),
+    /// Where a save was going (the canonical folder and the file name), noted before the writer made anything. Never a link: see [`Ledger::destinations`].
+    Destination(PathBuf),
 }
 
 /// What was read: the links in order, the first reason the whole story is not there, and how much of the file was sound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ledger {
     pub links: Vec<Link>,
+    /// The paths saves were going to when they started, in file order, never joined to any lineage, to the survey of the writer's temporaries alone. **Every
+    /// one is kept, whatever is seen at the path later:** a crashed save's temp is named for its destination and lopdf sweeps it only an hour later with a dead
+    /// owner, so a later landing proves nothing about it. Holds at most the frames the cap on frames allows.
+    pub destinations: Vec<PathBuf>,
+    /// The path bytes of every frame read: what the cap on paths counts, so the writer knows what room is left.
+    pub path_bytes: usize,
     /// When the file was made. `i64::MAX` where it can't be known, so everything reads as older than it.
     pub began_ns: i64,
     /// The first reason the whole story is not there: a `Gap` frame the file holds, or why the read stopped. Not complete if any.
@@ -144,6 +153,8 @@ impl Ledger {
     fn empty(gap: Gap) -> Self {
         Self {
             links: Vec::new(),
+            destinations: Vec::new(),
+            path_bytes: 0,
             began_ns: i64::MAX,
             gap: Some(gap),
             stopped: Some(gap),
@@ -187,6 +198,10 @@ pub fn encode(entry: &Entry) -> Option<Vec<u8>> {
         Entry::Gap(gap) => {
             body.push(*gap as u8);
             4
+        }
+        Entry::Destination(path) => {
+            put_path(&mut body, path)?;
+            5
         }
     };
     let mut out = Vec::with_capacity(body.len() + FRAME_OVERHEAD);
@@ -298,6 +313,7 @@ fn decode(kind: u8, body: &[u8], limits: &LedgerLimits) -> Option<Entry> {
             to: b.version()?,
         }),
         3 => Entry::Link(Link::Unplaced { path: b.path(longest)? }),
+        5 => Entry::Destination(b.path(longest)?),
         4 => Entry::Gap(Gap::from_code(b.take(1)?[0])?),
         _ => return None,
     };
@@ -313,7 +329,7 @@ fn length_fits(kind: u8, len: usize, frame: &[u8]) -> bool {
         2 => len == 2 * VERSION_LEN,
         4 => len == 1,
         1 => len > VERSION_LEN + 2 && len <= MAX_BODY && path_len_at(VERSION_LEN).is_none_or(|p| len == VERSION_LEN + 2 + p),
-        3 => len > 2 && len <= MAX_BODY - VERSION_LEN && path_len_at(0).is_none_or(|p| len == 2 + p),
+        3 | 5 => len > 2 && len <= MAX_BODY - VERSION_LEN && path_len_at(0).is_none_or(|p| len == 2 + p),
         _ => false,
     }
 }
@@ -349,6 +365,8 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
     let began_ns = if began < EARLIEST_BEGAN_NS { i64::MAX } else { began };
     let mut out = Ledger {
         links: Vec::new(),
+        destinations: Vec::new(),
+        path_bytes: 0,
         began_ns,
         gap: None,
         stopped: None,
@@ -356,7 +374,8 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
         frames: 0,
         overflowed: false,
     };
-    let (mut frames, mut path_total) = (0usize, 0usize);
+    let mut frames = 0usize;
+    let mut path_total = 0usize;
     let mut pos = HEADER_LEN;
     while pos < bytes.len() {
         let rest = &bytes[pos..];
@@ -397,8 +416,16 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
                 }
                 out.links.push(link);
             }
+            Entry::Destination(path) => {
+                path_total += path.as_os_str().as_encoded_bytes().len();
+                if path_total > limits.max_total_path_bytes as usize {
+                    return stop(out, Gap::Damaged);
+                }
+                out.destinations.push(path);
+            }
         }
         pos += end;
+        out.path_bytes = path_total;
         out.good_len = pos;
         out.frames = frames;
     }
