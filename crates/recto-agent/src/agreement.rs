@@ -734,7 +734,7 @@ mod tests {
     impl RendererHalf for Scripted {
         fn repaired(&mut self) -> Result<bool, RenderFailure> {
             self.asks += 1;
-            self.repaired.clone()
+            self.repaired
         }
         fn page_count(&mut self) -> Result<u32, RenderFailure> {
             self.asks += 1;
