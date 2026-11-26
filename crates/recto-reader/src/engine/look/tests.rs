@@ -8,6 +8,10 @@ use std::time::Duration;
 /// A renderer for one letter page, black all over, as a dark slide is, with images or none as a test says, whose small pictures come out as a test lists them, and drawn black once the list is done; or, with `fails_until`, fail for a reason that may pass until the test's clock, `now`, gets there.
 struct StandIn {
     boxes: Option<Vec<[u16; 4]>>,
+    /// Its next image checks the Mac was too busy for, as many as are left.
+    busy_images: u8,
+    /// How many times its images were asked after.
+    image_asks: usize,
     draws: VecDeque<Result<(), RenderFailure>>,
     drawn: usize,
     now: Instant,
@@ -22,6 +26,8 @@ impl StandIn {
     fn new(boxes: Option<Vec<[u16; 4]>>, draws: impl IntoIterator<Item = Result<(), RenderFailure>>) -> Self {
         Self {
             boxes,
+            busy_images: 0,
+            image_asks: 0,
             draws: draws.into_iter().collect(),
             drawn: 0,
             now: Instant::now(),
@@ -46,8 +52,13 @@ impl LookSource for StandIn {
         false
     }
 
-    fn image_boxes(&mut self, _page: u32, _generation: u64) -> Option<Vec<[u16; 4]>> {
-        self.boxes.clone()
+    fn image_boxes(&mut self, _page: u32, _generation: u64) -> ImagesAsked {
+        self.image_asks += 1;
+        if self.busy_images > 0 {
+            self.busy_images -= 1;
+            return ImagesAsked::Busy;
+        }
+        self.boxes.clone().map_or(ImagesAsked::Unknown, ImagesAsked::Known)
     }
 
     fn is_stale(&self, _generation: u64) -> bool {
@@ -188,6 +199,38 @@ fn a_page_size_the_mac_was_too_busy_for_is_tried_again_not_decided() {
     assert_eq!(doc.drawn, 0);
 }
 
+/// Failure (the owner's 2026-11-13 report): the check for where a page's pictures are came back unknown because the Mac was too busy to run its worker, and the page was judged whole and kept so, a map sheet on white paper dimmed grey for the renderer's life. A busy check decides nothing and keeps nothing: the job ends as a look to be tried again, nothing is drawn for it, and once the wait is over and the Mac has the processor the look is decided from where the images are. Seen failing with `Busy` mapped to `Unknown` (the look kept at the first ask, dimmed).
+#[test]
+fn a_busy_image_check_makes_the_look_wait_and_it_is_decided_from_the_images_then() {
+    let start = Instant::now();
+    let picture = vec![[0, 0, 65_535, 65_535]];
+    let mut doc = StandIn::new(Some(picture.clone()), []);
+    doc.busy_images = 1;
+    let mut looks = Looks::default();
+    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(0)), Err(NoLook::Again));
+    assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
+    assert_eq!(doc.drawn, 0, "and nothing drawn for it");
+    // Decided as the same page is on a Mac that was never busy.
+    let mut quiet = StandIn::new(Some(picture), []);
+    let expected = asked(&mut quiet, &mut Looks::default()).unwrap();
+    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(30)).unwrap(), expected);
+    assert_eq!(doc.drawn, 1, "from one picture, drawn once the wait was over");
+}
+
+/// Failure: a page whose worker hangs makes every image check busy, so a look that waits for ever is a page never shown. The tries are [`LOOK_TRIES`], spaced, after which the page is judged whole as one whose images can't be told, and kept.
+#[test]
+fn a_page_whose_image_check_stays_busy_is_judged_whole_after_the_tries() {
+    let start = Instant::now();
+    let mut doc = StandIn::new(Some(vec![[0, 0, 65_535, 65_535]]), []);
+    doc.busy_images = u8::MAX;
+    let mut looks = Looks::default();
+    for tenth in [0, 30] {
+        assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again), "at {tenth} tenths");
+    }
+    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), PageLook::unknown());
+    assert!(looks.decided.contains_key(&0), "kept");
+}
+
 /// Failure: a picture that can't be had for good (a page that stopped its worker) is tried again at every job, a tile thrown away each time. It takes [`PageLook::undecided`] at once and keeps it, as before.
 #[test]
 fn a_small_picture_that_fails_for_good_is_answered_at_once() {
@@ -266,4 +309,19 @@ fn only_a_tile_that_is_the_whole_page_decides_it() {
         "a dark tile that's the whole page"
     );
     assert_eq!(doc.drawn, 0, "nothing drawn for it");
+}
+
+/// Failure (review round 1, item 3): the image check ran before the page's wait was looked at, so a second ask inside the wait (a second tab on the same file) ran a fresh walk each time, each costing a deadline in the product and filling the host's busy run early. A page waiting after a busy check asks nothing until its wait is over: two asks inside the wait make one walk. Seen failing with the wait looked at after the images were asked (3 walks).
+#[test]
+fn asks_inside_the_wait_after_a_busy_check_start_no_new_walk() {
+    let start = Instant::now();
+    let mut doc = StandIn::new(Some(vec![[0, 0, 65_535, 65_535]]), []);
+    doc.busy_images = u8::MAX;
+    let mut looks = Looks::default();
+    for tenth in [0, 5, 10] {
+        assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again), "at {tenth} tenths");
+    }
+    assert_eq!(doc.image_asks, 1, "one walk for the three asks inside the wait");
+    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(30)), Err(NoLook::Again));
+    assert_eq!(doc.image_asks, 2, "asked again once the wait is over");
 }

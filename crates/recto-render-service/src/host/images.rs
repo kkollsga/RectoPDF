@@ -88,7 +88,7 @@ impl DocRenderer {
         Ok(pixels)
     }
 
-    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
+    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. A check the Mac was too busy for (starved, or not started) is also `None` and is NOT remembered, so it's asked again, until `MAX_BUSY` of them in a row, after which it's an answer.
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
         forget_places_of_a_replaced_file(self);
         if let Some(known) = self.images.places.get(&page) {
@@ -110,7 +110,7 @@ impl DocRenderer {
     /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, the walk's answer to a request
     /// with the click's flag (`places.rs`), typed as it's decoded: the pictures' boxes, each by its own box through the forms it's in, and apart from
     /// them the box where a picture may be anywhere, which is never read as one. Never dark paper's boxes, which give a picture in a form the outermost
-    /// form's box. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click takes as no
+    /// form's box. `None` if it isn't known: stale (nothing remembered), a check the Mac was too busy for (starved or not started: not remembered either, until `MAX_BUSY` in a row), or the page couldn't be asked or the asking failed, which a click takes as no
     /// picture there. Remembered apart from dark paper's, under the same cap.
     pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<proto::ClickPlaces> {
         forget_places_of_a_replaced_file(self);
@@ -196,7 +196,7 @@ enum Ask {
 
 /// Asks `doc`'s worker where a page's images are, dark paper's way or a click's, its answer read by `decode`, the one for that request's shape, so a
 /// worker answering with the other's is a violation (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went
-/// stale, which says nothing about the page.
+/// stale, or a check the Mac was too busy for (starved or not started) was stopped, which say nothing about the page and are not remembered, until `MAX_BUSY` in a row.
 fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, decode: impl Fn(&[u8]) -> Result<(u32, T), ProtoError>) -> Option<Option<T>> {
     if doc.control.is_stale(generation) {
         return None;
@@ -220,6 +220,7 @@ fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, 
         proto::encode_images_request(job_id, page)
     };
     let (kills, busy) = (doc.kills(), doc.left_out.busy);
+    let busy_before = busy::before(doc);
     let reply = doc.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
         Kind::Images => {
             let (answered, places) = decode(&reply.payload)?;
@@ -241,6 +242,13 @@ fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, 
     // Stale: not about the page, so nothing's remembered.
     if doc.control.is_stale(generation) {
         return None;
+    }
+    // A check the Mac was too busy for says nothing about the page, so nothing's remembered and whoever asked asks again; past `MAX_BUSY` in a row it's an answer after all.
+    if busy::walk_stopped(doc, page, &reply, busy_before) {
+        return None;
+    }
+    if reply.is_ok() {
+        busy::landed(doc, page);
     }
     Some(reply.ok())
 }

@@ -20,11 +20,22 @@ const IMAGELESS_LOOK_EDGE: f32 = 128.0;
 /// **How many times a page's picture may fail for a reason that may pass before the page takes [`PageLook::undecided`] and keeps it** (review of 2026-11-13, S2), the tries spaced by the page view's own wait for a page that couldn't be drawn for a reason that may pass, `TRY_AGAIN_AFTER`, 3 s (second review, 2026-11-14: counted per job, three back-to-back tile draws used them up in milliseconds, under just the memory pressure that makes a surface fail, and a dark slide turned light for the renderer's life). After a try fails the job ends as [`Outcome::LookLater`]: its tile isn't shown, nothing's kept, and the page view asks nothing of the page till the wait is over, so no tile's drawn to be thrown away meanwhile; what's shown of the page stays, the sleep picture or the preview, with no note, as nothing's failed. A try asked before its time, as by a second tab on the same file, isn't one: nothing's drawn for it and the job ends the same way. Three tries over at least 6 s: a heavy page whose larger limit is busy for a moment, or a Mac short of memory for a few seconds, gets it, and a page that can never be drawn small still draws, after three tiles' worth of work.
 const LOOK_TRIES: u8 = 3;
 
+/// What asking where a page's images are came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ImagesAsked {
+    /// Where they are (none, for a page with no images).
+    Known(Vec<[u16; 4]>),
+    /// They can't be told, and won't be: the page is judged whole.
+    Unknown,
+    /// The Mac was too busy to run the worker that would have said. That says nothing of the page, so nothing is decided from it: the look waits and asks again ([`NoLook::Again`]).
+    Busy,
+}
+
 /// What the look is decided with: a file's renderer, or a test's stand-in for one.
 pub(super) trait LookSource {
     /// The places its images were decided from have been forgotten since this was last asked, so no look decided from them may stand.
     fn take_image_places_cleared(&mut self) -> bool;
-    fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>>;
+    fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked;
     fn is_stale(&self, generation: u64) -> bool;
     fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>;
     fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>;
@@ -35,8 +46,14 @@ impl LookSource for DocRenderer {
         DocRenderer::take_image_places_cleared(self)
     }
 
-    fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
-        DocRenderer::image_boxes(self, page, generation)
+    fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked {
+        let too_busy = self.stats().too_busy;
+        match DocRenderer::image_boxes(self, page, generation) {
+            Some(boxes) => ImagesAsked::Known(boxes),
+            // Nothing's remembered of a check the Mac was too busy for, so the count moved during this ask and only for it.
+            None if self.stats().too_busy > too_busy => ImagesAsked::Busy,
+            None => ImagesAsked::Unknown,
+        }
     }
 
     fn is_stale(&self, generation: u64) -> bool {
@@ -65,6 +82,8 @@ struct Tries {
     made: u8,
     /// Not tried again before this.
     next: Instant,
+    /// The last try was the image check the Mac was too busy for, so while the page waits nothing asks the images again: each ask is a walk that costs the host a deadline and a place in its busy run.
+    busy: bool,
 }
 
 impl Looks {
@@ -89,12 +108,18 @@ impl Looks {
         self.tries.get(&page).is_some_and(|tries| now < tries.next)
     }
 
+    /// Whether a page is waiting out the wait after an image check the Mac was too busy for.
+    fn waiting_after_busy(&self, page: u32, now: Instant) -> bool {
+        self.tries.get(&page).is_some_and(|tries| tries.busy && now < tries.next)
+    }
+
     /// A failure of a page's picture that may pass, at `now`: whether it may be tried again, rather than the page taking what a page with no picture takes. It counts as a try only once the last one's wait is over.
-    fn try_again(&mut self, page: u32, now: Instant) -> bool {
+    fn try_again(&mut self, page: u32, now: Instant, busy: bool) -> bool {
         if self.tries.len() >= MAX_LOOKS && !self.tries.contains_key(&page) {
             self.tries.clear();
         }
-        let tries = self.tries.entry(page).or_insert(Tries { made: 0, next: now });
+        let tries = self.tries.entry(page).or_insert(Tries { made: 0, next: now, busy });
+        tries.busy = busy;
         if now >= tries.next {
             tries.made = tries.made.saturating_add(1);
             tries.next = now + TRY_AGAIN_AFTER;
@@ -154,10 +179,25 @@ pub(super) fn page_look(
     if let Some(known) = looks.decided.get(&page) {
         return Ok(Arc::clone(known));
     }
-    let boxes = doc.image_boxes(page, generation);
+    // Asked before its wait is over (a second tab on the same file): nothing's asked, as nothing's drawn for a page still waiting.
+    if looks.waiting_after_busy(page, now) {
+        return Err(NoLook::Again);
+    }
+    let asked = doc.image_boxes(page, generation);
     if doc.is_stale(generation) {
         return Err(NoLook::Stale);
     }
+    // Before any picture at hand decides: a look decided without knowing where the images are is kept for the renderer's life. Bounded by [`LOOK_TRIES`], after which the page takes what a page whose images can't be told takes.
+    if asked == ImagesAsked::Busy {
+        if looks.try_again(page, now, true) {
+            return Err(NoLook::Again);
+        }
+        return Ok(looks.keep(page, PageLook::undecided(false)));
+    }
+    let boxes = match asked {
+        ImagesAsked::Known(boxes) => Some(boxes),
+        ImagesAsked::Unknown | ImagesAsked::Busy => None,
+    };
     let image_less = boxes.as_ref().is_some_and(Vec::is_empty);
     let decide = |surface: &PixelSurface, rect: TileRect| {
         let stride = surface.stride() as usize;
@@ -181,7 +221,7 @@ pub(super) fn page_look(
     };
     let look = match picture {
         Picture::Decided(look) => look,
-        Picture::Passing if looks.try_again(page, now) => return Err(NoLook::Again),
+        Picture::Passing if looks.try_again(page, now, false) => return Err(NoLook::Again),
         Picture::Passing | Picture::Final => PageLook::undecided(image_less),
     };
     Ok(looks.keep(page, look))
