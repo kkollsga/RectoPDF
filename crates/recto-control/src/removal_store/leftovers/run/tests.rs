@@ -126,7 +126,7 @@ struct Crash(u32, Moment);
 impl Hooks for Crash {}
 
 impl Steps for Crash {
-    fn at(&mut self, step: u32, moment: Moment) -> bool {
+    fn at(&mut self, step: u32, moment: Moment, _deadline: Instant) -> bool {
         !(step == self.0 && moment == self.1)
     }
 }
@@ -438,4 +438,60 @@ fn a_stop_in_the_middle_of_a_copy_never_says_nothing_was_cleared_and_a_clear_aft
         assert!(fx.check(Who::Person).found.is_empty());
     }
     assert!(stopped_part_way >= 8, "the walk was stopped part way {stopped_part_way} times");
+}
+
+/// Spends the clear's time inside the first entry, then lets it go on: what a slow disk does to a long copy.
+struct Slow(bool);
+
+impl Hooks for Slow {
+    fn entry(&mut self, _: &OsStr) -> bool {
+        if !std::mem::replace(&mut self.0, true) {
+            let until = Instant::now() + Duration::from_millis(30);
+            while Instant::now() < until {
+                std::hint::spin_loop();
+            }
+        }
+        true
+    }
+}
+
+impl Steps for Slow {
+    fn limit(&self) -> Duration {
+        Duration::from_millis(20)
+    }
+}
+
+/// Failure (review round 1, 4): the deadline is looked at only between steps, so one step that deletes many copies, each with many entries, runs on past
+/// it. With a clear whose first entry takes the whole time, the walk stops at the next entry, part way through that copy, and says it ran out of time.
+#[test]
+fn a_long_copies_step_stops_at_the_deadline_part_way_and_says_so() {
+    let fx = fx();
+    // One copy to clear and nothing else, so the stop can only be inside it.
+    for name in ["session.damaged", "session.damaged.1"] {
+        std::fs::remove_dir_all(fx.fixture.root().join(name)).unwrap();
+    }
+    for entry in std::fs::read_dir(&*fx.fixture.docs).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap().as_encoded_bytes().starts_with(b".append-") {
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            }
+            .unwrap();
+        }
+    }
+    let id = id_of(&fx.check(Who::Person));
+    let cleared = fx.clear(id, Who::Person, Instant::now(), &mut Slow(false)).expect("started");
+    assert_eq!(cleared.stopped.as_deref(), Some("it ran out of time"), "{}", cleared.words);
+    assert_eq!(cleared.outcome, Outcome::PartlyCleared, "{}", cleared.words);
+    assert!(
+        cleared.words.contains("partly deleted"),
+        "stopped inside the copy, not after it: {}",
+        cleared.words
+    );
+    assert!(
+        fx.fixture.root().join("update").join("before").exists(),
+        "what is left is left for the next check"
+    );
 }

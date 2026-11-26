@@ -19,7 +19,7 @@ use recto_control::removal_store::leftovers::{act::Hooks, words};
 use recto_core::removal::{CONFIRM_LIMITS, ConfirmRefusal, Confirmations, Refusal};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -50,6 +50,8 @@ pub struct Removal {
     clearing: AtomicBool,
     hold: Hold,
     world: Mutex<Option<World>>,
+    /// How long a clear may take, in milliseconds, when a test or a QA run shortens it; 0 is the design's.
+    limit_ms: AtomicU64,
 }
 
 impl Default for Removal {
@@ -59,6 +61,7 @@ impl Default for Removal {
             clearing: AtomicBool::new(false),
             hold: Hold::default(),
             world: Mutex::new(None),
+            limit_ms: AtomicU64::new(0),
         }
     }
 }
@@ -73,12 +76,16 @@ impl Drop for Clearing<'_> {
 }
 
 /// A clear's walk as the app sees it: held at the step a QA run asked for.
-struct Held<'a>(&'a Hold);
+struct Held<'a>(&'a Hold, Duration);
 
 impl Hooks for Held<'_> {}
 
 impl Steps for Held<'_> {
-    fn at(&mut self, step: u32, moment: Moment) -> bool {
+    fn limit(&self) -> Duration {
+        self.1
+    }
+
+    fn at(&mut self, step: u32, moment: Moment, deadline: Instant) -> bool {
         if moment != Moment::Before {
             return true;
         }
@@ -88,9 +95,15 @@ impl Steps for Held<'_> {
         }
         state.reached = true;
         self.0.changed.notify_all();
-        let began = Instant::now();
-        while state.armed == Some(step) && began.elapsed() < HOLD_LIMIT {
-            state = self.0.changed.wait_timeout(state, HOLD_LIMIT).unwrap_or_else(PoisonError::into_inner).0;
+        // Held until released, and never past the clear's own time.
+        let until = deadline.min(Instant::now() + HOLD_LIMIT);
+        while state.armed == Some(step) && Instant::now() < until {
+            state = self
+                .0
+                .changed
+                .wait_timeout(state, until.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
         true
     }
@@ -125,6 +138,19 @@ impl Removal {
     /// QA and tests: act in this world (a Trash, a process table, a volume fact) and not the Mac's.
     pub fn set_world(&self, world: World) {
         *lock(&self.world) = Some(world);
+    }
+
+    /// QA and tests: a clear may take this long, not the design's 10 seconds.
+    pub fn set_limit(&self, limit: Duration) {
+        self.limit_ms
+            .store(u64::try_from(limit.as_millis()).unwrap_or(u64::MAX).max(1), Ordering::SeqCst);
+    }
+
+    fn limit(&self) -> Duration {
+        match self.limit_ms.load(Ordering::SeqCst) {
+            0 => run::CLEAR_DEADLINE,
+            ms => Duration::from_millis(ms),
+        }
     }
 
     /// How many plans wait for a yes.
@@ -283,7 +309,16 @@ pub(crate) fn command(
                 beside_newer: saver.store.beside_newer(),
                 sleep_pass_done: on_disk.sleeper().older_pass_done(),
             };
-            let cleared = run::clear(&removal.store, &asked, id, &world, outside, Instant::now(), &mut Held(&removal.hold)).map_err(clear_error)?;
+            let cleared = run::clear(
+                &removal.store,
+                &asked,
+                id,
+                &world,
+                outside,
+                Instant::now(),
+                &mut Held(&removal.hold, removal.limit()),
+            )
+            .map_err(clear_error)?;
             if cleared.stopped.is_some() {
                 return Err(refuse(Code::REMOVAL_STOPPED, cleared.words, exit::FAILED));
             }

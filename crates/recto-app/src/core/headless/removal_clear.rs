@@ -258,3 +258,24 @@ fn recto_removal_check_and_clear_are_the_same_commands() {
         .expect("cleared");
     assert_eq!(cleared["outcome"], "complete", "{cleared}");
 }
+
+/// Failure (review round 1, 4): a clear held by a QA run waits for its release past the clear's own time, so a hold outlasts the 10 seconds the person was
+/// promised. Held at a step with the time cut to 50 ms and never released, it stops by itself, says it ran out of time, and the app is not left clearing.
+#[test]
+fn a_hold_stops_at_the_clears_deadline() {
+    let bed = bed();
+    let plan = plan(&bed.agent(Level::Full, CHECK).expect("a look"));
+    let removal = bed.app.core().tools.removal();
+    removal.set_limit(std::time::Duration::from_millis(50));
+    removal.hold_at(1);
+    let stopped = bed.agent(Level::Full, &clear_line(&plan)).unwrap_err();
+    assert_eq!(stopped.code.as_str(), "removal_stopped", "{stopped:?}");
+    assert!(stopped.message.contains("ran out of time"), "{}", stopped.message);
+    assert!(!removal.clearing());
+    assert_eq!(
+        std::fs::read_dir(bed.trash()).map_or(0, Iterator::count),
+        0,
+        "past the deadline nothing more is moved: the save is where it was"
+    );
+    removal.release();
+}

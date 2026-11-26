@@ -288,8 +288,34 @@ pub enum Moment {
 
 /// What a caller sees of the walk and may stop: the app's QA hold, and a test's crash. `false` stops the walk where it is, as a crash would.
 pub trait Steps: Hooks {
-    fn at(&mut self, _step: u32, _moment: Moment) -> bool {
+    /// `deadline` is when the clear must stop: a hold that waits waits no later.
+    fn at(&mut self, _step: u32, _moment: Moment, _deadline: Instant) -> bool {
         true
+    }
+
+    /// How long the clear may take from when it was asked. A test's or a QA run's seam: the design's limit unless it says another.
+    fn limit(&self) -> Duration {
+        CLEAR_DEADLINE
+    }
+}
+
+/// The walk's hooks with the deadline looked at before every artifact and every entry of a copy, so a long copies step stops at it as a slow step does.
+struct Deadlined<'a> {
+    steps: &'a mut dyn Steps,
+    deadline: Instant,
+}
+
+impl Hooks for Deadlined<'_> {
+    fn before(&mut self, key: &ArtifactKey) -> bool {
+        Instant::now() < self.deadline && self.steps.before(key)
+    }
+
+    fn after(&mut self, key: &ArtifactKey, done: &Done) {
+        self.steps.after(key, done);
+    }
+
+    fn entry(&mut self, name: &std::ffi::OsStr) -> bool {
+        Instant::now() < self.deadline && self.steps.entry(name)
     }
 }
 
@@ -313,6 +339,9 @@ fn why_words(why: &Why) -> &'static str {
     }
 }
 
+/// What a clear says when it stopped for its time.
+const RAN_OUT: &str = "it ran out of time";
+
 fn count(len: usize) -> u32 {
     u32::try_from(len).unwrap_or(u32::MAX)
 }
@@ -333,7 +362,8 @@ pub fn clear<A: Copy + Eq>(
     let mut progress = Progress::start(&looked.plan, confirmed).map_err(|_| ClearError::Confirm(ConfirmRefusal::PlanChanged))?;
     // Right before the first act: an `update/` that has appeared since is leased now, or the clear doesn't go.
     leases.look_again().map_err(ClearError::Busy)?;
-    Ok(walk(asked, &looked, &mut progress, world, Some(leases), now + CLEAR_DEADLINE, steps))
+    let deadline = now + steps.limit();
+    Ok(walk(asked, &looked, &mut progress, world, Some(leases), deadline, steps))
 }
 
 fn walk<A: Copy + Eq>(
@@ -366,10 +396,10 @@ fn walk<A: Copy + Eq>(
     while let Some(step) = progress.next(plan) {
         let index = progress.acked();
         if Instant::now() >= deadline {
-            stopped = Some("it took longer than 10 seconds".to_owned());
+            stopped = Some(RAN_OUT.to_owned());
             break;
         }
-        if !steps.at(index, Moment::Before) {
+        if !steps.at(index, Moment::Before, deadline) {
             stopped = Some(why_words(&Why::Asked).to_owned());
             break;
         }
@@ -383,7 +413,7 @@ fn walk<A: Copy + Eq>(
                     .filter_map(|id| looked.surveyed.key(*id))
                     .map(|(_, key)| key)
                     .collect();
-                let report = act::clear(&looked.pins, &keys, &env, steps);
+                let report = act::clear(&looked.pins, &keys, &env, &mut Deadlined { steps: &mut *steps, deadline });
                 for (key, result) in &report.done {
                     match result {
                         Done::Trashed(_) => did.trashed += 1,
@@ -397,7 +427,8 @@ fn walk<A: Copy + Eq>(
                 match report.stopped {
                     None => recto_core::removal::Ack::Done,
                     Some((_, why)) => {
-                        stopped = Some(why_words(&why).to_owned());
+                        let late = matches!(why, Why::Asked) && Instant::now() >= deadline;
+                        stopped = Some(if late { RAN_OUT } else { why_words(&why) }.to_owned());
                         if trash && why.in_doubt() {
                             recto_core::removal::Ack::DoneNotDurable
                         } else {
@@ -423,7 +454,7 @@ fn walk<A: Copy + Eq>(
                 recto_core::removal::Ack::Failed
             }
         };
-        if !steps.at(index, Moment::Acted) {
+        if !steps.at(index, Moment::Acted, deadline) {
             stopped = Some(why_words(&Why::Asked).to_owned());
             break;
         }
@@ -431,7 +462,7 @@ fn walk<A: Copy + Eq>(
             stopped.get_or_insert_with(|| "RectoPDF lost its place".to_owned());
             break;
         }
-        if !steps.at(index, Moment::Acknowledged) {
+        if !steps.at(index, Moment::Acknowledged, deadline) {
             stopped = Some(why_words(&Why::Asked).to_owned());
             break;
         }
