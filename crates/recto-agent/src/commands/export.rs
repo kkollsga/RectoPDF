@@ -121,7 +121,7 @@ impl Cmd for Render {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (page, found) = at.find(access, tab)?;
+            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
             // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
             let pinned = found.as_ref().map(locating::Located::tab_ref);
             let tab = pinned.as_ref().unwrap_or(tab);

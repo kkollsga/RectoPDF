@@ -16,7 +16,7 @@ pub use codec::{decode, encode};
 pub use resolve::{
     DocumentMatch, Looked, MAX_CANDIDATES, Placed, Referrer, Resolution, ScanCaps, Status, TAG_PAGES, Unreferenceable, document_tags, reference, resolve,
 };
-pub use text::{TextMatch, characters, check_characters, text_check};
+pub use text::{TextMatch, characters, check_characters, held_characters, text_check};
 
 use crate::page_id::PageIdentity;
 

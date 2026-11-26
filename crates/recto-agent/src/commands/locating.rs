@@ -88,11 +88,16 @@ impl PageOrRef {
     }
 
     /// What `text` and `render` read: the page's place in the tab now, and what was said of finding it when it was by reference.
-    pub(crate) fn find<A: SessionAccess>(&self, access: &A, tab: &TabRef) -> Result<(u32, Option<locating::Located>), AgentError> {
+    pub(crate) fn find<A: SessionAccess>(
+        &self,
+        access: &A,
+        tab: &TabRef,
+        when: locating::CharsChecked,
+    ) -> Result<(u32, Option<locating::Located>), AgentError> {
         match self {
             Self::Page(page) => Ok((*page, None)),
             Self::Ref(reference) => {
-                let found = locating::page_of(access, tab, reference)?;
+                let found = locating::page_of(access, tab, reference, when)?;
                 Ok((found.page, Some(found)))
             }
         }
