@@ -277,6 +277,53 @@ fn a_link_at_the_ledgers_name_is_never_written_through() {
     assert_eq!(read(&root).gap, Some(Gap::Damaged));
 }
 
+/// Runs `work` on a thread and fails, naming `what`, if it hasn't returned in 10 s (a thread blocked for good is left behind, which only a failing run does).
+fn returns_in_time(what: &str, work: impl FnOnce() + Send + 'static) {
+    let (done, returned) = mpsc::channel();
+    std::thread::spawn(move || {
+        work();
+        let _ = done.send(());
+    });
+    returned.recv_timeout(Duration::from_secs(10)).unwrap_or_else(|_| panic!("{what} didn't return"));
+}
+
+/// A write that is lost: the lock is held by someone else for longer than the writer waits.
+fn lose_a_write(root: &Path) {
+    let holder = std::fs::OpenOptions::new().append(true).open(ledger_path(root)).unwrap();
+    holder.lock().unwrap();
+    let config = Config {
+        lock_wait: Duration::from_millis(20),
+        ..Config::default()
+    };
+    append(root, &config, vec![at(99)]);
+}
+
+/// Failure: the gap mark is opened for writing with a plain open, so a pipe planted at `ledger.gap` waits for a reader for ever and a save that lost a
+/// write hangs on it.
+#[test]
+fn a_pipe_at_the_gap_mark_doesnt_hold_a_save_up() {
+    let dir = temp();
+    let root = dir.join("state");
+    append(&root, &Config::default(), vec![at(1)]);
+    let mark = root.join("removal").join(GAP_MARK);
+    assert!(std::process::Command::new("mkfifo").arg(&mark).status().unwrap().success());
+    let root = root.clone();
+    returns_in_time("a save that lost a write, with a pipe at the gap mark", move || lose_a_write(&root));
+}
+
+/// Failure: when `removal/` is a link, the gap mark is made through it, in whatever folder it points at (a file made in a place the app never chose).
+#[test]
+fn a_linked_removal_folder_gets_no_gap_mark_through_it() {
+    let dir = temp();
+    let root = dir.join("state");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&root).unwrap();
+    local::ensure_private_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join("removal")).unwrap();
+    append(&root, &Config::default(), vec![at(1)]);
+    assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing was made in the linked folder");
+}
+
 /// Failure: two writers that read the same state both append the same link (a duplicate), or the second's header lands after the first's frames (damage). A
 /// writer held between its read and its append, and another started then, must leave one link and a clean read.
 #[test]

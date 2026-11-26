@@ -259,9 +259,16 @@ impl Room {
 pub(crate) fn append(root: &Path, config: &Config, entries: Vec<Entry>) {
     match try_append(root, config, entries) {
         Ok(()) | Err(Failed::Unwritable) => {}
-        Err(Failed::Lost) => {
-            let _ = local::open_private_for_writing(&dir_of(root).join(GAP_MARK), true);
-        }
+        Err(Failed::Lost) => mark_gap(root),
+    }
+}
+
+/// Leaves the gap mark, only in a folder that is really this user's own (a linked `removal/` would put it in whatever the link points at), and opened as the
+/// ledger is: a link isn't followed and a pipe isn't waited on. If it can't be made, nothing is: a save is never held up for it.
+fn mark_gap(root: &Path) {
+    let dir = dir_of(root);
+    if local::check_private_dir(&dir).is_ok() {
+        let _ = local::append_private_file(&dir.join(GAP_MARK));
     }
 }
 
