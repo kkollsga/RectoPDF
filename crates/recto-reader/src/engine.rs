@@ -93,6 +93,8 @@ struct Shared {
     #[cfg(any(test, feature = "qa"))]
     qa: Box<qa_holds::QaHolds>,
     hidden: Mutex<crate::tiles::HiddenSets>, // The file's highlights each tab shown has taken out, unsaved: `Selection::show_hidden`.
+    /// How many `recto-open` threads' opens haven't returned: a file that doesn't answer shows here, for QA (`reader.opens_waiting`).
+    opens_waiting: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// The tick ([`asked`]) of the newest ask of each kind applied to the view, each moved on only with the view's lock held, so an ask asked before it isn't
@@ -195,6 +197,7 @@ impl Engine {
             #[cfg(any(test, feature = "qa"))]
             qa: Box::default(),
             hidden: Mutex::default(),
+            opens_waiting: Arc::default(),
         });
         Self {
             shared,
@@ -520,7 +523,11 @@ impl Engine {
     }
 
     pub fn report(&self) -> ReaderReport {
-        lock(&self.shared.reader).report()
+        let mut report = lock(&self.shared.reader).report();
+        if let Some(map) = report.0.as_object_mut() {
+            map.insert("opens_waiting".into(), self.shared.opens_waiting.load(Ordering::SeqCst).into());
+        }
+        report
     }
 
     /// Blocks until everything visible is settled and the thread that draws has told what came of its last turn, or the time runs out. Never for the UI thread.

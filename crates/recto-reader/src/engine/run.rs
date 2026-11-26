@@ -512,13 +512,25 @@ fn renderer_for<'a>(
             }
             let (sender, receiver) = sync_channel(1);
             let opening = path.to_path_buf();
-            std::thread::Builder::new()
+            let waiting = shared.opens_waiting.clone();
+            waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            /// Counts an open down when its thread ends, a panic included.
+            struct Done(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let done = Done(waiting);
+            let spawned = std::thread::Builder::new()
                 .name("recto-open".into())
                 .stack_size(128 * 1024)
                 .spawn(move || {
+                    let _done = done;
                     let _ = sender.send(DocRenderer::open_file(&opening));
-                })
-                .map_err(|_| Unopened::Failed(RenderFailure::Unavailable))?;
+                });
+            // A spawn that failed dropped the closure, and its guard with it.
+            spawned.map_err(|_| Unopened::Failed(RenderFailure::Unavailable))?;
             openings.insert(path.to_path_buf(), receiver);
         }
         let started = Instant::now();
