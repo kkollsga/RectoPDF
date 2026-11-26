@@ -53,23 +53,27 @@ fn tabs(n: u32, salt: u64) -> Vec<TabEntry> {
     (1..=n).map(|id| tab(id, &format!("/d/{id}.pdf"), salt * 1_000_000 + u64::from(id))).collect()
 }
 
-/// Failure: what `note_tabs` keeps grows with the tabs opened over a session (a set per tab, or a set that is never cleared), against rule 1. Filled to its
-/// cap on eight state folders (the most it holds, a ninth pushing the first out), the set holds under 1 MiB in all (live bytes of the process, the set being all
-/// that is kept).
+/// Failure: what `note_tabs` keeps grows with the tabs opened over a session (a set that is never cleared when full), against rule 1. Nine state folders each
+/// take 200 calls of 64 new pairs (12,800 hashes a root, three times the set's cap, so it is cleared several times): what is held in all (live bytes of the
+/// process, the set being all that is kept) stays under 1 MiB. Without the clearing it is about 1.2 MiB. (That at most 8 roots are held is
+/// `roots_are_held_only_with_something_to_note_and_never_while_running`'s; it can't be told from bytes.)
 #[test]
 fn held_bytes_are_capped() {
     let roots: Vec<_> = (0..9).map(|_| temp()).collect();
+    let template = tab(1, "/d/x.pdf", 0);
     let before = live();
     for (n, root) in roots.iter().enumerate() {
-        // 4,096 hashes a root: sixty-four calls of sixty-four new pairs.
-        for round in 0..64u64 {
-            let batch: Vec<TabEntry> = (0..64u64).map(|i| tab(1, "/d/x.pdf", (n as u64 + 1) * 1_000_000 + round * 64 + i)).collect();
-            assert_eq!(take_new(root, &batch).len(), 64);
+        let mut batch: Vec<TabEntry> = vec![template.clone(); 64];
+        for round in 0..200u64 {
+            for (i, tab) in batch.iter_mut().enumerate() {
+                tab.file.as_mut().unwrap().inode = (n as u64 + 1) * 10_000_000 + round * 64 + i as u64;
+            }
+            assert_eq!(take_new(root, &batch).len(), 64, "root {n}, round {round}");
             finish(root);
         }
     }
     let held = live() - before;
-    println!("held by the seen sets at their cap, 8 roots: {held} bytes");
+    println!("held by the seen sets, 9 roots of 12,800 pairs offered: {held} bytes");
     assert!(held < 1 << 20, "held {held} bytes");
 }
 
