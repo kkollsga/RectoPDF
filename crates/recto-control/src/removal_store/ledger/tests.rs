@@ -765,7 +765,8 @@ impl Served {
 }
 
 /// Failure: a real Save leaves a backup the ledger can't place, so a removal refuses for every file saved by this app; or it places it on the wrong file. A
-/// Save, then the lineage and the survey from the ledger the save wrote: the real backup is the target's, and is purged by the plan.
+/// Save, then the lineage and the survey from the ledger the save wrote: the real backup is the target's, and is purged by the plan. The landed note is
+/// seen here and not in the app's headless test, where the record write after a save notes the file again.
 #[test]
 fn a_real_save_leaves_a_ledger_that_places_its_backup() {
     let s = served();
@@ -783,6 +784,12 @@ fn a_real_save_leaves_a_ledger_that_places_its_backup() {
     let now = stamp(&file);
     let current = FileVersion::new(now, recto_platform::volume::volume_identity(&file));
     assert!(current.volume.is_some(), "the temp folder is on a volume with a real UUID (APFS or HFS+)");
+    // The landed note: the file as it is now, recorded at its path (the save's own `Saved` only says it will be).
+    assert!(
+        ledger.links.iter().any(|l| matches!(l, Link::At { version, .. } if *version == current)),
+        "no `At` for the landed file: {:?}",
+        ledger.links
+    );
     let outcome = plan_for(&s.paths.root, &s.backups(), current, &file, TargetMode::Save).unwrap();
     assert_eq!(outcome, (1, Disposition::Purged), "the real backup is the target's");
     // Neither the marker in the page text nor the one in the title is in the ledger.
