@@ -241,3 +241,20 @@ fn a_document_opened_with_its_password_is_the_persons_to_look_beside_and_no_agen
     let checked = app.core().host.run_as(Actor::Person, &command, &mut Vec::new(), crate::queue::Origin::Input);
     assert!(checked.is_ok(), "{checked:?}");
 }
+
+/// Failure: the CLI's words (`recto removal check`, `recto removal clear --confirm <plan>`) don't make the commands the window will send, so what a person types
+/// at a terminal and what an agent sends are two features: the row's arguments, its plan word and the tab's selector don't reach the command.
+#[test]
+fn recto_removal_check_and_clear_are_the_same_commands() {
+    let bed = bed();
+    let checked = bed.app.recto(Level::Full, &["removal", "check", "--tab", "report"]).expect("a look");
+    let plan = plan(&checked);
+    assert_eq!(plan.len(), 16, "the plan is 16 hex digits");
+    let refused = bed.app.recto(Level::Full, &["removal", "clear", "--confirm", "not a plan"]).unwrap_err();
+    assert_eq!(refused.code.as_str(), "usage", "{refused:?}");
+    let cleared = bed
+        .app
+        .recto(Level::Full, &["removal", "clear", "--tab", "report", "--confirm", &plan])
+        .expect("cleared");
+    assert_eq!(cleared["outcome"], "complete", "{cleared}");
+}
