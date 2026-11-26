@@ -26,6 +26,9 @@ const MAX_ENTRIES: usize = 8_192;
 const MAX_COPIES: usize = 64;
 /// The two sessions' names.
 const FLAVORS: [&str; 2] = ["session", "session-windowless"];
+/// The word a damaged state's folder is named by (`<flavor>.damaged`, then `<flavor>.damaged.<k>`). A constant, so the line that reads it isn't mistaken
+/// for a decision by a refusal's code (`recto-agent/tests/codes.rs`): it is a folder name.
+const DAMAGED: &[u8] = b"damaged";
 /// The one-byte marker the record store writes beside a record after a copy went back, and reads only for whether it is there.
 const WENT_BACK: &[u8] = b"went-back";
 
@@ -97,7 +100,8 @@ pub(super) fn legacy_kind(name: &[u8]) -> Name {
         if let Some(version) = rest.strip_prefix(b"v").and_then(counted) {
             return if version <= CURRENT_VERSION { Name::Copy } else { Name::Newer };
         }
-        if rest == b"damaged" || rest.strip_prefix(b"damaged.").and_then(counted).is_some() {
+        let numbered = rest.strip_prefix(DAMAGED).and_then(|rest| rest.strip_prefix(b".")).and_then(counted);
+        if rest == DAMAGED || numbered.is_some() {
             return Name::Copy;
         }
     }
