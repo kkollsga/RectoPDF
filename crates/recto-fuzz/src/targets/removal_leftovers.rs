@@ -27,7 +27,9 @@ fn decode(data: &[u8]) -> (u8, Vec<Found>, &[u8]) {
     let body = data.get(2..).unwrap_or_default();
     let (records, acks) = body.split_at((count * 4).min(body.len()));
     let found = records
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|r| {
             let store = Store::ALL[usize::from(r[0]) % Store::COUNT];
             Found {
