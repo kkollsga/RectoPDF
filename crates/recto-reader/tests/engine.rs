@@ -424,7 +424,11 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     assert_eq!(engine.report().0["opens_waiting"], 1, "{}", engine.report().0);
     // Lets its thread go. Not a blocking open: with no reader that would wait for ever (CI run 45789292698); no reader is an error here.
     use std::os::unix::fs::OpenOptionsExt;
-    let writer = std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(&dead).expect("nothing is reading the fifo");
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&dead)
+        .expect("nothing is reading the fifo");
     let deadline = Instant::now() + HANG;
     while engine.report().0["opens_waiting"] != 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll

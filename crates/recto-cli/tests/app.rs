@@ -1068,9 +1068,7 @@ fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     // Lets its thread go, and nothing comes of it: the reader has moved on. Non-blocking: no reader is an error (ENXIO), not a wait for ever.
     use std::os::unix::fs::OpenOptionsExt;
     let writer = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&paths[0]);
-    let writer = writer.unwrap_or_else(|error| {
-        panic!("nothing was reading the FIFO ({error}): {}", run.report()["reader"])
-    });
+    let writer = writer.unwrap_or_else(|error| panic!("nothing was reading the FIFO ({error}): {}", run.report()["reader"]));
     wait_for(&run, |state| state["reader"]["opens_waiting"] == 0);
     drop(writer);
     assert_ne!(run.report()["reader"]["tab"], 1, "a read coming back doesn't take the reader anywhere");

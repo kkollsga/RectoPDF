@@ -522,13 +522,10 @@ fn renderer_for<'a>(
                 }
             }
             let done = Done(waiting);
-            let spawned = std::thread::Builder::new()
-                .name("recto-open".into())
-                .stack_size(128 * 1024)
-                .spawn(move || {
-                    let _done = done;
-                    let _ = sender.send(DocRenderer::open_file(&opening));
-                });
+            let spawned = std::thread::Builder::new().name("recto-open".into()).stack_size(128 * 1024).spawn(move || {
+                let _done = done;
+                let _ = sender.send(DocRenderer::open_file(&opening));
+            });
             // A spawn that failed dropped the closure, and its guard with it.
             spawned.map_err(|_| Unopened::Failed(RenderFailure::Unavailable))?;
             openings.insert(path.to_path_buf(), receiver);
