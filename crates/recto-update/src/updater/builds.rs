@@ -620,12 +620,8 @@ mod tests {
         // A FIFO with no writer, and a link, in the folder: refused, and the status is not left on checking.
         let fifo = bed.handover().join("RectoPDF-0.1.0.6.zip");
         assert!(Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap().success());
-        let (sender, receiver) = std::sync::mpsc::channel();
         let (updater, fifo_copy) = (Arc::clone(&bed.updater), fifo.clone());
-        std::thread::spawn(move || {
-            let _ = sender.send(updater.install_build(&fifo_copy, true));
-        });
-        let answer = receiver.recv_timeout(Duration::from_secs(10)).expect("a FIFO held the install");
+        let answer = recto_testpdf::returns_in_time("a FIFO held the install", move || updater.install_build(&fifo_copy, true));
         assert!(matches!(answer, Err(InstallRefused::Refused { code: "zip_not_a_file", .. })), "{answer:?}");
         assert!(!fifo.exists(), "deleted after a refusal");
         assert!(!matches!(bed.status(), Status::PreparingBuild(_)), "{:?}", bed.status());

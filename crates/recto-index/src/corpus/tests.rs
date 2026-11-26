@@ -1567,14 +1567,13 @@ fn a_pipe_at_a_files_path_doesnt_block_looking_it_up() {
     let root = temp.0.join("corpus");
     let fifo = temp.0.join("pipe.pdf");
     assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap().success());
-    let (done, finished) = std::sync::mpsc::channel();
     let (root_copy, fifo_copy) = (root.clone(), fifo.clone());
-    std::thread::spawn(move || {
+    let keys = recto_testpdf::returns_in_time("looking up a pipe", move || {
         let keys = keys_of_file(&root_copy, &fifo_copy);
         forget_file(&root_copy, &fifo_copy);
-        let _ = done.send(keys);
+        keys
     });
-    assert_eq!(finished.recv_timeout(Duration::from_secs(20)).expect("it blocked on the pipe"), Vec::new());
+    assert_eq!(keys, Vec::new());
 }
 
 /// Failure: two sessions on one folder both build a document, and one's pack interleaves with the other's.
