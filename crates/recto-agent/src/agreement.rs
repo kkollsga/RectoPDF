@@ -358,7 +358,7 @@ fn check_until(path: &Path, stamp: FileStamp, deadline: Instant, looker: Box<Loo
     }
     held.looking.push(stamp);
     drop(held);
-    run_look(path, stamp, looker, None, Instant::now() + LOOK_DEADLINE)
+    run_look(path, stamp, looker, None, deadline)
 }
 
 /// **What the window asks:** the answer for this version if it's known, whatever it is; if not, `None`, and the look starts on a thread of its own,
