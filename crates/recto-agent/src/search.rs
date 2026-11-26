@@ -1083,8 +1083,9 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
 fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let opened = std::cell::OnceCell::new();
-    // The second pass's own time, since it runs past `settings.deadline` by design: with that one every reference of a search whose first pass used its
-    // time would be counted under `caps`. No test: when the first pass reaches its deadline the ranked answer has no hits.
+    // The second pass's own time, since it runs past `settings.deadline` by design: with `settings.deadline` every reference of a search whose first pass
+    // used its time would be counted under `caps`. No test: `settings.deadline` gates the first pass before every page, so no deterministic test can stop it
+    // part way and leave pages to be referred to.
     let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.second_pass_until);
     let mut found = Found::default();
     let mut slot = Slot::default();
