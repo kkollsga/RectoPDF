@@ -90,8 +90,7 @@ fn compared(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Optio
 fn password_half(r: &mut impl RendererHalf, deadline: Instant) -> Option<Disagreement> {
     match asked(deadline, || r.page_count()) {
         Ok(_) => Some(Disagreement::Encryption),
-        // Still busy is about the moment, not agreement.
-        Err(busy) if busy.is_busy() => Some(Disagreement::Unchecked),
+        // Still busy, or any other failure: the gate steps aside, and the writer's own refusal of a password-protected file is what the person sees.
         Err(_) => None,
     }
 }
