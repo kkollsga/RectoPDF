@@ -73,7 +73,8 @@ fn index_of(plan: &Plan, effect: Effect) -> u32 {
 }
 
 impl Progress {
-    /// Begins the walk of `plan`, consuming the confirmation of it. A confirmation of another plan is `WrongPlan`.
+    /// Begins the walk of `plan`, consuming the confirmation of it. A confirmation of another plan is `WrongPlan`. A stopped leftovers walk is
+    /// never offered again: the caller surveys again first, and the person confirms what is left.
     pub fn start(plan: &Plan, confirmed: Confirmed) -> Result<Self, OrderError> {
         if confirmed.digest() != plan.digest {
             return Err(OrderError::WrongPlan);

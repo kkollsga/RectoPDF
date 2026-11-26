@@ -1,9 +1,11 @@
 //! The leftovers plan: `Scope::Leftovers`, the smallest removal anyone can run end to end.
 //!
 //! Owner, 2026-11-26: leftover unfinished saves go to the Trash and the session copies kept for going back are deleted whole, as a confirmed
-//! step of its own, before any removal. So this plan covers three stores only, and nothing else is ever planned: unfinished saves beside the
-//! document (`WriterTemp`, moved to the Trash, never deleted), and the copies of the session kept for going back to an earlier version
-//! (`UpdateCopy`, then `LegacySession`, deleted whole). Pure: it names no path and opens nothing. The adapters that survey and act hold the proof
+//! step of its own, before any removal. So this plan covers three stores only, and nothing else is ever planned: crashed saves in the document's folder
+//! and in any other folder that was searched, of any document, whose process has ended (`WriterTemp`, moved to the Trash, never deleted; owner
+//! decision of 2026-11-26), and the copies of the session kept for going back to an earlier version
+//! (`UpdateCopy`, then `LegacySession`, deleted whole). Deleting `update/before` takes its `.whole` marker first and durably, before any
+//! entry, so a crash part way leaves a copy that `restore_record` ignores (`recto-update/src/install.rs` ~712: no `.whole`, no restore). Pure: it names no path and opens nothing. The adapters that survey and act hold the proof
 //! that an artifact is what it says; this decides only what is planned, in what order, and what is reported.
 //!
 //! **No history gate.** `Refusal::HistoryIncomplete` is not asked here: a temp is the document's by its exact shape beside it and a copy is the
@@ -24,8 +26,10 @@ fn in_scope(store: Store) -> bool {
     STORES.contains(&store)
 }
 
-/// An artifact of `store` this scope acts on. A temp is only the target's: another document's unfinished save beside it is not ours. The two
-/// copies are the app's own, kept whole whatever document they came from, so their owner does not matter (an unplaceable one still refuses).
+/// An artifact of `store` this scope acts on. For a temp, `Owner::Target` here means "a crashed save, of any document, whose process has ended, in a
+/// folder that was searched"; the adapter gives `Unrelated` to one it must leave (a save still being written, a folder with no Trash), and that is
+/// left alone. The two copies are the app's own, kept whole whatever document they came from, so their owner does not matter (an unplaceable one
+/// still refuses).
 fn acted_on(store: Store, owner: Owner) -> bool {
     match store {
         Store::WriterTemp => owner == Owner::Target,

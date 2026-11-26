@@ -53,7 +53,7 @@ fn a_different_temp_with_equal_counts_changes_the_digest() {
     assert_eq!(plan_of(&SOME).digest(), plan_of(&reversed).digest());
 }
 
-/// Catches the owner or the format of an artifact being left out of the digest, so that the same file proven someone else's would still pass a
+/// Catches the owner of an artifact being left out of the digest, so that the same file proven someone else's would still pass a
 /// confirmation of it as the target's.
 #[test]
 fn a_changed_owner_changes_the_digest() {
@@ -93,9 +93,9 @@ fn only_the_three_stores_are_planned_and_in_the_trash_first_order() {
     }
 }
 
-/// Catches an unfinished save of another document, beside this one, being moved to the Trash with this one's.
+/// Catches a temp the adapter marked to leave (still being written, no Trash there: `Unrelated`) being moved to the Trash with the crashed ones.
 #[test]
-fn a_temp_of_another_document_is_left_alone_but_every_copy_is_cleared() {
+fn an_unrelated_temp_is_left_alone_but_every_copy_is_cleared() {
     let p = plan_of(&[
         (Store::WriterTemp, ".other.pdf.tmp1", Owner::Unrelated),
         (Store::WriterTemp, ".report.pdf.tmp1", Owner::Target),
@@ -242,9 +242,9 @@ fn after_the_first_act_it_never_says_nothing_changed() {
     assert!(progress.succeeded(&p));
 }
 
-/// Catches a failed step being told as "nothing changed" when something was done before it in the same step or in an earlier one. A copy that
-/// failed half way is changed (a deletion can stop with some of it gone). A move to the Trash is whole or nothing, and with one temp a step a
-/// failed one has moved nothing: with three temps, the first moved and the second failing is "partly cleared", and the first failing is not.
+/// Catches a failed step being told as "nothing changed" after an earlier step acted, or a copy that failed half way (a deletion can stop with
+/// some of it gone) being told as untouched. Given one temp a step (`every_temp_is_a_step_of_its_own` holds that), a failed move has moved
+/// nothing: with three temps, the first moved and the second failing is "partly cleared", and the first failing is not.
 #[test]
 fn a_failed_purge_counts_as_an_act_and_a_failed_move_does_not() {
     let three = [
@@ -253,6 +253,7 @@ fn a_failed_purge_counts_as_an_act_and_a_failed_move_does_not() {
         (Store::WriterTemp, ".r.pdf.tmp3", Owner::Target),
     ];
     let p = plan_of(&three);
+    assert!(p.steps()[1..=3].iter().all(|s| s.effect() == Effect::Trash(Store::WriterTemp)));
     let mut first_fails = start(&p);
     first_fails.acknowledge(&p, 0, Ack::Done).unwrap();
     assert_eq!(first_fails.acknowledge(&p, 1, Ack::Failed), Ok(Outcome::Unchanged));

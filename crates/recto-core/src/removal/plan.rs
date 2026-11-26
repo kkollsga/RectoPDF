@@ -119,15 +119,18 @@ impl Builder {
 
     /// The store's target artifacts, in input order, in steps of at most `batch`.
     fn push_store(&mut self, store: Store, artifacts: &[Artifact], batch: usize) {
-        let effect = match store.class() {
+        let class = store.class();
+        let effect = match class {
             Class::Rewrite => Effect::Rewrite(store),
             Class::Trash => Effect::Trash(store),
             _ => Effect::Purge(store),
         };
+        // A move to the Trash is one artifact a step, so a step that failed has moved nothing (see `Effect::Trash`).
+        let per_step = if class == Class::Trash { 1 } else { batch };
         self.push_ids(
             effect,
             artifacts.iter().filter(|a| a.store == store && a.owner == Owner::Target).map(|a| a.id),
-            batch,
+            per_step,
         );
     }
 

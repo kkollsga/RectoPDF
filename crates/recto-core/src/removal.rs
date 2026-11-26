@@ -152,6 +152,9 @@ pub struct ArtifactId(pub u32);
 
 /// Whose an artifact has been proven to be, by the adapter that found it.
 ///
+/// In the leftovers scope a `WriterTemp` is `Target` when it is a crashed save, of any document, whose process has ended, in a folder that was
+/// searched; `Unrelated` is one that must be left (still being written, no Trash there).
+///
 /// For a `Rewrite` store, `Target` means the container holds entries proven to be the target's, and
 /// `Shared` means an entry is shared with another history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -405,7 +408,8 @@ pub enum Effect {
     Rewrite(Store),
     ClearFindText,
     Purge(Store),
-    /// Move the store's artifacts to the Trash; never deletes.
+    /// Move the store's artifact to the Trash; never deletes. The carrier's contract: one artifact a step (so a failed step moved nothing);
+    /// `Ack::Failed` only if the file is still where it was; a carrier in doubt whether it moved acknowledges `Ack::DoneNotDurable`.
     Trash(Store),
     VerifyRetired,
     MarkNoReturn,
@@ -507,11 +511,11 @@ pub enum Disposition {
 pub struct StoreLine {
     pub store: Store,
     pub disposition: Disposition,
-    /// Target artifacts acted on.
+    /// Target artifacts acted on. In the leftovers scope a temp is acted on when it is a crashed save of any document whose process has ended.
     pub acted: u32,
     /// Save As source artifacts left in place.
     pub kept: u32,
-    /// Artifacts of other documents, left alone.
+    /// Artifacts of other documents, left alone (in the leftovers scope: temps that must be left, such as one still being written).
     pub untouched: u32,
 }
 
