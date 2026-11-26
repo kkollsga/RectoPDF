@@ -609,6 +609,8 @@ final class CenteringClipView: NSClipView {
             let isSystem = !entry.systemAction.isEmpty
             let item = menu.addItem(withTitle: entry.title, action: isSystem ? NSSelectorFromString(entry.systemAction) : #selector(AppDelegate.menuChosen(_:)), keyEquivalent: "")
             item.representedObject = entry.id
+            let help = core.menuHelp(id: entry.id)
+            item.toolTip = help.isEmpty ? nil : help
             item.state = entry.checked ? .on : .off
         }
         return menu

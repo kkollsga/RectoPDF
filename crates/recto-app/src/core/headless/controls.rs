@@ -34,8 +34,9 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::LinkClicked { .. } => 21,
         UiAction::SnapshotTaken => 22,
         UiAction::Pasted { .. } => 23,
+        UiAction::CopyLink { .. } => 24,
     };
-    (place, 24)
+    (place, 25)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -64,6 +65,7 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         .map(|entry| UiAction::Menu { id: entry.id })
         .collect();
     actions.extend([
+        UiAction::CopyLink { row: contents.clone() },
         UiAction::Row { row: contents, adding: false },
         // The note over the contents is `contents show` or `contents stop`, and the first on a thread of its own (C5f).
         UiAction::Row {

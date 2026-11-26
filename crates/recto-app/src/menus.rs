@@ -115,6 +115,7 @@ fn edit_entries() -> Vec<MenuEntry> {
             system_action: "copy:".into(),
             ..entry("edit.copy", "Copy", "c")
         },
+        entry("edit.copy_link", crate::core::copy_link::TITLE, ""),
         MenuEntry {
             system_action: "selectAll:".into(),
             ..entry("edit.select_all", "Select All", "a")
@@ -176,6 +177,19 @@ fn layout_id(spread: Spread) -> String {
     format!("layout.{}", spread.name().replace('-', "_"))
 }
 
+/// What a right-click on a contents row offers: Copy Link, for the page the row goes to.
+pub fn contents_context_menu() -> Vec<MenuEntry> {
+    vec![entry(crate::core::copy_link::COPY_LINK_ID, crate::core::copy_link::TITLE, "")]
+}
+
+/// What a menu item says of itself, for its tooltip, in Rust's words: empty for one with nothing to add.
+pub fn help(id: &str) -> &'static str {
+    match id {
+        crate::core::copy_link::COPY_LINK_ID => crate::core::copy_link::HELP,
+        _ => "",
+    }
+}
+
 /// What a right-click on a page offers: Copy and Select All, Capture, then the layouts, and in a comparison, how its panes scroll, `synced` saying which. The system adds Services and the like itself, as it does to any menu that has a selection to act on. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
 pub fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Vec<MenuEntry> {
     let mut entries = edit_entries();
@@ -235,7 +249,7 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         "view.paper" | "paper.white" | "paper.warm" | "paper.dark" => Enable::Always,
         "view.zoom_in" | "view.zoom_out" | "view.actual_size" | "view.fit" | "view.sidebar" | "view.agent_icon" | "palette.open" => Enable::Always,
         "compare.separate" | "compare.synced" => Enable::Always,
-        "edit.copy" | "edit.copy_anyway" => Enable::Selection,
+        "edit.copy" | "edit.copy_anyway" | "edit.copy_link" => Enable::Selection,
         "edit.select_all"
         | "edit.clear_history"
         | "go.page"
@@ -500,6 +514,8 @@ pub fn action(id: &str) -> Option<Action> {
         "edit.copy" => Action::Copy { anyway: false },
         "edit.copy_anyway" => Action::Copy { anyway: true },
         "edit.select_all" => Action::SelectAll,
+        // Its row sends the person's `recto link` ([`crate::core::copy_link`]); nothing here is left for the host.
+        "edit.copy_link" => Action::Host(HostAction::None),
         "edit.clear_history" => Action::ClearEditHistory,
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
@@ -690,6 +706,10 @@ mod tests {
     fn copy_and_select_all_are_enabled_as_on_any_mac_app() {
         assert!(!enabled("edit.copy", true, false));
         assert!(enabled("edit.copy", true, true));
+        assert!(
+            !enabled("edit.copy_link", true, false) && enabled("edit.copy_link", true, true),
+            "Copy Link goes with a selection"
+        );
         assert!(!enabled("edit.select_all", false, false));
         assert!(enabled("edit.select_all", true, false));
         assert!(enabled("view.zoom_in", false, false));
@@ -870,8 +890,8 @@ mod tests {
         for comparing in [None, Some(false), Some(true)] {
             let ids: Vec<String> = context_menu(Some(Spread::Single), comparing).into_iter().map(|item| item.id).collect();
             assert_eq!(
-                ids[..5],
-                ["edit.copy", "edit.select_all", "tools.capture", "", "layout.single"],
+                ids[..6],
+                ["edit.copy", "edit.copy_link", "edit.select_all", "tools.capture", "", "layout.single"],
                 "{comparing:?}"
             );
         }

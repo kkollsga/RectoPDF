@@ -118,6 +118,11 @@ impl<'a> RowParts<'a> {
         super::zoom::for_person(self.host, self.serving, zoom)
     }
 
+    /// The person asks for Copy Link now: its place among what's asked of the clipboard, kept for its address when it lands ([`super::snapshot_tool::Tool::link_asked`]).
+    pub fn link_asked(&self) {
+        self.tools.tool().link_asked();
+    }
+
     /// The tools panel open or shut.
     pub fn toggle_panel(&self) {
         self.window.toggle_panel();

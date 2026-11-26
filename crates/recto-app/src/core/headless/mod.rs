@@ -8,6 +8,7 @@ mod closing;
 mod compare;
 mod contents;
 mod controls;
+mod copy_link;
 mod coverage;
 mod editing;
 mod encrypted_sleep;

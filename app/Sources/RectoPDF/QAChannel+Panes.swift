@@ -29,6 +29,17 @@ extension QAChannel {
             guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
             NSApp.sendAction(action, to: item.target, from: item)
             return true
+        case "contents_context_menu":
+            // A right-click on a contents row (`ROW:ITEM`, the row from 0 in the contents), by what AppKit calls for one, then the item, as a person would choose it.
+            let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let controller, parts.count == 2, let row = Int(parts[0]), row >= 0 else { return fail(id, "That isn't a contents row and an item.") }
+            let table = controller.sidebar.contentsTable
+            let place = table.convert(NSPoint(x: table.rect(ofRow: row).midX, y: table.rect(ofRow: row).midY), to: nil)
+            let click = NSEvent.mouseEvent(with: .rightMouseDown, location: place, modifierFlags: [], timestamp: 0, windowNumber: controller.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            guard let menu = table.menu(for: click) else { return fail(id, "There's no menu for that row.") }
+            guard let item = menu.items.first(where: { ($0.representedObject as? String) == parts[1] }), let action = item.action else { return fail(id, "That isn't in the contents row's right-click menu.") }
+            NSApp.sendAction(action, to: item.target, from: item)
+            return true
         default:
             return nil
         }

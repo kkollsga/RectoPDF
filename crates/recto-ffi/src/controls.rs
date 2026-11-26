@@ -14,6 +14,8 @@ pub enum UiAction {
     Menu { id: String },
     /// A sidebar row tapped, or ⌘- or ⌃-clicked (`adding`).
     Row { row: SidebarRow, adding: bool },
+    /// A contents row's right-click, Copy Link: the address of the page a tap on it goes to, to the clipboard.
+    CopyLink { row: SidebarRow },
     /// The reader's moved into another pane, by the pointer or a scroll, as the page views report it: that pane's tab.
     PaneRead { tab: u32 },
     /// A contents row's chevron, by the row's place in the contents.
@@ -81,5 +83,15 @@ impl AppCore {
     /// waits, and says what's left for the host.
     pub fn act(&self, action: UiAction) -> Acted {
         self.inner.act(action)
+    }
+
+    /// What a right-click on a contents row offers (Copy Link), by Rust's words; chosen, it is `UiAction::CopyLink` of the row.
+    pub fn contents_menu(&self) -> Vec<crate::menus::MenuEntry> {
+        recto_app::menus::contents_context_menu()
+    }
+
+    /// What a menu item says of itself, for its tooltip: empty for one with nothing to add.
+    pub fn menu_help(&self, id: String) -> String {
+        recto_app::menus::help(&id).to_string()
     }
 }

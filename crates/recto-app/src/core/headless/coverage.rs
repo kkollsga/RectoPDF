@@ -193,6 +193,13 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             },
             adding: false,
         },
+        UiAction::CopyLink {
+            row: crate::SidebarRow {
+                kind: RowKind::Contents,
+                page: Some(2),
+                ..row.clone()
+            },
+        },
         UiAction::Row {
             row: crate::SidebarRow {
                 kind: RowKind::Contents,

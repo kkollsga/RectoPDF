@@ -54,18 +54,22 @@ fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64
     .into()
 }
 
+/// How many pages the reader has of `tab`, or 0 if it isn't showing in any pane.
+pub fn shown_pages(panes: &panes::Panes, engine: &Engine, tab: TabId) -> u32 {
+    let showing = (0..panes.count()).any(|pane| panes.tab_of(pane) == Some(tab));
+    if showing {
+        panes.engine_for_tab(engine, tab).points().page_count()
+    } else {
+        0
+    }
+}
+
 /// A contents row tapped: `goto` its page, on its tab, as far down it as the entry is and naming the entry (`goto --entry`), so the entry is the one being
 /// read when the view lands, and stays so until the reader moves on. A page the reader doesn't have (accident A5) lands on its last, which isn't the
 /// entry's page, so no entry is named there.
 pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, contents: &[crate::ContentsEntry], row: &crate::SidebarRow, page: u32) -> Command {
     let tab = TabId(row.tab);
-    let showing = (0..panes.count()).any(|pane| panes.tab_of(pane) == Some(tab));
-    let shown = if showing {
-        panes.engine_for_tab(engine, tab).points().page_count()
-    } else {
-        0
-    };
-    let to = contents_page(page, shown);
+    let to = contents_page(page, shown_pages(panes, engine, tab));
     let tapped = tapped_entry(contents, row);
     goto(
         tab,
