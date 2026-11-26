@@ -7,9 +7,11 @@ mod journals;
 pub mod ledger;
 mod placing;
 mod record;
+mod writer_temps;
 
 pub use backups::survey_backups;
 pub use journals::survey_journals;
 pub use record::survey_record;
+pub use writer_temps::survey_writer_temps;
 #[cfg(test)]
 mod testing;

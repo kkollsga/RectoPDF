@@ -1,0 +1,281 @@
+//! The adapter lists real folders in a temp root and places by the writer's own names; the plan made from it is what a person would be shown.
+
+use super::*;
+use crate::removal_store::testing::{Restore, bounded, limits, mkfifo, mode, put, version};
+use recto_core::removal::{DESIGN_LIMITS, Kinds, LEDGER_LIMITS, Ledger, Link, Plan, Request, Surveyed, lineage};
+use recto_testpdf::TempDir;
+use std::sync::Arc;
+
+const INCOMPLETE: Refusal = Refusal::Incomplete(Store::WriterTemp);
+
+/// The folder `dir` holds this document (`mine.pdf`, inode 7) and another (`theirs.pdf`, inode 8), seen from the beginning of time.
+fn ledger(dir: &Path) -> Ledger {
+    let at = |inode, name: &str| Link::At {
+        version: version(inode),
+        path: dir.join(name),
+    };
+    Ledger {
+        links: vec![at(7, "mine.pdf"), at(8, "theirs.pdf")],
+        began_ns: 0,
+        gap: None,
+        stopped: None,
+        good_len: 0,
+        frames: 0,
+        overflowed: false,
+    }
+}
+
+/// The name of a temporary of `dir/name`. Made from the file name alone, as the writer makes it: the same name in any folder has the same prefix.
+fn temp(_dir: &Path, name: &str, tail: &str) -> String {
+    format!("{}{tail}", writer_temp_prefix(Path::new(name)))
+}
+
+/// A survey of the lineage of `ledger` with every store but `WriterTemp` marked complete, so the plan decides on the temps alone.
+fn survey_of(ledger: &Ledger, dir: &Path, mode: TargetMode, max: u32, caps: &TempCaps) -> Result<Surveyed, Refusal> {
+    let current = dir.join("mine.pdf");
+    let lineage = lineage(ledger, version(7), &current, &LEDGER_LIMITS).unwrap();
+    let mut survey = Survey::new(&limits(max));
+    for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::WriterTemp) {
+        survey.mark_complete(store);
+    }
+    survey.history(&lineage);
+    survey_writer_temps_with(&lineage, mode, &mut survey, caps)?;
+    survey.finish()
+}
+
+fn survey(dir: &Path, mode: TargetMode) -> Surveyed {
+    survey_of(&ledger(dir), dir, mode, 64, &TempCaps::default()).unwrap()
+}
+
+fn plan_of(s: &Surveyed, mode: TargetMode) -> Result<Plan, Refusal> {
+    let request = Request::new(Kinds::from_bits(Kinds::METADATA).unwrap(), mode, false);
+    recto_core::removal::plan(&request, &s.inventory(), &DESIGN_LIMITS)
+}
+
+fn refusal(dir: &Path) -> Refusal {
+    plan_of(&survey(dir, TargetMode::Save), TargetMode::Save).unwrap_err()
+}
+
+fn count(s: &Surveyed, owner: Owner) -> usize {
+    s.inventory()
+        .artifacts()
+        .iter()
+        .filter(|a| a.store == Store::WriterTemp && a.owner == owner)
+        .count()
+}
+
+fn total(s: &Surveyed) -> usize {
+    s.inventory().artifacts().iter().filter(|a| a.store == Store::WriterTemp).count()
+}
+
+/// The folder a save over `mine.pdf` leaves when it crashes: lopdf's `.d` with a `clone` of the document in it.
+fn crashed_folder(dir: &Path, name: &str) {
+    std::fs::create_dir(dir.join(name)).unwrap();
+    put(&dir.join(name), "clone", b"%PDF-1.4");
+}
+
+/// Failure: a link followed or a pipe waited on in the person's folder. A pipe, a link to the target PDF (which would place as a plain file with a
+/// copy of the document) and a link to a folder, each named as the writer names its temporaries, are `Unknown` and never opened.
+#[test]
+fn a_pipe_or_a_link_named_as_a_temp_is_unknown_and_never_opened() {
+    let dir = TempDir::new("recto-wtemps-");
+    let pdf = put(&dir, "mine.pdf", b"%PDF-1.4");
+    let other_folder = TempDir::new("recto-wtemps-out-");
+    mkfifo(&dir.join(temp(&dir, "mine.pdf", "1-0.tmp")));
+    std::os::unix::fs::symlink(&pdf, dir.join(temp(&dir, "mine.pdf", "2-0.tmp"))).unwrap();
+    std::os::unix::fs::symlink(other_folder.path(), dir.join(temp(&dir, "mine.pdf", "1-0.d"))).unwrap();
+    let path = dir.path().to_path_buf();
+    let s = bounded(move || survey(&path, TargetMode::Save));
+    assert_eq!((count(&s, Owner::Unknown), total(&s)), (3, 3));
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), INCOMPLETE);
+}
+
+/// Failure: the target's folder is listed by its path after the check, so a swap in between (renamed away, a link to another folder put there) lists
+/// whatever the link leads to: another folder's temporaries are placed as the target's. Opened once by its descriptor, the swap changes nothing.
+#[test]
+fn a_folder_swapped_for_a_link_before_it_is_listed_changes_nothing() {
+    let dir = TempDir::new("recto-wtemps-");
+    let docs = dir.join("docs");
+    std::fs::create_dir(&docs).unwrap();
+    put(&docs, &temp(&docs, "mine.pdf", "1-0.tmp"), b"mine");
+    let outside = TempDir::new("recto-wtemps-out-");
+    for n in 2..5 {
+        put(&outside, &temp(&docs, "mine.pdf", &format!("{n}-0.tmp")), b"theirs");
+    }
+    let moved = dir.join("moved");
+    let (from, to, link) = (docs.clone(), moved.clone(), outside.path().to_path_buf());
+    let hook: Hook = Arc::new(move |_| {
+        std::fs::rename(&from, &to).unwrap();
+        std::os::unix::fs::symlink(&link, &from).unwrap();
+    });
+    let caps = TempCaps {
+        before_list: Some(hook),
+        ..TempCaps::default()
+    };
+    let s = survey_of(&ledger(&docs), &docs, TargetMode::Save, 64, &caps).unwrap();
+    assert!(docs.is_symlink(), "the swap happened");
+    assert_eq!((count(&s, Owner::Target), total(&s)), (1, 1), "only the folder that was opened was listed");
+    // A link already there is not opened at all.
+    let s = survey_of(&ledger(&docs), &docs, TargetMode::Save, 64, &TempCaps::default()).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), INCOMPLETE);
+}
+
+/// Failure: a crash's copy of the target is left (read as none found), or another document's temp is taken.
+#[test]
+fn the_targets_temps_are_the_targets_and_anothers_are_not() {
+    let dir = TempDir::new("recto-wtemps-");
+    put(&dir, &temp(&dir, "mine.pdf", "1-0.tmp"), b"x");
+    crashed_folder(&dir, &temp(&dir, "mine.pdf", "2-0.d"));
+    put(&dir, &temp(&dir, "theirs.pdf", "3-0.tmp"), b"x");
+    for (mode, owner) in [(TargetMode::Save, Owner::Target), (TargetMode::SaveAs, Owner::SaveAsSource)] {
+        let s = survey(&dir, mode);
+        assert_eq!((count(&s, owner), count(&s, Owner::Unrelated), total(&s)), (2, 1, 3), "{mode:?}");
+    }
+    // A path the ledger could not place is both sides: its temp can't be placed.
+    let mut unplaced = ledger(&dir);
+    unplaced.links.push(Link::Unplaced { path: dir.join("lost.pdf") });
+    put(&dir, &temp(&dir, "lost.pdf", "4-0.tmp"), b"x");
+    let s = survey_of(&unplaced, &dir, TargetMode::Save, 64, &TempCaps::default()).unwrap();
+    assert_eq!((count(&s, Owner::Unknown), total(&s)), (1, 4));
+}
+
+/// Failure: a folder named as a file or a file named as a folder is placed as the target's and purged by the wrong call, or a hard-linked temp is
+/// purged by name while its other name keeps the bytes.
+#[test]
+fn a_temp_of_the_wrong_kind_is_unknown_and_a_hard_linked_one_is_shared() {
+    let dir = TempDir::new("recto-wtemps-");
+    std::fs::create_dir(dir.join(temp(&dir, "mine.pdf", "1-0.tmp"))).unwrap();
+    put(&dir, &temp(&dir, "mine.pdf", "2-0.d"), b"x");
+    let s = survey(&dir, TargetMode::Save);
+    assert_eq!((count(&s, Owner::Unknown), total(&s)), (2, 2));
+    let dir = TempDir::new("recto-wtemps-");
+    let outside = TempDir::new("recto-wtemps-out-");
+    let other = put(&outside, "other", b"x");
+    std::fs::hard_link(&other, dir.join(temp(&dir, "mine.pdf", "1-0.tmp"))).unwrap();
+    assert_eq!(refusal(&dir), Refusal::Shared(Store::WriterTemp));
+}
+
+/// Failure: every removal refuses on the person's own files in their folder, because anything not lopdf's exact shape is named `Unknown`.
+#[test]
+fn the_persons_own_files_are_ignored() {
+    let dir = TempDir::new("recto-wtemps-");
+    put(&dir, "report.pdf", b"x");
+    mkfifo(&dir.join("pipe"));
+    std::fs::create_dir(dir.join("old")).unwrap();
+    put(&dir, ".append-zz", b"x");
+    put(&dir, &temp(&dir, "mine.pdf", "junk"), b"x");
+    put(&dir, &temp(&dir, "mine.pdf", "1-0.tmp.bak"), b"x");
+    let s = survey(&dir, TargetMode::Save);
+    assert_eq!(total(&s), 0);
+    assert!(plan_of(&s, TargetMode::Save).is_ok(), "and the store is complete");
+}
+
+/// Failure: a temp from before the ledger began reads as "none found" (a hash no lineage path matches, and the file older than the ledger), or a temp
+/// of some other save from after it is `Unknown` and refuses every removal (every save since the ledger began recorded its path first).
+#[test]
+fn a_temp_nobody_can_place_is_ignored_after_the_ledger_began_and_unknown_before() {
+    let dir = TempDir::new("recto-wtemps-");
+    put(&dir, ".append-0123456789abcdef-5-0.tmp", b"x");
+    let s = survey(&dir, TargetMode::Save);
+    assert_eq!(total(&s), 0, "changed after the ledger began");
+    let mut later = ledger(&dir);
+    later.began_ns = i64::MAX / 2; // far ahead of now: everything on disk is older
+    put(&dir, &temp(&dir, "mine.pdf", "1-0.tmp"), b"x");
+    let s = survey_of(&later, &dir, TargetMode::Save, 64, &TempCaps::default()).unwrap();
+    assert_eq!(
+        (count(&s, Owner::Unknown), total(&s)),
+        (2, 2),
+        "one nobody can place, and one that matches but is older than the ledger"
+    );
+}
+
+/// Failure: a document is opened. The target is a pipe with no writer and the temps have mode 000; every one still places without opening anything.
+#[test]
+fn nothing_in_the_folder_is_opened() {
+    let dir = TempDir::new("recto-wtemps-");
+    mkfifo(&dir.join("mine.pdf"));
+    mode(&put(&dir, &temp(&dir, "mine.pdf", "1-0.tmp"), b"x"), 0o000);
+    crashed_folder(&dir, &temp(&dir, "mine.pdf", "2-0.d"));
+    mode(&dir.join(temp(&dir, "mine.pdf", "2-0.d")), 0o000);
+    let path = dir.path().to_path_buf();
+    let s = bounded(move || survey(&path, TargetMode::Save));
+    mode(&dir.join(temp(&dir, "mine.pdf", "2-0.d")), 0o700);
+    assert_eq!((count(&s, Owner::Target), total(&s)), (2, 2));
+}
+
+/// Failure: a document saved under two names has its folder listed once for each, so the same temp is found twice and every removal refuses as
+/// `Inconsistent`.
+#[test]
+fn a_folder_is_listed_once_however_many_paths_are_in_it() {
+    let dir = TempDir::new("recto-wtemps-");
+    let mut renamed = ledger(&dir);
+    renamed.links.push(Link::At {
+        version: version(7),
+        path: dir.join("mine-old-name.pdf"),
+    });
+    put(&dir, &temp(&dir, "mine.pdf", "1-0.tmp"), b"x");
+    put(&dir, &temp(&dir, "mine-old-name.pdf", "1-0.tmp"), b"x");
+    let s = survey_of(&renamed, &dir, TargetMode::Save, 64, &TempCaps::default()).unwrap();
+    assert_eq!((count(&s, Owner::Target), total(&s)), (2, 2));
+}
+
+/// Failure: a cut survey reads complete: the entry cap or the folder cap off by one, a folder that can't be listed marked complete, or a missing
+/// one refusing every removal.
+#[test]
+fn caps_are_exact_and_errors_leave_the_store_unmarked() {
+    let dir = TempDir::new("recto-wtemps-");
+    for n in 1..=3 {
+        put(&dir, &format!("note-{n}"), b"x");
+    }
+    let caps = TempCaps {
+        entries: 3,
+        ..TempCaps::default()
+    };
+    assert!(plan_of(&survey_of(&ledger(&dir), &dir, TargetMode::Save, 64, &caps).unwrap(), TargetMode::Save).is_ok());
+    put(&dir, "note-4", b"x");
+    assert_eq!(survey_of(&ledger(&dir), &dir, TargetMode::Save, 64, &caps).unwrap_err(), Refusal::TooLarge);
+
+    // Two folders hold target paths; a cap of 2 is complete and a cap of 1 is too large. The second folder is missing.
+    let elsewhere = TempDir::new("recto-wtemps-else-");
+    let mut two = ledger(&dir);
+    two.links.push(Link::At {
+        version: version(7),
+        path: elsewhere.join("mine.pdf"),
+    });
+    let gone = elsewhere.join("gone");
+    two.links.push(Link::At {
+        version: version(7),
+        path: gone.join("mine.pdf"),
+    });
+    let at = |folders| TempCaps {
+        folders,
+        ..TempCaps::default()
+    };
+    let big = TempCaps { entries: 99, ..at(3) };
+    assert!(
+        plan_of(&survey_of(&two, &dir, TargetMode::Save, 64, &big).unwrap(), TargetMode::Save).is_ok(),
+        "three folders, one of them missing"
+    );
+    assert_eq!(
+        survey_of(&two, &dir, TargetMode::Save, 64, &TempCaps { entries: 99, ..at(2) }).unwrap_err(),
+        Refusal::TooLarge
+    );
+    // A folder that can't be entered: unmarked.
+    let _restore = Restore(elsewhere.path().to_path_buf());
+    mode(&elsewhere, 0o000);
+    let s = survey_of(&two, &dir, TargetMode::Save, 64, &big).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), INCOMPLETE, "no access");
+    mode(&elsewhere, 0o700);
+    let s = survey_of(
+        &ledger(&dir),
+        &dir,
+        TargetMode::Save,
+        64,
+        &TempCaps {
+            entries: 99,
+            ..TempCaps::default()
+        },
+    )
+    .unwrap();
+    assert!(plan_of(&s, TargetMode::Save).is_ok());
+}
