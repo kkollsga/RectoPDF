@@ -5,6 +5,11 @@
 mod backups;
 mod journals;
 pub mod ledger;
+mod placing;
+mod record;
 
 pub use backups::survey_backups;
 pub use journals::survey_journals;
+pub use record::survey_record;
+#[cfg(test)]
+mod testing;

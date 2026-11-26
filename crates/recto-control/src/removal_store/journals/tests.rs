@@ -1,27 +1,17 @@
 //! The adapter lists real folders in a temp root and places by headers and names; the plan made from it is what a person would be shown.
 
 use super::*;
-use recto_core::removal::{DESIGN_LIMITS, Disposition, Effect, FileVersion, Kinds, LEDGER_LIMITS, Ledger, Limits, Link, Plan, Request, Surveyed, lineage};
+use crate::removal_store::placing::key_of;
+use crate::removal_store::testing::{Restore, bounded, limits, mkfifo, mode, put, version};
+use recto_core::removal::{DESIGN_LIMITS, Disposition, Effect, FileVersion, Kinds, LEDGER_LIMITS, Ledger, Link, Plan, Request, Surveyed, lineage};
+use recto_platform::FileStamp;
 use recto_session::record::{JournalHeader, journal_line, journal_start};
 use recto_testpdf::TempDir;
-use std::num::NonZeroU16;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::time::Duration;
 
 const MINE: &str = "/docs/mine.pdf";
 const THEIRS: &str = "/docs/theirs.pdf";
 const FIVE: [Store; 5] = [Store::Journal, Store::JournalVariant, Store::PageIds, Store::SleepFile, Store::KeptPages];
-
-fn version(inode: u64) -> FileVersion {
-    FileVersion {
-        volume: Some([3; 16]),
-        inode,
-        size: 10,
-        mtime_ns: 1,
-    }
-}
 
 fn stamp(inode: u64) -> FileStamp {
     FileStamp {
@@ -51,13 +41,6 @@ fn ledger() -> Ledger {
         good_len: 0,
         frames: 0,
         overflowed: false,
-    }
-}
-
-fn limits(max: u32) -> Limits {
-    Limits {
-        max_artifacts: max,
-        max_batch: NonZeroU16::new(4).unwrap(),
     }
 }
 
@@ -118,25 +101,6 @@ fn purged(p: &Plan, store: Store) -> usize {
 /// A journal's bytes: its first line, for a tab with this file and path.
 fn journal(path: &str, inode: u64) -> Vec<u8> {
     journal_start(&JournalHeader::new(1, Path::new(path), Some(stamp(inode)), 3, 0), None)
-}
-
-fn put(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
-    let path = dir.join(name);
-    std::fs::write(&path, bytes).unwrap();
-    path
-}
-
-fn mkfifo(path: &Path) {
-    assert!(std::process::Command::new("mkfifo").arg(path).status().unwrap().success());
-}
-
-/// Runs `work` on a thread and fails if it takes over 10 s, so a pipe waited on fails the test and doesn't hang the run.
-fn bounded<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(work());
-    });
-    receiver.recv_timeout(Duration::from_secs(10)).expect("the survey waited on something")
 }
 
 /// Failure: a link is followed (a symlink to a file that would place as the target's is taken for the target's own and purged, or read for its
@@ -229,10 +193,6 @@ fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
             assert_eq!(refused, Refusal::Incomplete(store), "{file} swapped for a {swapped}");
         }
     }
-}
-
-fn mode(path: &Path, bits: u32) {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
 }
 
 /// Failure: another document's history is purged with this one's, or the target's own is left behind; a Save As deletes the source's history.
@@ -513,15 +473,6 @@ fn the_caps_are_exact() {
     assert_eq!(with(3, 64), Err(Refusal::TooLarge));
     assert_eq!(with(4, 64), Ok(()));
     assert_eq!(with(8_192, 3), Err(Refusal::TooLarge), "the survey's own cap passes through");
-}
-
-/// Puts a mode back on drop so a failed run can't leave a folder a `TempDir` can't remove.
-struct Restore(PathBuf);
-
-impl Drop for Restore {
-    fn drop(&mut self) {
-        mode(&self.0, 0o700);
-    }
 }
 
 /// Failure: a folder that couldn't be read through (a link, no access, a file gone mid-survey) is marked complete, so the plan claims "none found"
