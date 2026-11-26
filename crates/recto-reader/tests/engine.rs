@@ -8,6 +8,7 @@ use recto_reader::paper::dim_rgb;
 use recto_reader::tiles::{Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, slow_page, text_lines};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -500,6 +501,112 @@ fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
     }
     assert_eq!(waiting(), 0, "{}", engine.report().0);
     drop(writer);
+}
+
+/// A page view's cap on opens that haven't returned (`MAX_OPENINGS` in `engine/run.rs`).
+const MAX_OPENS: u64 = 4;
+
+fn fifo_in(folder: &std::path::Path, name: &str) -> PathBuf {
+    let path = folder.join(name);
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&path).status().unwrap().success());
+    path
+}
+
+fn show_one(engine: &Engine, tab: u32, file: &std::path::Path, was: &[u32]) {
+    engine.activate(
+        tab,
+        1,
+        0,
+        PageMap {
+            files: vec![file.to_path_buf()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        was,
+        None,
+        recto_reader::layout::Spread::Single,
+    );
+    engine.set_viewport(view(0.0));
+}
+
+/// Looks at the page view for this long, as the host does, and returns the most opens that hadn't returned at once.
+fn watch_opens(engine: &Engine, limit: Duration) -> u64 {
+    let until = Instant::now() + limit;
+    let mut most = 0;
+    while Instant::now() < until {
+        engine.drain();
+        engine.applied();
+        most = most.max(engine.report().0["opens_waiting"].as_u64().unwrap());
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
+    most
+}
+
+/// Failure: a password given, or a new version of the file, reopens it, and the page view forgot the open still stuck on a dead volume and started another beside it, one more thread at every reopen, past the cap on opens (the cap counted what the page view still knew of, not the threads alive).
+#[test]
+fn reopening_a_file_that_doesnt_answer_never_passes_the_cap_on_opens() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-reopen-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let dead = fifo_in(&folder, "dead.pdf");
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.qa().system_takes_only_when_told();
+    show_one(&engine, 1, &dead, &[]);
+    let mut most = watch_opens(&engine, Duration::from_millis(400));
+    // More reopens than the cap, so a leak shows as past it.
+    for _ in 0..(MAX_OPENS + 3) {
+        engine.key_given(&dead);
+        most = most.max(watch_opens(&engine, Duration::from_millis(300)));
+    }
+    assert!(
+        most >= 1 && most <= MAX_OPENS,
+        "{most} opens at once, the cap is {MAX_OPENS}: {}",
+        engine.report().0
+    );
+    use std::os::unix::fs::OpenOptionsExt;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&dead)
+        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    drop(writer);
+}
+
+/// Failure: four files that aren't answering take every slot for opens, and the page of a healthy file that has to wait for one said "This file isn't answering", blaming the healthy file for the others'.
+#[test]
+fn a_healthy_file_held_up_by_others_that_dont_answer_isnt_blamed() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-busy-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.qa().system_takes_only_when_told();
+    let mut was: Vec<u32> = Vec::new();
+    let mut dead_ones = Vec::new();
+    for tab in 1..=MAX_OPENS as u32 {
+        let dead = fifo_in(&folder, &format!("dead{tab}.pdf"));
+        dead_ones.push(dead.clone());
+        show_one(&engine, tab, &dead, &was);
+        was = vec![tab];
+        watch_opens(&engine, Duration::from_millis(300));
+    }
+    assert_eq!(engine.report().0["opens_waiting"], MAX_OPENS, "{}", engine.report().0);
+    let healthy = document(1);
+    show_one(&engine, 5, &healthy.0, &was);
+    let deadline = Instant::now() + HANG;
+    while engine.note().is_none() && Instant::now() < deadline {
+        engine.drain();
+        engine.applied();
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    let note = engine.note().unwrap_or_default();
+    assert!(note.contains("Too many files"), "{note:?}");
+    assert!(!note.contains("This file isn't answering"), "{note:?}");
+    // Lets their threads go.
+    use std::os::unix::fs::OpenOptionsExt;
+    for dead in &dead_ones {
+        drop(std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(dead));
+    }
 }
 
 /// Failure: closing the window leaves "there are ops" raised with no host to take them, so when the window's back nobody is ever told again, and tiles stop arriving. The host must hear of new ones, even if no ops were taken in between.
