@@ -293,7 +293,9 @@ fn returns_in_time(what: &str, work: impl FnOnce() + Send + 'static) {
         work();
         let _ = done.send(());
     });
-    returned.recv_timeout(Duration::from_secs(10)).unwrap_or_else(|_| panic!("{what} didn't return"));
+    returned
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| panic!("{what} didn't return"));
 }
 
 /// A write that is lost: the lock is held by someone else for longer than the writer waits.
@@ -410,7 +412,9 @@ fn two_writers_leave_no_duplicate_and_no_damage() {
         let root = root.clone();
         move || append(&root, &second, vec![at(1)])
     });
-    lock_reached.recv_timeout(Duration::from_secs(10)).expect("the second writer found the lock held");
+    lock_reached
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second writer found the lock held");
     release.send(()).unwrap();
     a.join().unwrap();
     b.join().unwrap();
@@ -470,7 +474,9 @@ fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
     std::fs::write(&own, pdf("own")).unwrap();
     // The save's own call, on this thread: it returns with the thread's seam not yet passed.
     note_save_with(&root.join("backups.noindex"), &SaveNote::Starting { path: &own, from: None }, &config);
-    at_seam.recv_timeout(Duration::from_secs(10)).expect("adoption was handed to the ledger's thread");
+    at_seam
+        .recv_timeout(Duration::from_secs(10))
+        .expect("adoption was handed to the ledger's thread");
     let held = read(&root);
     assert_eq!((held.links.len(), held.gap), (1, None), "the save's own entry only: {:?}", held.links);
     release.send(()).unwrap();

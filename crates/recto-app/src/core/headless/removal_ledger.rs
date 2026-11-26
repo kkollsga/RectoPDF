@@ -46,7 +46,9 @@ fn the_record_and_the_persons_save_write_the_ledger() {
             _ => None,
         });
         let there = landed.is_some_and(|to| found.links.iter().any(|link| matches!(link, Link::At { version, .. } if *version == to)));
-        there.then_some(()).ok_or_else(|| format!("no `Saved` and `At` of its result yet: {:?}", found.links))
+        there
+            .then_some(())
+            .ok_or_else(|| format!("no `Saved` and `At` of its result yet: {:?}", found.links))
     });
     let saved = ledger(&app);
     let (from, to) = saved
@@ -57,7 +59,12 @@ fn the_record_and_the_persons_save_write_the_ledger() {
             _ => None,
         })
         .expect("a Saved");
-    let at = |version| saved.links.iter().any(|link| matches!(link, Link::At { version: v, path } if *v == version && *path == canonical));
+    let at = |version| {
+        saved
+            .links
+            .iter()
+            .any(|link| matches!(link, Link::At { version: v, path } if *v == version && *path == canonical))
+    };
     assert!(at(from), "the file as it was: {:?}", saved.links);
     assert!(at(to), "the file as it landed: {:?}", saved.links);
     assert_eq!(saved.gap, None, "the backup went where its path hashes to: {:?}", saved.links);

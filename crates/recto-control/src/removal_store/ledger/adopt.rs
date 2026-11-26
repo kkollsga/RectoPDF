@@ -70,6 +70,10 @@ fn from_header(path: &Path) -> Vec<Entry> {
 
 fn head(path: &Path) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
-    recto_platform::local::open_private_file(path).ok()?.take(HEADER_BYTES).read_to_end(&mut bytes).ok()?;
+    recto_platform::local::open_private_file(path)
+        .ok()?
+        .take(HEADER_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
     Some(bytes)
 }

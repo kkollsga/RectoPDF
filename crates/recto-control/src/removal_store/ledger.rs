@@ -207,7 +207,8 @@ fn lock(file: &File, config: &Config) -> bool {
     loop {
         match file.try_lock() {
             Ok(()) => return true,
-            Err(std::fs::TryLockError::WouldBlock) => {
+            Err(std::fs::TryLockError::WouldBlock) =>
+            {
                 #[cfg(test)]
                 if let (Some(seam), false) = (&config.at_lock, std::mem::replace(&mut told, true)) {
                     seam();
