@@ -822,7 +822,7 @@ fn open_failed(failure: RenderFailure) -> Outcome {
 
 /// The Mac was too busy to give the worker the processor, for a page's draw or for starting or opening the renderer: it says nothing of the page or the file, so it's held and asked again, never remembered as a failure. The service bounds a run of these ([`recto_render_service::MAX_BUSY`]) and says what it was after all.
 fn too_busy(failure: RenderFailure) -> bool {
-    matches!(failure, RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart)
+    failure.is_busy()
 }
 
 /// Failures about the file or the renderer rather than one page.
