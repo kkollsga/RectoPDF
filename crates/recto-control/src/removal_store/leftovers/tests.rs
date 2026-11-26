@@ -9,12 +9,13 @@ use crate::removal_store::legacy_session::{LegacyCaps, survey_legacy_sessions_wi
 use crate::removal_store::testing::{limits, version};
 use crate::removal_store::update_copy::{UpdateCaps, survey_update_copy_with};
 use crate::removal_store::writer_temps::{TempCaps, survey_writer_temps_with};
-use recto_core::removal::{ArtifactKey, LEDGER_LIMITS, Ledger, Link, Store, Survey, TargetMode, lineage};
+use recto_core::removal::{ArtifactKey, LEDGER_LIMITS, Ledger, Link, Owner, Store, Survey, TargetMode, lineage};
 use recto_core::save::writer_temp_prefix;
 use recto_testpdf::TempDir;
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const DEAD: u32 = 4_000_001;
 
@@ -61,6 +62,12 @@ fn world() -> World {
     }
 }
 
+impl PinSet {
+    fn temp_named(&self, name: &str) -> Option<&super::pin::TempPin> {
+        self.temps.iter().find(|t| t.name == OsStr::new(name))
+    }
+}
+
 impl World {
     fn root(&self) -> &Path {
         self.state.root()
@@ -70,9 +77,14 @@ impl World {
         self.root().join("update").join("before")
     }
 
-    /// What the surveys pin, with the copy folders and temps as the artifacts they are.
+    /// What the surveys pin, with a Trash that exists and every process dead.
     fn pins(&self) -> PinSet {
-        let sink = Pins::new();
+        self.pins_with(Arc::new(FolderTrash::at(&self.trash)), Arc::new(|_| false))
+    }
+
+    /// What the surveys pin, with this Trash and this process table.
+    fn pins_with(&self, trash: Arc<dyn Trash>, alive: Arc<dyn Fn(u32) -> bool + Send + Sync>) -> PinSet {
+        let sink = Pins::new(trash, alive);
         let ledger = Ledger {
             links: vec![Link::At {
                 version: version(7),
@@ -157,22 +169,24 @@ impl Hooks for Stop {
     }
 }
 
-/// Failure: the pins are not what the surveys list (a copy folder that is no artifact, a temp pinned under another key, or pins made with no sink), so a
-/// plan counts what the act can't find, or the act acts on what the plan never showed.
+/// Failure: the pins are not what the surveys list (a copy folder that is no artifact, its entries listed one by one so a record slot refuses every clear, a
+/// temp pinned under another key or listed with an owner a plan can't act on, or pins made with no sink), so a plan counts what the act can't find, or
+/// refuses what it could clear. In the Leftovers survey each copy is one `Target` artifact and nothing inside it is listed; the Removal survey is as it was.
 #[test]
 fn the_surveys_pin_exactly_the_artifacts_they_list() {
     let w = world();
     let pins = w.pins();
     assert_eq!(pins.temps.len(), 2);
     assert_eq!(pins.copies.len(), 3, "session.v1, session.damaged and update/before");
-    let s = surveyed(&[Store::LegacySession, Store::UpdateCopy], |lineage, survey| {
+    let sink = || Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false));
+    let s = surveyed(&[Store::LegacySession, Store::UpdateCopy, Store::WriterTemp], |lineage, survey| {
         survey_legacy_sessions_with(
             w.root(),
             lineage,
             TargetMode::Save,
             survey,
             &LegacyCaps {
-                pins: Some(Pins::new()),
+                pins: Some(sink()),
                 ..LegacyCaps::default()
             },
         )?;
@@ -182,13 +196,24 @@ fn the_surveys_pin_exactly_the_artifacts_they_list() {
             TargetMode::Save,
             survey,
             &UpdateCaps {
-                pins: Some(Pins::new()),
+                pins: Some(sink()),
                 ..UpdateCaps::default()
+            },
+        )?;
+        survey_writer_temps_with(
+            lineage,
+            survey,
+            &TempCaps {
+                pins: Some(sink()),
+                ..TempCaps::default()
             },
         )
     })
     .unwrap();
-    let listed: Vec<ArtifactKey> = found_of(&s).into_iter().map(|f| f.3).collect();
+    let found: Vec<_> = found_of(&s).into_iter().filter(|f| f.0 != Store::WriterTemp).collect();
+    let listed: Vec<ArtifactKey> = found.iter().map(|f| f.3).collect();
+    assert_eq!(listed.len(), 3, "one artifact a copy and nothing inside it");
+    assert!(found.iter().all(|f| f.1 == Owner::Target));
     for copy in &pins.copies {
         assert!(listed.contains(&copy.key), "{:?} is an artifact of its store", copy.name);
     }
@@ -212,48 +237,52 @@ fn the_process_number_is_the_one_the_writer_puts_in_the_name() {
     assert_eq!(temp_pid(format!("{}1-2.bak", writer_temp_prefix(Path::new("a.pdf"))).as_bytes()), None);
 }
 
-/// Failure (T6): an unfinished save that the app's own save, or `recto local`, is writing at this moment is moved to the Trash from under it. This process's
-/// own number is a live process; `DEAD` is none.
+/// Failure (T6): an unfinished save that the app's own save, or `recto local`, is writing at this moment is moved to the Trash from under it, or stops a
+/// clear of the others. This process's own number is a live process: the survey leaves that temp out (kept in the pins as waiting) and the clear of the rest
+/// goes on; and one whose process came back between the survey and the act is refused by the act.
 #[test]
 fn a_save_still_being_written_is_never_moved() {
     let w = world();
     let live = temp_name(std::process::id(), 7, ".tmp");
     std::fs::write(w.docs.join(&live), b"being written").unwrap();
-    let pins = w.pins();
+    let pins = w.pins_with(Arc::new(FolderTrash::at(&w.trash)), Arc::new(recto_platform::local::process_exists));
+    assert!(
+        pins.temp_named(&live).is_none() && pins.waiting.iter().any(|t| t.name == OsStr::new(&live)),
+        "left out, and said as waiting"
+    );
+    assert_eq!(pins.temps.len(), 2, "the two dead ones are still offered");
     let trash = FolderTrash::at(&w.trash);
-    let key = pins.temps.iter().find(|t| t.name == OsStr::new(&live)).unwrap().key;
-    let report = run(&pins, &[key], &trash, &recto_platform::local::process_exists, &mut super::act::Unwatched);
-    assert!(matches!(report.stopped, Some((k, Why::BeingWritten)) if k == key), "{report:?}");
-    assert!(w.docs.join(&live).exists(), "still in its folder");
-    assert_eq!(std::fs::read_dir(&w.trash).unwrap().count(), 0, "nothing in the Trash");
-    // The same names with the process gone are moved: the refusal was the process.
-    let dead = pins
-        .temps
-        .iter()
-        .find(|t| t.name != OsStr::new(&live) && t.name.as_encoded_bytes().ends_with(b".tmp"))
-        .unwrap()
-        .key;
-    let report = run(&pins, &[dead], &trash, &|_| false, &mut super::act::Unwatched);
+    let report = run(&pins, &keys(&pins), &trash, &|_| false, &mut super::act::Unwatched);
     assert!(report.stopped.is_none(), "{report:?}");
+    assert_eq!(std::fs::read(w.docs.join(&live)).unwrap(), b"being written", "still in its folder");
+    // The process of an offered temp comes back before the act.
+    let pins = w.pins();
+    let key = pins.temps[0].key;
+    let before = std::fs::read_dir(&w.trash).unwrap().count();
+    let report = run(&pins, &[key], &trash, &|_| true, &mut super::act::Unwatched);
+    assert!(matches!(report.stopped, Some((k, Why::BeingWritten)) if k == key), "{report:?}");
+    assert_eq!(std::fs::read_dir(&w.trash).unwrap().count(), before, "nothing went to the Trash");
 }
 
 /// Failure (T12): a volume with no Trash falls back to deleting the unfinished save, or one the Trash refuses is removed anyway: the person's possibly only
-/// copy of an earlier document is gone for good.
+/// copy of an earlier document is gone for good. A temp on such a volume isn't an artifact (so it doesn't stop a clear) and is kept in the pins as "stays".
 #[test]
 fn no_trash_never_means_delete() {
     let w = world();
+    let none = Arc::new(FolderTrash::without_trash());
+    let pins = w.pins_with(none.clone(), Arc::new(|_| false));
+    assert!(pins.temps.is_empty() && pins.no_trash.len() == 2, "{pins:?}");
+    // The Trash is gone between the survey and the act.
     let pins = w.pins();
-    let dead = pins.temps.iter().find(|t| t.name.as_encoded_bytes().ends_with(b".tmp")).unwrap();
-    let (key, name) = (dead.key, dead.name.clone());
-    let none = FolderTrash::without_trash();
-    let report = run(&pins, &[key], &none, &|_| false, &mut super::act::Unwatched);
+    let (key, name) = (pins.temps[0].key, pins.temps[0].name.clone());
+    let report = run(&pins, &[key], &*none, &|_| false, &mut super::act::Unwatched);
     assert!(matches!(report.stopped, Some((k, Why::NoTrash)) if k == key), "{report:?}");
-    assert_eq!(std::fs::read(w.docs.join(&name)).unwrap(), b"a crashed save");
+    assert!(w.docs.join(&name).exists());
     // A Trash that exists and refuses (its folder is gone): the item stays too.
     let refusing = FolderTrash::at(&w.trash.join("missing"));
     let report = run(&pins, &[key], &refusing, &|_| false, &mut super::act::Unwatched);
     assert!(matches!(report.stopped, Some((k, Why::Trash(_))) if k == key), "{report:?}");
-    assert_eq!(std::fs::read(w.docs.join(&name)).unwrap(), b"a crashed save");
+    assert!(w.docs.join(&name).exists());
 }
 
 /// Failure (T11): a copy an earlier version worked in after going back (`went-back`), whose work has not been brought forward, is offered and deleted,
@@ -263,6 +292,23 @@ fn a_copy_with_went_back_is_never_offered() {
     let w = world();
     std::fs::write(w.root().join("session.v1").join("went-back"), b"1").unwrap();
     let pins = w.pins();
+    // Through the survey, which is what a plan is made from: the copy holding it is an artifact core refuses, the other one may be cleared.
+    let s = surveyed(&[Store::LegacySession], |lineage, survey| {
+        let caps = LegacyCaps {
+            pins: Some(Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false))),
+            ..LegacyCaps::default()
+        };
+        survey_legacy_sessions_with(w.root(), lineage, TargetMode::Save, survey, &caps)
+    })
+    .unwrap();
+    let owner_of = |name: &str| {
+        found_of(&s)
+            .into_iter()
+            .find(|f| f.3 == ArtifactKey::of(Store::LegacySession, name.as_bytes()))
+            .map(|f| f.1)
+    };
+    assert_eq!(owner_of("session.v1"), Some(Owner::Unknown), "a copy holding went-back refuses");
+    assert_eq!(owner_of("session.damaged"), Some(Owner::Target));
     let wb = pins.copies.iter().find(|c| c.name == OsStr::new("session.v1")).unwrap();
     assert_eq!(copy_state(wb), CopyState::WentBack);
     let other = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap();

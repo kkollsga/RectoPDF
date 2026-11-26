@@ -100,6 +100,13 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the first line (at most 8 KiB) of a journal in the state folder, a plain file only, read once when the ledger is first made: never a document",
     ),
     (
+        "recto-control/src/removal_store/leftovers/act.rs",
+        2,
+        "Clear leftovers' two `Folder::open` calls, each by a path the surveys pinned (the documents folder of an unfinished save, the app's own state root), \
+         never a path from a command: no link is followed at its last part, and the folder's device and inode are then compared with the pin before anything \
+         is done in it. Everything below is reached by descriptor",
+    ),
+    (
         "recto-control/src/removal_store/legacy_session.rs",
         1,
         "the state folder the caller of `survey_legacy_sessions` names (`pub`, with no production caller yet; the design names the state folder), opened through the \
@@ -167,13 +174,6 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-index/src/corpus/sealed.rs",
         1,
         "the index's own pack under the app's index folder, read to say what it keeps of a document: `opened_text`, for the index tests",
-    ),
-    (
-        "recto-control/src/removal_store/leftovers/act.rs",
-        2,
-        "Clear leftovers' two `Folder::open` calls, each by a path the surveys pinned (the documents folder of an unfinished save, the app's own state root), \
-         never a path from a command: no link is followed at its last part, and the folder's device and inode are then compared with the pin before anything \
-         is done in it. Everything below is reached by descriptor",
     ),
     (
         "recto-platform/src/bin/recto-sandbox-probe.rs",

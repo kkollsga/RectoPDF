@@ -86,6 +86,22 @@ fn entry_of(name: OsString, st: &libc::stat) -> Entry {
     }
 }
 
+/// What the path leads to now, without following a link at its last part (`lstat`). `None` if there is nothing there or it can't be looked at.
+pub fn identity_at(path: &Path) -> Option<Identity> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let kind = match meta.file_type() {
+        t if t.is_file() => Kind::File,
+        t if t.is_dir() => Kind::Folder,
+        t if t.is_symlink() => Kind::Link,
+        _ => Kind::Other,
+    };
+    Some(Identity {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        kind,
+    })
+}
+
 fn flags() -> libc::c_int {
     libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
 }

@@ -15,7 +15,7 @@ use super::leftovers::pin::Pins;
 use super::legacy_session::survey_copy;
 use super::placing::Maps;
 use crate::record_store::UPDATE_COPY;
-use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Store, Survey, TargetMode};
+use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Refusal, Store, Survey, TargetMode};
 use recto_platform::folder::{Folder, Opened};
 use std::ffi::OsStr;
 use std::path::Path;
@@ -29,7 +29,7 @@ const WHOLE: &[u8] = b".whole";
 /// The caps, so a test can make them small.
 #[derive(Clone, Default)]
 pub(crate) struct UpdateCaps {
-    /// Where the copy is pinned whole, and listed as one artifact of its own, for Clear leftovers. `None` pins nothing and adds only what the copy holds.
+    /// The Leftovers mode: the copy is pinned whole and is one artifact (its entries aren't listed). `None` is the Removal survey: what the copy holds.
     pub pins: Option<Pins>,
     /// For `before` and its `journals` (its entries, the header bytes read, and the journals' hooks).
     pub folder: Caps,
@@ -95,14 +95,8 @@ pub(crate) fn survey_update_copy_with(root: &Path, lineage: &Lineage<'_>, mode: 
     if let (Some(pins), Some(root_id)) = (&caps.pins, root_id) {
         let name = prefix.trim_end_matches('/');
         let key = ArtifactKey::of(Store::UpdateCopy, name.as_bytes());
-        survey.add(Found {
-            store: Store::UpdateCopy,
-            key,
-            owner: Owner::Unknown,
-            format: Format::Current,
-        })?;
         let last = UPDATE_COPY[UPDATE_COPY.len() - 1];
-        pins.copy(
+        let owner = pins.copy(
             Store::UpdateCopy,
             key,
             root,
@@ -112,6 +106,15 @@ pub(crate) fn survey_update_copy_with(root: &Path, lineage: &Lineage<'_>, mode: 
             &folder,
             caps.folder.entries,
         );
+        survey.add(Found {
+            store: Store::UpdateCopy,
+            key,
+            owner,
+            format: Format::Current,
+        })?;
+        // The pin holds everything in the copy, and it goes whole: its entries are not listed one by one.
+        survey.mark_complete(Store::UpdateCopy);
+        return Ok(());
     }
     if survey_copy(
         &folder,

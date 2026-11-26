@@ -32,7 +32,8 @@ const MAX_FOLDERS: usize = 64;
 pub(crate) struct TempCaps {
     pub entries: usize,
     pub folders: usize,
-    /// Where each temp found is pinned (its folder's and its own identity), for Clear leftovers. `None` pins nothing.
+    /// The Leftovers mode: each temp is pinned (its folder's and its own identity), and is an artifact only if its process has ended and its volume has a Trash.
+    /// `None` is the Removal survey: every exact-shape temp is `Unknown`.
     pub pins: Option<Pins>,
     /// Called with a folder's path once it is opened and before it is listed: a test's way to change the path under the survey.
     #[cfg(test)]
@@ -104,15 +105,20 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, survey: &mut Surve
             key.push(b'/');
             key.extend_from_slice(entry.name.as_encoded_bytes());
             let key = ArtifactKey::of(Store::WriterTemp, &key);
+            // In the Leftovers survey a temp whose process has ended and whose volume has a Trash is clearable; any other is left out, and the pins say why.
+            let owner = match (&caps.pins, folder_id) {
+                (Some(pins), Some(folder_id)) => match pins.temp(path, folder_id, &entry, key) {
+                    Some(owner) => owner,
+                    None => continue,
+                },
+                _ => Owner::Unknown,
+            };
             survey.add(Found {
                 store: Store::WriterTemp,
                 key,
-                owner: Owner::Unknown,
+                owner,
                 format: Format::Current,
             })?;
-            if let (Some(pins), Some(folder_id)) = (&caps.pins, folder_id) {
-                pins.temp(path, folder_id, &entry, key);
-            }
         }
     }
     survey.mark_complete(Store::WriterTemp);

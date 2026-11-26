@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A place to move a file to that the person can empty and Put Back from: never a delete.
-pub trait Trash {
+pub trait Trash: Send + Sync {
     /// Whether the volume `path` is on has a Trash for this user. `false` means the item stays where it is and is never deleted instead.
     fn has_trash_for(&self, path: &Path) -> bool;
     /// Moves `path` there and says where it went. On a failure it is where it was.

@@ -9,8 +9,9 @@
 //! Only this module decides what is offerable: a temp whose process may still be running, or on a volume with no Trash, and a copy holding `went-back`
 //! (work of an earlier version not yet brought in) are listed by [`PinSet`] and refused by the act.
 
+use super::trash::{MacTrash, Trash};
 use crate::record_store::WENT_BACK_NAME;
-use recto_core::removal::{ArtifactKey, Store};
+use recto_core::removal::{ArtifactKey, Owner, Store};
 use recto_platform::folder::{Entry, Folder, Identity, Kind, MAX_DEPTH, Opened, Pinned, Tree};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -49,8 +50,13 @@ pub struct CopyPin {
 /// Everything the surveys pinned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PinSet {
+    /// Unfinished saves that may go to the Trash now (their process has ended and their volume has a Trash): the artifacts of `Store::WriterTemp`.
     pub temps: Vec<TempPin>,
     pub copies: Vec<CopyPin>,
+    /// Unfinished saves whose process may still be running: not artifacts, so they don't stop a clear, and said as "still being written".
+    pub waiting: Vec<TempPin>,
+    /// Unfinished saves on a volume that has no Trash: not artifacts, and said as "stays".
+    pub no_trash: Vec<TempPin>,
 }
 
 impl PinSet {
@@ -63,22 +69,39 @@ impl PinSet {
     }
 }
 
-/// The sink a survey's caps carry. Cheap to clone; the surveys fill it, and [`Pins::set`] takes what they pinned.
-#[derive(Clone, Default)]
-pub struct Pins(Arc<Mutex<PinSet>>);
+/// The sink a survey's caps carry, and so the mode a survey is in: a survey with `Pins` is the Leftovers survey (each copy one artifact, none of its entries
+/// listed; each unfinished save whose process has ended and whose volume has a Trash one artifact, the others left out and kept here), one without is the
+/// Removal survey as it was. Cheap to clone; the surveys fill it, and [`Pins::set`] takes what they pinned. It carries the two outside facts the offer
+/// depends on, so a test can say a process is dead or a volume has no Trash.
+#[derive(Clone)]
+pub struct Pins {
+    set: Arc<Mutex<PinSet>>,
+    trash: Arc<dyn Trash>,
+    alive: Arc<dyn Fn(u32) -> bool + Send + Sync>,
+}
 
 impl Pins {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(trash: Arc<dyn Trash>, alive: Arc<dyn Fn(u32) -> bool + Send + Sync>) -> Self {
+        Self {
+            set: Arc::default(),
+            trash,
+            alive,
+        }
+    }
+
+    /// With the Mac's own Trash and process table.
+    pub fn real() -> Self {
+        Self::new(Arc::new(MacTrash), Arc::new(recto_platform::local::process_exists))
     }
 
     /// What has been pinned so far.
     pub fn set(&self) -> PinSet {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.set.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// Pins one temporary of `folder` (open as `at`, of identity `folder_id`) that the survey listed as `entry`.
-    pub(in crate::removal_store) fn temp(&self, at: &Path, folder_id: Identity, entry: &Entry, key: ArtifactKey) {
+    /// Pins one temporary of `folder` (open as `at`, of identity `folder_id`) that the survey listed as `entry`. `Some(Target)` when it may go to the
+    /// Trash now and is an artifact; `None` when it is left out (its process may still run, or its volume has no Trash) and kept in the pins.
+    pub(in crate::removal_store) fn temp(&self, at: &Path, folder_id: Identity, entry: &Entry, key: ArtifactKey) -> Option<Owner> {
         let pin = TempPin {
             key,
             folder: at.to_path_buf(),
@@ -87,10 +110,22 @@ impl Pins {
             id: entry.identity(),
             pid: temp_pid(entry.name.as_encoded_bytes()),
         };
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).temps.push(pin);
+        let mut set = self.set.lock().unwrap_or_else(PoisonError::into_inner);
+        if pin.pid.is_none_or(|pid| (self.alive)(pid)) {
+            set.waiting.push(pin);
+            None
+        } else if !self.trash.has_trash_for(at) {
+            set.no_trash.push(pin);
+            None
+        } else {
+            set.temps.push(pin);
+            Some(Owner::Target)
+        }
     }
 
-    /// Pins the copy folder `name`, which the survey holds open as `copy`, with everything in it. A copy that can't be pinned is not recorded.
+    /// Pins the copy folder `name`, which the survey holds open as `copy`, with everything in it, and says what owner the copy folder is as an artifact:
+    /// `Target` for a copy that may be cleared, `Unknown` (a plan refuses it) for one holding `went-back`, whose work is not yet brought in, and for one
+    /// that can't be pinned (too deep, too large, changed while it was looked at), which is not recorded and so couldn't be acted on.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::removal_store) fn copy(
         &self,
@@ -102,8 +137,8 @@ impl Pins {
         name: &OsStr,
         copy: &Folder,
         max_entries: usize,
-    ) {
-        let Some(tree) = tree_of(copy, 0, max_entries) else { return };
+    ) -> Owner {
+        let Some(tree) = tree_of(copy, 0, max_entries) else { return Owner::Unknown };
         let went_back = store == Store::LegacySession
             && tree
                 .entries
@@ -119,7 +154,8 @@ impl Pins {
             tree,
             went_back,
         };
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).copies.push(pin);
+        self.set.lock().unwrap_or_else(PoisonError::into_inner).copies.push(pin);
+        if went_back { Owner::Unknown } else { Owner::Target }
     }
 }
 

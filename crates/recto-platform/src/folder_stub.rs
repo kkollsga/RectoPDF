@@ -31,6 +31,11 @@ pub struct Entry {
     pub kind: Kind,
 }
 
+/// Nothing is looked at off the Mac.
+pub fn identity_at(_path: &Path) -> Option<Identity> {
+    None
+}
+
 impl Entry {
     pub fn identity(&self) -> Identity {
         Identity {

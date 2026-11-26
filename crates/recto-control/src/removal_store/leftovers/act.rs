@@ -16,12 +16,11 @@ use super::pin::{CopyPin, PinSet, TempPin};
 use super::trash::Trash;
 use recto_core::removal::{ArtifactKey, Store};
 use recto_platform::folder::remove::{Failure, Walk, remove_tree_in};
-use recto_platform::folder::{Folder, Identity, Kind, Opened};
+use recto_platform::folder::{Folder, Kind, Opened, identity_at};
 use recto_platform::trash::Failure as TrashFailure;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// What the acts need from outside.
 pub struct Env<'a> {
@@ -193,22 +192,6 @@ pub fn clear(pins: &PinSet, keys: &[ArtifactKey], env: &Env<'_>, hooks: &mut dyn
 fn stopped(mut report: Report, key: ArtifactKey, why: Why) -> Report {
     report.stopped = Some((key, why));
     report
-}
-
-/// What a path leads to now without following a link at its last part.
-fn identity_at(path: &Path) -> Option<Identity> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    let kind = match meta.file_type() {
-        t if t.is_file() => Kind::File,
-        t if t.is_dir() => Kind::Folder,
-        t if t.is_symlink() => Kind::Link,
-        _ => Kind::Other,
-    };
-    Some(Identity {
-        dev: meta.dev(),
-        ino: meta.ino(),
-        kind,
-    })
 }
 
 fn trash_temp(pin: &TempPin, env: &Env<'_>) -> Result<Done, Why> {
