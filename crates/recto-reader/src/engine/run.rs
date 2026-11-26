@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use super::look::{Looks, tile_look};
 use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
-/// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
+/// Opens that can be under way at once, counted in threads still in `File::open`, not in what the page view still knows of. Past this, more wait for one to return.
 const MAX_OPENINGS: usize = 4;
 /// How long a job waits for its file to open before the page says so. It stays being tried.
 const OPEN_PATIENCE: Duration = Duration::from_secs(3);
@@ -29,6 +29,8 @@ const ADDED_FILE_CHANGED: &str = "This page comes from a PDF that has changed or
 const ADDED_FILE_NEEDS_PASSWORD: &str = "This page comes from a PDF that needs a password, so it isn't shown here. Open that PDF to see it.";
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
+/// What a page says while other files that aren't answering hold every slot for opening, so this one waits its turn.
+const TOO_MANY_NOT_ANSWERING: &str = "Too many files aren't answering just now, so this one is waiting its turn.";
 
 /// Panics of the thread that draws that it comes back from, close together. Past this it would only panic again.
 const MAX_PANICS_IN_A_ROW: u32 = 4;
@@ -231,6 +233,10 @@ fn run(shared: &Shared) {
                 Err(Unopened::NotWanted) => Outcome::Cancelled,
                 Err(Unopened::NotAnswering) => Outcome::PageFailed {
                     message: NOT_ANSWERING.to_string(),
+                    may_pass: true,
+                },
+                Err(Unopened::Busy) => Outcome::PageFailed {
+                    message: TOO_MANY_NOT_ANSWERING.to_string(),
                     may_pass: true,
                 },
             }
@@ -498,6 +504,8 @@ enum Unopened {
     NotWanted,
     /// It hasn't answered in [`OPEN_PATIENCE`], and it's still being tried.
     NotAnswering,
+    /// Other files' opens that haven't returned hold every slot ([`MAX_OPENINGS`]), so this one hasn't been tried yet. It's tried again.
+    Busy,
 }
 
 /// Opens a file's renderer on a thread of its own, the one part of this that a dead volume can hold up for ever, and waits for it only while the job's still wanted. One file not answering is no reason for a healthy tab to get no tiles. The wait is a look every [`OPEN_LOOK`], and only while a file's being opened.
@@ -514,8 +522,8 @@ fn renderer_for<'a>(
     if !renderers.contains_key(path) {
         let config = service.as_ref().map_err(|failure| Unopened::Failed(*failure))?.clone();
         if !openings.contains_key(path) {
-            if openings.len() >= MAX_OPENINGS {
-                return Err(Unopened::NotAnswering);
+            if openings.len() >= MAX_OPENINGS || shared.opens_waiting.load(Ordering::SeqCst) >= MAX_OPENINGS {
+                return Err(Unopened::Busy);
             }
             let (sender, receiver) = sync_channel(1);
             let opening = path.to_path_buf();
