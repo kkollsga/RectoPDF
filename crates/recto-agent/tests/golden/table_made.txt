@@ -338,12 +338,12 @@ row 84 settings: cbf0a757cb880650 766 bytes
 help settings: 74b5ae420573e9b7 531 bytes
 usage settings: f1c13855b836b3e5 44 bytes
 by tag settings: ee5f6d7b48b44de8 8 bytes
-row 85 removal check: 13cdb4556509b952 1333 bytes
-help removal check: 0c95b80b498c518f 1112 bytes
+row 85 removal check: 5e74621614022638 1487 bytes
+help removal check: 6976c2713e613e6d 1266 bytes
 usage removal check: c9a1fd1d02e4e574 33 bytes
 by tag removal_check: 8b0824236e8d1487 13 bytes
-row 86 removal clear: 535e56519687ef97 1409 bytes
-help removal clear: d1f3b25f86a54c47 1139 bytes
+row 86 removal clear: 69ee7bb465248c4c 1633 bytes
+help removal clear: 6305f4830a4b3cc6 1361 bytes
 usage removal clear: f95f028031083559 53 bytes
 by tag removal_clear: a3422b47612b9cc2 13 bytes
 row 87 skill show: f6b1003068fb4694 487 bytes
@@ -787,6 +787,6 @@ family removal: ef8f8cbb2bd6a405 516 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: c05eb34536898c70 13300 bytes
-help --json: 02e39ce9e741e919 152364 bytes
+help --json: b4c5a388153b6604 152742 bytes
 SKILL.md: 51f0ab7dfa92dfda 28545 bytes
-REFERENCE.md: 718a3f5081f05ceb 98653 bytes
+REFERENCE.md: f8525496493fa698 99029 bytes
