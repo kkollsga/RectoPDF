@@ -1,4 +1,4 @@
-//! **Asking again while the Mac is too busy,** for the exports that ask the render service once (`export svg`, an image, the list of a page's images). A busy answer ([`RenderFailure::is_busy`]) says nothing of the page and the service remembers nothing of it, so the person isn't handed "too busy, it will be tried again" with nothing trying: the export starts its output over and asks again. At most [`MAX_BUSY`] asks (the service's own bound for a page's run), and none after the command's `deadline`; the last busy answer is then the answer. The same idea as `agreement::asked` and the indexer's `asked`, which count starts and opens apart and could take this one.
+//! **Asking again while the Mac is too busy,** for the exports that ask the render service once (`export svg`, an image, the list of a page's images). A busy answer ([`RenderFailure::is_busy`]) says nothing of the page and the service remembers nothing of it, so the person isn't handed "too busy, it will be tried again" with nothing trying: the export starts its output over and asks again. At most `2 * MAX_BUSY` asks (one contents ask can be busy from three separate runs of the service, a start's, an open's and a page read's, each bounded by [`MAX_BUSY`] on its own; as `agreement::asked` and the indexer's), and none after the command's `deadline`; the last busy answer is then the answer. The same idea as `agreement::asked` and the indexer's `asked`, which count starts and opens apart and could take this one.
 
 use recto_render_service::{MAX_BUSY, RenderFailure};
 use std::time::Instant;
@@ -14,7 +14,7 @@ pub(crate) fn asked_again<S, T>(
     loop {
         asks += 1;
         match ask(state) {
-            Err(busy) if busy.is_busy() && asks < MAX_BUSY && Instant::now() < deadline => start_over(state)?,
+            Err(busy) if busy.is_busy() && asks < 2 * MAX_BUSY && Instant::now() < deadline => start_over(state)?,
             other => return other,
         }
     }
@@ -54,9 +54,9 @@ mod tests {
         assert_eq!(got, Ok(1), "only the second ask's byte is in the output");
     }
 
-    /// Failure: a page whose worker hangs every time looks busy for ever, and the export asks for ever; it asks exactly `MAX_BUSY` times and says the last busy answer.
+    /// Failure: a page whose worker hangs every time looks busy for ever, and the export asks for ever; it asks exactly `2 * MAX_BUSY` times (a start's run and an open's run each have `MAX_BUSY`, as `agreement::asked` and the indexer's) and says the last busy answer.
     #[test]
-    fn busy_answers_in_a_row_stop_at_max_busy_asks() {
+    fn busy_answers_in_a_row_stop_at_twice_max_busy_asks() {
         let mut asks = 0u8;
         let got: Result<(), _> = asked_again(
             far(),
@@ -68,7 +68,30 @@ mod tests {
             |_| Ok(()),
         );
         assert_eq!(got, Err(RenderFailure::TooBusy { page: 0 }));
-        assert_eq!(asks, MAX_BUSY);
+        assert_eq!(asks, 2 * MAX_BUSY);
+    }
+
+    /// Failure: one ask can be busy from three separate service runs (a start, an open, a page read, each bounded by `MAX_BUSY` on its own), so an export that gives up after `MAX_BUSY` asks says "too busy" while the next ask would have drawn the page. A read-busy, a start-busy and a read-busy in a row succeed on the next.
+    #[test]
+    fn three_kinds_of_busy_in_a_row_are_asked_through() {
+        let answers = [
+            Err(RenderFailure::TooBusy { page: 0 }),
+            Err(RenderFailure::TooBusyToStart),
+            Err(RenderFailure::TooBusy { page: 0 }),
+            Ok(7),
+        ];
+        let mut asked = 0;
+        let got = asked_again(
+            far(),
+            &mut (),
+            |_| {
+                asked += 1;
+                answers[asked - 1]
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(got, Ok(7));
+        assert_eq!(asked, 4);
     }
 
     /// Failure: an export asks again past its own deadline, or asks again of a failure that is the page's own.
