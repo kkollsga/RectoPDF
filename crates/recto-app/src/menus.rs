@@ -177,19 +177,6 @@ fn layout_id(spread: Spread) -> String {
     format!("layout.{}", spread.name().replace('-', "_"))
 }
 
-/// What a right-click on a contents row offers: Copy Link, for the page the row goes to.
-pub fn contents_context_menu() -> Vec<MenuEntry> {
-    vec![entry(crate::core::copy_link::COPY_LINK_ID, crate::core::copy_link::TITLE, "")]
-}
-
-/// What a menu item says of itself, for its tooltip, in Rust's words: empty for one with nothing to add.
-pub fn help(id: &str) -> &'static str {
-    match id {
-        crate::core::copy_link::COPY_LINK_ID => crate::core::copy_link::HELP,
-        _ => "",
-    }
-}
-
 /// What a right-click on a page offers: Copy and Select All, Capture, then the layouts, and in a comparison, how its panes scroll, `synced` saying which. The system adds Services and the like itself, as it does to any menu that has a selection to act on. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
 pub fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Vec<MenuEntry> {
     let mut entries = edit_entries();

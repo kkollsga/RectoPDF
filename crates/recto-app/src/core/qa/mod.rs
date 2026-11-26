@@ -532,7 +532,7 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "click_row" => {
+            "click_row" | "contents_context_menu" => {
                 check_drive_value(verb, value)?;
                 if let Some(row) = value.strip_prefix("fold:").and_then(|row| row.parse().ok()) {
                     let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
@@ -543,41 +543,10 @@ impl QaBridge {
                     }
                 }
             }
-            "appearance"
-            | "window"
-            | "hover"
-            | "compare_click"
-            | "pane_focus"
-            | "pane_scroll"
-            | "pane_context_menu"
-            | "contents_context_menu"
-            | "resize"
-            | "contents_scroll"
-            | "contents_pointer"
-            | "corner_pointer"
-            | "reduce_motion"
-            | "reveal"
-            | "scroller_style"
-            | "menu"
-            | "panel"
-            | "button"
-            | "zoom_type"
-            | "page_type"
-            | "find_type"
-            | "find_key"
-            | "find_click"
-            | "swipe"
-            | "context_menu"
-            | "key_action"
-            | "full_screen"
-            | "minimise"
-            | "hide_app"
-            | "focus"
-            | "frontmost"
-            | "sheet"
-            | "sheet_answer"
-            | "sidebar_width"
-            | "accessibility" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll"
+            | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type"
+            | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise" | "hide_app"
+            | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
                 if !self.inner().is_some_and(|inner| inner.tools.palette().is_open()) {

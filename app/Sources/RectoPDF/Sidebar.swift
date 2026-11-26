@@ -1177,12 +1177,11 @@ final class ContentsTable: NSTableView {
     func contentsMenu(row: Int) -> NSMenu? {
         guard row >= 0, let chosen = core.contentsRows(first: UInt32(row), count: 1).first, chosen.page != nil else { return nil }
         let menu = NSMenu()
-        for entry in core.contentsMenu() {
+        // Rust's own item, by its id, from the list a page's right-click has.
+        for entry in core.contextMenu(pane: core.readingPane()) where entry.id == "edit.copy_link" {
             let item = menu.addItem(withTitle: entry.title, action: #selector(contentsMenuChosen(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = entry.id
-            let help = core.menuHelp(id: entry.id)
-            item.toolTip = help.isEmpty ? nil : help
         }
         menuRow = chosen
         return menu

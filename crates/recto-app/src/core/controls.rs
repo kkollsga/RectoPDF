@@ -149,7 +149,7 @@ impl Inner {
                 super::opening::row_command(row, adding, &self.panes, &self.engine, &contents)
             }
             UiAction::CopyLink { row } => {
-                super::copy_link::of_row(self, &row);
+                super::copy_link::of_row(super::person::Person::of(self), &self.tools, &self.panes, &self.engine, &row);
                 return Acted::DONE;
             }
             UiAction::PaneRead { tab } => Some(super::comparison::reading(TabId(tab))),

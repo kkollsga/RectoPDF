@@ -121,7 +121,7 @@ pub(super) fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentErro
         }),
         "contents_context_menu" => value
             .split_once(':')
-            .is_some_and(|(row, item)| row.parse::<u32>().is_ok() && crate::menus::contents_context_menu().iter().any(|entry| entry.id == item)),
+            .is_some_and(|(row, item)| row.parse::<u32>().is_ok() && item == crate::core::copy_link::COPY_LINK_ID),
         "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
         "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| {
             pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)

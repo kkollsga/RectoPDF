@@ -4,7 +4,7 @@
 //! handed to the window's clipboard by `recto_agent`'s sink. An agent is never given it, at any level, and the answer holds no address and no path.
 //!
 //! **What Copy Link doesn't promise:** Preview may open the file at its first page. Nothing here opens a file; the page is in the address for a reader that
-//! takes it (owner, 2026-11-26: "Build it, say so").
+//! takes it. So it's said when the link is copied ([`answered`]), in one sentence after the confirmation (owner, 2026-11-26: "Build it, say so").
 
 use crate::core::answer_parts::AnswerParts;
 use crate::core::menu_rows::{Agents, Asked, Row};
@@ -15,14 +15,14 @@ use recto_agent::commands::Read;
 use recto_agent::commands::page_link::{ADDRESS_REFUSED, Link};
 use recto_agent::{Code, Command, TabRef};
 use recto_session::TabId;
-use std::sync::Arc;
 
 /// Edit > Copy Link's id, and the page's right-click menu's.
 pub const COPY_LINK_ID: &str = "edit.copy_link";
 
-/// What the menu item says, and what its help says: the page is in the address, and Preview may not take it.
+/// What the menu item says.
 pub const TITLE: &str = "Copy Link";
-pub const HELP: &str = "Puts a link to the selection's page on the clipboard. Preview may open the file at its first page.";
+/// Said after the confirmation: the page is in the address, and Preview may not take it.
+const PREVIEW: &str = "Preview may open it at the first page.";
 
 /// The person's `recto link` of `page` (from 1) of `tab`, to the window's clipboard.
 pub fn link_of(tab: u32, page: u32) -> Command {
@@ -54,12 +54,11 @@ pub fn row<'a>(parts: &RowParts<'a>, asked: &Asked<'_>) -> Option<Row<'a>> {
 }
 
 /// **A contents row's Copy Link** ([`super::controls::UiAction::CopyLink`]): the page a tap on that row goes to ([`super::navigation::contents_page`]).
-pub fn of_row(inner: &Arc<super::Inner>, row: &crate::SidebarRow) {
+pub fn of_row(person: person::Person<'_>, tools: &super::Tools, panes: &crate::panes::Panes, engine: &recto_reader::Engine, row: &crate::SidebarRow) {
     let Some(page) = row.page else { return };
-    let shown = super::navigation::shown_pages(&inner.panes, &inner.engine, TabId(row.tab));
-    let page = super::navigation::contents_page(page, shown);
-    inner.tools.tool().link_asked();
-    person::submit(inner, link_of(row.tab, page));
+    let page = super::navigation::contents_page(page, super::navigation::shown_pages(panes, engine, TabId(row.tab)));
+    tools.tool().link_asked();
+    person.submit(link_of(row.tab, page));
 }
 
 /// **How a person's Copy Link went, in words for them:** a refusal said by the page, as an agent's words are never shown to the person, and a quiet line when
@@ -70,9 +69,8 @@ pub fn answered(parts: &AnswerParts<'_>, ran: &person::Ran<'_>) {
     };
     if let Ok(answer) = ran.result {
         let file_page = answer["file_page"].as_u64().unwrap_or(0);
-        if file_page != u64::from(*page) {
-            parts.say(format!("Copied a link to page {file_page} of the saved file."));
-        }
+        let of = if file_page == u64::from(*page) { "" } else { " of the saved file" };
+        parts.say(format!("Copied a link to page {file_page}{of}. {PREVIEW}"));
         return;
     }
     let Some(error) = ran.refused() else { return };
