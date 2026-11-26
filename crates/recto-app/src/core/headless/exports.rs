@@ -64,6 +64,7 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ("save_panel", View, &[]),
     ("close_prompt", View, &[]),
     ("context_menu", View, &[]),
+    ("contents_menu", View, &[]),
     ("pointer_look", View, &[]),
     ("page_field", View, &[]),
     ("pointer_is_over_text", View, &[]),
