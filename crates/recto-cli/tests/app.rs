@@ -621,7 +621,6 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     wait_for(&run, |state| state["app"]["document_edited"] == true);
     run.settled();
     let turned = run.report();
-    let drawn = turned["reader"]["counts"]["drawn"].as_u64().unwrap();
     assert!(
         turned["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 1),
         "every page shows turned: {}",
@@ -644,12 +643,43 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
         back["app"]["pages"]
     );
     assert_eq!(run.ok(&["edits"])["can_undo"], false, "it was one step");
-    // A landscape page fits at another scale, so a turn draws at that scale; what was drawn before isn't dropped, so turning back draws nothing new.
+    // The rule: a turn and its undo drop nothing that was drawn, so after the undo nothing is drawn again except what the system took back (`discards_lost`, a
+    // tile found emptied when it was put back) and the one more the re-anchored place may show. Open question: what that one is for (it came in unexplained, 11f1578a).
+    let draws = |state: &serde_json::Value| {
+        (
+            state["reader"]["counts"]["drawn"].as_u64().unwrap(),
+            state["reader"]["counts"]["discards_lost"].as_u64().unwrap(),
+        )
+    };
+    let within = |from: &serde_json::Value, to: &serde_json::Value| {
+        let (drawn, lost) = draws(from);
+        let (now, now_lost) = draws(to);
+        let message = format!(
+            "turning back drew again: drawn {drawn} then {now}, discards_lost {lost} then {now_lost}, system pressure {}",
+            to["record"]["sleep"]["system_pressure"]
+        );
+        (now <= drawn + 1 + (now_lost - lost), message)
+    };
+    let (ok, message) = within(&turned, &back);
+    assert!(ok, "{message}");
+    run.ok(&["qa", "key-action", "redo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    let turned2 = run.report();
+    // The system takes back what's kept off the layers, as it does without a word when it needs the pages: what's drawn again is then exactly what it took.
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"]);
+    assert!(emptied["emptied"].as_u64().unwrap() > 0, "{emptied}");
+    run.ok(&["qa", "key-action", "undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.settled();
+    let back2 = run.report();
     assert!(
-        back["reader"]["counts"]["drawn"].as_u64().unwrap() <= drawn + 1,
-        "turning back drew again: {drawn} then {}",
-        back["reader"]["counts"]["drawn"]
+        draws(&back2).1 > draws(&turned2).1,
+        "the system took tiles, and the way back found them gone: {}",
+        back2["reader"]["counts"]
     );
+    let (ok, message) = within(&turned2, &back2);
+    assert!(ok, "{message}");
     run.ok(&["qa", "key-action", "redo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == true);
     // An agent's way, the same method.
