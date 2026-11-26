@@ -4,6 +4,8 @@
 
 use crate::Code;
 use crate::TabRef;
+use crate::commands::words::PickUnit;
+use crate::locating::Located;
 use crate::render::open_for_text;
 use crate::{AgentError, SessionAccess, exit, no_such_page, select as select_tab, source_changed};
 use recto_index::chrome::{self, EdgeLine};
@@ -35,6 +37,9 @@ pub(crate) struct Pick<'a> {
     pub unit: Option<&'a str>,
     pub all: bool,
     pub anyway: bool,
+    /// The page a `--ref` found, which this pick is of ([`crate::commands::locating::picking_by_reference`] sets `page` to it): the page is checked to be the page
+    /// found when it is read, and the reference's characters against the text of that read, so no second read of it is made.
+    pub found: Option<&'a Located>,
 }
 
 fn bad(words: impl Into<String>) -> AgentError {
@@ -69,6 +74,32 @@ struct Pages<'a, A: SessionAccess> {
     ends: HashMap<u32, PageText>,
     /// Those of them that couldn't be read, which has nothing to do with having no text.
     failed_ends: HashSet<u32>,
+    /// The page a reference found, if this is a pick of one: read as that page, and its characters checked against that read.
+    found: Option<&'a Located>,
+    /// The reference's characters have been checked against the text of the page found, which was read for this.
+    checked: bool,
+}
+
+impl<'a, A: SessionAccess> Pages<'a, A> {
+    fn new(access: &'a A, id: TabId, found: Option<&'a Located>) -> Self {
+        Self {
+            access,
+            id,
+            docs: Vec::new(),
+            ends: HashMap::new(),
+            failed_ends: HashSet::new(),
+            found,
+            checked: false,
+        }
+    }
+
+    /// The answer says how the page was found, once the page's read has checked what the reference names.
+    fn attach(&self, data: &mut Value) -> Result<(), AgentError> {
+        match self.found {
+            Some(found) => crate::locating::attach_checked(self.access, found, self.checked, data),
+            None => Ok(()),
+        }
+    }
 }
 
 impl<A: SessionAccess> Pages<'_, A> {
@@ -83,6 +114,10 @@ impl<A: SessionAccess> Pages<'_, A> {
         if !source.is_current() {
             return Err(source_changed(&source.path));
         }
+        let is_found = self.found.filter(|found| found.page == position + 1);
+        if let Some(found) = is_found {
+            crate::locating::agree(found, &source)?;
+        }
         match self.docs.iter().position(|(path, _)| *path == source.path) {
             Some(at) => {
                 let found = self.docs.remove(at);
@@ -96,10 +131,24 @@ impl<A: SessionAccess> Pages<'_, A> {
             }
         }
         let Some((_, doc)) = self.docs.last_mut() else { return Ok(None) };
-        Ok(doc
-            .page_characters(source.page, true, hidden_check)
-            .ok()
-            .map(|page| PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)))
+        let page = match (doc.page_characters(source.page, true, hidden_check), is_found) {
+            (Ok(page), _) => page,
+            // A page nobody can read hasn't had its text changed: the refusal is the read's own, as `text --ref` has it, and the page isn't one that failed.
+            (Err(error), Some(found)) if found.characters().is_some() => return Err(error.into()),
+            (Err(_), _) => return Ok(None),
+        };
+        if let Some(found) = is_found {
+            // The text as `recto text` gives it, from the same characters this read built its own from, so the offsets are the ones the pick takes.
+            found.held_in(&recto_index::read_page(&page.chars, &page.boxes, false).normalized.text)?;
+            self.checked = true;
+        }
+        Ok(Some(PageText::build(
+            &page.chars,
+            &page.boxes,
+            page.frame,
+            page.hidden_checked,
+            page.copy_restricted,
+        )))
     }
 }
 
@@ -145,11 +194,11 @@ fn range_of<A: SessionAccess>(pick: &Pick, pages: u32, reading: &mut Pages<A>) -
         });
     }
     let Some(at) = pick.at else { return Ok(Range::pages(first, last)) };
-    let unit = match pick.unit {
-        None if pick.to.is_some() => Unit::Char,
-        None | Some("word") => Unit::Word,
-        Some("line") => Unit::Line,
-        Some(_) => Unit::Char,
+    let unit = match (pick.unit.map(PickUnit::from_word), pick.to) {
+        (None, Some(_)) => Unit::Char,
+        (None | Some(Some(PickUnit::Word)), _) => Unit::Word,
+        (Some(Some(PickUnit::Line)), _) => Unit::Line,
+        _ => Unit::Char,
     };
     let clicks = match unit {
         Unit::Char => 1,
@@ -193,13 +242,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         let id = select_tab(s, pick.tab)?;
         Ok::<_, AgentError>((id, s.pages().count(id)))
     })?;
-    let mut reading = Pages {
-        access,
-        id,
-        docs: Vec::new(),
-        ends: HashMap::new(),
-        failed_ends: HashSet::new(),
-    };
+    let mut reading = Pages::new(access, id, pick.found);
     let range = range_of(pick, pages, &mut reading)?;
     let (page_cap, room, time) = if rects {
         (MAX_SELECT_PAGES, MAX_SELECT_BYTES, Duration::from_secs(60))
@@ -340,6 +383,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
     if rects {
         data["pages"] = json!(listed);
     }
+    reading.attach(&mut data)?;
     Ok(data)
 }
 
@@ -385,6 +429,7 @@ mod tests {
             unit: None,
             all: true,
             anyway: false,
+            found: None,
         }
     }
 
