@@ -150,6 +150,43 @@ fn the_rerun_line_gives_back_the_seams_the_seed_and_the_test() {
     }
 }
 
+/// Failure (2026-11-26, CI 45857918813): a test that only met an app some other way (`Run::attach`, the restore bed) failed and its `summary.txt` said "(no panic message caught)", for the panic hook was set only when this process launched an app. No app needed: the child registers a run through `met` and panics.
+#[test]
+fn a_run_that_was_only_met_still_has_its_panic_in_the_summary() {
+    let root = common::free_folder();
+    std::fs::create_dir_all(&root).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "met_then_fails_on_purpose", "--include-ignored", "--nocapture"])
+        .env(ON_PURPOSE, "1")
+        .env(common::evidence::ROOT_ENV, &root)
+        .env_remove("NEXTEST_TEST_NAME")
+        .env_remove("NEXTEST_BINARY_ID")
+        .output()
+        .unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let summaries: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("summary.txt")).ok())
+        .collect();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!output.status.success(), "the throwaway test passed: {said}");
+    assert_eq!(summaries.len(), 1, "one summary for the one failed test: {summaries:?}\n{said}");
+    assert!(summaries[0].contains("met and failing on purpose"), "{}", summaries[0]);
+}
+
+/// The throwaway for the test above: registers a run it did not launch, then fails.
+#[test]
+#[ignore = "fails on purpose; only a_run_that_was_only_met_still_has_its_panic_in_the_summary runs it, in a child"]
+fn met_then_fails_on_purpose() {
+    if std::env::var_os(ON_PURPOSE).is_none() {
+        return;
+    }
+    let state = State::new();
+    common::evidence::met(&state, std::process::id(), "attached");
+    panic!("met and failing on purpose");
+}
+
 /// Every file under a folder, relative to it.
 fn listing(folder: &Path) -> Vec<String> {
     fn walk(base: &Path, at: &Path, into: &mut Vec<String>) {

@@ -67,8 +67,8 @@ static PANIC: Mutex<Option<String>> = Mutex::new(None);
 static HOOK: Once = Once::new();
 static WRITTEN: Once = Once::new();
 
-/// A launch of the app on `state`, before it starts: its folder's messages so far are the launch before's, kept here as the next launch moves them along.
-pub fn launching(state: &State) -> usize {
+/// The hook that keeps the panic's words for the summary, set once, by every way a run is registered (a run only met has a summary too).
+fn install_hook() {
     HOOK.call_once(|| {
         let earlier = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -76,6 +76,11 @@ pub fn launching(state: &State) -> usize {
             earlier(info);
         }));
     });
+}
+
+/// A launch of the app on `state`, before it starts: its folder's messages so far are the launch before's, kept here as the next launch moves them along.
+pub fn launching(state: &State) -> usize {
+    install_hook();
     let messages_before = std::fs::read_to_string(&state.paths.server_messages).ok().map(|text| tail(&text, LOG_CAP));
     let files_before = files_of(&state.root);
     let mut launches = LAUNCHES.lock().unwrap_or_else(PoisonError::into_inner);
@@ -99,6 +104,7 @@ pub fn launched(index: usize, pid: u32) {
 
 /// A run some other way started, such as the app an update put in place.
 pub fn met(state: &State, pid: u32, how: &str) {
+    install_hook();
     LAUNCHES.lock().unwrap_or_else(PoisonError::into_inner).push(Launch {
         pid,
         state_root: state.root.clone(),
