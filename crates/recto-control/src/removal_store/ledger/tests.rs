@@ -928,11 +928,6 @@ fn a_destination_is_recorded_by_its_canonical_folder_a_missing_one_is_no_gap_and
         "the folder is canonical and the file isn't there"
     );
     assert_eq!(ledger.gap, None);
-    // A folder that isn't there: the save fails and no temp can exist, so nothing is recorded and nothing is doubtful.
-    start(&dir.join("no-such-folder").join("copy.pdf"));
-    let ledger = read(&root);
-    assert_eq!(ledger.destinations.len(), 1, "nothing is recorded for a folder that isn't there");
-    assert_eq!(ledger.gap, None, "a missing folder is no gap");
     // A folder that can't be looked into: a temp may be there that nobody can list, so the lineage is not the whole story.
     let locked = dir.join("locked");
     std::fs::create_dir_all(locked.join("sub")).unwrap();
@@ -942,4 +937,51 @@ fn a_destination_is_recorded_by_its_canonical_folder_a_missing_one_is_no_gap_and
     let ledger = read(&root);
     assert_eq!(ledger.destinations.len(), 1, "nothing is recorded for a folder that can't be resolved");
     assert_eq!(ledger.gap, Some(Gap::WriteFailed));
+}
+
+/// Failure (review round 2): a destination the writer fails on at once is recorded as a gap, which refuses every removal for a save that made nothing; or a
+/// folder made between the note and the write is not the one recorded, so its temp is never listed. A part of the parent that is a file, a name too long
+/// and a loop of links are nothing (the writer fails there); a missing part is recorded under the nearest folder that is there.
+#[test]
+fn a_destination_the_writer_fails_on_is_nothing_and_one_in_a_folder_not_yet_made_is_kept() {
+    let dir = temp();
+    let root = dir.join("state");
+    let real = dir.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
+    let start = |destination: &Path| {
+        note_save(
+            &root.join("backups.noindex"),
+            &SaveNote::Starting {
+                path: &dir.join("a.pdf"),
+                from: Some(stamp(&dir.join("a.pdf"))),
+                destination: Some(destination),
+            },
+        );
+    };
+    start(&real.join("not").join("yet").join("copy.pdf"));
+    assert_eq!(
+        read(&root).destinations,
+        vec![real.join("not").join("yet").join("copy.pdf")],
+        "kept under the folder that is there"
+    );
+    assert_eq!(read(&root).gap, None);
+    let file = dir.join("plain-file");
+    std::fs::write(&file, b"x").unwrap();
+    let looped = dir.join("looped");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+    let too_long = "n".repeat(300);
+    for (why, destination) in [
+        ("a file where a folder should be", file.join("sub").join("copy.pdf")),
+        ("a name too long", real.join(&too_long).join("copy.pdf")),
+        ("a loop of links", looped.join("copy.pdf")),
+    ] {
+        start(&destination);
+        let ledger = read(&root);
+        assert_eq!(ledger.destinations.len(), 1, "{why}: nothing is recorded");
+        assert_eq!(ledger.gap, None, "{why}: and it is no gap");
+    }
+    // A folder that isn't there at all is as one made later: kept under the nearest that is.
+    start(&dir.join("no-such-folder").join("copy.pdf"));
+    assert_eq!(read(&root).destinations.len(), 2, "a folder that isn't there is kept under the nearest that is");
 }

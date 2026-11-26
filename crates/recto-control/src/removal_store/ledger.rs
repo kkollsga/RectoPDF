@@ -98,21 +98,52 @@ fn verified(real: &Path, expect: FileStamp) -> Option<FileVersion> {
 
 /// **Where a Save As or a Replace is going, before it is there.** The writer makes its temporary, named for the destination's file name, in the
 /// destination's folder before anything lands, so a crash leaves it there with the whole document in it, and the survey can only list that folder if the
-/// ledger names a path in it. The file may not exist yet, so the folder (the destination's parent, `.` for a bare name) is canonicalized and the file name
-/// appended. It is a [`Entry::Destination`], not a link: it joins no version, so the copy's own journals and backups place as they would for any file, and
-/// the survey of the writer's temporaries alone reads it (only while no file has been seen at the path). A parent that isn't there records nothing and is no
-/// gap (the save fails, and no temp can exist in a folder that doesn't). Any other failure to resolve it (no permission, an I/O error) records nothing and
-/// leaves a gap, the safe direction: a temp may be there that nobody can list, so every removal refuses.
+/// ledger names a path in it. The file may not be there yet, nor its folder, so the nearest folder that exists (the destination's parent, `.` for a bare name)
+/// is canonicalized and the missing parts and the file name appended: a folder made between this note and the write is still the one recorded.
+///
+/// It is a [`Entry::Destination`], not a link: it joins no version, so the copy's own journals and backups place as they would for any file, and the survey of
+/// the writer's temporaries alone reads it (only while no file has been seen at the path). A path the writer fails on at once (a part of the parent that is
+/// a file, a name too long, a loop of links) records nothing and is no gap: it can make no temp. Any other failure to resolve it (no permission, an I/O
+/// error) records nothing and leaves a gap, the safe direction: a temp may be there that nobody can list, so every removal refuses.
 fn destination_entry(destination: &Path) -> Option<Entry> {
     let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let Some(name) = destination.file_name() else {
         return Some(Entry::Gap(Gap::WriteFailed));
     };
-    match parent.canonicalize() {
-        Ok(parent) => Some(Entry::Destination(parent.join(name))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => Some(Entry::Gap(Gap::WriteFailed)),
+    // From the whole parent up, one part at a time: at most the path's own components.
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut at = parent;
+    let real = loop {
+        match if at.as_os_str().is_empty() { Path::new(".") } else { at }.canonicalize() {
+            Ok(real) => break real,
+            Err(error) if writer_fails_here(&error) => return None,
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Some(Entry::Gap(Gap::WriteFailed)),
+            Err(_) => {}
+        }
+        // Only a plain name is a part that may yet be made; `..` and the root can't be missing.
+        match (at.file_name(), at.parent()) {
+            (Some(part), Some(up)) => {
+                missing.push(part);
+                at = up;
+            }
+            _ => return None,
+        }
+    };
+    let mut path = real;
+    path.extend(missing.iter().rev());
+    path.push(name);
+    // A path the ledger can't hold would be a note that was lost without a word.
+    if path.as_os_str().as_encoded_bytes().len() > recto_core::removal::MAX_PATH_BYTES {
+        return Some(Entry::Gap(Gap::WriteFailed));
     }
+    Some(Entry::Destination(path))
+}
+
+/// Whether the writer, given this error for a part of the path, fails there and can make no temporary.
+fn writer_fails_here(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{InvalidFilename, NotADirectory};
+    // `ErrorKind` has no stable name for a loop of links.
+    matches!(error.kind(), NotADirectory | InvalidFilename) || error.raw_os_error() == Some(libc::ELOOP)
 }
 
 /// What a save's step adds to the ledger. Pure over the files' stats.

@@ -234,12 +234,16 @@ fn a_destination_is_no_link_and_only_one_nothing_was_seen_at_is_offered() {
     let mut led = ledger(&[at(s0, "/docs/mine.pdf"), at(stamp(8, 100, 1), "/docs/landed.pdf")]);
     led.destinations = vec!["/docs/landed.pdf".into(), "/elsewhere/lost.pdf".into()];
     let l = lineage(&led, s0, Path::new("/docs/mine.pdf"), &LEDGER_LIMITS).unwrap();
-    assert!(sides_of(&l).iter().all(|(p, _)| !p.contains("lost")), "no side for a destination: {:?}", sides_of(&l));
+    assert!(
+        sides_of(&l).iter().all(|(p, _)| !p.contains("lost")),
+        "no side for a destination: {:?}",
+        sides_of(&l)
+    );
     assert_eq!(l.destinations().collect::<Vec<_>>(), [Path::new("/elsewhere/lost.pdf")]);
     // Destinations count against the caps like any path.
-    let small = LedgerLimits {
-        max_links: 3,
-        ..LEDGER_LIMITS
-    };
-    assert!(lineage(&led, s0, Path::new("/docs/mine.pdf"), &small).is_err(), "2 links and 2 destinations are over 3 frames");
+    let small = LedgerLimits { max_links: 3, ..LEDGER_LIMITS };
+    assert!(
+        lineage(&led, s0, Path::new("/docs/mine.pdf"), &small).is_err(),
+        "2 links and 2 destinations are over 3 frames"
+    );
 }

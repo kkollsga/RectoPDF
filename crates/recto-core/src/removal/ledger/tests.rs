@@ -364,7 +364,10 @@ fn a_destination_reads_back_as_a_destination_and_no_link() {
     let entries = [Entry::Link(at(7, "/docs/a.pdf")), Entry::Destination("/docs/copy.pdf".into())];
     let bytes = file_of(&entries);
     let ledger = read(&bytes, &LEDGER_LIMITS);
-    assert_eq!((ledger.links.len(), ledger.destinations.clone(), ledger.gap), (1, vec![PathBuf::from("/docs/copy.pdf")], None));
+    assert_eq!(
+        (ledger.links.len(), ledger.destinations.clone(), ledger.gap),
+        (1, vec![PathBuf::from("/docs/copy.pdf")], None)
+    );
     assert_eq!(ledger.frames, 2, "a destination is a frame, so it counts against the cap on frames");
     // One byte of a destination's length flipped: damage, never a link.
     let mut bad = bytes.clone();
