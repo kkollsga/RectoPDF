@@ -338,6 +338,7 @@ RowParts::pub fn copy_selection(&self, anyway: bool)
 RowParts::pub fn edit_landing(&self, tab: TabId) -> bool
 RowParts::pub fn let_go_image(&self)
 RowParts::pub fn link_asked(&self)
+RowParts::pub fn link_not_taken(&self)
 RowParts::pub fn mark_update_menu(&self) -> bool
 RowParts::pub fn open(&self, path: PathBuf)
 RowParts::pub fn open_palette(&self)
