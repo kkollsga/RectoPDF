@@ -11,6 +11,8 @@ use std::process::Command;
 
 /// Set by the test below for its child alone.
 const ON_PURPOSE: &str = "RECTO_EVIDENCE_FAIL_ON_PURPOSE";
+/// `ON_PURPOSE`'s value for the child that registers a run through `met` and fails, with no app.
+const MET_ONLY: &str = "met";
 
 /// Failure: a failing app test leaves nothing to go on but its message, as on CI on 2026-11-12, when each failure cost a rerun to learn anything: no folder, more than one, or one missing an item (every launch's messages, `qa state` as each launch was last read, the threads by name, a sample, the slow seams and seed, the system pressure, the machine, the settings and the runner's command line, Launch Services, and the command that runs it again); or one that holds a path from the owner's own folders.
 #[test]
@@ -139,6 +141,7 @@ fn the_rerun_line_gives_back_the_seams_the_seed_and_the_test() {
     let switch = common::evidence::slow_switch(&report).unwrap();
     assert_eq!(Profile::read(Some(&switch), None, None).unwrap().unwrap(), profile, "{switch}");
     assert_eq!(common::evidence::slow_switch(&serde_json::Value::Null), None, "no slow mode, no switch");
+    a_run_that_was_only_met_still_has_its_panic_in_the_summary();
     let line = common::evidence::rerun_line(&report);
     for part in [
         format!("RECTO_QA_SLOW='{switch}'"),
@@ -148,6 +151,30 @@ fn the_rerun_line_gives_back_the_seams_the_seed_and_the_test() {
     ] {
         assert!(line.contains(&part), "{part}: {line}");
     }
+}
+
+/// Failure (2026-11-26, CI 45857918813): a test that only met an app some other way (`Run::attach`, the restore bed) failed and its `summary.txt` said "(no panic message caught)", for the panic hook was set only when this process launched an app. No app needed: the child registers a run through `met` and panics. Run inside the test above, so no test is added to the ones that count as launching the app.
+fn a_run_that_was_only_met_still_has_its_panic_in_the_summary() {
+    let root = common::free_folder();
+    std::fs::create_dir_all(&root).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fails_on_purpose", "--include-ignored", "--nocapture"])
+        .env(ON_PURPOSE, MET_ONLY)
+        .env(common::evidence::ROOT_ENV, &root)
+        .env_remove("NEXTEST_TEST_NAME")
+        .env_remove("NEXTEST_BINARY_ID")
+        .output()
+        .unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let summaries: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("summary.txt")).ok())
+        .collect();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!output.status.success(), "the throwaway test passed: {said}");
+    assert_eq!(summaries.len(), 1, "one summary for the one failed test: {summaries:?}\n{said}");
+    assert!(summaries[0].contains("met and failing on purpose"), "{}", summaries[0]);
 }
 
 /// Every file under a folder, relative to it.
@@ -171,10 +198,12 @@ fn listing(folder: &Path) -> Vec<String> {
 #[test]
 #[ignore = "fails on purpose; only a_failing_app_test_leaves_one_folder_with_its_evidence runs it, in a child"]
 fn fails_on_purpose() {
-    if std::env::var_os(ON_PURPOSE).is_none() {
-        return;
-    }
+    let Some(mode) = std::env::var_os(ON_PURPOSE) else { return };
     let state = State::new();
+    if mode == MET_ONLY {
+        common::evidence::met(&state, std::process::id(), "attached");
+        panic!("met and failing on purpose");
+    }
     let slow = std::ffi::OsStr::new("worker=1,jitter=42");
     let document = numbered(2);
     let first = Run::on_with_env(&state, &[("RECTO_QA_SLOW", slow)]).unwrap();
