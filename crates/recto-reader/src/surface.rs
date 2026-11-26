@@ -660,6 +660,7 @@ EngineConfig.pub keys: Option<Arc<Keyring>>
 EngineConfig.pub policy: Option<Policy>
 EngineConfig.pub service: Option<ServiceConfig>
 Entry (pub(super) struct, derives Debug)
+Healed (pub(in crate::engine) enum, derives Debug, PartialEq, Eq)
 HostQueue (pub(crate) struct, derives Debug)
 HostQueue: Drop (trait impl)
 HostQueue: Drop::fn drop(&mut self)
@@ -707,7 +708,7 @@ NotShowable::pub const fn code(reason: Option<Self>) -> u8
 NotShowable::pub const fn name(self) -> &'static str
 NotShowable::pub fn from_code(code: u8) -> Option<Self>
 Op (pub enum, derives Debug, PartialEq)
-OpenDoc (private struct)
+OpenDoc (pub(super) struct)
 Outcome (pub enum, derives Debug)
 PageMap (pub struct, derives Clone, Debug, Default, PartialEq, Eq)
 PageMap.pub expected: Vec<Option<FileStamp>>
@@ -945,19 +946,26 @@ WorkerFigures::pub fn pids(&self) -> Vec<u32>
 WorkerFigures::pub fn starved(&self) -> (u32, u32)
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
+fn (pub(crate)) pub(crate) fn bare(reader: &mut Reader, file: &Path, source_page: u32)
+fn (pub(crate)) pub(crate) fn drop_look(reader: &mut Reader, file: &Path, source_page: u32)
 fn (pub(crate)) pub(crate) fn finding(reader: &Reader) -> bool
 fn (pub(crate)) pub(crate) fn found(reader: &mut Reader, tab: u32, serial: u32, number: u32, rect: Rect) -> bool
 fn (pub(crate)) pub(crate) fn let_go(reader: &mut Reader) -> bool
 fn (pub(crate)) pub(crate) fn looking(reader: &Reader) -> Option<(u32, PagePoint, u32)>
 fn (pub(crate)) pub(crate) fn not_found(reader: &mut Reader, tab: u32, serial: u32)
+fn (pub(crate)) pub(crate) fn on_dark_paper(reader: &mut Reader) -> Option<(Vec<(PathBuf, u32)>, u64)>
 fn (pub(crate)) pub(crate) fn pages_on_show(reader: &mut Reader) -> Option<(Vec<(std::path::PathBuf, u32)>, u64)>
 fn (pub(crate)) pub(crate) fn picked(reader: &Reader) -> Option<(u32, ImagePick)>
 fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
 fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
 fn (pub(crate)) pub(crate) fn set(reader: &mut Reader, tab: u32, on: bool) -> bool
 fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
+fn (pub(crate)) pub(crate) fn stand_in_plan(reader: &mut Reader, file: &Path, source_page: u32) -> Option<JobPlan>
 fn (pub(crate)) pub(crate) fn system_takes_only_when_told() [qa feature only]
 fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)
+fn (pub(in crate::engine)) pub(in crate::engine) fn at_rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) -> bool
+fn (pub(in crate::engine)) pub(in crate::engine) fn heal(doc: &mut impl LookSource, looks: &mut Looks, page: u32, generation: u64, now: Instant) -> Healed
+fn (pub(in crate::engine)) pub(in crate::engine) fn next_heal<'a>(pages: &[(PathBuf, u32)], looks_of: impl Fn(&Path) -> Option<&'a Looks>, now: Instant) -> Option<Duration>
 fn (pub) pub fn look(paper: PaperKind) -> (u32, bool)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>
