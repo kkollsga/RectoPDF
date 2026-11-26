@@ -72,11 +72,6 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the state folder's own list kept beside a tab after a copy went back, its first line read (no link followed) to say whose it is",
     ),
     (
-        "recto-control/src/removal_store/journals.rs",
-        1,
-        "the first 8 KiB of a journal and the first 110 bytes of a sidecar in the state folder, through open_private_file (no link, no pipe), read for a removal's survey: never a document",
-    ),
-    (
         "recto-control/src/removal_store/ledger.rs",
         2,
         "the provenance ledger's own file in the state folder, read with a cap (a plain file only; the writer opens it with no link followed): paths and numbers, never a document",
@@ -136,6 +131,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the platform's file primitives, each handed its path by a caller: private state files (links not followed), clones, the untrusted open of \
          `recto`'s update zip in `recto`, a folder flushed. Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
          are counted again where a caller in these crates makes them",
+    ),
+    (
+        "recto-platform/src/folder_mac.rs",
+        1,
+        "a folder of the state folder opened without following a link (O_DIRECTORY | O_NOFOLLOW), for a removal's survey, which then lists and opens through its descriptor: never a document",
     ),
     ("recto-platform/src/local_stub.rs", 4, "the same primitives' stand-ins on another system"),
     (
