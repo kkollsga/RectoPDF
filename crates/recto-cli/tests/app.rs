@@ -652,6 +652,22 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     );
     run.ok(&["qa", "key-action", "redo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    let turned2 = run.report();
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"]);
+    assert!(emptied["emptied"].as_u64().unwrap() > 0, "{emptied}");
+    run.ok(&["qa", "key-action", "undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.settled();
+    let back2 = run.report();
+    assert!(
+        back2["reader"]["counts"]["drawn"].as_u64().unwrap() <= turned2["reader"]["counts"]["drawn"].as_u64().unwrap() + 1,
+        "turning back again drew: {} then {}",
+        turned2["reader"]["counts"]["drawn"],
+        back2["reader"]["counts"]["drawn"]
+    );
+    run.ok(&["qa", "key-action", "redo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
     // An agent's way, the same method.
     run.ok(&["qa", "key-action", "undo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == false);
