@@ -440,31 +440,34 @@ impl Bed {
                     "the last run never let go: {answered}\n{}",
                     self.log()
                 );
+                // Plain on purpose: a wait that stopped for a go-back would leave what's answering still answering, and the `continue` would send `qa start` straight back to "already running", round and round until the limit.
                 self.wait_until_nothing_answers();
                 continue;
             }
             if let Some(pid) = reply["data"]["pid"].as_u64() {
-                self.wait_gone(pid as u32, look);
+                self.wait_gone(pid as u32, look, || self.going_back());
             }
             // Or it went back, and what's running at the app's path now is the version before.
             while !local::processes_running(&executable).is_empty() && self.version() != OLD {
                 assert!(began.elapsed() < Duration::from_secs(60), "it didn't end: {}", self.log());
                 std::thread::sleep(Duration::from_millis(20));
             }
-            let saw_new = self.version() != OLD;
+            let going_back = self.going_back();
             if look == Look::Late {
-                eprintln!("late look: the decision after the launch saw {}", if saw_new { "NEW" } else { "OLD" });
+                let seen = if self.version() != OLD { "NEW" } else { "OLD" };
+                eprintln!("late look: the decision after the launch saw {seen}, going back: {going_back}");
             }
-            if saw_new {
+            if !going_back {
                 self.late_pause(look);
-                self.wait_until_nothing_answers();
+                self.wait_until_nothing_answers_unless(|| self.going_back());
             }
             return answered;
         }
     }
 
-    /// Waits for a run to be gone: its process, and then its socket, which a process that can't be asked about any more can still be closing, and which still takes a connection meanwhile, so the next `qa start` would be told something's already running.
-    fn wait_gone(&self, pid: u32, look: Look) {
+    /// Waits for a run to be gone: its process, and then its socket, which a process that can't be asked about any more can still be closing, and which still takes a connection meanwhile, so the next `qa start` would be told something's already running. Unless `done`: a launch that's going back stops waiting for quiet once its process is gone, as the version before binds the same socket within a few hundred ms and a slow runner can miss the quiet between (CI run 45857918813).
+    #[track_caller]
+    fn wait_gone(&self, pid: u32, look: Look, done: impl Fn() -> bool) {
         let began = Instant::now();
         while local::process_counters(pid).is_some() {
             assert!(began.elapsed() < Duration::from_secs(60), "process {pid} didn't end: {}", self.log());
@@ -473,11 +476,19 @@ impl Bed {
         if look == Look::Late {
             eprintln!("late look: the process was gone, version {}", if self.version() != OLD { "NEW" } else { "OLD" });
         }
-        self.late_pause(look);
-        self.wait_until_nothing_answers();
+        if !done() {
+            self.late_pause(look);
+            self.wait_until_nothing_answers_unless(done);
+        }
     }
 
-    /// For `Look::Late`: holds the test here, between its last look and the wait for quiet, until the version before is in place and answering: the order a starved runner sees. A wait for quiet after this can't end.
+    /// Whether the launch that just ended is going back, or has: the installer has its plan or its helper is running, or the version before is in place. The plan is written before the launch exits and stays until after the swap back.
+    fn going_back(&self) -> bool {
+        let files = recto_update::plan::Files::in_state(&self.state.root);
+        files.plan().exists() || recto_update::plan::helper_alive(&files) || self.version() == OLD
+    }
+
+    /// For `Look::Late`: holds the test here, between its last look and the wait for quiet, until the version before is in place and answering: the order a starved runner sees. A plain wait for quiet after this can't end; one that stops for a go-back does.
     fn late_pause(&self, look: Look) {
         if look != Look::Late {
             return;
@@ -489,10 +500,25 @@ impl Bed {
         }
     }
 
+    #[track_caller]
     fn wait_until_nothing_answers(&self) {
+        self.wait_until_nothing_answers_unless(|| false);
+    }
+
+    /// Waits for nothing to answer on the socket, or for `done`. A failure says what is answering: `status`'s pid and version, and what runs from the app's path.
+    #[track_caller]
+    fn wait_until_nothing_answers_unless(&self, done: impl Fn() -> bool) {
         let began = Instant::now();
-        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
-            assert!(began.elapsed() < Duration::from_secs(60), "the socket stayed: {}", self.log());
+        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() && !done() {
+            if began.elapsed() >= Duration::from_secs(60) {
+                let (status, _) = self.state.json(&["status"]);
+                let running = local::processes_running(&self.app.join("Contents/MacOS/RectoPDF"));
+                panic!(
+                    "the socket stayed: status {status}; running at the app's path: {running:?}; version {}\n{}",
+                    self.version(),
+                    self.log()
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -1131,8 +1157,13 @@ fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
         answers.push(bed.launch_until_it_ends(if goes_back { Look::Late } else { Look::AsItHappens }));
         // A launch that's going back has left the installer its plan, and the version before is in place a moment later.
         let began = Instant::now();
+        let limit = Duration::from_millis(recto_update::plan::QUIT_LIMIT_MS + recto_update::plan::START_LIMIT_MS);
         while (files.plan().exists() || recto_update::plan::helper_alive(&files)) && bed.version() != OLD {
-            assert!(began.elapsed() < Duration::from_secs(60), "{}", bed.log());
+            assert!(
+                began.elapsed() < limit,
+                "the go-back didn't finish within the installer's own limits: {}",
+                bed.log()
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
