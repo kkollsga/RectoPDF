@@ -1042,7 +1042,14 @@ check "a heavy run lists the lifecycle tests for its record, and makes no -p rec
 check "the warm gate builds the gate's commands and nothing else" "0 1 1 1 0" "$warm_rc $(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c '^clippy --manifest-path crates/recto-headings' "$CALLS") $(grep -c '^clippy --workspace --locked --target' "$CALLS") $(grep -c 'nextest' "$CALLS")"
 save_if=$(grep -A3 "name: Rust's cache, saved on main" "$SOURCE/.github/workflows/ci.yml" | sed -n 's/^ *if: //p')
 warm_if=$(grep -A3 "name: The gate's builds, kept in the cache" "$SOURCE/.github/workflows/ci.yml" | sed -n 's/^ *if: //p')
-check "the workflow runs it on the runs that save the cache, and only those" "$save_if" "$warm_if"
+CI_YML="$SOURCE/.github/workflows/ci.yml"
+miss=no; [[ "$save_if" == *"cache-hit != 'true'"* ]] && miss=yes
+check "the save step's condition is there, and is the cache-miss one" "yes" "$miss"
+check "the workflow runs the warm gate on the runs that save the cache, and only those" "$save_if" "$warm_if"
+check "its command is the check's own --warm-gate" "tools/check.sh --warm-gate" "$(grep -A4 "name: The gate's builds, kept in the cache" "$CI_YML" | sed -n 's/^ *run: //p')"
+check "and it sits after the heavy part's tests and before the save" "yes" "$(awk '/Full check, its heavy part/ {a=NR} /The gate.s builds, kept in the cache/ {w=NR} /Rust.s cache, saved on main/ {v=NR} END {print (a && w && v && a < w && w < v) ? "yes" : "no"}' "$CI_YML")"
+: > "$CALLS"; STUB_FAIL='clippy --workspace --all-targets' STUB_EXIT=101 CI=true tools/check.sh --warm-gate > "$X/warm-fail.out" 2>&1
+check "a failing clippy of the workspace doesn't stop the warm gate's other two builds, and it still exits 0" "0 1 1" "$? $(grep -c '^clippy --manifest-path crates/recto-headings' "$CALLS") $(grep -c '^clippy --workspace --locked --target' "$CALLS")"
 same_calls() { grep -vE -- '--test app --test restore|binary\(=app\) \| binary\(=restore\)' "$1" | sed -E 's/^nextest run --locked --no-fail-fast (-p recto-cli --test |--workspace -E package\(recto-cli\) \& \(binary\(=)(notices|registrations).*/\2 stage/' | sort; }
 check "light and heavy together run what a run of everything does, each call once" "$(same_calls "$X/calls-all")" "$( { same_calls "$X/calls-light"; same_calls "$X/calls-heavy"; } | sort)"
 check "no call is in both" "" "$(comm -12 <(sort -u "$X/calls-light") <(sort -u "$X/calls-heavy"))"

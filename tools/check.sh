@@ -39,7 +39,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,17p' "$0"; exit 2; }
+usage() { sed -n '2,/^#   tools\/check.sh --like-ci/p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
@@ -512,18 +512,20 @@ stage() {
 # The compile gate: what must build and pass the lints before a test job is queued. Clippy for the whole workspace, which is incremental and so costs
 # seconds on what didn't change, then the headings helper's own lints, then the Windows compile check. A compile error is found here, as a quick job at
 # the front of the queue, and no test is ever queued for it (46 of 156 failed jobs in 30 hours were compile, clippy or fmt errors, 2026-11-12).
+# GATE_KEEP_GOING=1 (--warm-gate only): each command is run on its own and a failure doesn't stop the next, so the cache keeps every one's artifacts.
 gate() {
   set -e
   local at
   at=$(date +%s)
-  cargo clippy --workspace --all-targets --locked -- -D warnings
+  step() { if [ -n "${GATE_KEEP_GOING:-}" ]; then "$@" || echo "check: (warm gate) failed, going on: ${*:1:3}"; else "$@"; fi; }
+  step cargo clippy --workspace --all-targets --locked -- -D warnings
   # The headings helper is a workspace of its own, kept apart so distillPDF's lopdf features never reach the app. Its own lints, then its tests below.
-  cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
+  step cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed. A compile error, so it goes before anything runs.
   # Clippy at the level above, so a warning fails it: code only a Windows build compiles is seen nowhere else, and an unused variable in it passed a plain
   # `cargo check` (916efaf). Clippy shares the check's artifacts for dependencies, so nothing more is built than before.
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
-    cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
+    step cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
   fi
   echo "check: clippy and the Windows compile check took $(($(date +%s) - at)) s"
   # The docs' links of the crates in doc_crates (DOC_LINK_CRATES that changed, tools/check-scope.sh): a link to nothing, or a public doc linking a private item.
@@ -536,10 +538,11 @@ gate() {
 }
 # The gate's builds alone, for the run that saves CI's cache: heavy no longer runs the gate, so its check-mode artifacts (clippy's, the Windows target's) would be
 # missing from the cache and `light` would build them every run after the next Cargo.lock change. The same `gate` function, so one set of command lines;
-# its verdict is light's, so a failure here only says so.
+# its verdict is light's, so a failure here only says so, and each of the three commands runs even if an earlier one failed (GATE_KEEP_GOING).
 if [ "$mode" = --warm-gate ]; then
   doc_crates=""
-  export doc_crates
+  GATE_KEEP_GOING=1
+  export doc_crates GATE_KEEP_GOING
   export -f gate
   HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh --warm-gate" || echo "check: the warm gate failed; the gate's verdict is light's, so this run goes on."
   exit 0
