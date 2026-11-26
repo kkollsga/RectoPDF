@@ -134,6 +134,24 @@
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"goto","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=goto code=usage
+{"cmd":"goto","label":"iv","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=goto code=usage
+{"cmd":"goto","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","entry":2}
+  refused cmd=goto code=usage
+{"cmd":"goto","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","link":true}
+  refused cmd=goto code=usage
+{"cmd":"goto","ref":null}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"goto","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"goto","ref":"nonsense"}
+  refused cmd=goto code=bad_reference
+{"cmd":"goto","page":3,"ref":"nonsense"}
+  refused cmd=goto code=bad_reference
 {"cmd":"Goto"}
   refused cmd=unknown code=bad_command
 {"cmd":"links","page":3}
@@ -601,9 +619,9 @@
 {"cmd":"export_svg","page":{},"out":"/d/x.pdf"}
   refused cmd=unknown code=bad_command
 {"cmd":"export_svg","page":null,"out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=export_svg code=usage
 {"cmd":"export_svg","out":"/d/x.pdf"}
-  refused cmd=unknown code=bad_command
+  refused cmd=export_svg code=usage
 {"cmd":"export_svg","page":3,"out":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"export_svg","page":3,"out":null}
@@ -628,6 +646,12 @@
   refused cmd=unknown code=bad_command
 ["export_svg"]
   refused cmd=unknown code=bad_command
+{"cmd":"export_svg","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","out":"/d/x.pdf"}
+  refused cmd=export_svg code=usage
+{"cmd":"export_svg","ref":null,"out":"/d/x.pdf"}
+  refused cmd=export_svg code=usage
+{"cmd":"export_svg","ref":"nonsense","out":"/d/x.pdf"}
+  refused cmd=export_svg code=bad_reference
 {"cmd":"ExportSvg"}
   refused cmd=unknown code=bad_command
 {"cmd":"images","page":3,"extra":1}
@@ -687,9 +711,9 @@
 {"cmd":"snapshot","page":{},"rect":[0,0,10,10],"as":"png"}
   refused cmd=unknown code=bad_command
 {"cmd":"snapshot","page":null,"rect":[0,0,10,10],"as":"png"}
-  refused cmd=unknown code=bad_command
+  refused cmd=snapshot code=usage
 {"cmd":"snapshot","rect":[0,0,10,10],"as":"png"}
-  refused cmd=unknown code=bad_command
+  refused cmd=snapshot code=usage
 {"cmd":"snapshot","page":3,"rect":{},"as":"png"}
   refused cmd=unknown code=bad_command
 {"cmd":"snapshot","page":3,"rect":null,"as":"png"}
@@ -714,6 +738,14 @@
   refused cmd=unknown code=bad_command
 ["snapshot"]
   refused cmd=unknown code=bad_command
+{"cmd":"snapshot","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","rect":[0,0,10,10],"as":"png"}
+  refused cmd=snapshot code=usage
+{"cmd":"snapshot","ref":null,"rect":[0,0,10,10],"as":"png"}
+  refused cmd=snapshot code=usage
+{"cmd":"snapshot","ref":"nonsense","rect":[0,0,10,10],"as":"png"}
+  refused cmd=snapshot code=bad_reference
+{"cmd":"snapshot","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","rect":[0,0,10,10],"as":"png","to_clipboard":true}
+  refused cmd=snapshot code=usage
 {"cmd":"Snapshot"}
   refused cmd=unknown code=bad_command
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"format":"png"}
@@ -790,6 +822,16 @@
   refused cmd=unknown code=bad_command
 {"cmd":"select","anyway":null}
   refused cmd=unknown code=bad_command
+{"cmd":"select","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=select code=usage
+{"cmd":"select","chars":"0-5","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=select code=usage
+{"cmd":"select","all":true,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=select code=usage
+{"cmd":"select","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"select","ref":"nonsense"}
+  refused cmd=select code=bad_reference
 {"cmd":"Select"}
   refused cmd=unknown code=bad_command
 {"cmd":"copy","extra":1}
@@ -818,6 +860,16 @@
   refused cmd=unknown code=bad_command
 {"cmd":"copy","anyway":null}
   refused cmd=unknown code=bad_command
+{"cmd":"copy","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=copy code=usage
+{"cmd":"copy","chars":"0-5","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=copy code=usage
+{"cmd":"copy","all":true,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=copy code=usage
+{"cmd":"copy","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"copy","ref":"nonsense"}
+  refused cmd=copy code=bad_reference
 {"cmd":"Copy"}
   refused cmd=unknown code=bad_command
 {"cmd":"budget_render","pages":3,"extra":1}
@@ -1908,6 +1960,16 @@
   refused cmd=unknown code=bad_command
 {"cmd":"highlight","unit":{}}
   refused cmd=unknown code=bad_command
+{"cmd":"highlight","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+  refused cmd=highlight code=usage
+{"cmd":"highlight","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000.c0-5-0c1g60r30c1g6"}
+  refused cmd=highlight code=usage
+{"cmd":"highlight","unit":"word","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000.c0-5-0c1g60r30c1g6"}
+  refused cmd=highlight code=usage
+{"cmd":"highlight","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"highlight","ref":"nonsense"}
+  refused cmd=highlight code=bad_reference
 {"cmd":"Highlight"}
   refused cmd=unknown code=bad_command
 {"cmd":"highlight_remove","extra":1}
