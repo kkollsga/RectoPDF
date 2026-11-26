@@ -23,7 +23,8 @@ fn version(inode: u64, volume: bool) -> FileVersion {
     }
 }
 
-/// Valid ledgers: each kind of frame, a fork, a gap, a torn tail.
+/// Valid ledgers: each kind of frame (`At`, `Saved`, `Unplaced`, `Gap` and `Destination`, kinds 1 to 5), a fork, a gap, a torn tail, and a destination before and
+/// after the file that lands it (order counts).
 pub fn seeds() -> Vec<Vec<u8>> {
     let file = |entries: &[Entry]| {
         let mut bytes = encode_header(1_000).to_vec();
@@ -56,6 +57,12 @@ pub fn seeds() -> Vec<Vec<u8>> {
             path: "/n.pdf".into(),
         })]),
         torn,
+        file(&[
+            Entry::Destination("/d/copy.pdf".into()),
+            at(5, "/d/copy.pdf"),
+            Entry::Destination("/d/copy.pdf".into()),
+            Entry::Destination("/e/x.pdf".into()),
+        ]),
     ]
 }
 
@@ -96,6 +103,10 @@ fn held(ledger: &Ledger, limits: &LedgerLimits, input_len: usize) {
         total += len;
     }
     assert!(total <= limits.max_total_path_bytes as usize, "a cap on paths holds");
+    assert!(
+        ledger.path_bytes <= limits.max_total_path_bytes as usize && ledger.path_bytes >= total,
+        "every frame's path counts, landed destinations too"
+    );
     if input_len > MAX_LEDGER_BYTES {
         assert_eq!(ledger.gap, Some(Gap::Damaged));
     }
