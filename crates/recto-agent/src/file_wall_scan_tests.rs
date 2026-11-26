@@ -126,16 +126,16 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the app's own files and tools, never a document: a test state folder's key file put in place, and the test-only look at a built program for the Keychain's code",
     ),
     (
+        "recto-platform/src/folder_mac.rs",
+        1,
+        "a folder of the state folder opened without following a link (O_DIRECTORY | O_NOFOLLOW), for a removal's survey, which then lists and opens through its descriptor: never a document",
+    ),
+    (
         "recto-platform/src/local_mac.rs",
         16,
         "the platform's file primitives, each handed its path by a caller: private state files (links not followed), clones, the untrusted open of \
          `recto`'s update zip in `recto`, a folder flushed. Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
          are counted again where a caller in these crates makes them",
-    ),
-    (
-        "recto-platform/src/folder_mac.rs",
-        1,
-        "a folder of the state folder opened without following a link (O_DIRECTORY | O_NOFOLLOW), for a removal's survey, which then lists and opens through its descriptor: never a document",
     ),
     ("recto-platform/src/local_stub.rs", 4, "the same primitives' stand-ins on another system"),
     (
