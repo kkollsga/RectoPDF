@@ -795,7 +795,7 @@ fn a_draw_the_mac_was_too_busy_for_is_tried_again() {
 fn picture_page_file(name: &str) -> TempPdf {
     let mut list = vec![Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec())];
     // Pages after the first are for making the next ask start a worker: a size not yet known is read by one.
-    list.extend((1..4).map(|at| Page::new(text_lines(&[&format!("page {at}")]))));
+    list.extend((1..6).map(|at| Page::new(text_lines(&[&format!("page {at}")]))));
     let image = recto_testpdf::first_extra_object(list.len());
     let bytes = recto_testpdf::pages_with(
         &list,
@@ -832,20 +832,73 @@ fn a_starved_image_check_is_asked_again_not_remembered() {
     );
 }
 
-/// Failure: a page whose worker hangs every time looks starved too, so a starved check that is never remembered would cost a deadline at every ask for ever. Three in a row
-/// (`MAX_BUSY`) are remembered as unknown after all, and a fourth ask costs no job.
+/// Failure (the owner's 2026-11-13 report, long starvation): a dark-paper image check the Mac was too busy for was counted in the page's busy draws and, at the third, remembered as "no way to say" for the renderer's life, so a picture sheet stayed dimmed after the Mac was quiet; and a re-ask at rest, which no draw lands between, would fill that count at once and fail the page's next starved draw at every scale. A starved check is `NotNow` however many come in a row with no draw between: each starts a walk (the Mac is counted busy each time), none is remembered, none counts in the page's busy draws, so a starved draw of the page afterwards is still `TooBusy`, and a quiet ask then finds the picture. The engine's own clock bounds how often it is asked.
 #[test]
-fn three_starved_image_checks_in_a_row_are_remembered_as_unknown() {
-    let file = picture_page_file("busy-images-three.pdf");
+fn starved_dark_checks_are_never_kept_or_counted_as_busy_draws() {
+    use recto_render_service::{MAX_BUSY, Places};
+    let file = picture_page_file("busy-images-never-kept.pdf");
     let mut doc = renderer(&file.0, Policy::default());
     doc.page_size(0).unwrap();
-    for round in 0..3u64 {
+    for round in 0..=MAX_BUSY as u64 {
         doc.page_size(round as u32 + 1).unwrap();
-        assert_eq!(starved_image_ask(&mut doc, 0, round + 1), None, "round {round}");
+        stop_worker(&mut doc);
+        let asked =
+            recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.image_boxes_asked(0, round + 1));
+        assert_eq!(asked, Places::NotNow, "round {round}: {:?}", doc.stats());
+        assert_eq!(
+            doc.stats().too_busy,
+            round as u32 + 1,
+            "round {round}: each started a walk, which the Mac was too busy for"
+        );
     }
-    let spawns = doc.stats().spawns;
-    assert_eq!(doc.image_boxes(0, 9), None, "remembered after the bound: {:?}", doc.stats());
-    assert_eq!(doc.stats().spawns, spawns, "and asked of no worker");
+    // The page's own draws were not counted against it by those walks.
+    doc.page_size(5).unwrap();
+    stop_worker(&mut doc);
+    let surface = tile_surface();
+    let drawn = recto_render_service::under_page_deadline_for_test(
+        &mut doc,
+        |doc| doc,
+        Duration::from_millis(250),
+        |doc| doc.render_tile(&tile_request(0, 0), &surface),
+    );
+    assert!(
+        matches!(drawn, Err(RenderFailure::TooBusy { page: 0 })),
+        "a starved draw is still only busy: {drawn:?}, {:?}",
+        doc.stats()
+    );
+    let found = doc.image_boxes_asked(0, 9);
+    assert!(
+        matches!(&found, Places::Known(Some(boxes)) if !boxes.is_empty()),
+        "a quiet ask finds the picture: {found:?}, {:?}",
+        doc.stats()
+    );
+}
+
+/// Failure: a worker the Mac was too busy to start for `MAX_BUSY` checks in a row is `Unavailable`, which dark paper's check remembered as "no way to say" for the renderer's life (the start's own run is bounded and the failure is remembered for a moment, but the page's look is not the host's to settle). It is `NotNow` at every ask, and once failures are forgotten, or a start works, a quiet ask finds the picture.
+#[test]
+fn an_unstartable_worker_is_not_now_for_a_dark_check_never_an_answer() {
+    use recto_render_service::{MAX_BUSY, Places, under_start_timeout_for_test};
+    let file = picture_page_file("busy-images-unavailable.pdf");
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            open_retry_pause: Duration::from_secs(600),
+            ..Policy::default()
+        },
+    );
+    doc.page_size(0).unwrap();
+    doc.kill_worker();
+    for round in 0..=MAX_BUSY {
+        let asked = under_start_timeout_for_test(&mut doc, |doc| doc, Duration::ZERO, |doc| doc.image_boxes_asked(0, 1));
+        assert_eq!(asked, Places::NotNow, "ask {round}: {:?}", doc.stats());
+    }
+    doc.forget_failures();
+    let found = doc.image_boxes_asked(0, 2);
+    assert!(
+        matches!(&found, Places::Known(Some(boxes)) if !boxes.is_empty()),
+        "a quiet ask finds the picture: {found:?}, {:?}",
+        doc.stats()
+    );
 }
 
 /// Failure: a page whose worker hangs every time looks just like a busy Mac, so busy draws that aren't remembered cost a deadline for every ask for ever, or busy draws count towards stopping the document and a busy Mac stops it drawing. Three busy draws of a page in a row remember it as failed after all, as three busy reads do, and none of them counts towards the kills that stop a document.
