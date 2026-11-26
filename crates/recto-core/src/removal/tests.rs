@@ -144,6 +144,21 @@ fn unrelated_and_source_artifacts_never_appear_in_steps() {
     assert_eq!((b.disposition, b.acted, b.kept), (Disposition::KeptAsSource, 0, 1));
 }
 
+/// Catches a removal plan batching moves to the Trash: a step with several temps that fails on the second would leave the first in the Trash while
+/// the walk says nothing moved. Each temp is a step of its own, as in the leftovers plan.
+#[test]
+fn a_removal_plan_moves_one_temp_a_step() {
+    let temps: Vec<Artifact> = (1..=3).map(|n| art(n, Store::WriterTemp, Owner::Target)).collect();
+    let p = ok(&temps);
+    let moves: Vec<usize> = p
+        .steps()
+        .iter()
+        .filter(|s| s.effect() == Effect::Trash(Store::WriterTemp))
+        .map(|s| p.artifacts(s).len())
+        .collect();
+    assert_eq!(moves, [1, 1, 1]);
+}
+
 /// Catches a store missing from the report, or one the report acts on though it is excluded.
 #[test]
 fn every_inventory_row_has_exactly_one_line() {
