@@ -334,6 +334,9 @@ impl Run<'_> {
         );
         let (Some(version), Some(at)) = found else { return Placed::unknown() };
         let mut sides = version.union(at);
+        // A `saving` version names the file a save was writing when the journal was last written. If the lineage never saw it (the save didn't
+        // finish, so no link names it) or its inode is 0 (unknown), it adds nothing: it can't name a side we know of, and the journal is already
+        // placed by its own file and path. Adding nothing can only leave a journal less owned, never more, so it fails toward refusing.
         if let Some(saving) = header.saving.and_then(|s| self.maps.version(s.inode, s.size, s.mtime_ns)) {
             sides = sides.union(saving);
         }
