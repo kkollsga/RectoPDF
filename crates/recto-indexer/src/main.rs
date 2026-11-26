@@ -31,16 +31,16 @@ struct WorkerFeed {
     check_hidden: bool,
     hidden_check_failures: u32,
     /// The file's version as `main` saw it right after the key check, and lopdf's reading of exactly that version, opened when the first identity is asked for.
-    identities: Identities,
+    identities: OpenedIdentities,
 }
 
 /// What lopdf reads of the file for the page identities. Opened once, and only if the build gets as far as asking.
-struct Identities {
+struct OpenedIdentities {
     stamp: Option<recto_platform::FileStamp>,
     opened: Option<Option<FileIdentities>>,
 }
 
-impl Identities {
+impl OpenedIdentities {
     fn of(path: &Path) -> Self {
         Self {
             stamp: recto_platform::file_stamp(path).ok(),
@@ -299,7 +299,7 @@ fn main() {
         return;
     }
     // Straight after the key check, so what lopdf reads for the identities is the version the key names, or nothing.
-    let identities = Identities::of(&file);
+    let identities = OpenedIdentities::of(&file);
     let mut limits = BuildLimits::default();
     if let Some(bytes) = job["max_doc_bytes"].as_u64() {
         limits.max_doc_bytes = bytes;
@@ -460,7 +460,7 @@ mod tests {
             renderer: Some(renderer),
             check_hidden: false,
             hidden_check_failures: 0,
-            identities: Identities::of(&path),
+            identities: OpenedIdentities::of(&path),
         };
         let error = feed.read(0).unwrap_err();
         let _ = std::fs::remove_dir_all(&folder);
@@ -505,12 +505,12 @@ mod tests {
         let folder = recto_testpdf::TempDir::new("recto-indexer-ids-");
         let path = folder.join("doc.pdf");
         std::fs::write(&path, recto_testpdf::pages(&[recto_testpdf::Page::new("BT /F1 12 Tf 72 700 Td (A) Tj ET")])).unwrap();
-        let mut identities = Identities::of(&path);
+        let mut identities = OpenedIdentities::of(&path);
         assert!(identities.opened.is_none(), "nothing is opened before the first is asked for");
         assert_eq!(identities.files(&path).map(|files| files.info().pages), Some(1));
         assert!(matches!(identities.opened, Some(Some(_))));
         // Another version put at the path after the stamp: nothing is identified for it.
-        let mut stale = Identities::of(&path);
+        let mut stale = OpenedIdentities::of(&path);
         std::fs::write(
             &path,
             recto_testpdf::pages(&[recto_testpdf::Page::new("BT /F1 12 Tf 72 700 Td (B) Tj ET"), recto_testpdf::Page::new("")]),
