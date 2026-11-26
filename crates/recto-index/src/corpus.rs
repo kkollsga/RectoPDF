@@ -43,7 +43,7 @@ mod agent_life;
 mod aux;
 mod identities;
 use aux::Aux;
-pub use identities::{FileIdentities, Identities, IdentityInfo, remove_identities};
+pub use identities::{FileIdentities, Identities, IdentityInfo, RECORD_BYTES, remove_identities};
 mod retry;
 use retry::retry_failed_pages;
 mod versions;
