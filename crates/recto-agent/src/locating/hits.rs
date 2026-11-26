@@ -159,6 +159,7 @@ impl<'f> HitRefs<'f> {
     pub(crate) fn mark(&mut self, hit: &mut Value, added: bool, page: u32, text: &str, range: Option<&Range<usize>>, corpus: Option<CorpusKey>) {
         hit["chars"] = Value::Null;
         hit["ref"] = Value::Null;
+        hit["untrusted"]["link"] = self.link_for(added, page).map_or(Value::Null, Value::String);
         match self.made_for(added, page, text, range, corpus) {
             Ok((chars, token)) => {
                 if let Some((start, end)) = chars {
@@ -169,6 +170,17 @@ impl<'f> HitRefs<'f> {
             }
             Err(why) => *self.missing.entry(why.code()).or_default() += 1,
         }
+    }
+
+    /// The standard link to the hit's page of the file, `name.pdf#page=N`, made by `locator::page_link` as `recto link` makes it: the file's own name (no
+    /// folder, no file opened) and the file's page, never the tab's position. None for a page of an added file, or when there is no name to give. It names
+    /// a page number, not a version, so it stays when `finish` withdraws the references. Under `untrusted`: a file's name is anyone's.
+    fn link_for(&self, added: bool, page: u32) -> Option<String> {
+        if added {
+            return None;
+        }
+        let name = self.path?.file_name()?.as_encoded_bytes();
+        locator::page_link(name, page.checked_add(1)?).ok()
     }
 
     /// Checks free things first: the page is of the file, the range is on characters; then the file, then the page.

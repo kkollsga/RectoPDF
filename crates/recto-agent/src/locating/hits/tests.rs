@@ -299,3 +299,34 @@ fn a_source_that_cannot_answer_is_counted_as_file_unreadable() {
     assert_eq!(Why::Page(Unreferenceable::Unreadable).code(), "file_unreadable");
     assert_eq!(Why::Page(Unreferenceable::Unreadable).code(), Why::File.code());
 }
+
+/// Failure: the link is made from the tab's position instead of the file page (the raw `page` is zero-based, the link one-based), or from the raw name, or
+/// made for an added file's page, or lost when a changed file withdraws the references, or holds the folder. Page 2 (index 1) of `we ird#a:b.pdf` is
+/// `page_link(name, 2)`; an added page and a hit with no path get none; the withdrawn references leave the link as it was.
+#[test]
+fn a_hits_link_is_page_links_of_the_name_and_file_page_and_stays_when_references_are_withdrawn() {
+    let file = TempPdf::new("we ird#a:b.pdf", &recto_testpdf::pages(&[Page::new("BT ET"), Page::new("BT ET")]));
+    let folder = file.0.parent().expect("a folder").to_string_lossy().into_owned();
+    let opened = OnceCell::new();
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
+    let (mut own, mut added, mut phrase) = (hit(), hit(), hit());
+    refs.mark(&mut own, false, 1, "words", Some(&(0..5)), None);
+    refs.mark(&mut added, true, 1, "words", Some(&(0..5)), None);
+    refs.mark(&mut phrase, false, 0, "words", None, None);
+    let name = file.0.file_name().expect("a name").as_encoded_bytes();
+    assert_eq!(own["untrusted"]["link"], json!(locator::page_link(name, 2).expect("a link")));
+    assert_eq!(own["untrusted"]["link"], "we%20ird%23a%3Ab.pdf#page=2");
+    assert_eq!(phrase["untrusted"]["link"], "we%20ird%23a%3Ab.pdf#page=1");
+    assert_eq!(added["untrusted"]["link"], Value::Null);
+    assert!(!own.to_string().contains(&folder));
+    let mut none = HitRefs::new(None, &opened, far(), None);
+    let mut nameless = hit();
+    none.mark(&mut nameless, false, 0, "words", None, None);
+    assert_eq!(nameless["untrusted"]["link"], Value::Null);
+    replace_with_another_file(&file);
+    let mut hits = json!([own]);
+    let said = refs.finish(&mut hits);
+    assert_eq!(said["missing"], json!({ "file_changed": 1 }));
+    assert_eq!(hits[0]["ref"], Value::Null);
+    assert_eq!(hits[0]["untrusted"]["link"], "we%20ird%23a%3Ab.pdf#page=2", "a link names a page number, not a version");
+}
