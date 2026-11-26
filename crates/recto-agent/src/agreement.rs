@@ -83,16 +83,40 @@ fn compared(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Optio
         // Any other failed read may be the disk's, not the file's: never taken as agreement, and looked at again by the next save (review round 1).
         Some(Err(_)) | None => return Some(Disagreement::Unchecked),
     };
-    let page_count = match doc.page_count() {
+    renderer_half(doc, &structure, deadline)
+}
+
+/// What the renderer can be asked for the renderer's half of a look, so a test can script its answers.
+trait RendererHalf {
+    fn repaired(&mut self) -> Result<bool, RenderFailure>;
+    fn page_count(&mut self) -> Result<u32, RenderFailure>;
+    fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>;
+}
+
+impl RendererHalf for DocRenderer {
+    fn repaired(&mut self) -> Result<bool, RenderFailure> {
+        DocRenderer::repaired(self)
+    }
+    fn page_count(&mut self) -> Result<u32, RenderFailure> {
+        DocRenderer::page_count(self)
+    }
+    fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure> {
+        DocRenderer::page_size(self, page)
+    }
+}
+
+/// **The renderer's half, compared with the structure's:** `None` when they agree.
+fn renderer_half(r: &mut impl RendererHalf, structure: &View, deadline: Instant) -> Option<Disagreement> {
+    let page_count = match r.page_count() {
         Ok(count) => count,
         Err(failure) => return Some(renderer_refused(failure)),
     };
     // The counts first: a document whose counts differ needs no page sized (review round 1).
     if page_count != structure.page_count {
-        return compare(&structure, &View { page_count, ..View::default() });
+        return compare(structure, &View { page_count, ..View::default() });
     }
-    match renderer_view(doc, page_count, deadline) {
-        Ok(renderer) => compare(&structure, &renderer),
+    match renderer_view(r, page_count, deadline) {
+        Ok(renderer) => compare(structure, &renderer),
         Err(failure) => Some(renderer_refused(failure)),
     }
 }
@@ -111,7 +135,7 @@ fn renderer_refused(failure: RenderFailure) -> Disagreement {
 
 /// The renderer's half, once its count is known to be the structure's: whether it rebuilt the file's index, and the sizes of the pages compared,
 /// by `deadline`. A page it can't size is `None`, up to [`PAGE_FAILURES`] of them; a failure of the whole file is the answer.
-fn renderer_view(doc: &mut DocRenderer, page_count: u32, deadline: Instant) -> Result<View, RenderFailure> {
+fn renderer_view(doc: &mut impl RendererHalf, page_count: u32, deadline: Instant) -> Result<View, RenderFailure> {
     let repaired = doc.repaired()?;
     let mut failures = 0;
     let mut sizes = Vec::new();
