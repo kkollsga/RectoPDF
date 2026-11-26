@@ -79,6 +79,8 @@ pub enum Kind {
     Rect,
     /// `x,y` in points: a place on a page.
     Point,
+    /// `x,y` in points, kept as the word it was typed as: a place a command reads for itself, checked here as it reads it.
+    PointWord,
     /// A share of something, from `0` to `1`, as `0.3`.
     Fraction,
     /// Everything left on the line.
@@ -1218,6 +1220,16 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
                 _ => Err(bad()),
             }
         }
+        Kind::PointWord => {
+            let finite = |part: &str| part.trim().parse::<f32>().ok().filter(|number| number.is_finite());
+            match value.split_once(',') {
+                Some((x, y)) if finite(x).is_some() && finite(y).is_some() => Ok(json!(value)),
+                _ => Err(format!(
+                    "`{}` isn't a place. Write x,y in points, such as 120,88.",
+                    recto_core::clean_line(value)
+                )),
+            }
+        }
         Kind::Reference => crate::locating::read_reference(value).map(|_| json!(value)),
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
@@ -1420,7 +1432,7 @@ mod tests {
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",
-            Kind::Point => "1,2",
+            Kind::Point | Kind::PointWord => "1,2",
             Kind::Switch | Kind::Rest => "",
         }
     }
