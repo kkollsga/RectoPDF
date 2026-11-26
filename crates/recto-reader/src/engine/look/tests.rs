@@ -403,7 +403,11 @@ fn a_look_kept_for_busy_checks_heals_once_its_images_are_told() {
     };
     let decided = page_look(&mut doc, &mut looks, 0, 1, Some((&preview, rect)), None, kept_at + HEAL_AFTER).unwrap();
     assert_eq!(*decided, expected, "the look the images give");
-    assert_eq!((doc.image_asks, doc.drawn), (asks + 1, drawn), "from the same answer, and still no small picture");
+    assert_eq!(
+        (doc.image_asks, doc.drawn),
+        (asks + 1, drawn),
+        "from the same answer, and still no small picture"
+    );
     assert!(looks.healing.is_empty(), "never healed again: {looks:?}");
     assert_eq!(heal(&mut doc, &mut looks, 0, 1, kept_at + HEAL_AFTER * 4), Healed::NotDue);
     assert_eq!(doc.image_asks, asks + 1, "and nothing is asked again");
@@ -422,7 +426,10 @@ fn a_heal_asks_only_a_worker_that_is_running() {
     assert_eq!(looks.healing[&0], at + HEAL_AFTER, "pushed back");
     assert_eq!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER - Duration::from_secs(1)), Healed::NotDue);
     doc.alive = true;
-    assert!(matches!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER), Healed::Asked(_)), "asked once there is one");
+    assert!(
+        matches!(heal(&mut doc, &mut looks, 0, 1, at + HEAL_AFTER), Healed::Asked(_)),
+        "asked once there is one"
+    );
 }
 
 /// Failure (a heal whose preview draw didn't land): the lifted look must come back, and its page be asked again after [`HEAL_AFTER`], not decided from nothing. Seen failing with `put_back` not restoring the look (the page has none and the next tile decides it by a small picture while the old tiles stand).
@@ -431,7 +438,9 @@ fn a_look_lifted_for_a_draw_that_failed_is_put_back_and_asked_again_later() {
     let start = Instant::now();
     let (mut doc, mut looks) = kept_for_busy_checks(start, &[0]);
     let at = start + seconds(60) + HEAL_AFTER;
-    let Healed::Asked(kept) = heal(&mut doc, &mut looks, 0, 1, at) else { panic!("asked") };
+    let Healed::Asked(kept) = heal(&mut doc, &mut looks, 0, 1, at) else {
+        panic!("asked")
+    };
     assert!(!looks.decided.contains_key(&0), "lifted while the preview is drawn");
     looks.put_back(0, Arc::clone(&kept), at);
     assert!(Arc::ptr_eq(&looks.decided[&0], &kept), "the old look again");

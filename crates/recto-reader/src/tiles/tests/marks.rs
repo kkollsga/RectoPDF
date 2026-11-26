@@ -140,7 +140,11 @@ fn dropping_a_page_detaches_a_one_colour_tile_that_is_not_the_papers() {
         .expect("the one-colour tile is kept");
     reader.refresh(MAX_ATTACH_PER_TURN);
     assert!(
-        reader.host.ops.iter().any(|op| matches!(op, Op::Attach { id, rgb: Some(0xFF_00_00), .. } if *id == coloured)),
+        reader
+            .host
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::Attach { id, rgb: Some(0xFF_00_00), .. } if *id == coloured)),
         "the host was given the coloured square: {:?}",
         reader.host.ops
     );

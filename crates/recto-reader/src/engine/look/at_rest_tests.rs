@@ -1,6 +1,7 @@
 #![cfg(test)]
 //! **The step of healing as the thread that draws takes it**, with a real render worker and no app: `at_rest` and what wakes it, on a page view the test settles itself (no thread draws).
 
+use super::heal::landed;
 use super::*;
 use crate::engine::run::{OpenDoc, rest_or_wait_for_a_surface};
 use crate::engine::{Engine, EngineConfig, EngineEvents};
@@ -9,7 +10,6 @@ use crate::paper::PaperKind;
 use crate::tiles::{JobKind, Op, Outcome, PageMap, Viewport};
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind};
 use std::path::PathBuf;
-use super::heal::landed;
 
 struct Quiet;
 impl EngineEvents for Quiet {
@@ -56,7 +56,9 @@ fn told(engine: &Engine) -> Vec<Op> {
 fn settle(engine: &Engine) {
     loop {
         let mut reader = crate::engine::lock(&engine.shared.reader);
-        let Some(job) = reader.next_plan().and_then(crate::tiles::JobPlan::ready) else { break };
+        let Some(job) = reader.next_plan().and_then(crate::tiles::JobPlan::ready) else {
+            break;
+        };
         reader.work.note_started(&job, None);
         let outcome = match &job.kind {
             JobKind::Size => Outcome::Size(PageBox { width: 612.0, height: 792.0 }),
@@ -84,7 +86,10 @@ struct Rig {
 fn rig(keyed_for: Option<u32>) -> Rig {
     let file = recto_testpdf::TempPdf::new(
         "heal.pdf",
-        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A page whose look was kept", "for want of an answer"]))]),
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&[
+            "A page whose look was kept",
+            "for want of an answer",
+        ]))]),
     );
     let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
     engine.shut_down();
@@ -127,7 +132,10 @@ fn a_heal_draws_nothing_of_a_withheld_tab_s_page() {
     assert!(at_rest(&rig.engine.shared, &mut rig.renderers), "a refusal is a step");
     let ops = told(&rig.engine);
     assert_eq!(tiles_of(&ops, 0).0, 0, "nothing of the withheld page is drawn: {ops:?}");
-    assert!(rig.renderers[&rig.file.0].looks.decided.contains_key(&0), "and the kept look is still kept, asked again later");
+    assert!(
+        rig.renderers[&rig.file.0].looks.decided.contains_key(&0),
+        "and the kept look is still kept, asked again later"
+    );
 }
 
 /// Failure (privacy): a heal drew with a renderer keyed to a password typed for another tab, which no job of the shown tab may use. A renderer opened with the key of tab 1 doesn't serve tab 2, shown: nothing is drawn for it. Seen failing with the check skipped (the preview attached).
@@ -159,7 +167,9 @@ fn a_preview_that_does_not_land_leaves_the_old_tiles_and_the_old_look() {
     let planned = crate::tiles::relook::stand_in_plan(&mut crate::engine::lock(&rig.engine.shared.reader), &rig.file.0, 0);
     let job = planned.and_then(crate::tiles::JobPlan::ready).expect("a preview is at hand");
     let open = rig.renderers.get_mut(&rig.file.0).unwrap();
-    let Healed::Asked(kept) = heal(&mut open.doc, &mut open.looks, 0, 1, now) else { panic!("asked") };
+    let Healed::Asked(kept) = heal(&mut open.doc, &mut open.looks, 0, 1, now) else {
+        panic!("asked")
+    };
     landed(
         &rig.engine.shared,
         open,
@@ -196,7 +206,10 @@ fn the_thread_at_rest_wakes_for_a_kept_look_and_takes_the_step() {
     let seen = rig.engine.shared.round_begins();
     rest_or_wait_for_a_surface(false, seen, &rig.engine.shared, &mut rig.renderers, &Policy::default(), &mut resting_since);
     let slept = began.elapsed();
-    assert!(slept >= Duration::from_millis(150) && slept < Duration::from_millis(2500), "woke for the heal's time: {slept:?}");
+    assert!(
+        slept >= Duration::from_millis(150) && slept < Duration::from_millis(2500),
+        "woke for the heal's time: {slept:?}"
+    );
     assert!(told(&rig.engine).is_empty(), "nothing taken before its time");
     rest_or_wait_for_a_surface(false, seen, &rig.engine.shared, &mut rig.renderers, &Policy::default(), &mut resting_since);
     let ops = told(&rig.engine);
