@@ -392,8 +392,13 @@ fn two_writers_leave_no_duplicate_and_no_damage() {
         })),
         ..Config::default()
     };
+    let (at_lock, lock_reached) = mpsc::channel::<()>();
+    let at_lock = Mutex::new(at_lock);
     let second = Config {
         lock_wait: Duration::from_secs(20),
+        at_lock: Some(Arc::new(move || {
+            let _ = at_lock.lock().unwrap().send(());
+        })),
         ..Config::default()
     };
     let a = std::thread::spawn({
@@ -405,7 +410,7 @@ fn two_writers_leave_no_duplicate_and_no_damage() {
         let root = root.clone();
         move || append(&root, &second, vec![at(1)])
     });
-    std::thread::sleep(Duration::from_millis(100)); // ratchet: poll (the second tries the lock; it is not yet taken)
+    lock_reached.recv_timeout(Duration::from_secs(10)).expect("the second writer found the lock held");
     release.send(()).unwrap();
     a.join().unwrap();
     b.join().unwrap();

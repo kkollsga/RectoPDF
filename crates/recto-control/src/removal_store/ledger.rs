@@ -48,6 +48,9 @@ pub struct Config {
     /// Test seams: called with the lock held and everything read, just before the append, and by the `recto-ledger` thread before it looks anything up.
     #[cfg(test)]
     pub(crate) before_write: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Test seam: called, once, when a writer finds the lock held and is about to retry.
+    #[cfg(test)]
+    pub(crate) at_lock: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     pub(crate) in_thread: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Test seam: called by the `recto-ledger` thread when it has been handed the adoption, before it reads a journal.
@@ -64,6 +67,8 @@ impl Default for Config {
             adoption_time: Duration::from_millis(100),
             #[cfg(test)]
             before_write: None,
+            #[cfg(test)]
+            at_lock: None,
             #[cfg(test)]
             in_thread: None,
             #[cfg(test)]
@@ -195,12 +200,19 @@ fn now_ns() -> i64 {
 }
 
 /// Takes the lock without blocking, retrying for at most `wait`.
-fn lock(file: &File, wait: Duration) -> bool {
-    let began = Instant::now();
+fn lock(file: &File, config: &Config) -> bool {
+    let (began, wait) = (Instant::now(), config.lock_wait);
+    #[cfg(test)]
+    let mut told = false;
     loop {
         match file.try_lock() {
             Ok(()) => return true,
-            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                if let (Some(seam), false) = (&config.at_lock, std::mem::replace(&mut told, true)) {
+                    seam();
+                }
+            }
             Err(std::fs::TryLockError::Error(_)) => return false,
         }
         if began.elapsed() >= wait {
@@ -319,7 +331,7 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<bool,
     if !meta.is_file() {
         return Err(Failed::Unwritable);
     }
-    if !lock(&file, config.lock_wait) {
+    if !lock(&file, config) {
         return Err(Failed::Lost);
     }
     // Read through a second descriptor of the same file: the one that holds the lock only appends.
