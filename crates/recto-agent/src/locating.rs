@@ -2,9 +2,9 @@
 //! the answer's words. The session is asked once, inside `tab_file`, for the tab's facts; everything after reads the file with the session free. A
 //! token is hostile input and is never echoed, logged or kept: an answer carries only numbers and constant words.
 
-mod hits;
 #[cfg(test)]
 mod at_tests;
+mod hits;
 pub(crate) use hits::HitRefs;
 
 use crate::reading::{TabFile, tab_file};
