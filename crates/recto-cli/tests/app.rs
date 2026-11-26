@@ -1031,7 +1031,7 @@ fn reopening_the_window_keeps_the_place_and_the_zoom() {
 }
 
 /// Failure: a tab's file doesn't answer, on a dead volume, and a click on the tab holds the session thread for as long as it takes: later clicks and opens wait, and with the session's lock held so does `status`. A FIFO with no writer stands in for a dead volume: its open never returns. Everything else goes on, on the app's real path.
-/// A FIFO stands in for a dead volume only for the page view's open (`recto-open`): the session's read of a cold tab refuses a file that isn't regular at once (`open_regular`), so only the page view opens the FIFO, and `reader.opens_waiting` shows that open under way. The test waits to see it before it lets go, and its own open of the FIFO's write end is non-blocking: a blocking one waited for ever when no reader had come (CI run 45789292698, which hung the whole job).
+/// A FIFO stands in for a dead volume only for the page view's open (`recto-open`): the session's read of a cold tab refuses a file that isn't regular at once (`open_regular`), so only the page view opens the FIFO, and `reader.opens_waiting` shows that open under way. (The count covers every `recto-open`, so `>= 1` could be some other open; the final non-blocking open is what proves the page view was reading this FIFO.) The test waits to see it before it lets go, and its own open of the FIFO's write end is non-blocking: a blocking one waited for ever when no reader had come (CI run 45789292698, which hung the whole job).
 #[test]
 fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     let Some(run) = Run::start() else { return };
@@ -1086,6 +1086,7 @@ fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     let writer = writer.unwrap_or_else(|error| panic!("nothing was reading the FIFO ({error}): {}", run.report()["reader"]));
     wait_for(&run, |state| state["reader"]["opens_waiting"] == 0);
     drop(writer);
+    run.settled();
     assert_ne!(run.report()["reader"]["tab"], 1, "a read coming back doesn't take the reader anywhere");
 }
 
