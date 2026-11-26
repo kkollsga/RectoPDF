@@ -922,12 +922,13 @@ mod tests {
     }
 
     /// Failure (review round 1): the encrypted-file branch asked the renderer once, so a busy answer was read as "it can't open it either" and the two
-    /// readers agreed. A busy answer is asked again; one that stays busy is about the moment, never agreement.
+    /// readers agreed. A busy answer is asked again. One that stays busy gives no answer of the gate's (`None`): the writer's own refusal of a
+    /// password-protected file is what the person sees, as before.
     #[test]
     fn the_password_branch_asks_again_while_busy() {
         let mut renderer = busy_then_ok();
         assert_eq!(password_half(&mut renderer, Instant::now() + LOOK_DEADLINE), Some(Disagreement::Encryption));
         let mut busy = always_busy();
-        assert_eq!(password_half(&mut busy, Instant::now() + LOOK_DEADLINE), Some(Disagreement::Unchecked));
+        assert_eq!(password_half(&mut busy, Instant::now() + LOOK_DEADLINE), None);
     }
 }
