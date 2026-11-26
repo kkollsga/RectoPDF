@@ -78,7 +78,10 @@ fn edit_copy_link_puts_the_files_address_and_page_on_the_clipboard_as_text() {
     let (path, page) = path_of(&address);
     assert_eq!((Path::new(&path), page), (file.as_path(), "page=2"), "{address}");
     let said = app.core().window.notices().notice().expect("said");
-    assert_eq!(said, "Copied a link to page 2. Preview may open it at the first page.", "the owner's decision of 2026-11-26: it says so");
+    assert_eq!(
+        said, "Copied a link to page 2. Preview may open it at the first page.",
+        "the owner's decision of 2026-11-26: it says so"
+    );
     // Nothing selected sends nothing.
     selects_on_page(&app, 0);
     app.core().panes.reading_engine(&app.core().engine).selection().clear_soon();
