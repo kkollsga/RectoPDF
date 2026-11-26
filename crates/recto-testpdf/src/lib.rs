@@ -488,6 +488,17 @@ impl TempPdf {
     }
 }
 
+/// Runs `work` on a thread and fails, naming `what`, if it hasn't returned in 10 s: for a call that a FIFO with no writer would hold for ever, so a pipe waited on fails its test and doesn't hang the run. (A thread blocked for good is left behind, which only a failing run does.)
+pub fn returns_in_time<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap_or_else(|_| panic!("{what} didn't return in 10 s"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
