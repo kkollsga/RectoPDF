@@ -9,8 +9,8 @@ use recto_session::record::{JournalHeader, journal_line, journal_start};
 use recto_testpdf::TempDir;
 use std::path::PathBuf;
 
-const MINE: &str = "/docs/mine.pdf";
-const THEIRS: &str = "/docs/theirs.pdf";
+const MINE: &str = "/pdfs/mine.pdf";
+const THEIRS: &str = "/pdfs/theirs.pdf";
 const FIVE: [Store; 5] = [Store::Journal, Store::JournalVariant, Store::PageIds, Store::SleepFile, Store::KeptPages];
 
 fn stamp(inode: u64) -> FileStamp {
@@ -222,7 +222,7 @@ fn the_targets_journal_is_purged_anothers_left_and_a_save_as_source_kept() {
 #[test]
 fn a_journal_needs_both_its_version_and_its_path() {
     let wrong_path = root();
-    put(&folder(&wrong_path), &format!("journal-{}.log", k(7)), &journal("/docs/copy.pdf", 7));
+    put(&folder(&wrong_path), &format!("journal-{}.log", k(7)), &journal("/pdfs/copy.pdf", 7));
     assert_eq!(refusal(&wrong_path, TargetMode::Save), Refusal::Incomplete(Store::Journal));
     let wrong_version = root();
     put(&folder(&wrong_version), &format!("journal-{}.log", k(99)), &journal(MINE, 99));
@@ -256,7 +256,7 @@ fn a_hostile_first_line_places_nothing() {
         bytes.pop();
         bytes
     };
-    let relative = line(&header_json(|h| h.path = recto_session::record::PathField::Text("docs/mine.pdf".into())));
+    let relative = line(&header_json(|h| h.path = recto_session::record::PathField::Text("pdfs/mine.pdf".into())));
     let tab_zero = line(&header_json(|h| h.tab = 0));
     for (what, bytes) in [("bad crc", bad_crc), ("no newline", no_end), ("relative path", relative), ("tab 0", tab_zero)] {
         let dir = root();
@@ -529,6 +529,14 @@ fn both_sessions_folders_are_covered_and_one_name_is_two_artifacts() {
     put(&windowless(&dir), &name, &journal(MINE, 7));
     let s = survey(&dir, TargetMode::Save).unwrap();
     assert_eq!(purged(&plan_of(&s, TargetMode::Save).unwrap(), Store::Journal), 2);
+    // The live keys are the flavor's folder and the name: pinned for the windowless folder as for the app's.
+    let keys: Vec<_> = s.inventory().artifacts().iter().map(|a| s.key(a.id).unwrap()).collect();
+    for flavor in ["session", "session-windowless"] {
+        assert!(
+            keys.contains(&(Store::Journal, ArtifactKey::of(Store::Journal, format!("{flavor}/journals/{name}").as_bytes()))),
+            "{flavor}"
+        );
+    }
     let only = root();
     put(&windowless(&only), &name, &journal(MINE, 7));
     assert_eq!(purged(&plan(&only, TargetMode::Save).unwrap(), Store::Journal), 1);
