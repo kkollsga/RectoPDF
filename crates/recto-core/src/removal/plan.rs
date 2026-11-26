@@ -52,6 +52,9 @@ pub fn plan(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Re
     if request.mode() == TargetMode::Save && request.signed_source() {
         return Err(Refusal::SignedOriginal);
     }
+    if !inventory.history() {
+        return Err(Refusal::HistoryIncomplete);
+    }
     check_coverage(inventory.complete())?;
     check_artifacts(request, artifacts)?;
     check_unique(artifacts)?;

@@ -62,6 +62,7 @@ fn survey_of(links: &Ledger, folder: &Path, mode: TargetMode, max: u32) -> Resul
     for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
         survey.mark_complete(store);
     }
+    survey.history(&lineage);
     survey_backups(folder, &lineage, mode, &mut survey)?;
     survey.finish()
 }

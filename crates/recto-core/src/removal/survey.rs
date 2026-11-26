@@ -10,6 +10,7 @@
 //! 4. A key names an artifact within its store. A later adapter finds the file again by listing its own folder and rechecks it before any
 //!    change. Core holds no names or paths.
 //! 5. A store is complete only if its adapter called [`Survey::mark_complete`] after listing all of it. The default is incomplete.
+//! 6. The history is whole only if [`Survey::history`] was given a complete lineage. The default is not noted, which refuses.
 //!
 //! Bounded: the survey holds at most `Limits::max_artifacts` entries, and refuses, staying refused, at the next. Nothing here opens a file.
 
@@ -53,6 +54,8 @@ pub struct Survey {
     complete: StoreSet,
     found: Vec<Found>,
     over: bool,
+    /// Whether a whole lineage was noted. Not noted reads as incomplete.
+    history: bool,
 }
 
 impl Survey {
@@ -63,6 +66,7 @@ impl Survey {
             complete: StoreSet::empty(),
             found: Vec::new(),
             over: false,
+            history: false,
         }
     }
 
@@ -79,6 +83,12 @@ impl Survey {
     /// The adapter listed all of `store`.
     pub fn mark_complete(&mut self, store: Store) {
         self.complete = self.complete.with(store);
+    }
+
+    /// Notes the lineage the adapters placed artifacts by. Until this is called, or when the lineage has a gap or a fork, the plan refuses with
+    /// `HistoryIncomplete`, so no adapter repeats the gate and one that forgets can't pass.
+    pub fn history(&mut self, lineage: &Lineage<'_>) {
+        self.history = lineage.complete();
     }
 
     /// Sorts into the order contract. `TooLarge` if the cap was passed, `Inconsistent` if one (store, key) was found twice.
@@ -107,6 +117,7 @@ impl Survey {
             complete: self.complete,
             artifacts,
             keys,
+            history: self.history,
         })
     }
 }
@@ -128,11 +139,12 @@ pub struct Surveyed {
     complete: StoreSet,
     artifacts: Vec<Artifact>,
     keys: Vec<ArtifactKey>,
+    history: bool,
 }
 
 impl Surveyed {
     pub fn inventory(&self) -> Inventory<'_> {
-        Inventory::new(self.complete, &self.artifacts)
+        Inventory::with_history(self.complete, &self.artifacts, self.history)
     }
 
     /// The store and key an id was given for; `None` for 0 or past the end.
