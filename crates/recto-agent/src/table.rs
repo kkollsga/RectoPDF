@@ -1221,10 +1221,9 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             }
         }
         Kind::PointWord => {
-            let finite = |part: &str| part.trim().parse::<f32>().ok().filter(|number| number.is_finite());
-            match value.split_once(',') {
-                Some((x, y)) if finite(x).is_some() && finite(y).is_some() => Ok(json!(value)),
-                _ => Err(format!(
+            match crate::selecting::point(value) {
+                Some(_) => Ok(json!(value)),
+                None => Err(format!(
                     "`{}` isn't a place. Write x,y in points, such as 120,88.",
                     recto_core::clean_line(value)
                 )),

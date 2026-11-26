@@ -28,8 +28,9 @@ pub fn page_link(name: &[u8], file_page: u32) -> Result<String, LinkError> {
     if name.is_empty() || name == b"." || name == b".." || name.len() > MAX_NAME_BYTES || name.iter().any(|byte| matches!(byte, b'/' | 0)) {
         return Err(LinkError::Name);
     }
+    use std::fmt::Write;
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut link = String::with_capacity(MAX_LINK_BYTES);
+    let mut link = String::with_capacity(3 * name.len() + 12);
     for &byte in name {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
             link.push(char::from(byte));
@@ -40,7 +41,8 @@ pub fn page_link(name: &[u8], file_page: u32) -> Result<String, LinkError> {
         }
     }
     link.push_str("#page=");
-    link.push_str(&file_page.to_string());
+    write!(link, "{file_page}").expect("a String takes a write");
+    debug_assert!(link.len() <= MAX_LINK_BYTES, "the link outgrew its capacity");
     Ok(link)
 }
 
@@ -118,6 +120,8 @@ mod tests {
         assert_eq!(page_link(b"a.pdf", MAX_PAGE + 1), Err(LinkError::Page));
         let longest = page_link(&[0xFF; MAX_NAME_BYTES], MAX_PAGE).expect("the longest name");
         assert!(longest.len() <= MAX_LINK_BYTES, "{}", longest.len());
+        // Never grown past what it was made with: a String that reallocated has a capacity other than the one asked for.
+        assert_eq!(longest.capacity(), MAX_LINK_BYTES, "the link was reallocated");
         assert_eq!(page_link(&[0xFF; MAX_NAME_BYTES + 1], 1), Err(LinkError::Name));
         for name in [&b""[..], b".", b"..", b"a/b.pdf", b"/", b"a\0b.pdf"] {
             assert_eq!(page_link(name, 1), Err(LinkError::Name), "{name:?}");

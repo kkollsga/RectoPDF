@@ -11,7 +11,7 @@ use super::locating::{HIGHLIGHT_REF_EXAMPLE, REF_PICK};
 use super::{Cmd, Cx, row_access};
 use crate::highlighting::{self, Which};
 use crate::human::edit_state;
-use crate::selecting::Pick;
+use crate::selecting::{Pick, point};
 use crate::table::*;
 use crate::*;
 use recto_core::locator::Locator;
@@ -211,13 +211,6 @@ pub mod line {
 
 /// The refusal of `--id` with anything else.
 pub(crate) const ID_ALONE: &str = "`--id` goes alone: a highlight's number names it.";
-
-/// A point `X,Y`, both finite.
-fn point(at: &str) -> Option<(f32, f32)> {
-    let (x, y) = at.split_once(',')?;
-    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
-    (x.is_finite() && y.is_finite()).then_some((x, y))
-}
 
 impl TryFrom<line::HighlightRemove> for HighlightRemove {
     type Error = AgentError;

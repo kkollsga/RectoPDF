@@ -46,12 +46,15 @@ fn bad(words: impl Into<String>) -> AgentError {
     AgentError::new(Code::USAGE, words.into(), exit::USAGE)
 }
 
-fn point(word: &str, page: u32) -> Result<PagePoint, AgentError> {
-    let parsed = word
-        .split_once(',')
-        .and_then(|(x, y)| Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?)))
-        .filter(|(x, y)| x.is_finite() && y.is_finite());
-    let (x, y) = parsed.ok_or_else(|| bad("A place on a page is `X,Y`, in points from its top left, as `select` gives its rectangles."))?;
+/// A place `X,Y` in points, both finite: the one rule for it, for the table's check of a word, `highlight remove --at` and a pick's ends.
+pub(crate) fn point(word: &str) -> Option<(f32, f32)> {
+    let (x, y) = word.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+fn page_point(word: &str, page: u32) -> Result<PagePoint, AgentError> {
+    let (x, y) = point(word).ok_or_else(|| bad("A place on a page is `X,Y`, in points from its top left, as `select` gives its rectangles."))?;
     Ok(PagePoint { page, x, y })
 }
 
@@ -206,9 +209,9 @@ fn range_of<A: SessionAccess>(pick: &Pick, pages: u32, reading: &mut Pages<A>) -
         Unit::Line => 3,
     };
     let mut selection = Selection::default();
-    selection.press(point(at, first)?, clicks, false);
+    selection.press(page_point(at, first)?, clicks, false);
     if let Some(to) = pick.to {
-        selection.drag(point(to, last)?);
+        selection.drag(page_point(to, last)?);
     } else if last != first {
         return Err(bad("`--to-page` needs `--to`, to say where on that page."));
     }
