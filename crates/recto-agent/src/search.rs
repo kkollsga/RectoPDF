@@ -1019,7 +1019,7 @@ fn why(failure: RenderFailure) -> &'static str {
 fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let opened = std::cell::OnceCell::new();
-    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened).with_deadline(settings.deadline);
+    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.deadline);
     let mut found = Found::default();
     let mut slot = Slot::default();
     let mut folded = String::new();
@@ -1082,6 +1082,11 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
 /// Best-matching pages first, by BM25 over their words: see `recto_index::rank`. One pass over the pages for the counts, holding numbers for pages with any of the words and no text at all, then the top pages are read once more for their snippets.
 fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
+    let opened = std::cell::OnceCell::new();
+    // The second pass's own time, since it runs past `settings.deadline` by design: with `settings.deadline` every reference of a search whose first pass
+    // used its time would be counted under `caps`. No test: `settings.deadline` gates the first pass before every page, so no deterministic test can stop it
+    // part way and leave pages to be referred to.
+    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.second_pass_until);
     let mut found = Found::default();
     let mut slot = Slot::default();
     let words = terms.terms.len();
@@ -1183,6 +1188,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             }
         }
         say_where_from(&mut hit, page, &plan.files[usize::from(file)]);
+        refs.mark(&mut hit, plan.files[usize::from(file)].added, page, view.text, place.as_ref());
         found.hits.push(hit);
     }
     found.total_cut_short = true;
@@ -1203,6 +1209,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
         "hidden_text_checked": "pages_with_hits",
         "coverage": coverage,
     });
+    answer["references"] = refs.finish(&mut answer["hits"]);
     reader.say_how(&mut answer);
     Ok(answer)
 }

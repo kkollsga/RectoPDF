@@ -369,7 +369,7 @@ fn a_slow_disk_doesnt_bring_back_what_was_out_of_sight() {
 /// both known late, on a slow machine, so it shows a window that isn't the one left, and what comes in later is made into a window again or lost. A launch an
 /// update may have opened waits for its state (`UPDATE_RESTORE_PATIENCE`), whatever the host's second of patience says. The new version's look at what it is
 /// held, then its state's read held: through both, past the host's second, the host is told nothing; the state let in, it's told once, with the state, no window
-/// is made again, and the session is the one handed off, whole, its edits too. (What `update::slow::an_update_changes_nothing_when_every_wait_is_late` held for the slow stage;
+/// is made again, and the session is the one handed off, whole, its edits too. (What the slow stage's update test, since removed, held;
 /// the real swap and its first frame stay in that test's normal run, `an_update_in_the_middle_of_things_changes_nothing`.)
 #[test]
 fn a_launch_an_update_opened_waits_for_its_state_however_late() {

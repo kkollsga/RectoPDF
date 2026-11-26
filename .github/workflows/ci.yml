@@ -28,8 +28,8 @@
 # What is left out of the saved cache (2026-11-14; the cache was 5.8 GB and its restore took 118 to 214 s a run): target/pdfium (its own cache above),
 # target/nextest (a run's junit, overwritten by the next), target/recto-evidence (a run's evidence; on CI it is under RUNNER_TEMP anyway) and
 # ~/.cargo/registry/src (the unpacked crates: cargo unpacks them again from registry/cache, in seconds). Changing `path:` changes the cache's version,
-# so no older `check-` cache matches by prefix: the first run after this is a cold build, once. Not pruned: stale test executables from the prefix
-# fallback. Cargo keeps no record of which files a run used, and atime isn't reliable here, so no rule could be shown never to delete what the next run needs.
+# so no older `check-` cache matches by prefix: the first run after this is a cold build, once. Test executables no run builds any more are
+# pruned before the save (2026-11-26, the step "Dead test executables" below).
 #
 # How long. A whole run took 12 to 15 minutes in one job (2026-11-12), and the tools' tests added about 3 when they ran (now in `light`, beside it). A failed stage's tests run again
 # (tools/check-rerun.sh, R0.7c): at most 8 tests, no round after 240 s of a stage's rounds, and no round at all after 360 s of the whole run's
@@ -118,6 +118,8 @@ jobs:
       # lines start with "cache-report"). Read the two against each other and against the restore's "Cache Size" line.
       - name: What the restored cache holds
         run: tools/ci-cache-report.sh after-restore
+      - name: Mark the job's start
+        run: touch "$RUNNER_TEMP/job-start"
       - name: Full check, its heavy part
         run: tools/check.sh --full
         env:
@@ -129,8 +131,8 @@ jobs:
           # with the logs below. A failed stage's tests run again 4 times here (CHECK_RERUN, set by tools/check.sh on CI) and the log has "failed N of M".
           RECTO_EVIDENCE: ${{ runner.temp }}/recto-test-logs/evidence
       # Debug info is off in this job's builds (CARGO_PROFILE_DEV_DEBUG above) unless a "lines" run asked for it, and nothing writes a .dSYM then: the ones in
-      # the restored cache are old (2.9 GiB in 202 entries, the same in three runs, 2026-11-15) and only cost the next restore. Only they go: an earlier
-      # attempt at pruning found no safe rule for the rest. A "lines" run keeps what it made.
+      # the restored cache are old (2.9 GiB in 202 entries, the same in three runs, 2026-11-15) and only cost the next restore. Only they go here; the dead test
+      # executables have their own step below. A "lines" run keeps what it made.
       - name: Dead debug-symbol bundles, left out of the cache
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true' && inputs.lines != true
         run: find target -name '*.dSYM' -prune -exec rm -rf {} +
@@ -140,6 +142,13 @@ jobs:
       - name: The gate's builds, kept in the cache
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: tools/check.sh --warm-gate
+      # Dead test executables: each Cargo.lock change leaves a generation of them in target/debug/deps (993, 7.7 GB, for about 95 real ones, 2026-11-26). Safe because the
+      # checkout comes before the restore, so every workspace unit is rebuilt each run and written after the job-start marker; those and what `cargo nextest list`
+      # names are kept (tools/ci-prune-test-binaries.sh). A wrong delete only costs a relink, and the step can't fail the job or skip the save.
+      - name: Dead test executables, left out of the cache
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: tools/ci-prune-test-binaries.sh --newer-than "$RUNNER_TEMP/job-start"
       - name: What the cache holds, before it is saved
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: tools/ci-cache-report.sh before-save
