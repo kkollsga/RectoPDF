@@ -27,7 +27,8 @@ pub enum Format {
 }
 
 impl Format {
-    /// Every format, in the order of [`Format::WORDS`].
+    /// Every format, in the order of [`Format::WORDS`]: for the test that holds the two together.
+    #[cfg(test)]
     pub const ALL: [Self; 4] = [Self::Png, Self::Jpg, Self::Svg, Self::Text];
     /// The words `--as` offers, the names [`Format::name`] says: each reads back as its format.
     pub const WORDS: &'static [&'static str] = &["png", "jpg", "svg", "text"];
