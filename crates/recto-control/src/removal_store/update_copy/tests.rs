@@ -161,8 +161,9 @@ fn a_missing_step_is_complete_and_empty() {
     );
 }
 
-/// Failure: a folder past its cap is let through at the cap plus one (`>` for `>=`), or one exactly at it is refused. `before`'s entries and its
-/// journals', each made small.
+/// Failure: `before` past its cap is let through at the cap plus one (`>` for `>=`), or one exactly at it is refused. `before` holds three entries (a
+/// file, the marker and `journals`) and its `journals` one, so only `before`'s own cap is what refuses at 2 (the journals' cap is held in
+/// `legacy_session`'s test, and by the same function in `journals.rs`).
 #[test]
 fn the_caps_refuse_one_past_and_not_at() {
     let state = state();
@@ -170,17 +171,13 @@ fn the_caps_refuse_one_past_and_not_at() {
     std::fs::create_dir_all(copy.join("journals")).unwrap();
     put(&copy, "a", b"");
     put(&copy, ".whole", b"");
-    for name in ["x", "y", "z"] {
-        put(&copy.join("journals"), name, b"");
-    }
+    put(&copy.join("journals"), "x", b"");
     let at = |entries| UpdateCaps {
         folder: Caps { entries, ..Caps::default() },
         ..UpdateCaps::default()
     };
-    assert!(survey_with(state.root(), &at(3)).is_ok(), "3 in before (a, .whole, journals) and 3 in journals");
+    assert!(survey_with(state.root(), &at(3)).is_ok(), "three entries in before at a cap of three");
     assert_eq!(survey_with(state.root(), &at(2)).unwrap_err(), Refusal::TooLarge);
-    std::fs::remove_file(copy.join("journals").join("z")).unwrap();
-    assert!(survey_with(state.root(), &at(3)).is_ok());
 }
 
 /// Failure: a `before` swapped for a link after `update` was opened is followed. `update` is opened first, and `before` from it, so the swap yields
