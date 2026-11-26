@@ -72,6 +72,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the state folder's own list kept beside a tab after a copy went back, its first line read (no link followed) to say whose it is",
     ),
     (
+        "recto-control/src/removal_store/journals.rs",
+        1,
+        "the first 8 KiB of a journal and the first 110 bytes of a sidecar in the state folder, through open_private_file (no link, no pipe), read for a removal's survey: never a document",
+    ),
+    (
         "recto-control/src/removal_store/ledger.rs",
         2,
         "the provenance ledger's own file in the state folder, read with a cap (a plain file only; the writer opens it with no link followed): paths and numbers, never a document",

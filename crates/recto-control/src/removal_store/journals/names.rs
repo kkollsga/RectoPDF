@@ -89,7 +89,7 @@ mod tests {
             ("notes.txt".into(), Kind::Other),
             ("journal-zz.log".into(), Kind::Variant),
             (format!("pages-{k}.tmp"), Kind::Other),
-            (format!("sleep-zz.bin"), Kind::Other),
+            ("sleep-zz.bin".into(), Kind::Other),
         ] {
             assert_eq!(kind(&name), want, "{name}");
         }

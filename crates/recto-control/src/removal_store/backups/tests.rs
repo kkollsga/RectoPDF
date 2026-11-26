@@ -80,6 +80,13 @@ fn purges(p: &Plan) -> usize {
         .sum()
 }
 
+/// With a gap or a fork the plan now stops at the history, before it reaches coverage; the adapter's own gate (the store left unmarked) is what this
+/// still holds, by reading the mark itself.
+fn history_refuses_and_backups_unmarked(s: &Surveyed) {
+    assert_eq!(plan_of(s, TargetMode::Save).unwrap_err(), Refusal::HistoryIncomplete);
+    assert!(!s.inventory().complete().contains(Store::Backup));
+}
+
 fn backup(folder: &Path, of: &str) -> PathBuf {
     folder.join(backup_name(Path::new(of)))
 }
@@ -285,7 +292,7 @@ fn an_incomplete_ledger_leaves_the_folder_unmarked() {
     let mut gapped = ledger();
     gapped.gap = Some(Gap::Torn);
     let s = survey_of(&gapped, &dir, TargetMode::Save, 16).unwrap();
-    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    history_refuses_and_backups_unmarked(&s);
     // The same folder with a whole ledger plans.
     assert!(plan_of(&survey(&dir, TargetMode::Save, 16).unwrap(), TargetMode::Save).is_ok());
     // A fork in the target's own history is a gap too.
@@ -294,7 +301,7 @@ fn an_incomplete_ledger_leaves_the_folder_unmarked() {
         .links
         .extend([Link::Saved { from: stamp(7), to: stamp(70) }, Link::Saved { from: stamp(7), to: stamp(71) }]);
     let s = survey_of(&forked, &dir, TargetMode::Save, 16).unwrap();
-    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    history_refuses_and_backups_unmarked(&s);
 }
 
 /// Failure: a backup made before the ledger existed is placed by a path the ledger only saw later, and the original of another document is
@@ -319,7 +326,7 @@ fn a_missing_folder_is_not_complete_while_the_ledger_has_a_gap() {
     let mut gapped = ledger();
     gapped.gap = Some(Gap::Overflowed);
     let s = survey_of(&gapped, &missing, TargetMode::Save, 16).unwrap();
-    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    history_refuses_and_backups_unmarked(&s);
 }
 
 /// Failure: the ledger's beginning is compared in the wrong unit (seconds against nanoseconds) or off by one, so a backup made just before the

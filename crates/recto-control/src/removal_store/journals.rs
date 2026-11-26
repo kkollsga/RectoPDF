@@ -33,6 +33,10 @@ const MAX_ENTRIES: usize = 8_192;
 /// The two sessions' folders.
 const FLAVORS: [&str; 2] = ["session", "session-windowless"];
 
+/// What a test runs just before a path is opened.
+#[cfg(test)]
+pub(crate) type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
+
 /// The caps, so a test can make them small.
 #[derive(Clone)]
 pub(crate) struct Caps {
@@ -40,7 +44,7 @@ pub(crate) struct Caps {
     pub header_bytes: usize,
     /// Called with a path just before it is opened: a test's way to change the folder under the listing.
     #[cfg(test)]
-    pub before_open: Option<Arc<dyn Fn(&Path) + Send + Sync>>,
+    pub before_open: Option<Hook>,
 }
 
 impl Default for Caps {
