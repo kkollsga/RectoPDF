@@ -186,7 +186,7 @@ pub(crate) const ROWS_REMOVAL_CLEAR: &[Spec] = &[Spec {
         },
         TAB,
     ],
-    data: "`{ words, outcome, cleared: { trashed, copies }, acted, planned, stopped }`. `outcome` is `complete`, `partly_cleared` or `unchanged`.",
+    data: "On success `{ words, outcome, cleared: { trashed, copies }, acted, planned }`, with `outcome` `complete`. **A stop is the error `removal_stopped`**, whose words say how far it got (what was moved or deleted, and a copy part deleted or a save that may be in the Trash, which are never \"nothing was cleared\") and why; `removal check` then shows what is left.",
     examples: &["recto removal clear --confirm 3f9a0c51d27be864"],
     client_wait_s: 60,
     ..BASE
