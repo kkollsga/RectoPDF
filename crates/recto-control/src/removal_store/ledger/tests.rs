@@ -601,7 +601,8 @@ fn adoption_stops_at_its_cap_and_says_so() {
             &root,
             &Config {
                 adoption_headers: 3,
-                ..Config::default()
+                // The count is what is tested: under a starved machine the default time cap ended adoption before the third header (--like-ci, 1 of 20).
+                ..patient()
             },
             Vec::new(),
         );
