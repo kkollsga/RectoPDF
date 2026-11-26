@@ -947,7 +947,6 @@ WorkerFigures::pub fn pids(&self) -> Vec<u32>
 WorkerFigures::pub fn starved(&self) -> (u32, u32)
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
-fn (pub(crate)) pub(crate) fn bare(reader: &mut Reader, file: &Path, source_page: u32)
 fn (pub(crate)) pub(crate) fn drop_look(reader: &mut Reader, file: &Path, source_page: u32)
 fn (pub(crate)) pub(crate) fn finding(reader: &Reader) -> bool
 fn (pub(crate)) pub(crate) fn found(reader: &mut Reader, tab: u32, serial: u32, number: u32, rect: Rect) -> bool

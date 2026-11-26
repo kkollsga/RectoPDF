@@ -201,7 +201,7 @@ mod tests {
                     folders.push(path);
                 } else if path.extension().is_some_and(|ext| ext == "rs") && !path.to_string_lossy().contains("tests") {
                     let source = std::fs::read_to_string(&path).expect("a source file");
-                    let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+                    let production = source.split("#[cfg(test)]\nmod ").next().unwrap_or(&source);
                     for line in production.lines() {
                         if !line.trim_start().starts_with("//") && line.contains("do_job(") && !line.contains("fn do_job(") {
                             calls.push(path.file_name().expect("a name").to_string_lossy().into_owned());
