@@ -124,9 +124,8 @@ fn draw_anew(shared: &Shared, open: &mut OpenDoc, job: crate::tiles::Job, own: b
     {
         let mut reader = lock(&shared.reader);
         reader.work.note_started(&job, None);
-        reader.work.set_cancel(open.doc.cancel_handle());
     }
-    let outcome = crate::engine::run::do_job(open, &job);
+    let outcome = crate::engine::run::job_on(shared, open, &job, own);
     let outcome = if own { outcome } else { as_an_added_files(outcome, &job) };
     landed(shared, open, job, kept, outcome, now);
 }

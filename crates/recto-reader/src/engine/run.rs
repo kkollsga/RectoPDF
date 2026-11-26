@@ -205,11 +205,8 @@ fn run(shared: &Shared) {
             }
         } else {
             match renderer_for(shared, &mut renderers, &mut openings, job.tab, &job.file, &service, &policy) {
-                // Not the tab the password was typed for: as though it had none, so its own tab is asked for it and an added page says why it isn't shown.
-                Ok(open) if !open.serves(job.tab, own) => document_failed(RenderFailure::NeedsPassword),
                 Ok(open) => {
-                    lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
-                    let outcome = do_job(open, &job);
+                    let outcome = job_on(shared, open, &job, own);
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                     if file_changed {
                         open.looks.clear();
@@ -648,7 +645,17 @@ fn document_failed(failure: RenderFailure) -> Outcome {
     }
 }
 
-pub(super) fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
+/// **Every step between "this tab's job on this renderer" and the draw, in one place, for the job loop and for the healing swap alike** (`engine/look/heal.rs`), so a step added here can't be left out of one of them (the heal's preview once drew a highlight the shown tab had taken out, for want of the third). In order: a renderer keyed to another tab's password isn't drawn from, as though it had none, so its own tab is asked for it and an added page says why it isn't shown ([`OpenDoc::serves`]); the job's tab's set of hidden highlights goes to the renderer ([`super::selection::hidden_for`]); the job is made cancellable by its tab; then [`do_job`]. What comes before it, which doesn't need an open renderer ([`refused_now`], and [`drawable_by`] for a step that asks first), is the caller's, since it decides whether a renderer's opened at all. The only call of `do_job`: a source scan holds that (`engine/selection.rs`).
+pub(super) fn job_on(shared: &Shared, open: &mut OpenDoc, job: &Job, own: bool) -> Outcome {
+    if !open.serves(job.tab, own) {
+        return document_failed(RenderFailure::NeedsPassword);
+    }
+    open.doc.hidden.draw_for(job.tab, super::selection::hidden_for(shared, job.tab, &job.file));
+    lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
+    do_job(open, job)
+}
+
+fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     if let JobKind::Text { check } = job.kind {
         let read = open.doc.page_characters_for(job.source_page, true, check, job.generation);
         // Told to stop, a check that didn't finish says nothing about the page, so it's as though it was never tried. What was read on the way is good, and a read that went with its worker isn't a failure of the page's.

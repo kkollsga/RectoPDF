@@ -133,6 +133,23 @@ fn a_heal_draws_nothing_of_a_withheld_tab_s_page() {
     );
 }
 
+/// Failure (a highlight drawn back): the heal's preview was drawn without the tab's set of hidden highlights, as a renderer last drawn for a warm tab on the same file left it, so a highlight the person took out in the shown tab was on the page again. The shown tab hid a highlight (on a page the file hasn't, so the worker says so: `unmatched`), a warm tab on the file drew last: the heal's preview draws with the shown tab's set. Seen failing with the swap calling `do_job` directly.
+#[test]
+fn a_heal_s_preview_is_drawn_without_what_the_shown_tab_took_out() {
+    let mut rig = rig(None);
+    let set = recto_proto::hidden::HiddenAnnots {
+        generation: 1,
+        pages: vec![(99, vec![(0, [0.0, 0.0, 10.0, 10.0])])],
+    };
+    crate::tiles::put_hidden(&mut crate::engine::lock(&rig.engine.shared.hidden), 2, rig.file.0.clone(), Some(Arc::new(set)));
+    let open = rig.renderers.get_mut(&rig.file.0).unwrap();
+    open.doc.hidden.draw_for(1, None);
+    assert_eq!(open.doc.hidden.unmatched(), 0, "nothing was sent yet");
+    assert!(at_rest(&rig.engine.shared, &mut rig.renderers));
+    let open = &rig.renderers[&rig.file.0];
+    assert_eq!(open.doc.hidden.unmatched(), 1, "the worker was given the shown tab's set for the preview");
+}
+
 /// Failure (privacy): a heal drew with a renderer keyed to a password typed for another tab, which no job of the shown tab may use. A renderer opened with the key of tab 1 doesn't serve tab 2, shown: nothing is drawn for it. Seen failing with the check skipped (the preview attached).
 #[test]
 fn a_heal_does_not_draw_by_a_renderer_keyed_to_another_tab() {
