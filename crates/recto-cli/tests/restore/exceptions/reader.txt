@@ -2,6 +2,7 @@ reader.counts. Jobs and steps of its own run.
 reader.documents_held Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs.
 reader.last_wake How long a wake took, and that this one was from a sleep file: about this launch.
 reader.looks_held Pages waiting for their look on dark paper to be tried again, in this process: a new one decides its pages' looks afresh.
+reader.opens_waiting Page-view opens still waiting on a file in this process (a file that does not answer): about this launch, and a new one has none.
 reader.selection.image. An image picked with a click isn't kept, as the snapshot tool isn't (asked of the coordinator, build/image-select): it's let go by whatever the person does next, and picking it again is one click, which reads the file.
 reader.selection.text_ Page text held for a selection, which is read again when it's wanted.
 reader.selection.unit What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows.
