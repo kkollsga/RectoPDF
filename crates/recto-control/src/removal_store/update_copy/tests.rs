@@ -1,7 +1,7 @@
 //! The survey lists a real update copy: `copy_record`, the installer's own function, run on a session the real record store wrote.
 
 use super::*;
-use crate::removal_store::copy_fixtures::{MINE, State, complete, find, found_of, journal_bytes, journal_name, state, surveyed, write_session};
+use crate::removal_store::copy_fixtures::{State, complete, copy_tree, find, found_of, journal_name, state, surveyed, write_session};
 use crate::removal_store::journals::survey_journals;
 use crate::removal_store::legacy_session::survey_legacy_sessions;
 use crate::removal_store::testing::{bounded, put};
@@ -31,10 +31,6 @@ fn updated() -> State {
     state
 }
 
-fn artifacts(s: &Surveyed) -> Vec<(Store, Owner, Format, recto_core::removal::ArtifactKey)> {
-    found_of(s)
-}
-
 /// Failure: the copy an update keeps for going back holds the document's history and the last search, and is skipped (a plan removes the document
 /// and leaves its edit history and a tab's path in a week-long copy), or `.whole` is taken for the target's. One whole update: the slots are `Unknown`
 /// and never opened, the journal is the target's in the copy's own store, and the marker is left out.
@@ -57,7 +53,7 @@ fn one_whole_update_leaves_the_slots_unknown_and_the_journal_the_targets() {
         find(&s, Store::UpdateCopy, &format!("update/before/journals/{}", journal_name(7))),
         Some((Owner::Target, Format::Current))
     );
-    assert!(artifacts(&s).iter().all(|f| f.0 == Store::UpdateCopy));
+    assert!(found_of(&s).iter().all(|f| f.0 == Store::UpdateCopy));
 }
 
 /// Failure: the live journals and the update's copy of the same journal are one survey's `Inconsistent`, or the copy's journal lands in the live
@@ -102,8 +98,8 @@ fn a_copy_without_its_marker_is_surveyed_the_same() {
     std::fs::remove_file(before(&state).join(".whole")).unwrap();
     let partial = survey(state.root()).unwrap();
     assert!(complete(&partial, Store::UpdateCopy));
-    assert_eq!(artifacts(&partial), artifacts(&whole));
-    assert!(!artifacts(&partial).is_empty());
+    assert_eq!(found_of(&partial), found_of(&whole));
+    assert!(!found_of(&partial).is_empty());
 }
 
 /// Failure: `.whole` is left out by its name alone, so a second name for another file, or a folder, hides what the copy holds. Only a plain file of
@@ -139,12 +135,12 @@ fn a_link_at_update_or_before_is_never_followed_and_leaves_the_store_unmarked() 
     std::fs::rename(state.root().join("update"), away.join("update")).unwrap();
     std::os::unix::fs::symlink(away.join("update"), state.root().join("update")).unwrap();
     let s = survey(state.root()).unwrap();
-    assert!(!complete(&s, Store::UpdateCopy) && artifacts(&s).is_empty(), "update is a link");
+    assert!(!complete(&s, Store::UpdateCopy) && found_of(&s).is_empty(), "update is a link");
     std::fs::remove_file(state.root().join("update")).unwrap();
     std::fs::create_dir(state.root().join("update")).unwrap();
     std::os::unix::fs::symlink(away.join("update").join("before"), state.root().join("update").join("before")).unwrap();
     let s = survey(state.root()).unwrap();
-    assert!(!complete(&s, Store::UpdateCopy) && artifacts(&s).is_empty(), "before is a link");
+    assert!(!complete(&s, Store::UpdateCopy) && found_of(&s).is_empty(), "before is a link");
 }
 
 /// Failure: a step that isn't there is read as unfinished, so a person who never updated can't remove anything; or an `update` with no `before`
@@ -153,14 +149,14 @@ fn a_link_at_update_or_before_is_never_followed_and_leaves_the_store_unmarked() 
 fn a_missing_step_is_complete_and_empty() {
     let state = state();
     let s = survey(&state.root().join("nowhere")).unwrap();
-    assert!(complete(&s, Store::UpdateCopy) && artifacts(&s).is_empty());
+    assert!(complete(&s, Store::UpdateCopy) && found_of(&s).is_empty());
     let s = survey(state.root()).unwrap();
-    assert!(complete(&s, Store::UpdateCopy) && artifacts(&s).is_empty(), "no update");
+    assert!(complete(&s, Store::UpdateCopy) && found_of(&s).is_empty(), "no update");
     std::fs::create_dir(state.root().join("update")).unwrap();
     put(&state.root().join("update"), "launch-ok", b"");
     let s = survey(state.root()).unwrap();
     assert!(
-        complete(&s, Store::UpdateCopy) && artifacts(&s).is_empty(),
+        complete(&s, Store::UpdateCopy) && found_of(&s).is_empty(),
         "no before: the rest of `update` is another store's"
     );
 }
@@ -193,7 +189,7 @@ fn the_caps_refuse_one_past_and_not_at() {
 fn a_before_swapped_for_a_link_between_the_steps_is_never_followed() {
     let state = updated();
     let away = recto_testpdf::TempDir::new("recto-away-");
-    copy_for_swap(&before(&state), away.path());
+    copy_tree(&before(&state), away.path());
     let target = away.path().to_path_buf();
     let hook: crate::removal_store::testing::Hook = Arc::new(move |path| {
         if path.ends_with("before") {
@@ -208,10 +204,5 @@ fn a_before_swapped_for_a_link_between_the_steps_is_never_followed() {
     let root = state.root().to_path_buf();
     let s = bounded(move || survey_with(&root, &caps)).unwrap();
     assert!(!complete(&s, Store::UpdateCopy));
-    assert!(artifacts(&s).is_empty());
-    let _ = journal_bytes(MINE, 7);
-}
-
-fn copy_for_swap(from: &Path, to: &Path) {
-    crate::removal_store::copy_fixtures::copy_tree(from, to);
+    assert!(found_of(&s).is_empty());
 }
