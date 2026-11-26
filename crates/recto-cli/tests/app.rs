@@ -1052,7 +1052,22 @@ fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     assert!(Command::new("/usr/bin/mkfifo").arg(&paths[0]).status().unwrap().success());
     let started = std::time::Instant::now();
     run.ok(&["qa", "click-row", "0"]);
-    wait_for(&run, |state| state["reader"]["opens_waiting"].as_u64().unwrap_or(0) >= 1);
+    // Bounded by time, not by polls: a poll of `qa state` can take a second under load, so 400 of them took two minutes on the seeded run.
+    let waiting_since = std::time::Instant::now();
+    loop {
+        let state = run.report();
+        if state["reader"]["opens_waiting"].as_u64().unwrap_or(0) >= 1 {
+            break;
+        }
+        assert!(
+            waiting_since.elapsed() < std::time::Duration::from_secs(10),
+            "the click never reached the page view's open: woken_from_file={}, opens_waiting={}, reader: {}",
+            state["record"]["sleep"]["woken_from_file"],
+            state["reader"]["opens_waiting"],
+            state["reader"]
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20)); // ratchet: poll
+    }
     assert_eq!(run.ok(&["status"])["tabs"], 5, "the session answers");
     assert_eq!(run.ok(&["tabs"])["count"].as_u64().or(Some(5)), Some(5));
     // A later click goes ahead, and it's what's shown when the read does come back.
