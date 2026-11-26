@@ -427,7 +427,7 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     let writer = std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(&dead).expect("nothing is reading the fifo");
     let deadline = Instant::now() + HANG;
     while engine.report().0["opens_waiting"] != 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
     assert_eq!(engine.report().0["opens_waiting"], 0, "{}", engine.report().0);
     drop(writer);
