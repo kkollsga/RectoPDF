@@ -70,7 +70,7 @@ fn modified_ns(meta: &std::fs::Metadata) -> Option<i64> {
 }
 
 /// Hard links to the file. Off Unix it is not known, so a file reads as shared.
-fn links(meta: &std::fs::Metadata) -> u64 {
+pub(super) fn links(meta: &std::fs::Metadata) -> u64 {
     #[cfg(unix)]
     {
         std::os::unix::fs::MetadataExt::nlink(meta)
