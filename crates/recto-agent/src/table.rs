@@ -1416,7 +1416,7 @@ mod tests {
             Kind::Degrees => "90",
             Kind::Level => "read_only",
             Kind::Text => "words",
-            Kind::Reference => crate::commands::locating::EXAMPLE_REF,
+            Kind::Reference => crate::commands::locating::EXAMPLE_REF_CHARS,
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",
@@ -1476,8 +1476,6 @@ mod tests {
                             if arg.kind == Kind::Switch
                                 && error.code == Code::USAGE
                                 && SWITCHES_THAT_GO_WITH_ANOTHER.contains(&(spec.tag, arg.key, error.message.as_str())) => {}
-                        // A reference alone is refused where the command takes only some (`highlight --ref` takes characters, the sample is a page).
-                        Err(error) if arg.kind == Kind::Reference && crate::commands::refused_for_its_combination(spec.tag, &error) => {}
                         Err(error) => panic!("{} --{} {value}: refused, {:?}: {}", spec.name, arg.key, error.code, error.message),
                         Ok(_) => {}
                     }
