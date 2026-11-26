@@ -226,7 +226,7 @@ row 56 highlight: e9c89fca0aa69e32 2631 bytes
 help highlight: fd0ea4b96ca330d4 2055 bytes
 usage highlight: bb59984cbfd84268 139 bytes
 by tag highlight: 4c5803d8a5526c67 9 bytes
-row 57 highlight remove: 78d21a8c58b3a24d 1980 bytes
+row 57 highlight remove: 4548685a7005fedc 1985 bytes
 help highlight remove: 85ad333f841de56d 1428 bytes
 usage highlight remove: afe7d651b0d4c2f4 128 bytes
 by tag highlight_remove: 6c9814c40059b2fd 16 bytes
