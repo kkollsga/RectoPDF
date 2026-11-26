@@ -168,7 +168,7 @@ SCOPE
 # two calls to it (the compile gate and the tests) go to a stand-in that runs the command, as the real one does for a command it lets through. The real
 # one's own start-up (its slot arithmetic, ps and sysctl calls, named pipes and waits) cost about 0.7 s of the 1 s a stubbed full run took.
 real_queue() { cp "$SOURCE/tools/sysguard/heavy.sh" tools/sysguard/heavy.sh; }
-printf '#!/usr/bin/env bash\nexec "$@"\n' > tools/sysguard/heavy.sh; chmod +x tools/sysguard/heavy.sh
+printf '#!/usr/bin/env bash\necho "solo=${HEAVY_SOLO:-} $*" >> "$CALLS.heavy"\nexec "$@"\n' > tools/sysguard/heavy.sh; chmod +x tools/sysguard/heavy.sh
 cp "$SOURCE/tools/hooks/pre-push" tools/hooks/pre-push
 printf '#!/usr/bin/env bash\n' > tools/pdfium.sh
 # The ratchet has its own test (tools/ratchet-test.sh); here it, and the tools' tests, only log that they ran, and STUB_FAIL can fail them.
@@ -1551,7 +1551,7 @@ seg_O() {
 git checkout -q main
 git checkout -qb like-ci-cases
 commit_code like-ci-part
-rm -f "$CALLS.policy" "$CALLS.slow" "$CALLS.solo"; : > "$CALLS"
+rm -f "$CALLS.policy" "$CALLS.slow" "$CALLS.solo" "$CALLS.heavy"; : > "$CALLS"
 runs_before=$(runs_in_ledger); checked_before=$(wc -l < "$CHECKED" | tr -d ' ')
 out=$(tools/check.sh --like-ci lifecycle 2>&1); rc=$?
 check "a part like CI passes as the part does" "0" "$rc"
@@ -1561,15 +1561,17 @@ check "it runs the part's tests, held by the limits, with CI's profile" "1" "$(g
 check "and builds them first without the limits (the app tests', the registrations')" "2 0" "$(grep -c -- '^nextest run --no-run' "$CALLS") $(grep -c -- '--no-run' "$CALLS.policy")"
 # Failure (2026-11-26, PROCESS): a --like-ci run shared the build queue with other agents' jobs, so it measured the load and not CI's slower machine (the start's wait ran out under it).
 check "its tests take the build queue to themselves (HEAVY_SOLO=1)" "1 0" "$(sort -u "$CALLS.solo" | grep -c '^solo=1$') $(grep -vc '^solo=1$' "$CALLS.solo")"
+check "and only the job that runs them: every other queued command is queued as any other" "1 0" "$(grep -c '^solo=1 bash -c tests=' "$CALLS.heavy") $(grep -v 'bash -c tests=' "$CALLS.heavy" | grep -c '^solo=1')"
 check "with no slow stage, as on CI" "no" "$([ -s "$CALLS.slow" ] && echo yes || echo no)"
 check "and it's never a run, a pass or a stamp" "$runs_before $checked_before" "$(runs_in_ledger) $(wc -l < "$CHECKED" | tr -d ' ')"
 check "an unknown option is refused" "2" "$(tools/check.sh --like-ci lifecycle --fast > /dev/null 2>&1; echo $?)"
 commit_code like-ci-filter
-rm -f "$CALLS.policy" "$CALLS.reruns"; : > "$CALLS"
+rm -f "$CALLS.policy" "$CALLS.reruns" "$CALLS.heavy"; : > "$CALLS"
 # This repository's app binaries are none; for this case, the real one's first.
 echo "APP_BINARIES='app'" >> tools/check-scope.sh
 out=$(STUB_LIST='recto-cli::app flaky_one' STUB_JUNIT_FAIL='binary_id(=recto-cli::app)' STUB_RERUN_FAILS=1 tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --times 3 2>&1); rc=$?
 check "a filter like CI, N times: the failure fails it" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+check "its rounds are one solo job, and the listing and the app's build are queued as any other" "1 0" "$(grep -c '^solo=1 bash -c like_ci_rounds' "$CALLS.heavy") $(grep -v 'like_ci_rounds' "$CALLS.heavy" | grep -c '^solo=1')"
 check "it builds the app for an app binary's test" "1" "$(grep -c '^app-build$' "$CALLS")"
 check "and runs it that many times under the limits, 4 at once for the app's tests" "3" "$(grep -c -- '-j 4 -E binary_id(=recto-cli::app) & test(=flaky_one) profile=ci$' "$CALLS.policy")"
 has "with its rate" "failed 1 of 3" "$(printf '%s' "$out" | tr -s ' ')"

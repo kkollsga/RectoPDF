@@ -56,8 +56,7 @@ like_ci_main() {
   local limits=${LIKE_CI_LIMITS-$LIKE_CI_LIMITS_DEFAULT}
   export CHECK_LIKE_CI_WRAP=""
   [ -z "$limits" ] || CHECK_LIKE_CI_WRAP="taskpolicy $limits"
-  # The queue to itself (coordinator, 2026-11-26): CI's runner has nothing else on it, so this Mac's other jobs would add load CI doesn't have, and a start's patience would be spent on them.
-  export CHECK_LIKE_CI=1 NEXTEST_PROFILE=$profile HEAVY_SOLO=1
+  export CHECK_LIKE_CI=1 NEXTEST_PROFILE=$profile
   case "$target" in
     light | heavy | core | window | lifecycle)
       [ "$times" = 1 ] || { echo "like-ci: --times goes with a filter; a part runs once." >&2; return 2; }
@@ -95,7 +94,9 @@ like_ci_main() {
   fi
   local status=0
   export LIKE_TARGET=$target LIKE_JOBS=$jobs LIKE_TIMES=$times LIKE_APP=$app
-  HEAVY_RETRY=1 tools/sysguard/heavy.sh bash -c 'like_ci_rounds' "check.sh --like-ci" || status=$?
+  # The queue to itself (coordinator, 2026-11-26): CI's runner has nothing else on it, so this Mac's other jobs would add load CI doesn't have. Only the job that runs
+  # the tests takes it, never the listing or the app's build before it (review, 2026-11-26: those held every other agent's work for nothing).
+  HEAVY_SOLO=1 HEAVY_RETRY=1 tools/sysguard/heavy.sh bash -c 'like_ci_rounds' "check.sh --like-ci" || status=$?
   return "$status"
 }
 

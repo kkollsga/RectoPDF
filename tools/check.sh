@@ -766,7 +766,8 @@ export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_
 export app_tier_dir CHECK_TOP_PID check_mark part runs_light runs_core mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
-tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
+# A --like-ci part takes the queue to itself for the tests only, not for the compile gate before them (coordinator, 2026-11-26).
+HEAVY_SOLO=${CHECK_LIKE_CI:+1} tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
 app_tier_stopped
 evidence_report "$status"
 [ "$mode" = --full ] || exit "$status"
