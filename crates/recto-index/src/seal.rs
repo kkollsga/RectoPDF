@@ -41,6 +41,10 @@ pub enum Purpose {
     Meta,
     /// The header's check, with whether its key lasts.
     Check(bool),
+    /// One page's stored identity, so a record can't answer for another page.
+    Identity(u32),
+    /// The header of a corpus's stored identities.
+    Identities,
 }
 
 impl Purpose {
@@ -50,6 +54,8 @@ impl Purpose {
             Self::Summary => (2, 0),
             Self::Meta => (3, 0),
             Self::Check(lasting) => (4, u32::from(lasting)),
+            Self::Identity(page) => (5, page),
+            Self::Identities => (6, 0),
         };
         let mut out = [kind, 0, 0, 0, 0];
         out[1..].copy_from_slice(&number.to_le_bytes());

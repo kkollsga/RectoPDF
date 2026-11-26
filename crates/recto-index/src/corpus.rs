@@ -6,6 +6,8 @@
 //!     seal.bin            The corpus's seal: whether its key lasts, its salt, a check. Written before the first page
 //!     pages.bin           Where each page's chunk is in the pack and how long, in order, each written after its chunk. Its length is the progress
 //!     text.pack           Each page's chunk: its record (kind, flags, lengths), then its exact normalised text and what it needs beside that
+//!     ids.bin             Each page's identity, a sealed record a page, as its text is built: `corpus::identities`
+//!     ids.sealed          The identities' header, written after the last record and before `ready.sealed`
 //!     meta.sealed         The file's title and outline, cleaned and capped, for the manifest, sealed
 //!     ready.sealed        The summary, sealed, written last. Without it the corpus isn't used
 //!     refused.json        Why this version of the file won't be indexed. It holds no text
@@ -39,14 +41,16 @@
 use crate::seal::{self, CorpusSeal, Purpose};
 mod agent_life;
 mod aux;
+mod identities;
 use aux::Aux;
+pub use identities::{FileIdentities, Identities, IdentityInfo, remove_identities};
 mod retry;
 use retry::retry_failed_pages;
 mod versions;
-pub use versions::{forget_file, keys_of_file};
-use versions::{VERSIONS_FOLDER, note_finished, note_starting, tidy_versions};
 #[cfg(test)]
 use versions::MAX_KEYS_PER_ALIAS;
+use versions::{VERSIONS_FOLDER, note_finished, note_starting, tidy_versions};
+pub use versions::{forget_file, keys_of_file};
 mod evict;
 pub(crate) use evict::key_folders;
 use evict::remove_unless_building;
@@ -272,6 +276,14 @@ impl CorpusPaths {
     /// The corpus's seal: its salt and a check, written before its first page.
     pub(crate) fn seal(&self) -> PathBuf {
         self.app.join("seal.bin")
+    }
+
+    pub(crate) fn ids_file(&self) -> PathBuf {
+        self.app.join("ids.bin")
+    }
+
+    pub(crate) fn ids_header(&self) -> PathBuf {
+        self.app.join("ids.sealed")
     }
 
     pub fn page_file(&self, page: u32, width: usize) -> PathBuf {
@@ -605,6 +617,14 @@ pub trait PageFeed {
     fn still_the_same_file(&mut self) -> bool;
     /// What's about to be read has been tried before, so forget that it failed.
     fn forget_failures(&mut self) {}
+    /// The document's page identities, if this feed can read them (lopdf, never the renderer): how many pages it has and its `/ID` pair. Asked once, before the first page.
+    fn identities(&mut self) -> Option<IdentityInfo> {
+        None
+    }
+    /// Page `page`'s identity as `recto_core::page_id::read_page` reads it, under the standard caps. Only asked when [`PageFeed::identities`] answered.
+    fn identity(&mut self, _page: u32) -> recto_core::page_id::PageRead {
+        recto_core::page_id::PageRead { identity: None, bytes: 0 }
+    }
 }
 
 /// What goes in the manifest beside the pages. All of it comes from the file, and goes under `untrusted`.
@@ -620,6 +640,8 @@ pub struct DocMeta {
 
 #[derive(Clone, Copy, Debug)]
 pub struct BuildLimits {
+    /// What reading the pages' identities may be charged in all (`ScanCaps::STANDARD`'s: what one `resolve` may spend). Past it the corpus has no identities, and references are made from the file.
+    pub identity_bytes: u64,
     pub max_doc_bytes: u64,
     pub max_total_bytes: u64,
     pub max_age: Duration,
@@ -629,6 +651,7 @@ pub struct BuildLimits {
 impl Default for BuildLimits {
     fn default() -> Self {
         Self {
+            identity_bytes: recto_core::locator::ScanCaps::STANDARD.bytes,
             max_doc_bytes: MAX_DOC_BYTES,
             max_total_bytes: MAX_TOTAL_BYTES,
             max_age: MAX_AGE,
@@ -728,6 +751,7 @@ fn build_with_lock(
     let mut pack = local::append_private_file(&paths.pack)?;
     let (mut offset, mut bytes) = (resumed.pack_end, resumed.bytes);
     let (mut blob, mut chunk) = (crate::seal::Plain::default(), Vec::new());
+    let mut ids = identities::start(&paths, &seal, feed, resumed.pages, limits)?;
     for page in resumed.pages..pages {
         if started.elapsed() >= limits.max_time {
             return Ok(BuildOutcome::Paused("out_of_time"));
@@ -745,7 +769,8 @@ fn build_with_lock(
         let record = digest_into(read, &mut blob);
         seal_page(&seal, page, &record, &blob, &mut chunk)?;
         bytes += chunk.len() as u64 + RECORD_LEN as u64;
-        if bytes > limits.max_doc_bytes {
+        identities::step(&mut ids, &paths, &seal, feed, page)?;
+        if bytes + identities::disk_bytes(&ids) > limits.max_doc_bytes {
             return refuse(&paths, "too_large");
         }
         pack.write_all(&chunk)?;
@@ -758,12 +783,18 @@ fn build_with_lock(
         )?;
         offset += chunk.len() as u64;
     }
+    // Every read of the file's pages is done before this last look at the file, and the identities' header goes after it, last but for `ready.sealed`.
+    identities::complete(&mut ids, &paths, &seal, feed)?;
     if !feed.still_the_same_file() {
         return throw_away(&paths);
     }
     // Only now is any of it believed, so what a search reads must really be there before the mark that says so.
     pack.sync_all()?;
     table.sync_all()?;
+    let bytes = bytes + identities::seal_header(&mut ids, &paths, &seal)?;
+    if bytes > limits.max_doc_bytes {
+        return refuse(&paths, "too_large");
+    }
     let summary = finish(&paths, &seal, pages, width, offset, bytes, meta, 0)?;
     let stats = BuildStats {
         pages_built: pages - resumed.pages,
@@ -943,6 +974,7 @@ fn clear_text(paths: &CorpusPaths) {
     let _ = fs::remove_file(&paths.temp_page);
     let _ = fs::remove_file(&paths.meta);
     let _ = fs::remove_file(&paths.ready);
+    identities::remove_files(paths);
     let _ = fs::remove_file(paths.seal());
 }
 
