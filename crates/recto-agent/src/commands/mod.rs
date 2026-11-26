@@ -26,6 +26,7 @@ pub mod highlight;
 pub mod linking;
 pub mod locating;
 pub mod measure;
+pub mod page_link;
 pub mod qa;
 pub mod reading;
 pub mod record;
@@ -353,6 +354,7 @@ family! {
         Contents(reading::Contents),
         Search(text::Search),
         Ref(locating::Ref),
+        Link(page_link::Link),
         #[line(locating::line::Resolve)]
         Resolve(locating::Resolve),
         Index(text::Index),

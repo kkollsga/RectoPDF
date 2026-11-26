@@ -34,6 +34,7 @@ mod menu_agents;
 mod menu_twins;
 mod navigation;
 mod newer_read;
+mod page_link;
 mod page_ids;
 mod palette;
 mod password_not_kept;
