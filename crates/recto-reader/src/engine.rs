@@ -95,6 +95,8 @@ struct Shared {
     hidden: Mutex<crate::tiles::HiddenSets>, // The file's highlights each tab shown has taken out, unsaved: `Selection::show_hidden`.
     /// How many `recto-open` threads' opens haven't returned: a file that doesn't answer shows here, for QA (`reader.opens_waiting`).
     opens_waiting: Arc<std::sync::atomic::AtomicUsize>,
+    /// The files those opens are of, one entry per open that hasn't returned (at most `MAX_OPENINGS`, nothing per idle tab), so a count of one file's opens can be told from all of them (`reader.opening`).
+    opening: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 /// The tick ([`asked`]) of the newest ask of each kind applied to the view, each moved on only with the view's lock held, so an ask asked before it isn't
@@ -198,6 +200,7 @@ impl Engine {
             qa: Box::default(),
             hidden: Mutex::default(),
             opens_waiting: Arc::default(),
+            opening: Arc::default(),
         });
         Self {
             shared,
@@ -526,6 +529,8 @@ impl Engine {
         let mut report = lock(&self.shared.reader).report();
         if let Some(map) = report.0.as_object_mut() {
             map.insert("opens_waiting".into(), self.shared.opens_waiting.load(Ordering::SeqCst).into());
+            let opening: Vec<String> = lock(&self.shared.opening).iter().map(|path| path.display().to_string()).collect();
+            map.insert("opening".into(), opening.into());
         }
         report
     }

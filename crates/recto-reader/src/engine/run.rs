@@ -10,9 +10,9 @@ use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, Ti
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::look::{Looks, at_rest, next_heal, tile_look};
@@ -555,14 +555,19 @@ fn renderer_for<'a>(
             let opening = path.to_path_buf();
             let waiting = shared.opens_waiting.clone();
             waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            /// Counts an open down when its thread ends, a panic included.
-            struct Done(Arc<std::sync::atomic::AtomicUsize>);
+            /// Counts an open down, and takes its file off the list of files being opened, when its thread ends, a panic included (a poisoned list too).
+            struct Done(Arc<std::sync::atomic::AtomicUsize>, Arc<Mutex<Vec<PathBuf>>>, PathBuf);
             impl Drop for Done {
                 fn drop(&mut self) {
                     self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    let mut list = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(at) = list.iter().position(|path| *path == self.2) {
+                        list.swap_remove(at);
+                    }
                 }
             }
-            let done = Done(waiting);
+            shared.opening.lock().unwrap_or_else(PoisonError::into_inner).push(path.to_path_buf());
+            let done = Done(waiting, shared.opening.clone(), path.to_path_buf());
             let spawned = std::thread::Builder::new().name("recto-open".into()).stack_size(128 * 1024).spawn(move || {
                 let _done = done;
                 let _ = sender.send(DocRenderer::open_file(&opening));

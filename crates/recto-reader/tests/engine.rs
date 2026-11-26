@@ -439,53 +439,38 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     let _ = std::fs::remove_dir_all(&folder);
 }
 
-/// Failure: going back to a file that doesn't answer starts another open each time, since the page view forgot the one still stuck when it moved on: every revisit of a dead volume's tab left one more `recto-open` thread (and its file handle once it returned) behind, with nothing capping them. A revisit waits on the open already under way, so the count never passes one for the one file, and goes to 0 when it's let go.
+/// Failure: going back to a file that doesn't answer starts another open each time, since the page view forgot the one still stuck when it moved on: every revisit of a dead volume's tab left one more `recto-open` thread (and its file handle once it returned) behind, with nothing capping them. A revisit waits on the open already under way, so the count of opens of the one file never passes one, and the total goes to 0 when it's let go.
 #[test]
 fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
     let folder = recto_testpdf::TempDir::new("recto-fifo-revisit-");
     std::fs::create_dir_all(&folder).unwrap();
-    let dead = folder.join("dead.pdf");
-    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&dead).status().unwrap().success());
+    let dead = fifo_in(&folder, "dead.pdf");
     let healthy = document(1);
-    let events = Arc::new(Events::default());
-    let engine = Engine::new(EngineConfig::default(), events);
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
     engine.qa().system_takes_only_when_told();
-    let show = |tab: u32, file: &std::path::Path, was: &[u32]| {
-        engine.activate(
-            tab,
-            1,
-            0,
-            PageMap {
-                files: vec![file.to_path_buf()],
-                slots: None,
-                own: None,
-                turns: None,
-                expected: Vec::new(),
-                follows: None,
-            },
-            was,
-            None,
-            recto_reader::layout::Spread::Single,
-        );
-        engine.set_viewport(view(0.0));
-    };
-    let waiting = || engine.report().0["opens_waiting"].as_u64().unwrap();
     let mut most = 0;
-    // Looks at the page view for this long, as the host does, and notes the most opens it had at once. An open starts the moment the job reaches it, so a few hundred ms show a leak.
+    // Looks at the page view for this long, as the host does, and notes the most opens of the dead file at once. An open starts the moment the job reaches it, so a few hundred ms show a leak.
     let mut watch = |limit: Duration| {
         let until = Instant::now() + limit;
         while Instant::now() < until {
             engine.drain();
             engine.applied();
-            most = most.max(waiting());
+            most = most.max(opens_of(&engine, &dead));
             std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
         }
     };
+    // The healthy file is opened first, so the arrangement below is only the dead file's revisits.
+    show_one(&engine, 2, &healthy.0, &[]);
+    watch(Duration::from_millis(200));
     // More revisits than the page view's cap on opens (4), so a leak shows as the cap and a cap that holds shows as one.
-    for _ in 0..6 {
-        show(1, &dead, &[2]);
+    for revisit in 0..6 {
+        show_one(&engine, 1, &dead, &[2]);
+        if revisit == 0 {
+            // Until the first open is under way, a late thread would leave nothing to count (and nothing for the writer below to release).
+            wait_opens(&engine, 1);
+        }
         watch(Duration::from_millis(400));
-        show(2, &healthy.0, &[1]);
+        show_one(&engine, 2, &healthy.0, &[1]);
         watch(Duration::from_millis(200));
     }
     assert!(most <= 1, "{most} opens of one file at once: {}", engine.report().0);
@@ -495,12 +480,69 @@ fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
         .custom_flags(O_NONBLOCK)
         .open(&dead)
         .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    wait_no_opens(&engine);
+    drop(writer);
+}
+
+/// Failure: a count of all opens read as one file's. The reader keeps one count of every `recto-open` thread, so two files that don't answer read 2 with one open each and no bug; a test that held the total to 1 failed on a healthy file's open under load. The opens of each file are counted by its path.
+#[test]
+fn a_count_of_one_files_opens_isnt_another_files_open() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-two-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let dead = fifo_in(&folder, "dead.pdf");
+    let other = fifo_in(&folder, "other.pdf");
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.qa().system_takes_only_when_told();
+    show_one(&engine, 1, &dead, &[2]);
+    wait_opens(&engine, 1);
+    show_one(&engine, 2, &other, &[1]);
+    wait_opens(&engine, 2);
+    assert_eq!(engine.report().0["opens_waiting"], 2, "{}", engine.report().0);
+    assert_eq!(opens_of(&engine, &dead), 1, "{}", engine.report().0);
+    assert_eq!(opens_of(&engine, &other), 1, "{}", engine.report().0);
+    use std::os::unix::fs::OpenOptionsExt;
+    let writers: Vec<_> = [&dead, &other]
+        .iter()
+        .map(|fifo| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(O_NONBLOCK)
+                .open(fifo)
+                .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0))
+        })
+        .collect();
+    wait_no_opens(&engine);
+    drop(writers);
+}
+
+/// The opens of this one file that haven't returned (`reader.opening`), not all files' (`opens_waiting`).
+fn opens_of(engine: &Engine, path: &std::path::Path) -> u64 {
+    let report = engine.report().0;
+    let path = path.display().to_string();
+    report["opening"]
+        .as_array()
+        .map_or(0, |list| list.iter().filter(|open| open.as_str() == Some(&path)).count() as u64)
+}
+
+/// Polls, bounded, until at least `n` opens are under way.
+fn wait_opens(engine: &Engine, n: u64) {
     let deadline = Instant::now() + HANG;
-    while waiting() != 0 && Instant::now() < deadline {
+    while engine.report().0["opens_waiting"].as_u64().unwrap() < n && Instant::now() < deadline {
+        engine.drain();
+        engine.applied();
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
+    assert!(engine.report().0["opens_waiting"].as_u64().unwrap() >= n, "{}", engine.report().0);
+}
+
+/// Polls, bounded, until every open has returned, and says what it saw if not.
+fn wait_no_opens(engine: &Engine) {
+    let deadline = Instant::now() + HANG;
+    while engine.report().0["opens_waiting"] != 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
-    assert_eq!(waiting(), 0, "{}", engine.report().0);
-    drop(writer);
+    assert_eq!(engine.report().0["opens_waiting"], 0, "{}", engine.report().0);
+    assert_eq!(engine.report().0["opening"].as_array().map(Vec::len), Some(0), "{}", engine.report().0);
 }
 
 /// A page view's cap on opens that haven't returned (`MAX_OPENINGS` in `engine/run.rs`).
