@@ -302,7 +302,8 @@ fn a_length_flipped_mid_file_is_damage_not_a_torn_tail() {
     while at < bytes.len() {
         let len = usize::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
         let mut flipped = bytes.clone();
-        flipped[at + 1] ^= 0x7F;
+        // Past the end of the file, but under the most any frame holds: only the kind's own size says it can't be.
+        flipped[at..at + 2].copy_from_slice(&u16::try_from(len + 600).unwrap().to_le_bytes());
         let ledger = read(&flipped, &LEDGER_LIMITS);
         assert_eq!((ledger.stopped, ledger.good_len), (Some(Gap::Damaged), at), "length at {at}");
         at += 3 + len + 4;
