@@ -1,26 +1,24 @@
 //! The writer's temporary files (`Store::WriterTemp`): a crashed save's whole copy of the document, left beside it in the person's own folder
-//! (`docs/design/removal.md` §3, §10 "D2c-2b as built").
+//! (`docs/design/removal.md` §3, §10 "The writer's temporaries: the plainly safe rule").
 //!
 //! **Read-only, and nothing in the person's folder is opened.** The folder of each path the lineage puts on the target's side (an `Unplaced` path
-//! included), and of each Save As destination nothing was seen at since (`Lineage::destinations`, which no other survey reads), is opened once by its descriptor (no link followed at its last part, this user's) and only listed; each entry is looked at by `fstatat`
+//! included), and of **every** Save As or Replace destination ever recorded (`Lineage::destinations`, which no other survey reads; a later landing doesn't
+//! drop it), is opened once by its descriptor (no link followed at its last part, this user's) and only listed; each entry is looked at by `fstatat`
 //! without following a link. The naming rule is the writer's own (`recto_core::save::writer_temp_shape`).
 //!
-//! **What an entry is.** Not lopdf's exact shape: the person's own file, ignored (naming it `Unknown` would refuse every removal from a busy
-//! folder). Exact shape and a hash that is a lineage path's file name in this folder: placed by that path's sides, as a backup is. Exact shape and
-//! a hash that is no lineage path's: ignored if it changed after the ledger began, `Unknown` if it changed before or has no time. The
-//! time rule holds because Save, Save As and Replace all record the path the writer names its temp for at `Starting`, before the writer makes anything (a
-//! destination as a `Destination` record, by its canonical folder: a temp named for one that never landed is `Unknown`), or leave a gap that refuses; so a temp that appeared after the ledger began and matches no path is
-//! no save's of this app. **Known limits (the first a false "none found", the second a false refusal):** a Save As started by a build from before this
-//! recording isn't in the ledger, so its temp reads "none found" until it's swept; and a Save As that crashes just after its rename leaves its `.tmp` as a
-//! hard link to the target, which reads `Shared` (a false refusal) until lopdf's `clear_leftover_links` runs. A placed `.tmp` must be a plain file (`Shared` with other hard links); a `.d` must
-//! be a real folder and is not looked into. Any other kind, or one changed before the ledger began, is `Unknown`.
+//! **What an entry is.** Not lopdf's exact shape: the person's own file, ignored (naming it `Unknown` would refuse every removal from a busy folder).
+//! Exact shape: `Unknown`, whatever its hash (target's, another lineage's or none), its time, kind or links. lopdf sweeps only a temp at least an hour old
+//! whose owner is dead, so a later save landing proves nothing about an earlier one's leftover, and no rule about hashes or times can say whose a temp is
+//! safely. The cost is a false refusal: any leftover lopdf temp in a listed folder refuses removal until it is gone. **Known limit (a false "none found"):**
+//! a Save As started by a build from before the destination was recorded isn't in the ledger, so its temp in a folder nothing else lists reads "none found".
+//! A folder that is missing when listed is complete and empty: a purge must list again before it deletes (a remounted volume).
 
 #[cfg(test)]
 use super::testing::Hook;
-use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
-use recto_core::save::{TempShape, writer_temp_prefix, writer_temp_shape};
-use recto_platform::folder::{Entry, Folder, Opened};
-use std::collections::HashMap;
+use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Store, Survey, TargetMode};
+use recto_core::save::writer_temp_shape;
+use recto_platform::folder::{Folder, Opened};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// The most entries looked at in one folder: lopdf's own sweep bound, so a temp past it can't be swept either. Design limit, not a measurement.
@@ -56,17 +54,16 @@ impl Default for TempCaps {
 /// listed or an entry that can't be looked at leaves the store unmarked, so the plan says `Incomplete` rather than "none found". The adapter does
 /// not check the lineage's gap: the plan's `HistoryIncomplete` gate (`Survey::history`) does. More than 64 folders that open, or 65,536 entries in one, is
 /// `TooLarge`. `add`'s refusal passes through.
-pub fn survey_writer_temps(lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
-    survey_writer_temps_with(lineage, mode, survey, &TempCaps::default())
+pub fn survey_writer_temps(lineage: &Lineage<'_>, _mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
+    survey_writer_temps_with(lineage, _mode, survey, &TempCaps::default())
 }
 
-pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, caps: &TempCaps) -> Result<(), Refusal> {
+pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, _mode: TargetMode, survey: &mut Survey, caps: &TempCaps) -> Result<(), Refusal> {
     let folders = folders_of(lineage);
-    let began = lineage.began_ns();
     // Only a folder that opens counts toward the cap: one that isn't there holds no file, so no temp can be in it (a Save As to a folder made later, or
     // removed since, costs nothing), and the cap is on what is listed, which is the work.
     let mut opened = 0usize;
-    for (path, hashes) in folders.iter().filter(|(_, hashes)| hashes.listed) {
+    for path in &folders {
         let folder = match Folder::open(path) {
             Opened::Missing => continue,
             Opened::Other => return Ok(()),
@@ -88,16 +85,17 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, mode: TargetMode, 
             if seen > caps.entries {
                 return Err(Refusal::TooLarge);
             }
-            let Some(owner) = owner_of(&entry, &hashes.sides, began, mode) else {
+            // Exact shape and nothing else: whose it is can't be told safely.
+            if writer_temp_shape(entry.name.as_encoded_bytes()).is_none() {
                 continue;
-            };
+            }
             let mut key = path.as_os_str().as_encoded_bytes().to_vec();
             key.push(b'/');
             key.extend_from_slice(entry.name.as_encoded_bytes());
             survey.add(Found {
                 store: Store::WriterTemp,
                 key: ArtifactKey::of(Store::WriterTemp, &key),
-                owner,
+                owner: Owner::Unknown,
                 format: Format::Current,
             })?;
         }
@@ -106,70 +104,20 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, mode: TargetMode, 
     Ok(())
 }
 
-/// What the lineage says about one folder.
-#[derive(Default)]
-struct Hashes {
-    /// Whether any path of this folder is on the target's side: only then is the folder listed.
-    listed: bool,
-    /// By the 16 hex of a path's file name: the sides that path was seen on.
-    sides: HashMap<String, Sides>,
-}
-
-/// Each folder that holds a lineage path, with the hashes of the file names in it. Each folder once, whatever the number of paths in it.
-fn folders_of(lineage: &Lineage<'_>) -> Vec<(PathBuf, Hashes)> {
-    let mut folders: Vec<(PathBuf, Hashes)> = Vec::new();
-    let mut at: HashMap<PathBuf, usize> = HashMap::new();
-    for (path, side) in lineage.paths() {
-        let Some(hashes) = hashes_of(&mut folders, &mut at, path) else { continue };
-        hashes.listed |= side == Side::Target;
-        let sides = hashes.sides.entry(hash_of(path)).or_default();
-        *sides = sides.with(side);
-    }
-    // A save that was going to a path and never landed may have left its temp there, named for it: the folder is listed, and that temp is no one's to place.
-    for path in lineage.destinations() {
-        let Some(hashes) = hashes_of(&mut folders, &mut at, path) else { continue };
-        hashes.listed = true;
-        let sides = hashes.sides.entry(hash_of(path)).or_default();
-        *sides = sides.with(Side::Target).with(Side::Other);
+/// The folders to list, each once: those of the target-side paths and of every destination ever recorded.
+fn folders_of(lineage: &Lineage<'_>) -> Vec<PathBuf> {
+    let mut seen: HashSet<&Path> = HashSet::new();
+    let mut folders = Vec::new();
+    let targets = lineage.paths().filter(|(_, side)| *side == Side::Target).map(|(path, _)| path);
+    for path in targets.chain(lineage.destinations()) {
+        let Some(parent) = path.parent() else { continue };
+        // The writer's own rule for a path with no folder part.
+        let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+        if seen.insert(parent) {
+            folders.push(parent.to_path_buf());
+        }
     }
     folders
-}
-
-/// The record of the folder `path` is in, made if it is the first of that folder.
-fn hashes_of<'a>(folders: &'a mut Vec<(PathBuf, Hashes)>, at: &mut HashMap<PathBuf, usize>, path: &Path) -> Option<&'a mut Hashes> {
-    let parent = path.parent()?;
-    // The writer's own rule for a path with no folder part.
-    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
-    let index = *at.entry(parent.to_path_buf()).or_insert_with(|| {
-        folders.push((parent.to_path_buf(), Hashes::default()));
-        folders.len() - 1
-    });
-    Some(&mut folders[index].1)
-}
-
-/// The 16 hex of a path's file name that its temporaries carry (`.append-` and the `-` after them frame it).
-fn hash_of(path: &Path) -> String {
-    let prefix = writer_temp_prefix(path);
-    prefix[".append-".len()..prefix.len() - 1].to_string()
-}
-
-/// What an entry of the person's folder is, or `None` if it isn't the survey's business.
-fn owner_of(entry: &Entry, sides: &HashMap<String, Sides>, began: i64, mode: TargetMode) -> Option<Owner> {
-    let (hash, shape) = writer_temp_shape(entry.name.as_encoded_bytes())?;
-    let before_ledger = entry.modified_ns.is_none_or(|time| time < began);
-    let Some(sides) = sides.get(hash) else {
-        // A temp of some save the ledger saw nothing of: from before it began, nobody can say whose; from after, every save recorded its path first.
-        return before_ledger.then_some(Owner::Unknown);
-    };
-    let right_kind = match shape {
-        TempShape::File => entry.is_file,
-        TempShape::Folder => entry.is_dir,
-    };
-    Some(match () {
-        _ if !right_kind || before_ledger => Owner::Unknown,
-        _ if shape == TempShape::File && entry.links != 1 => Owner::Shared,
-        _ => sides.owner(mode),
-    })
 }
 
 #[cfg(test)]

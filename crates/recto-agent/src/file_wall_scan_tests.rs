@@ -109,7 +109,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-control/src/removal_store/writer_temps.rs",
         1,
-        "the folder of each target-side lineage path the caller of `survey_writer_temps` names (`pub`, with no production caller yet), and of each Save As or Replace destination no file was seen at since, from any lineage (a never-landed one): a person's folder, \
+        "the folder of each target-side lineage path the caller of `survey_writer_temps` names (`pub`, with no production caller yet), and of every Save As or Replace destination ever recorded, from any lineage (landed or not): a person's folder, \
          opened through the folder helper (this user's only, no link followed at its last part) and only listed; each entry is looked at by `fstatat` without \
          following a link, and nothing in the folder is opened: never a document",
     ),

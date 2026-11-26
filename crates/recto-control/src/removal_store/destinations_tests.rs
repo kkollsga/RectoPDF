@@ -10,7 +10,7 @@ use recto_core::save::{backup_name, writer_temp_prefix};
 use recto_platform::FileStamp;
 use recto_session::record::{JournalHeader, journal_file_name, journal_start};
 use recto_testpdf::TempDir;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 fn stamp(path: &Path) -> FileStamp {
@@ -136,27 +136,25 @@ fn after_a_save_as_the_copy_and_an_unrelated_file_still_plan() {
     }
 }
 
-/// The folder of a Save As that never landed is listed, and a temp named for its destination reads `Unknown`; a destination that landed is a file with a
-/// version, and its folder is no longer listed for it. Failure: a landed destination keeps its folder in every survey (64 Save As folders: `TooLarge`).
+/// The folder of every Save As destination is listed, landed or not, and a temp of exact shape in it refuses. Failure: a landed destination's folder drops out
+/// of the survey, so a temp left in it by an earlier crashed save reads "none found".
 #[test]
-fn only_a_destination_that_never_landed_has_its_folder_listed() {
+fn a_landed_destinations_folder_is_still_listed() {
     let dir = folder();
     let root = dir.join("state");
     let mine = put(&dir, "mine.pdf", b"%PDF-1.4 mine");
     let elsewhere = dir.join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    let (landed, crashed) = (elsewhere.join("copy.pdf"), dir.join("lost.pdf"));
-    for destination in [&landed, &crashed] {
-        notes(
-            &root,
-            &SaveNote::Starting {
-                path: &mine,
-                from: Some(stamp(&mine)),
-                destination: Some(destination),
-            },
-        );
-        settled(&root);
-    }
+    let landed = elsewhere.join("copy.pdf");
+    notes(
+        &root,
+        &SaveNote::Starting {
+            path: &mine,
+            from: Some(stamp(&mine)),
+            destination: Some(&landed),
+        },
+    );
+    settled(&root);
     put(&elsewhere, "copy.pdf", b"%PDF-1.4 the copy, longer");
     notes(
         &root,
@@ -167,14 +165,9 @@ fn only_a_destination_that_never_landed_has_its_folder_listed() {
             backup: None,
         },
     );
-    let temp = |name: &str| format!("{}9-1.tmp", writer_temp_prefix(Path::new(name)));
-    // A temp of the copy that landed, in its folder: the folder isn't listed, so it isn't found.
-    put(&elsewhere, &temp("copy.pdf"), b"left by something else");
-    let survey = planned(&root, &mine, TargetMode::Save);
-    assert!(survey.is_ok(), "the landed destination's folder is not listed for it: {survey:?}");
-    // A temp of the one that never landed, in its folder: found, and unknown.
-    let found: PathBuf = put(&dir, &temp("lost.pdf"), b"the whole document and its edits");
-    assert!(found.exists());
+    assert!(planned(&root, &mine, TargetMode::Save).is_ok(), "nothing is left yet");
+    let temp = format!("{}9-1.tmp", writer_temp_prefix(Path::new("copy.pdf")));
+    put(&elsewhere, &temp, b"left by something else");
     assert_eq!(
         planned(&root, &mine, TargetMode::Save).unwrap_err(),
         recto_core::removal::Refusal::Incomplete(Store::WriterTemp)
@@ -229,8 +222,8 @@ fn a_save_as_through_local_or_session_is_noted_in_a_ledger_that_has_begun_and_be
     let second = dir.join("second.pdf");
     save_as(&paths, &mine, &second);
     let ledger = read(&paths.root);
-    // Noted at the writer's first step and landed since: the reader drops it (a file was seen at it after), and the file holds it as a frame and a link.
-    assert!(!ledger.destinations.contains(&second), "landed: {:?}", ledger.destinations);
+    // Noted at the writer's first step and landed since: the reader keeps it all the same, and the file holds it as a frame and a link.
+    assert!(ledger.destinations.contains(&second), "kept: {:?}", ledger.destinations);
     let bytes = std::fs::read(paths.root.join("removal").join("ledger.v1")).unwrap();
     let name = second.as_os_str().as_encoded_bytes();
     assert_eq!(bytes.windows(name.len()).filter(|w| *w == name).count(), 2, "a destination frame and the link");
@@ -372,4 +365,69 @@ fn a_refused_save_as_records_no_destination() {
     assert!(crate::local::run_here(&mut session, &paths, &mut log, &save).is_err());
     assert!(!out.exists());
     assert!(read(&paths.root).destinations.is_empty(), "{:?}", read(&paths.root).destinations);
+}
+
+/// Failure (fifth hole): a crashed Save As of A to C leaves T1 (A's whole content, named for C); a retry lands C. The reader dropped the destination at the
+/// landing, so T1 read `Unrelated` (same folder) or its folder wasn't listed (another), and A's removal said none found while lopdf would not sweep T1 for
+/// an hour. A's removal refuses, for C in the same folder and in another.
+#[test]
+fn a_crashed_save_as_then_a_landing_of_the_retry_still_refuses() {
+    for other_folder in [false, true] {
+        let dir = folder();
+        let root = dir.join("state");
+        let mine = put(&dir, "mine.pdf", b"%PDF-1.4 mine");
+        let home = if other_folder { dir.join("elsewhere") } else { dir.path().to_path_buf() };
+        std::fs::create_dir_all(&home).unwrap();
+        let copy = home.join("copy.pdf");
+        crash_save_as(&root, &mine, &copy);
+        // The retry: noted again, and landed.
+        notes(
+            &root,
+            &SaveNote::Starting {
+                path: &mine,
+                from: Some(stamp(&mine)),
+                destination: Some(&copy),
+            },
+        );
+        put(&home, "copy.pdf", b"%PDF-1.4 the copy, longer");
+        notes(
+            &root,
+            &SaveNote::Landed {
+                path: &copy,
+                to: Some(stamp(&copy)),
+                original: &mine,
+                backup: None,
+            },
+        );
+        assert_eq!(
+            planned(&root, &mine, TargetMode::Save).unwrap_err(),
+            recto_core::removal::Refusal::Incomplete(Store::WriterTemp),
+            "T1 is still there after the retry landed, copy in another folder: {other_folder}"
+        );
+    }
+}
+
+/// Failure (fifth hole): a Replace onto C that crashed leaves a temp named for C; a later sighting of the unchanged C (a link at C, as a later save or an
+/// adoption notes it) dropped the destination and with it the folder. The removal refuses.
+#[test]
+fn a_crashed_replace_then_a_sighting_of_the_unchanged_file_still_refuses() {
+    let dir = folder();
+    let root = dir.join("state");
+    let mine = put(&dir, "mine.pdf", b"%PDF-1.4 mine");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let target = put(&elsewhere, "c.pdf", b"%PDF-1.4 c, which a replace was going to overwrite");
+    crash_save_as(&root, &mine, &target);
+    notes(
+        &root,
+        &SaveNote::Starting {
+            path: &target,
+            from: Some(stamp(&target)),
+            destination: None,
+        },
+    );
+    assert_eq!(
+        planned(&root, &mine, TargetMode::Save).unwrap_err(),
+        recto_core::removal::Refusal::Incomplete(Store::WriterTemp)
+    );
 }

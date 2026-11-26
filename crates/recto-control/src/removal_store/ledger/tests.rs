@@ -861,9 +861,9 @@ fn after_a_save_as_the_sources_backup_is_unrelated() {
     let now = FileVersion::new(stamp(&copy), recto_platform::volume::volume_identity(&copy));
     let outcome = plan_for(&s.paths.root, &s.backups(), now, &copy, TargetMode::Save).unwrap();
     assert_eq!(outcome.0, 0, "the source's backup is not the copy's to purge: {outcome:?}");
-    // The destination was noted when the writer was about to make its temp (a destination frame, no link); the file landed since, so a link after it names
-    // it and the survey needs the destination no more: the reader drops it, and its path is in the file twice (the frame and the link).
-    assert!(!ledger.destinations.contains(&copy), "landed after the note: {:?}", ledger.destinations);
+    // The destination was noted when the writer was about to make its temp (a destination frame, no link); the file landed since, and the reader keeps the
+    // destination all the same (a landing proves nothing about an earlier crashed save's temp): its path is in the file twice (the frame and the link).
+    assert!(ledger.destinations.contains(&copy), "kept after it landed: {:?}", ledger.destinations);
     let file_bytes = std::fs::read(ledger_path(&s.paths.root)).unwrap();
     let path_bytes = copy.as_os_str().as_encoded_bytes();
     assert_eq!(file_bytes.windows(path_bytes.len()).filter(|w| *w == path_bytes).count(), 2);

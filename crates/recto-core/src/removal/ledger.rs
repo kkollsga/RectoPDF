@@ -117,12 +117,11 @@ pub enum Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ledger {
     pub links: Vec<Link>,
-    /// The paths saves were going to when they started, in order, never joined to any lineage, to the survey of the writer's temporaries alone. **Order counts:**
-    /// a `Destination` is dropped when an `At` or `Unplaced` for the same path comes after it (the file landed, or was there), so a later save to that name is
-    /// a destination again, and one before it is not. Read once, in file order, so it holds at most the frames the cap on frames allows.
+    /// The paths saves were going to when they started, in file order, never joined to any lineage, to the survey of the writer's temporaries alone. **Every
+    /// one is kept, whatever is seen at the path later:** a crashed save's temp is named for its destination and lopdf sweeps it only an hour later with a dead
+    /// owner, so a later landing proves nothing about it. Holds at most the frames the cap on frames allows.
     pub destinations: Vec<PathBuf>,
-    /// The path bytes of every frame read, destinations that later landed included (they are dropped from `destinations` but stay in the file): what the cap on
-    /// paths counts, so the writer knows what room is left.
+    /// The path bytes of every frame read: what the cap on paths counts, so the writer knows what room is left.
     pub path_bytes: usize,
     /// When the file was made. `i64::MAX` where it can't be known, so everything reads as older than it.
     pub began_ns: i64,
@@ -414,8 +413,6 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
                     if path_total > limits.max_total_path_bytes as usize {
                         return stop(out, Gap::Damaged);
                     }
-                    // A file seen here after a save was going here: that save landed (or the file was there), and a later one is a new destination.
-                    out.destinations.retain(|d| d != path);
                 }
                 out.links.push(link);
             }

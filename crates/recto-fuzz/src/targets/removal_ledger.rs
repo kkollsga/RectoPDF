@@ -105,7 +105,7 @@ fn held(ledger: &Ledger, limits: &LedgerLimits, input_len: usize) {
     assert!(total <= limits.max_total_path_bytes as usize, "a cap on paths holds");
     assert!(
         ledger.path_bytes <= limits.max_total_path_bytes as usize && ledger.path_bytes >= total,
-        "every frame's path counts, landed destinations too"
+        "every frame's path counts"
     );
     if input_len > MAX_LEDGER_BYTES {
         assert_eq!(ledger.gap, Some(Gap::Damaged));
@@ -135,6 +135,10 @@ fn one(bytes: &[u8]) {
         }
         let back = read_ledger(&again, &LEDGER_LIMITS);
         assert_eq!((&back.links, back.gap), (&ledger.links, None), "a ledger read encodes and reads back as it was");
+        assert_eq!(
+            back.destinations, ledger.destinations,
+            "and its destinations too: every one is kept, in order, whatever links come after"
+        );
         // Lineage over it: never a panic, and never complete when there is a gap.
         let current = ledger
             .links

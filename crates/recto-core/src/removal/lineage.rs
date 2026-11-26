@@ -87,7 +87,7 @@ impl Sides {
 #[derive(Debug)]
 pub struct Lineage<'a> {
     links: &'a [Link],
-    /// Where saves were going that no link names (never landed): not links, so not in [`Lineage::paths`].
+    /// Where saves were going: not links, so not in [`Lineage::paths`].
     destinations: Vec<&'a Path>,
     path: &'a Path,
     current: FileVersion,
@@ -149,7 +149,7 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
     let root = joined.find(current);
     let forked = forks.into_iter().any(|n| joined.find(n) == root);
     let target = nodes.into_iter().map(|n| joined.find(n) == root).collect();
-    // The ledger's destinations are the ones no file was seen at AFTER (the reader dropped each at the `At` or `Unplaced` that came later), so order is its.
+    // Every destination the ledger recorded, in its order.
     let destinations = ledger.destinations.iter().map(PathBuf::as_path).collect();
     Ok(Lineage {
         links,
@@ -217,9 +217,8 @@ impl Lineage<'_> {
         }))
     }
 
-    /// The paths a save was going to that no file has been seen at since: a Save As that never landed (it failed, or crashed). Not links: no version, no side
-    /// and no journal or backup is placed by one. Only the survey of the writer's temporaries reads them, to list their folders and read a temp named for one
-    /// as unknown.
+    /// Every path a Save As or Replace was going to, landed or not (a landing proves nothing about an earlier crashed save's temp). Not links: no version, no
+    /// side and no journal or backup is placed by one. Only the survey of the writer's temporaries reads them, to list their folders.
     pub fn destinations(&self) -> impl Iterator<Item = &Path> {
         self.destinations.iter().copied()
     }
