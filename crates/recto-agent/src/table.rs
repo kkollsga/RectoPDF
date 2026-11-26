@@ -1220,15 +1220,13 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
                 _ => Err(bad()),
             }
         }
-        Kind::PointWord => {
-            match crate::selecting::point(value) {
-                Some(_) => Ok(json!(value)),
-                None => Err(format!(
-                    "`{}` isn't a place. Write x,y in points, such as 120,88.",
-                    recto_core::clean_line(value)
-                )),
-            }
-        }
+        Kind::PointWord => match crate::selecting::point(value) {
+            Some(_) => Ok(json!(value)),
+            None => Err(format!(
+                "`{}` isn't a place. Write x,y in points, such as 120,88.",
+                recto_core::clean_line(value)
+            )),
+        },
         Kind::Reference => crate::locating::read_reference(value).map(|_| json!(value)),
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
