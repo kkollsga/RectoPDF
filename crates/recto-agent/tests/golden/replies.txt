@@ -97,9 +97,7 @@
 {"cmd":"Tap"}
   refused cmd=unknown code=bad_command
 {"cmd":"goto"}
-  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
-  events 
-  words ""
+  refused cmd=goto code=usage
 {"cmd":"goto","tab":"#2","page":3,"label":"iv"}
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
@@ -117,19 +115,13 @@
 {"cmd":"goto","page":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"goto","page":null}
-  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
-  events 
-  words ""
+  refused cmd=goto code=usage
 {"cmd":"goto","label":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"goto","label":null}
-  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
-  events 
-  words ""
+  refused cmd=goto code=usage
 ["goto"]
-  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
-  events 
-  words ""
+  refused cmd=goto code=usage
 ["goto","#2",3,"iv"]
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
@@ -143,9 +135,7 @@
 {"cmd":"goto","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","link":true}
   refused cmd=goto code=usage
 {"cmd":"goto","ref":null}
-  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
-  events 
-  words ""
+  refused cmd=goto code=usage
 {"cmd":"goto","ref":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"goto","ref":"nonsense"}
@@ -2059,9 +2049,7 @@ null
   events 
   words ""
 {"cmd":"goto"}
-  reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
-  events 
-  words ""
+  refused cmd=goto code=usage
 {"cmd":"view","zoom":"fit"}
   reply {"cmd":"view","error":{"candidates":[],"code":"zoom_needs_app","exit":1,"message":"Zoom is about what's on a screen, and this session has none.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 

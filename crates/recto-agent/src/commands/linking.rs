@@ -131,6 +131,10 @@ impl TryFrom<line::Goto> for Goto {
         } = line;
         let others = page.is_some() || label.is_some() || entry.is_some() || link;
         let reference = super::locating::reference_alone(reference.as_deref(), others, super::locating::GOTO_REF_ALONE)?;
+        if page.is_none() && label.is_none() && reference.is_none() {
+            return Err(AgentError::new(Code::USAGE, super::locating::GOTO_NEITHER, exit::USAGE)
+                .then("`recto goto 12`, `recto goto label iv` or `recto goto --ref <token>`."));
+        }
         Ok(Self {
             tab,
             page,
@@ -685,7 +689,12 @@ mod tests {
         let mut session = Session::new(Fake);
         let id = session.open(Path::new("/d/a.pdf")).unwrap();
         let access = Mutex::new(session);
-        let error = execute(&access, Actor::Agent(Level::Control), &parse(r#"{"cmd":"goto"}"#).unwrap(), &mut Vec::new()).unwrap_err();
+        // As the line is read, in its own words, before any level is asked.
+        let error = parse(r#"{"cmd":"goto"}"#).map(|_| ()).unwrap_err();
+        assert_eq!((error.code.as_str(), error.exit, error.message.as_str()), ("usage", exit::USAGE, crate::commands::locating::GOTO_NEITHER));
+        // One built in Rust, which never passes through the line, is refused when it runs.
+        let bare = super::Goto { tab: TabRef::default(), page: None, label: None, within: None, entry: None, link: false, reference: None };
+        let error = crate::commands::Cmd::run(&bare, &mut crate::commands::Cx { access: &access, actor: Actor::Agent(Level::Control), events: &mut Vec::new() }).unwrap_err();
         assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE));
         assert!(access.lock().unwrap().mail_mut().take_jump(id).is_none(), "nothing was told to move");
     }

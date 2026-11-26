@@ -56,6 +56,8 @@ pub(crate) const EXPORT_SVG_BOTH: &str = "`export svg` takes a page or `--ref`, 
 pub(crate) const EXPORT_SVG_NEITHER: &str = "`export svg` needs a page or `--ref`.";
 /// `snapshot --ref` goes to a file or to the answer, never to the person's clipboard, which is their own and is made for the page they saw.
 pub(crate) const SNAPSHOT_REF_NOT_CLIPBOARD: &str = "`snapshot --ref` can't go to the clipboard: that is the person's, of the page they saw.";
+/// `goto` with no page, no label and no `--ref`, whatever else it came with.
+pub(crate) const GOTO_NEITHER: &str = "`goto` needs a page number, a label (`goto label`) or `--ref`.";
 pub(crate) const GOTO_REF_ALONE: &str =
     "`goto --ref` goes to the page the reference points at, so it takes no page, label, `--entry` or `--link`. `--within` goes with it.";
 /// Shared by `select`, `copy` and `highlight`.
@@ -610,7 +612,11 @@ mod tests {
             read_line(line_of(cmd, base, json!({ "ref": EXAMPLE_REF_CHARS, "tab": "#2" })))
                 .unwrap_or_else(|error| panic!("{cmd} with a tab: {}", error.message));
             let nothing = read_line(line_of(cmd, base, json!({ "ref": null })));
-            assert_eq!(nothing.is_err(), matches!(cmd, "snapshot" | "export_svg"), "{cmd}: a null ref is none");
+            assert_eq!(nothing.is_err(), matches!(cmd, "goto" | "snapshot" | "export_svg"), "{cmd}: a null ref is none");
+        }
+        // Neither a page, a label nor a reference is refused as the line is read (before the level is asked), in its own words, whatever else came with it.
+        for bare in [json!({}), json!({ "ref": null }), json!({ "within": 0.3 }), json!({ "link": true })] {
+            assert_eq!(usage("goto", "{}", bare.clone()), GOTO_NEITHER, "{bare}");
         }
         assert_eq!(usage("goto", "{}", json!({ "page": 3, "ref": EXAMPLE_REF })), GOTO_REF_ALONE);
         for beside in [json!({ "label": "iv" }), json!({ "entry": 2 }), json!({ "link": true })] {

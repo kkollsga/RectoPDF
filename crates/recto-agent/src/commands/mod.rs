@@ -582,6 +582,7 @@ const COMBINATIONS: &[(&str, &str)] = &[
     ("export_svg", locating::EXPORT_SVG_BOTH),
     ("export_svg", locating::EXPORT_SVG_NEITHER),
     ("goto", locating::GOTO_REF_ALONE),
+    ("goto", locating::GOTO_NEITHER),
     ("select", locating::PICK_REF_ALONE),
     ("copy", locating::PICK_REF_ALONE),
     ("highlight", locating::PICK_REF_ALONE),
