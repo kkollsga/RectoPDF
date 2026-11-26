@@ -176,6 +176,54 @@ fn a_pipe_or_a_link_at_any_name_is_unknown_and_never_followed() {
     }
 }
 
+/// Failure: a file that is a plain one at the listing and is swapped for a pipe or a link before it is opened (the listing's check is only a first
+/// look) is opened with a plain `File::open`: the pipe is waited on, or the link is followed to a journal that places as the target's.
+#[test]
+fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
+    let key = k(7);
+    let name = format!("journal-{key}.log");
+    let cases = [
+        (name.clone(), Store::Journal),
+        (format!("journal-{key}.log.unreadable"), Store::JournalVariant),
+        (format!("pages-{key}.ids"), Store::PageIds),
+    ];
+    for (file, store) in cases {
+        for pipe in [true, false] {
+            let dir = root();
+            let outside = TempDir::new("recto-journals-out-");
+            let precious = put(&outside, "precious", &journal(MINE, 7));
+            put(&folder(&dir), &name, &journal(MINE, 7));
+            put(&folder(&dir), &file, &sidecar_of(&name, 7));
+            let hook: Arc<dyn Fn(&Path) + Send + Sync> = {
+                let (file, precious) = (file.clone(), precious.clone());
+                Arc::new(move |path| {
+                    if path.file_name().is_some_and(|n| n == file.as_str()) {
+                        std::fs::remove_file(path).unwrap();
+                        if pipe {
+                            mkfifo(path);
+                        } else {
+                            std::os::unix::fs::symlink(&precious, path).unwrap();
+                        }
+                    }
+                })
+            };
+            let caps = Caps {
+                before_open: Some(hook),
+                ..Caps::default()
+            };
+            let root = dir.path().to_path_buf();
+            let s = bounded(move || survey_with(&root, &ledger(), version(7), TargetMode::Save, 64, &caps));
+            let refused = plan_of(&s.unwrap(), TargetMode::Save).unwrap_err();
+            assert_eq!(
+                refused,
+                Refusal::Incomplete(store),
+                "{file} swapped for a {}",
+                if pipe { "pipe" } else { "link" }
+            );
+        }
+    }
+}
+
 fn mode(path: &Path, bits: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
 }
