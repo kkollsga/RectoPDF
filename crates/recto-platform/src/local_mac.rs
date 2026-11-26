@@ -792,6 +792,8 @@ pub struct ProcessCounters {
     pub threads: u32,
     /// Bytes it's had written to disk in its life, the number SSD wear goes by. Counted when the write reaches the file system, whatever happens to the file after.
     pub disk_bytes_written: u64,
+    /// Pages it has had read in from disk (or swap) in its life: a start held up by memory pressure shows here and hardly at all in `cpu_ns`.
+    pub page_ins: u64,
 }
 
 /// A process's counters. `None` if it's gone or belongs to someone else.
@@ -820,6 +822,7 @@ pub fn process_counters(pid: u32) -> Option<ProcessCounters> {
         context_switches: u64::try_from(task.pti_csw).unwrap_or(0),
         threads: u32::try_from(task.pti_threadnum).unwrap_or(0),
         disk_bytes_written: info.ri_diskio_byteswritten,
+        page_ins: info.ri_pageins,
     })
 }
 

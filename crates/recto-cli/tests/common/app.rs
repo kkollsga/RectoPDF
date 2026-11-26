@@ -58,6 +58,9 @@ impl Deref for Held<'_> {
     }
 }
 
+/// How long a quiet run lasts unless a test asks for longer: the harness's own limit on a test (`.config/nextest.toml`: 60 s a period, ended after 5), so the run is never the first to end mid-test (2026-11-26: a run's own 120 s ended a test the harness still allowed). `--owner` ends the run when the test ends, so a long limit costs nothing.
+pub const TEST_LIMIT: Duration = Duration::from_secs(300);
+
 /// A quiet run. An owned launch is stopped, then killed/reaped if needed. An attached run is only asked through its original connection; its existing owner/state lifetime remains the final bound.
 pub struct Run<'a> {
     pub state: Held<'a>,
@@ -67,14 +70,14 @@ pub struct Run<'a> {
 }
 
 impl Run<'static> {
-    /// A run on a state folder of its own, for at most 2 minutes.
+    /// A run on a state folder of its own, for as long as a test may run.
     pub fn start() -> Option<Self> {
         Self::start_with(&[])
     }
 
     /// The same, with more of `qa start`'s flags.
     pub fn start_with(extra: &[&str]) -> Option<Self> {
-        Self::start_lasting(Duration::from_secs(120), extra)
+        Self::start_lasting(TEST_LIMIT, extra)
     }
 
     /// The same, for at most this long: for a test that waits on purpose for longer than a run's usual two minutes. A run's end at its limit is the app gone mid-test, as `session_ended`, so the limit has to outlast whatever the test is prepared to wait for.
@@ -231,7 +234,7 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
 }
 
 impl<'a> Run<'a> {
-    /// A run on a state folder that outlives it, for at most 3 minutes: quit, hand off or kill it, and start another on the same folder.
+    /// A run on a state folder that outlives it, for as long as a test may run: quit, hand off or kill it, and start another on the same folder.
     pub fn on(state: &'a State) -> Option<Self> {
         Self::on_with_env(state, &[])
     }
@@ -239,7 +242,7 @@ impl<'a> Run<'a> {
     /// [`Run::on`], with these in the app's environment, for a debug build's test seams such as `RECTO_TEST_SAVE_PAUSE`.
     #[allow(dead_code)] // Not every test binary uses a seam.
     pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
-        Some(Self::on_executable_with_env(state, &app_path()?, Duration::from_secs(3 * 60), env))
+        Some(Self::on_executable_with_env(state, &app_path()?, TEST_LIMIT, env))
     }
 
     /// A specific quiet fixture executable on existing state, retaining the Child returned by the one shared launcher.

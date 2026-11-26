@@ -186,6 +186,7 @@ pub struct ProcessCounters {
     pub context_switches: u64,
     pub threads: u32,
     pub disk_bytes_written: u64,
+    pub page_ins: u64,
 }
 
 pub fn process_counters(_pid: u32) -> Option<ProcessCounters> {

@@ -503,16 +503,16 @@ fn long_session_keeps_its_owned_child_and_thirty_minute_limit() {
     assert!(launch.contains("Lifetime::Owned(child)"));
 }
 
-/// Failure: cleanup's wait for a copy's exit is a fixed 5 s, not the bound a quiet run has to arm its watcher (`READY_WAIT` plus the time to exit), and the
+/// Failure: cleanup's wait for a copy's exit is a fixed 5 s, not the bound a quiet run has to arm its watcher (`READY_CAP` plus the time to exit), and the
 /// watcher is armed after the ready line, so a run is up (and the start's cap spent) before it can notice its program go (CI: `a_copy_opened_and_dropped_at_once_is_forgotten`,
 /// 22.4 s under load 23, the app did exit).
 #[test]
 fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
     assert!(
-        copy_cleanup::EXIT_CAP >= qa_launch::READY_WAIT + copy_cleanup::EXIT_GRACE,
-        "EXIT_CAP {:?} is shorter than READY_WAIT {:?} plus the grace to exit",
+        copy_cleanup::EXIT_CAP >= qa_launch::READY_CAP + copy_cleanup::EXIT_GRACE,
+        "EXIT_CAP {:?} is shorter than READY_CAP {:?} plus the grace to exit",
         copy_cleanup::EXIT_CAP,
-        qa_launch::READY_WAIT
+        qa_launch::READY_CAP
     );
     let source = include_str!("common/app.rs");
     let end_runs = source.split("fn end_runs(").nth(1).expect("end_runs").split("\n}").next().unwrap();
@@ -645,4 +645,82 @@ fn a_reused_pid_is_not_waited_for_as_the_copy() {
     };
     copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::from_secs(30), reused).unwrap();
     assert_eq!(std::fs::read(&program).unwrap(), b"original");
+}
+
+/// Failure: the start's wait is wall clock again, so a start that is slow but working (CPU or page-ins still rising) is stopped as a hung one is (CI lifecycle, 5 of 30 runs: "wasn't ready in time"),
+/// or one that has stopped is waited for to the cap, or the cap is not kept.
+#[test]
+fn a_start_is_waited_for_while_it_makes_progress_and_stopped_when_it_does_not() {
+    use qa_launch::{Patience, Verdict, ready_verdict};
+    use std::time::Duration;
+    let patience = Patience {
+        stall: Duration::from_secs(10),
+        cap: Duration::from_secs(180),
+    };
+    let at = |elapsed: u64, quiet: u64| ready_verdict(Duration::from_secs(elapsed), Duration::from_secs(quiet), patience);
+    assert_eq!(at(100, 0), Verdict::Wait, "far past the old 30 s, and still working");
+    assert_eq!(at(100, 9), Verdict::Wait);
+    assert_eq!(at(100, 10), Verdict::Stalled);
+    assert_eq!(at(11, 10), Verdict::Stalled, "a hang is stopped at the stall, not the cap");
+    assert_eq!(at(180, 0), Verdict::Capped, "working to the end is still ended at the cap");
+    assert_eq!(at(180, 50), Verdict::Capped);
+    assert!(qa_launch::READY_CAP > std::time::Duration::from_secs(30) && qa_launch::READY_STALL < qa_launch::READY_CAP);
+}
+
+/// Failure: a quiet run's own limit is shorter than the harness's, so the app ends mid-test while the test is still allowed to run (2026-11-26, a closed-window test).
+#[test]
+fn a_quiet_runs_limit_is_the_harness_limit_on_a_test() {
+    let nextest = include_str!("../../../.config/nextest.toml");
+    assert!(
+        nextest.contains("slow-timeout = { period = \"60s\", terminate-after = 5 }"),
+        "nextest's limit changed: TEST_LIMIT (tests/common/app.rs) follows it"
+    );
+    let app = include_str!("common/app.rs");
+    assert!(app.contains("pub const TEST_LIMIT: Duration = Duration::from_secs(300);"));
+    assert!(!app.contains("Duration::from_secs(120), extra") && !app.contains("Duration::from_secs(3 * 60), env"));
+}
+
+/// A shell script standing in for the app: it takes the app's arguments and ignores them.
+#[cfg(target_os = "macos")]
+fn stand_in(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("stand-in");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(target_os = "macos")]
+fn started(body: &str) -> (std::time::Duration, recto_agent::AgentError) {
+    let dir = std::env::temp_dir().join(format!("recto-ready-patience-{}-{}", std::process::id(), body.len()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = stand_in(&dir, body);
+    let paths = recto_control::StatePaths::overridden(&dir.join("state")).expect("a state folder in the temp folder");
+    let options = qa_launch::Launch {
+        patience: qa_launch::Patience {
+            stall: std::time::Duration::from_millis(300),
+            cap: std::time::Duration::from_millis(900),
+        },
+        ..Default::default()
+    };
+    let began = std::time::Instant::now();
+    let error = qa_launch::launch(&app, &paths, &options, &[]).expect_err("a stand-in that never says ready is stopped");
+    let took = began.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    (took, error)
+}
+
+/// Failure (the verdict, wired to the real counters): a start doing nothing runs to the cap as wall clock would, or one burning CPU is stopped at the stall.
+/// Stand-ins, not the app: about 1.5 s together.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_start_that_does_nothing_is_stopped_at_the_stall_and_one_that_works_runs_to_the_cap() {
+    let (idle, error) = started("exec sleep 30");
+    assert!(error.message.contains("made no progress"), "{}", error.message);
+    assert!(idle < std::time::Duration::from_millis(800), "stopped at the stall (300 ms), not the cap (900 ms): {idle:?}");
+    let (busy, error) = started("while :; do :; done");
+    assert!(error.message.contains("still starting"), "{}", error.message);
+    assert!(busy >= std::time::Duration::from_millis(900), "a start that is working is waited for to the cap: {busy:?}");
+    assert!(!error.next.contains("--timeout"), "{}", error.next);
 }

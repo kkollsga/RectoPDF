@@ -56,7 +56,8 @@ like_ci_main() {
   local limits=${LIKE_CI_LIMITS-$LIKE_CI_LIMITS_DEFAULT}
   export CHECK_LIKE_CI_WRAP=""
   [ -z "$limits" ] || CHECK_LIKE_CI_WRAP="taskpolicy $limits"
-  export CHECK_LIKE_CI=1 NEXTEST_PROFILE=$profile
+  # The queue to itself (coordinator, 2026-11-26): CI's runner has nothing else on it, so this Mac's other jobs would add load CI doesn't have, and a start's patience would be spent on them.
+  export CHECK_LIKE_CI=1 NEXTEST_PROFILE=$profile HEAVY_SOLO=1
   case "$target" in
     light | heavy | core | window | lifecycle)
       [ "$times" = 1 ] || { echo "like-ci: --times goes with a filter; a part runs once." >&2; return 2; }

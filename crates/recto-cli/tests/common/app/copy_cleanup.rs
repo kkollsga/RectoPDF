@@ -140,12 +140,12 @@ impl Lease {
     }
 }
 
-/// What a quiet run is given to be up (`qa_launch::READY_WAIT`, 30 s) and to have armed its end-watch, which it does before its ready line, plus this to exit once the watch fires.
+/// What a quiet run is given to be up (`qa_launch::READY_CAP`, 180 s) and to have armed its end-watch, which it does before its ready line, plus this to exit once the watch fires.
 pub const EXIT_GRACE: Duration = Duration::from_secs(10);
 
 /// How long cleanup keeps a copy's program unlinked while it waits for the runs to exit. A run still starting when the lease is taken arms its watch
-/// within `READY_WAIT`, finds the program gone and exits; a shorter wait gives up on a run that is about to end (a 5 s wait did, under load 23).
-pub const EXIT_CAP: Duration = Duration::from_secs(40);
+/// within `READY_CAP`, finds the program gone and exits; a shorter wait gives up on a run that is about to end (a 5 s wait did, under load 23).
+pub const EXIT_CAP: Duration = Duration::from_secs(super::qa_launch::READY_CAP.as_secs() + EXIT_GRACE.as_secs());
 
 /// Takes the program away (the lease), waits for every run of it to exit, and puts it back. The lease is kept until the exit, not given back at the
 /// first sign of slowness: a run that arms its watch after the program is back never sees it go and lives on. Each wait is one `kevent` on the

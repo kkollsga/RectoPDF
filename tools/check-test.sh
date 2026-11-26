@@ -100,6 +100,7 @@ STUB
 cat > "$X/bin/taskpolicy" <<'STUB'
 #!/usr/bin/env bash
 echo "taskpolicy $* profile=${NEXTEST_PROFILE:-}" >> "$CALLS.policy"
+echo "solo=${HEAVY_SOLO:-}" >> "$CALLS.solo"
 while [ $# -gt 0 ] && [ "$1" != cargo ]; do shift; done
 exec "$@"
 STUB
@@ -1550,7 +1551,7 @@ seg_O() {
 git checkout -q main
 git checkout -qb like-ci-cases
 commit_code like-ci-part
-rm -f "$CALLS.policy" "$CALLS.slow"; : > "$CALLS"
+rm -f "$CALLS.policy" "$CALLS.slow" "$CALLS.solo"; : > "$CALLS"
 runs_before=$(runs_in_ledger); checked_before=$(wc -l < "$CHECKED" | tr -d ' ')
 out=$(tools/check.sh --like-ci lifecycle 2>&1); rc=$?
 check "a part like CI passes as the part does" "0" "$rc"
@@ -1558,6 +1559,8 @@ has "it says what it can't give" "a clean user" "$out"
 has "and a clean Launch Services database" "clean Launch Services" "$out"
 check "it runs the part's tests, held by the limits, with CI's profile" "1" "$(grep -c -- '^taskpolicy -c background cargo nextest run .*long_session -j 4 -E test(~life_test) profile=ci$' "$CALLS.policy")"
 check "and builds them first without the limits (the app tests', the registrations')" "2 0" "$(grep -c -- '^nextest run --no-run' "$CALLS") $(grep -c -- '--no-run' "$CALLS.policy")"
+# Failure (2026-11-26, PROCESS): a --like-ci run shared the build queue with other agents' jobs, so it measured the load and not CI's slower machine (the start's wait ran out under it).
+check "its tests take the build queue to themselves (HEAVY_SOLO=1)" "1 0" "$(sort -u "$CALLS.solo" | grep -c '^solo=1$') $(grep -vc '^solo=1$' "$CALLS.solo")"
 check "with no slow stage, as on CI" "no" "$([ -s "$CALLS.slow" ] && echo yes || echo no)"
 check "and it's never a run, a pass or a stamp" "$runs_before $checked_before" "$(runs_in_ledger) $(wc -l < "$CHECKED" | tr -d ' ')"
 check "an unknown option is refused" "2" "$(tools/check.sh --like-ci lifecycle --fast > /dev/null 2>&1; echo $?)"
