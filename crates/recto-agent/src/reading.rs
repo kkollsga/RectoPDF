@@ -64,10 +64,10 @@ impl TabFile {
     }
 
     /// The file's page (from 0) that stands at `position` in the tab now (from 0), the inverse of [`Self::place_of`]: `None` when no page of the file does,
-    /// as at a page added from another PDF.
+    /// as at a page added from another PDF, and for a position past the tab's end, with an edit list or without.
     pub(crate) fn file_page_at(&self, position: u32) -> Option<u32> {
         match &self.positions {
-            None => Some(position),
+            None => (position < self.pages).then_some(position),
             Some(positions) => positions.iter().position(|place| *place == position).map(|file_page| file_page as u32),
         }
     }

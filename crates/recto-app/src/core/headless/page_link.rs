@@ -44,6 +44,10 @@ fn below_control_no_answer_holds_a_path() {
     let said = app.recto(Level::ReadOnly, &["link", "2"]).expect("a link");
     assert!(!said.to_string().contains(&folder), "no folder in {said}");
     assert_eq!(said["untrusted"]["link"], "plain.pdf#page=2");
+    // Past the end of a tab with no edits is no page, and the refusal names no folder either.
+    let past = app.recto(Level::ReadOnly, &["link", "5"]).expect_err("no such page");
+    assert_eq!(past.code.as_str(), "no_such_page", "{past:?}");
+    assert!(!format!("{past:?}").contains(&folder), "no folder in {past:?}");
     person_unlocks(&app, &locked);
     let tab = app.session_json()["tabs"]
         .as_array()
