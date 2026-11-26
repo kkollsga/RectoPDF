@@ -63,7 +63,7 @@ fn a_changed_look_leaves_no_old_tile_and_no_bare_frame() {
         .collect();
     assert_eq!(
         detached.len(),
-        old_shown.iter().filter(|id| reader.cache.entries.get(id).is_none()).count(),
+        old_shown.iter().filter(|id| !reader.cache.entries.contains_key(id)).count(),
         "every old picture detached: {ops:?}"
     );
     assert_eq!(attached.len(), 1, "the new preview attached, nothing else: {ops:?}");
