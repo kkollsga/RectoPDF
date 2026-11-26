@@ -679,6 +679,7 @@ fn the_seen_set_is_capped() {
     let root = dir.join("state");
     std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
     let base = tab(&dir.join("a.pdf"));
+    let set = Roots::new();
     for round in 0..70u64 {
         let tabs: Vec<_> = (0..64u64)
             .map(|n| {
@@ -687,11 +688,11 @@ fn the_seen_set_is_capped() {
                 t
             })
             .collect();
-        assert_eq!(take_new(&root, &tabs).len(), 64, "sixty-four new pairs, all at once");
-        finish(&root);
-        assert!(held(&root).1 <= 4_096, "round {round}: {}", held(&root).1);
+        assert_eq!(set.take_new(&root, &tabs).len(), 64, "sixty-four new pairs, all at once");
+        set.finish(&root);
+        assert!(set.held(&root).1 <= 4_096, "round {round}: {}", set.held(&root).1);
     }
-    assert!(held(&root).1 < 4_480, "cleared when full");
+    assert!(set.held(&root).1 < 4_480, "cleared when full");
 }
 
 /// A tab of `path` whose file is the `n`th version of it (no file is read).
@@ -705,28 +706,33 @@ fn tab_n(n: u64) -> recto_session::record::TabEntry {
 
 /// Failure: the set holds a root for a call that has nothing to note (every whole record write in a process adds one, so the eight fill with roots that never
 /// had a tab), or it lets go of a root whose thread is running, which then allows a second thread for it. Eight roots with threads out stay, a ninth gets no
-/// notes, and when one ends the ninth takes its place. (The set is the process's, so this holds under nextest, a process for each test.)
+/// notes, and when one ends the ninth takes its place. The set is the test's own, so a neighbour's root on the process's static (a save's thread leaves one
+/// running) changes nothing here, and this test leaves no root running on the static: one is put there to show that, and ended at the end.
 #[test]
 fn roots_are_held_only_with_something_to_note_and_never_while_running() {
     let dir = temp();
+    let neighbour = dir.join("neighbour");
+    assert_eq!(take_new(&neighbour, &[tab_n(99)]).len(), 1, "a neighbour's root on the process's set");
+    let set = Roots::new();
     let roots: Vec<PathBuf> = (0..9).map(|n| dir.join(format!("state-{n}"))).collect();
     let nothing = dir.join("nothing");
-    // A neighbour's root on the process's static, left running as a neighbouring test's saves leave theirs.
-    let neighbour = dir.join("neighbour");
-    assert_eq!(take_new(&neighbour, &[tab_n(99)]).len(), 1);
-    assert!(take_new(&nothing, &[]).is_empty());
-    assert!(take_new(&nothing, &[recto_session::record::TabEntry { file: None, ..tab_n(1) }]).is_empty());
-    assert_eq!(held(&nothing).0, 0, "a call with no tabs holds no root");
+    assert!(set.take_new(&nothing, &[]).is_empty());
+    assert!(set.take_new(&nothing, &[recto_session::record::TabEntry { file: None, ..tab_n(1) }]).is_empty());
+    assert_eq!(set.held(&nothing).0, 0, "a call with no tabs holds no root");
     for (n, root) in roots.iter().take(8).enumerate() {
-        assert_eq!(take_new(root, &[tab_n(n as u64)]).len(), 1);
+        assert_eq!(set.take_new(root, &[tab_n(n as u64)]).len(), 1);
     }
-    assert!(take_new(&roots[8], &[tab_n(8)]).is_empty(), "every held root has a thread: the ninth gets none");
-    assert!(roots.iter().take(8).all(|root| running(root)), "no running root was let go");
-    assert_eq!(held(&roots[8]), (8, 0));
-    finish(&roots[3]);
-    assert_eq!(take_new(&roots[8], &[tab_n(8)]).len(), 1, "the one that ended makes room");
-    assert!(running(&roots[0]) && !running(&roots[3]));
-    assert_eq!(held(&roots[8]).0, 8);
+    assert!(
+        set.take_new(&roots[8], &[tab_n(8)]).is_empty(),
+        "every held root has a thread: the ninth gets none"
+    );
+    assert!(roots.iter().take(8).all(|root| set.running(root)), "no running root was let go");
+    assert_eq!(set.held(&roots[8]), (8, 0));
+    set.finish(&roots[3]);
+    assert_eq!(set.take_new(&roots[8], &[tab_n(8)]).len(), 1, "the one that ended makes room");
+    assert!(set.running(&roots[0]) && !set.running(&roots[3]));
+    assert_eq!(set.held(&roots[8]).0, 8);
+    finish(&neighbour);
 }
 
 fn limits(max: u32) -> Limits {

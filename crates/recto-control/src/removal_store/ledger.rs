@@ -28,10 +28,10 @@ mod tabs;
 pub use support::ProvenanceOnly;
 
 pub use tabs::note_tabs;
+#[cfg(test)]
+pub(crate) use tabs::{Roots, note_tabs_with};
 #[cfg(any(test, feature = "test-seams"))]
 pub use tabs::{finish, running, take_new};
-#[cfg(test)]
-pub(crate) use tabs::{held, note_tabs_with};
 
 const DIR: &str = "removal";
 const FILE: &str = "ledger.v1";
