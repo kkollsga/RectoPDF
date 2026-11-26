@@ -33,6 +33,15 @@ fn starved(doc: &mut DocRenderer, page: u32, reason: KillReason, before: Before)
     memory.busy_draws < MAX_BUSY
 }
 
+/// Whether a walk over a page's images (dark paper's or a click's) failed because the Mac was too busy to run its worker: a start it couldn't make in time, or a kill at the deadline with the processor not given ([`starved`]). Such a walk is not an answer: nothing's remembered, so whoever asked asks again, until [`MAX_BUSY`] in a row, after which it's the failure it looked like.
+pub(super) fn walk_stopped<T>(doc: &mut DocRenderer, page: u32, reply: &Result<T, JobFailure>, before: Before) -> bool {
+    match reply {
+        Err(JobFailure::Failed(RenderFailure::TooBusyToStart)) => true,
+        Err(JobFailure::Stopped(reason)) => starved(doc, page, *reason, before),
+        _ => false,
+    }
+}
+
 /// A draw's, or what asks about a page the way a draw does (its traits, the reading of its contents), worker was stopped for `reason`. One that ran out of time with the Mac too busy to give its worker the processor isn't remembered ([`RenderFailure::TooBusy`]); past [`MAX_BUSY`] in a row it's remembered after all, at every scale.
 pub(super) fn draw_stopped(doc: &mut DocRenderer, page: u32, from_scale: f32, reason: KillReason, before: Before) -> RenderFailure {
     if starved(doc, page, reason, before) {

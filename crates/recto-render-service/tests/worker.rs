@@ -791,6 +791,63 @@ fn a_draw_the_mac_was_too_busy_for_is_tried_again() {
     );
 }
 
+/// A page with one picture on it, for the asks about where images are.
+fn picture_page_file(name: &str) -> TempPdf {
+    let mut list = vec![Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec())];
+    // Pages after the first are for making the next ask start a worker: a size not yet known is read by one.
+    list.extend((1..4).map(|at| Page::new(text_lines(&[&format!("page {at}")]))));
+    let image = recto_testpdf::first_extra_object(list.len());
+    let bytes = recto_testpdf::pages_with(
+        &list,
+        &format!("/XObject << /Im0 {image} 0 R >>"),
+        vec![recto_testpdf::Object::Stream {
+            dict: "/Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 /ColorSpace /DeviceGray".into(),
+            data: vec![90; 16],
+        }],
+    );
+    TempPdf::new(name, &bytes)
+}
+
+/// Asks where a page's images are with a worker too starved to answer in 250 ms (the page deadline for this one ask), as the Mac is in a wake or a build.
+fn starved_image_ask(doc: &mut DocRenderer, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
+    stop_worker(doc);
+    recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(250), |doc| doc.image_boxes(page, generation))
+}
+
+/// Failure (the owner's 2026-11-13 report): while the Mac is starved, the check for where a page's pictures are is killed at its deadline before its worker had the processor,
+/// and the answer "there is no way to say" is remembered for the renderer's life, so a map sheet that dark paper should turn over with its picture kept is dimmed grey for good,
+/// long after the Mac is quiet. A check the Mac was too busy for says nothing about the page: it is counted as the Mac being busy, nothing is remembered, and the next ask is made.
+#[test]
+fn a_starved_image_check_is_asked_again_not_remembered() {
+    let file = picture_page_file("busy-images.pdf");
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    assert_eq!(starved_image_ask(&mut doc, 0, 1), None, "the Mac was too busy to say");
+    assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy: {:?}", doc.stats());
+    let asked_again = doc.image_boxes(0, 2);
+    assert!(
+        asked_again.as_ref().is_some_and(|boxes| !boxes.is_empty()),
+        "asked again on a quiet Mac, it finds the picture: {asked_again:?}, {:?}",
+        doc.stats()
+    );
+}
+
+/// Failure: a page whose worker hangs every time looks starved too, so a starved check that is never remembered would cost a deadline at every ask for ever. Three in a row
+/// (`MAX_BUSY`) are remembered as unknown after all, and a fourth ask costs no job.
+#[test]
+fn three_starved_image_checks_in_a_row_are_remembered_as_unknown() {
+    let file = picture_page_file("busy-images-three.pdf");
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    for round in 0..3u64 {
+        doc.page_size(round as u32 + 1).unwrap();
+        assert_eq!(starved_image_ask(&mut doc, 0, round + 1), None, "round {round}");
+    }
+    let spawns = doc.stats().spawns;
+    assert_eq!(doc.image_boxes(0, 9), None, "remembered after the bound: {:?}", doc.stats());
+    assert_eq!(doc.stats().spawns, spawns, "and asked of no worker");
+}
+
 /// Failure: a page whose worker hangs every time looks just like a busy Mac, so busy draws that aren't remembered cost a deadline for every ask for ever, or busy draws count towards stopping the document and a busy Mac stops it drawing. Three busy draws of a page in a row remember it as failed after all, as three busy reads do, and none of them counts towards the kills that stop a document.
 #[test]
 fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {

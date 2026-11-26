@@ -220,6 +220,7 @@ fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, 
         proto::encode_images_request(job_id, page)
     };
     let (kills, busy) = (doc.kills(), doc.left_out.busy);
+    let busy_before = busy::before(doc);
     let reply = doc.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
         Kind::Images => {
             let (answered, places) = decode(&reply.payload)?;
@@ -241,6 +242,13 @@ fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, 
     // Stale: not about the page, so nothing's remembered.
     if doc.control.is_stale(generation) {
         return None;
+    }
+    // A check the Mac was too busy for says nothing about the page, so nothing's remembered and whoever asked asks again; past `MAX_BUSY` in a row it's an answer after all.
+    if busy::walk_stopped(doc, page, &reply, busy_before) {
+        return None;
+    }
+    if reply.is_ok() {
+        busy::landed(doc, page);
     }
     Some(reply.ok())
 }
