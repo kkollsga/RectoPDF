@@ -1,5 +1,5 @@
 use super::*;
-use crate::removal::tests::{art, make, ok};
+use crate::removal::tests::{art, fresh_id, make, ok};
 use crate::save::Target;
 use recto_platform::FileStamp;
 
@@ -68,9 +68,9 @@ fn store() -> Confirmations<Who> {
 fn pending_cap_refuses_at_limit_plus_one() {
     let (plan, t0) = (ok(&[]), Instant::now());
     let mut s = store();
-    let p = s.offer(bind(Who::Person, same()), &plan, t0).unwrap();
-    let a = s.offer(bind(Who::Agent(1), same()), &plan, t0).unwrap();
-    assert_eq!(s.offer(bind(Who::Agent(2), same()), &plan, t0), Err(ConfirmRefusal::Full));
+    let p = s.offer(bind(Who::Person, same()), &plan, t0, fresh_id()).unwrap();
+    let a = s.offer(bind(Who::Agent(1), same()), &plan, t0, fresh_id()).unwrap();
+    assert_eq!(s.offer(bind(Who::Agent(2), same()), &plan, t0, fresh_id()), Err(ConfirmRefusal::Full));
     assert_eq!(s.len(), 2);
     assert!(s.take(p, &bind(Who::Person, same()), &plan, t0).is_ok());
     assert!(s.take(a, &bind(Who::Agent(1), same()), &plan, t0).is_ok());
@@ -81,9 +81,9 @@ fn pending_cap_refuses_at_limit_plus_one() {
 fn at_cap_an_actor_replaces_only_its_own_oldest() {
     let (plan, t0) = (save_as_plan(), Instant::now());
     let mut s = store();
-    let others = s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).unwrap();
-    let first = s.offer(bind(Who::Person, new_file("/a.pdf")), &plan, t0).unwrap();
-    let third = s.offer(bind(Who::Person, new_file("/b.pdf")), &plan, t0).unwrap();
+    let others = s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0, fresh_id()).unwrap();
+    let first = s.offer(bind(Who::Person, new_file("/a.pdf")), &plan, t0, fresh_id()).unwrap();
+    let third = s.offer(bind(Who::Person, new_file("/b.pdf")), &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.len(), 2);
     assert_eq!(
         s.take(first, &bind(Who::Person, new_file("/a.pdf")), &plan, t0).unwrap_err(),
@@ -103,10 +103,10 @@ fn an_actor_at_its_share_evicts_only_its_own_oldest() {
         per_actor: n(2),
         ttl: SMALL.ttl,
     });
-    let x = s.offer(bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap();
-    let y = s.offer(bind(Who::Agent(1), new_file("/y.pdf")), &plan, t0).unwrap();
-    let z = s.offer(bind(Who::Person, new_file("/z.pdf")), &plan, t0).unwrap();
-    let w = s.offer(bind(Who::Agent(1), new_file("/w.pdf")), &plan, t0).unwrap();
+    let x = s.offer(bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0, fresh_id()).unwrap();
+    let y = s.offer(bind(Who::Agent(1), new_file("/y.pdf")), &plan, t0, fresh_id()).unwrap();
+    let z = s.offer(bind(Who::Person, new_file("/z.pdf")), &plan, t0, fresh_id()).unwrap();
+    let w = s.offer(bind(Who::Agent(1), new_file("/w.pdf")), &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.len(), 3);
     assert_eq!(
         s.take(x, &bind(Who::Agent(1), new_file("/x.pdf")), &plan, t0).unwrap_err(),
@@ -124,10 +124,10 @@ fn one_actor_cannot_fill_the_store_and_lock_out_the_person() {
     let (plan, t0) = (save_as_plan(), Instant::now());
     let mut s = Confirmations::new(CONFIRM_LIMITS);
     for i in 0..8 {
-        s.offer(bind(Who::Agent(1), new_file(&format!("/t{i}.pdf"))), &plan, t0).unwrap();
+        s.offer(bind(Who::Agent(1), new_file(&format!("/t{i}.pdf"))), &plan, t0, fresh_id()).unwrap();
     }
     assert_eq!(s.len(), usize::from(CONFIRM_LIMITS.per_actor.get()));
-    assert!(s.offer(bind(Who::Person, new_file("/mine.pdf")), &plan, t0).is_ok());
+    assert!(s.offer(bind(Who::Person, new_file("/mine.pdf")), &plan, t0, fresh_id()).is_ok());
 }
 
 /// Catches a share that is not enforced at the limit plus one: with a share of 1 and room for 2, a second target replaces the
@@ -136,11 +136,11 @@ fn one_actor_cannot_fill_the_store_and_lock_out_the_person() {
 fn the_share_holds_at_the_limit_plus_one() {
     let (plan, t0) = (save_as_plan(), Instant::now());
     let mut s = store();
-    s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0).unwrap();
-    s.offer(bind(Who::Agent(2), new_file("/a.pdf")), &plan, t0).unwrap();
-    s.offer(bind(Who::Agent(1), new_file("/b.pdf")), &plan, t0).unwrap();
+    s.offer(bind(Who::Agent(1), new_file("/a.pdf")), &plan, t0, fresh_id()).unwrap();
+    s.offer(bind(Who::Agent(2), new_file("/a.pdf")), &plan, t0, fresh_id()).unwrap();
+    s.offer(bind(Who::Agent(1), new_file("/b.pdf")), &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.len(), 2);
-    assert_eq!(s.offer(bind(Who::Person, new_file("/a.pdf")), &plan, t0), Err(ConfirmRefusal::Full));
+    assert_eq!(s.offer(bind(Who::Person, new_file("/a.pdf")), &plan, t0, fresh_id()), Err(ConfirmRefusal::Full));
     assert_eq!(s.len(), 2);
 }
 
@@ -149,8 +149,8 @@ fn the_share_holds_at_the_limit_plus_one() {
 fn a_new_plan_for_the_same_target_supersedes_the_old() {
     let (plan, t0) = (ok(&[]), Instant::now());
     let mut s = store();
-    let old = s.offer(bind(Who::Person, same()), &plan, t0).unwrap();
-    let new = s.offer(bind(Who::Person, same()), &plan, t0).unwrap();
+    let old = s.offer(bind(Who::Person, same()), &plan, t0, fresh_id()).unwrap();
+    let new = s.offer(bind(Who::Person, same()), &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.len(), 1);
     assert_eq!(s.take(old, &bind(Who::Person, same()), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     assert!(s.take(new, &bind(Who::Person, same()), &plan, t0).is_ok());
@@ -163,15 +163,15 @@ fn expiry_follows_the_injected_clock() {
     let (plan, t0, ttl) = (ok(&[]), Instant::now(), SMALL.ttl);
     let b = bind(Who::Person, same());
     let mut s = store();
-    let id = s.offer(b, &plan, t0).unwrap();
+    let id = s.offer(b, &plan, t0, fresh_id()).unwrap();
     assert!(s.take(id, &b, &plan, t0 + ttl - Duration::from_nanos(1)).is_ok());
-    let id = s.offer(b, &plan, t0).unwrap();
+    let id = s.offer(b, &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.take(id, &b, &plan, t0 + ttl).unwrap_err(), ConfirmRefusal::Expired);
     assert_eq!(s.take(id, &b, &plan, t0 + ttl).unwrap_err(), ConfirmRefusal::Unknown);
-    s.offer(b, &plan, t0).unwrap();
-    s.offer(bind(Who::Agent(1), same()), &plan, t0).unwrap();
+    s.offer(b, &plan, t0, fresh_id()).unwrap();
+    s.offer(bind(Who::Agent(1), same()), &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.len(), 2);
-    assert!(s.offer(bind(Who::Agent(2), same()), &plan, t0 + ttl).is_ok());
+    assert!(s.offer(bind(Who::Agent(2), same()), &plan, t0 + ttl, fresh_id()).is_ok());
     assert_eq!(s.len(), 1);
 }
 
@@ -193,7 +193,7 @@ fn stale_epoch_or_changed_file_refuses() {
     };
     for changed in [other_epoch, other_file] {
         let mut s = store();
-        let id = s.offer(b, &plan, t0).unwrap();
+        let id = s.offer(b, &plan, t0, fresh_id()).unwrap();
         assert_eq!(s.take(id, &changed, &plan, t0).unwrap_err(), ConfirmRefusal::Stale);
         assert_eq!(s.take(id, &b, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     }
@@ -206,7 +206,7 @@ fn other_actor_refuses_and_keeps_the_plan() {
     let (plan, t0) = (ok(&[]), Instant::now());
     let person = bind(Who::Person, same());
     let mut s = store();
-    let id = s.offer(person, &plan, t0).unwrap();
+    let id = s.offer(person, &plan, t0, fresh_id()).unwrap();
     for other in [Who::Agent(1), Who::Agent(2)] {
         assert_eq!(s.take(id, &bind(other, same()), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     }
@@ -221,7 +221,7 @@ fn other_actor_refuses_and_keeps_the_plan() {
     assert_eq!(s.len(), 1);
     assert!(s.take(id, &person, &plan, t0).is_ok());
     let agent = bind(Who::Agent(1), same());
-    let id = s.offer(agent, &plan, t0).unwrap();
+    let id = s.offer(agent, &plan, t0, fresh_id()).unwrap();
     assert_eq!(s.take(id, &bind(Who::Agent(2), same()), &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     assert_eq!(s.len(), 1);
     assert!(s.take(id, &agent, &plan, t0).is_ok());
@@ -246,7 +246,7 @@ fn other_target_refuses() {
     ];
     for (offered, taken, plan) in cases {
         let mut s = store();
-        let id = s.offer(bind(Who::Person, offered), plan, t0).unwrap();
+        let id = s.offer(bind(Who::Person, offered), plan, t0, fresh_id()).unwrap();
         assert_eq!(s.take(id, &bind(Who::Person, taken), plan, t0).unwrap_err(), ConfirmRefusal::OtherTarget);
         assert!(s.is_empty());
     }
@@ -257,8 +257,14 @@ fn other_target_refuses() {
 fn mode_mismatch_refuses_offer() {
     let t0 = Instant::now();
     let mut s = store();
-    assert_eq!(s.offer(bind(Who::Person, same()), &save_as_plan(), t0), Err(ConfirmRefusal::Mismatched));
-    assert_eq!(s.offer(bind(Who::Person, new_file("/a.pdf")), &ok(&[]), t0), Err(ConfirmRefusal::Mismatched));
+    assert_eq!(
+        s.offer(bind(Who::Person, same()), &save_as_plan(), t0, fresh_id()),
+        Err(ConfirmRefusal::Mismatched)
+    );
+    assert_eq!(
+        s.offer(bind(Who::Person, new_file("/a.pdf")), &ok(&[]), t0, fresh_id()),
+        Err(ConfirmRefusal::Mismatched)
+    );
     assert!(s.is_empty());
 }
 
@@ -268,7 +274,7 @@ fn changed_plan_refuses() {
     let t0 = Instant::now();
     let b = bind(Who::Person, same());
     let mut s = store();
-    let id = s.offer(b, &ok(&[]), t0).unwrap();
+    let id = s.offer(b, &ok(&[]), t0, fresh_id()).unwrap();
     let more = ok(&[art(1, Store::Journal, crate::removal::Owner::Target)]);
     assert_eq!(s.take(id, &b, &more, t0).unwrap_err(), ConfirmRefusal::PlanChanged);
     assert!(s.is_empty());
@@ -280,28 +286,36 @@ fn a_confirmation_is_used_once() {
     let (plan, t0) = (ok(&[]), Instant::now());
     let b = bind(Who::Person, same());
     let mut s = store();
-    let id = s.offer(b, &plan, t0).unwrap();
+    let id = s.offer(b, &plan, t0, fresh_id()).unwrap();
     let done = s.take(id, &b, &plan, t0).unwrap();
     assert_eq!(done.digest(), plan.digest());
     assert_eq!(s.take(id, &b, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
 }
 
-/// Catches an id coming back after its plan went (taken, replaced or evicted), so a late answer to
-/// an old question could confirm a new plan; and a counter that runs out panicking.
+/// Catches an id the caller made twice (two random draws that agree, or a counter that restarted) replacing or confirming another plan: the second
+/// offer is refused, the first still stands, and the same id is free again once its plan is gone.
 #[test]
-fn ids_are_never_reused() {
+fn an_id_already_pending_is_refused_and_changes_nothing() {
     let (plan, t0) = (ok(&[]), Instant::now());
     let b = bind(Who::Person, same());
+    let other = bind(Who::Agent(1), same());
     let mut s = store();
-    let first = s.offer(b, &plan, t0).unwrap();
-    assert_eq!(first.get(), 1);
+    let first = s.offer(b, &plan, t0, PlanId::from_raw(7).unwrap()).unwrap();
+    assert_eq!(first.get(), 7);
+    assert_eq!(s.offer(other, &plan, t0, PlanId::from_raw(7).unwrap()), Err(ConfirmRefusal::Collision));
+    assert_eq!(s.len(), 1);
+    // The one it collided with is untouched and still the person's.
+    assert_eq!(s.take(first, &other, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     s.take(first, &b, &plan, t0).unwrap();
-    let second = s.offer(b, &plan, t0).unwrap();
-    let third = s.offer(b, &plan, t0).unwrap();
-    assert_eq!((second.get(), third.get()), (2, 3));
+    assert_eq!(s.offer(other, &plan, t0, PlanId::from_raw(7).unwrap()).unwrap().get(), 7);
     assert_eq!(s.take(first, &b, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
-    s.next = u64::MAX;
-    assert_eq!(s.offer(b, &plan, t0), Err(ConfirmRefusal::Full));
+}
+
+/// Catches a zero id (an unset or zeroed value from the caller) naming a plan, which a stray 0 on the wire could then confirm.
+#[test]
+fn zero_is_not_an_id() {
+    assert_eq!(PlanId::from_raw(0), None);
+    assert_eq!(PlanId::from_raw(1).map(PlanId::get), Some(1));
 }
 
 /// Catches a store that holds memory for a feature nobody has used (rule 1: a cold tab costs nothing).

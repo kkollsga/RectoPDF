@@ -732,6 +732,37 @@ fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
     );
 }
 
+/// Failure: checks that stop their worker, however it was stopped, are counted against the document's kills, and a copy of a file whose pages all stop
+/// their check ends up unable to draw anything. Their cost is `left_out.check` and not a kill of the document, so the plain reads still come back (not
+/// checked), and drawing goes on past more crashes than `max_kills_per_document` allows. The stand-in's check aborts the worker, so no machine speed decides
+/// it. Replaces `checks_past_their_deadline_cant_stop_a_document_drawing` (`tests/worker.rs`), which made every check meet a 500 ms deadline that the reads after
+/// it had to beat too, so a read lost the race to the clock on a slow runner (CI run 45876504679: 4 spawns, 4 deadline kills, a read killed on its fresh worker).
+/// The deadline's own case stays in `a_check_past_its_deadline_says_not_checked_and_leaves_drawing_and_text_alone`.
+#[test]
+fn checks_that_stop_their_worker_cant_stop_a_document_drawing() {
+    let (mut doc, _file) = doc(
+        "dies_drawing_for_the_check",
+        Policy {
+            max_kills_per_document: 2,
+            ..policy()
+        },
+    );
+    for page in 0..3 {
+        let read = doc
+            .page_characters(page, false, true)
+            .unwrap_or_else(|failure| panic!("page {page}: {failure:?}, {:?}", doc.stats()));
+        assert!(!read.hidden_checked, "page {page}");
+        assert_eq!(read.chars.len(), 1, "page {page}");
+    }
+    assert!(doc.stats().crashes >= 3, "more stops than the document is allowed: {:?}", doc.stats());
+    assert!(
+        matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))),
+        "the document still draws: {:?}",
+        doc.stats()
+    );
+    assert!(doc.page_size(0).is_ok(), "the document hasn't been stopped");
+}
+
 /// Failure: reading text for a copy stops a slow page drawing for the rest of the session. The hidden-text check draws the whole page at 2x, and passing the
 /// deadline at that marked the page as failed at every scale, on the same renderer tiles use: a page that draws in 3.2 s at half zoom said "took too long to
 /// draw" after ⌘A ⌘C. A check that fails means not checked, and nothing about drawing or the page's text. It's remembered as that, so it isn't tried
@@ -742,16 +773,37 @@ fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
 #[test]
 fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_and_text_alone() {
     let (mut doc, _file) = doc("check_runs_past_its_deadline", policy());
-    let read = recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_characters(0, false, true))
-        .expect("the text still comes back");
+    // The read after the stopped check runs on a fresh worker under the same 250 ms seam, and a starved machine can lose that race (`PageReadFailed{Deadline}`,
+    // which is not remembered and is read again: `a_read_the_mac_was_too_busy_for_is_tried_again`). That says nothing about the check, so the ask is repeated
+    // under the ordinary deadline and each lost read is counted as the one more kill it is.
+    let mut lost_reads = 0;
+    let mut read =
+        recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_characters(0, false, true));
+    while matches!(
+        read,
+        Err(recto_render_service::RenderFailure::PageReadFailed {
+            reason: KillReason::Deadline,
+            ..
+        })
+    ) && lost_reads < 5
+    {
+        lost_reads += 1;
+        read = doc.page_characters(0, false, true);
+    }
+    let read = read.expect("the text still comes back");
     assert!(!read.hidden_checked, "not checked");
     assert_eq!(read.chars.len(), 1, "the page's text");
-    assert_eq!(doc.stats().deadline_kills, 1, "the check was stopped at its deadline: {:?}", doc.stats());
+    assert_eq!(
+        doc.stats().deadline_kills,
+        1 + lost_reads,
+        "the check was stopped at its deadline, once: {:?}",
+        doc.stats()
+    );
     for scale in [0.25, 0.5, 1.0, 2.0, 4.0] {
         assert_eq!(doc.page_draw_state_at(0, scale), recto_render_service::PageDrawState::Sharp, "at {scale}x");
     }
     assert!(!doc.page_characters(0, false, true).unwrap().hidden_checked);
-    assert_eq!(doc.stats().deadline_kills, 1, "it isn't tried again");
+    assert_eq!(doc.stats().deadline_kills, 1 + lost_reads, "it isn't tried again");
     assert!(
         matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))),
         "the page still draws"

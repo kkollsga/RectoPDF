@@ -634,33 +634,7 @@ fn full_page_fills(count: usize) -> Vec<u8> {
     content
 }
 
-/// Failure: a copy of a file with many slow pages uses up the kills a document is allowed, and then nothing in it draws. Checks stop being tried long before that, and what they cost isn't counted against drawing.
-#[test]
-fn checks_past_their_deadline_cant_stop_a_document_drawing() {
-    let content = full_page_fills(20_000);
-    let list: Vec<Page> = (0..6).map(|_| Page::new(content.clone())).collect();
-    let file = TempPdf::new("slows.pdf", &pages(&list));
-    // A check of one of these pages draws for over 2 s here, and reading its text takes 20 to 45 ms on a fresh worker, unloaded and at load 58. A deadline of 500 ms is far past a read and far short of a check, where 100 ms was within a few times of a read that a loaded run could take past it (the full check of 2026-11-08 at load 11).
-    let mut doc = renderer(
-        &file.0,
-        Policy {
-            page_deadline: Duration::from_millis(500),
-            max_kills_per_document: 2,
-            ..Policy::default()
-        },
-    );
-    for page in 0..6 {
-        let read = doc
-            .page_characters(page, true, true)
-            .unwrap_or_else(|failure| panic!("page {page}: {failure:?}, {:?}", doc.stats()));
-        assert!(!read.hidden_checked);
-    }
-    assert!(doc.stats().deadline_kills >= 2, "{:?}", doc.stats());
-    assert_eq!(doc.page_draw_state_at(0, 1.0), recto_render_service::PageDrawState::Sharp);
-    assert!(doc.page_size(0).is_ok(), "the document hasn't been stopped");
-}
-
-/// Failure (seen in a full check at load 11, `checks_past_their_deadline_cant_stop_a_document_drawing`): a page's text read runs out of time because the Mac is too busy to give its worker the processor, and the page is remembered as unreadable for the rest of the session, so selecting and copying it say "took too long" though nothing's wrong with it. A worker that got under half its deadline in processor time is the Mac being busy, as an open already reckons it: counted as that, not remembered, and read again when it's next asked. Made here by stopping the worker, so it has no processor time at all. Only the read to the stopped worker is short of time (the seam); the read again runs on a fresh worker under the ordinary deadline, so no machine speed decides it (a whole renderer at 400 ms lost its ordinary reads under CI's limits).
+/// Failure (seen in a full check at load 11, `checks_past_their_deadline_cant_stop_a_document_drawing`, since replaced by `checks_that_stop_their_worker_cant_stop_a_document_drawing` in `hostile.rs`): a page's text read runs out of time because the Mac is too busy to give its worker the processor, and the page is remembered as unreadable for the rest of the session, so selecting and copying it say "took too long" though nothing's wrong with it. A worker that got under half its deadline in processor time is the Mac being busy, as an open already reckons it: counted as that, not remembered, and read again when it's next asked. Made here by stopping the worker, so it has no processor time at all. Only the read to the stopped worker is short of time (the seam); the read again runs on a fresh worker under the ordinary deadline, so no machine speed decides it (a whole renderer at 400 ms lost its ordinary reads under CI's limits).
 #[test]
 fn a_read_the_mac_was_too_busy_for_is_tried_again() {
     let file = TempPdf::new("busy-read.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));

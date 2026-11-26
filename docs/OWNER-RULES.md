@@ -8,6 +8,7 @@ The owner's product rules and one-off decisions, in their words, with the date. 
 - **A leftover temporary file of a crashed save** (lopdf's temp beside a document), which makes removal refuse: removal lists it and offers to move it to the Trash with the rest, after the person confirms. Nothing is deleted without the confirmation.
 - **The session copies the app keeps** (a week after every update, copies for older versions, records set aside as damaged): a confirmed removal also deletes these copies whole. The accepted cost: if that update later has to go back, the earlier version may open without the person's tabs.
 - **Clear leftovers comes first, as a confirmed step of its own** (asked with the recommendation, "Build it now"): what makes removal refuse today — unfinished saves left beside a document, and the session copies kept for going back — is cleared by its own confirmed step, in the words the person would see inside a removal ("Move to Trash and Delete"), usable first by an agent at Full and through `recto`, the window's sheet later (D6). The full removal runs the same step inside its own confirmation later.
+- **Clear leftovers also takes other documents' crashed saves in the same folder** (asked with the recommendation, "Yes, if their save is dead"): they go to the Trash too, listed by name in the confirmation, only when the process that made them has ended; a save still being written is never touched.
 
 ## Decisions of 2026-11-25
 

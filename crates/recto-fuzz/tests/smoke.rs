@@ -114,6 +114,13 @@ fn hostile_removal_ledgers_do_no_harm() {
     smoke("removal_ledger", seed(), rounds(1500), 4 * 1024);
 }
 
+/// Failure: a hostile survey makes the leftovers plan name a store outside its three or an artifact nobody could place, change with the order it
+/// was listed in, keep its digest when a file is another file, or say "nothing changed" after a save went to the Trash or a copy was deleted.
+#[test]
+fn hostile_leftover_surveys_do_no_harm() {
+    smoke("removal_leftovers", seed(), rounds(1500), 128);
+}
+
 /// Failure: a forged kept file or a hostile helper's answer panics, bombs, or gets believed with a page past the end, a title on two lines or with invisible characters, or a depth or count past its cap.
 #[test]
 fn generated_contents_are_read_as_hostile() {
