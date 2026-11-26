@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
-use super::look::{Looks, tile_look};
+use super::look::{Looks, at_rest, next_heal, tile_look};
 use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
@@ -76,7 +76,7 @@ pub(super) fn run_guarded(shared: &Shared) {
 
 /// **Nothing to start:** at rest as ever (but for the wait of a page held to be tried again), or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
 /// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
-fn rest_or_wait_for_a_surface(
+pub(super) fn rest_or_wait_for_a_surface(
     planned: bool,
     seen: u64,
     shared: &Shared,
@@ -86,7 +86,7 @@ fn rest_or_wait_for_a_surface(
 ) {
     // With nothing planned, before the rest is said: one walk for a click's places on a page on show, then round again, where a new view or job comes first. The thread is at rest
     // when this has nothing left to do, so whoever waits for it to rest (a quiet run's settle, a test) finds the places kept.
-    if !planned && prefetch_at_rest(shared, renderers) {
+    if !planned && (prefetch_at_rest(shared, renderers) || at_rest(shared, renderers)) {
         return;
     }
     let retry = {
@@ -100,7 +100,11 @@ fn rest_or_wait_for_a_surface(
         } else {
             reader.work.surfaces.clear();
             // A page held for a look or a draw to be tried again has no event coming to ask it: the thread wakes when its wait is over, at once if it's over already (the plan was made before this rest).
-            reader.docs.next_hold_ends(Instant::now())
+            let now = Instant::now();
+            // And a look kept for want of an answer, asked again by the time its page's file is due ([`next_heal`]).
+            let heal = crate::tiles::relook::on_dark_paper(&mut reader)
+                .and_then(|(pages, _)| next_heal(&pages, |file| renderers.get(file).map(|open| &open.looks), now));
+            [reader.docs.next_hold_ends(now), heal].into_iter().flatten().min()
         }
     };
     rest(shared, renderers, policy, resting_since, retry);
@@ -201,11 +205,11 @@ fn run(shared: &Shared) {
             }
         } else {
             match renderer_for(shared, &mut renderers, &mut openings, job.tab, &job.file, &service, &policy) {
-                // Not the tab the password was typed for: as though it had none, so its own tab is asked for it and an added page says why it isn't shown.
+                // Refused before anything's said of the file: a job a renderer keyed to another tab won't serve tells this tab nothing of the file's version,
+                // length or replacement, as before `job_on` (which refuses it too, for the heal).
                 Ok(open) if !open.serves(job.tab, own) => document_failed(RenderFailure::NeedsPassword),
                 Ok(open) => {
-                    lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
-                    let outcome = do_job(open, &job);
+                    let outcome = job_on(shared, open, &job, own);
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                     if file_changed {
                         open.looks.clear();
@@ -255,6 +259,11 @@ pub(super) fn all_told(shared: &Shared, reader: &mut crate::tiles::Reader) {
 /// the note, the selection's notice, the page drawn, and the host's word that there are layers. Until this thread takes the view again, the view isn't
 /// settled (`Work::telling`), as what's told may queue the session's work.
 fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
+    job_ended_with(shared, job, outcome, file_changed, |_| {});
+}
+
+/// [`job_ended`], with `before` run under the same hold of the view just before the job is taken into it: what the page view is to do together with it (`engine/look/heal.rs`: the old tiles dropped as the new preview lands, so the host hears both in one batch).
+pub(super) fn job_ended_with(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool, before: impl FnOnce(&mut crate::tiles::Reader)) {
     let drawn = match (&job.kind, &outcome) {
         (
             JobKind::Draw {
@@ -277,6 +286,7 @@ fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
     } else {
         outcome
     };
+    before(&mut reader);
     reader.finish(job, outcome);
     take_pending_follow(shared, &mut reader);
     let has_ops = reader.host.has_ops();
@@ -449,14 +459,14 @@ fn let_go_of_unwanted(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>
 }
 
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
-struct OpenDoc {
+pub(super) struct OpenDoc {
     /// Whoever's asked has been told how long this file is.
     length_told: bool,
-    doc: DocRenderer,
+    pub(super) doc: DocRenderer,
     /// Of the file that's open now. A replacement clears them before anything goes by them: see [`seen_replaced`].
-    looks: Looks,
+    pub(super) looks: Looks,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
-    replaced: bool,
+    pub(super) replaced: bool,
     /// Its worker was given a password the person typed, and the tab whose job opened it then: for that tab's jobs on its own file, and no other's
     /// ([`OpenDoc::serves`], [`added_needs_password`]). **The key ends with that tab:** a renderer with it is kept only while that tab is held, hot or warm,
     /// with this as its own file ([`let_go_of_unwanted`]), not as long as any tab wants the path, as a document with a page added from the file does, nor
@@ -467,6 +477,22 @@ struct OpenDoc {
 }
 
 impl OpenDoc {
+    /// A file open as a test has it, its worker running, with no pages decided.
+    #[cfg(test)]
+    pub(super) fn opened_for_test(path: &Path, keyed_for: Option<u32>) -> Self {
+        let service = ServiceConfig::discover().expect("the worker is built");
+        let file = DocRenderer::open_file(path).expect("the file opens");
+        let mut doc = DocRenderer::with_file(file, path, None, service, Policy::default()).expect("a renderer");
+        doc.page_size(0).expect("a page size starts the worker");
+        Self {
+            length_told: false,
+            doc,
+            looks: Looks::default(),
+            replaced: false,
+            keyed_for,
+        }
+    }
+
     /// Whether a job of `tab`'s may use this renderer, `own` saying whether the file is the tab's own: any may, with no password given it; with one, only
     /// the tab it was given for, on its own file.
     fn serves(&self, tab: u32, own: bool) -> bool {
@@ -475,7 +501,7 @@ impl OpenDoc {
 }
 
 /// **The renderer has seen its file replaced: what was decided about the old one's pages goes, now, before anything goes by it.** The renderer opens the new file at the start of whichever job comes next, a draw included, so the tile that job draws is of the new file, and the look it's put on dark paper by has to be too. Says whether it had.
-fn seen_replaced(open: &mut OpenDoc) -> bool {
+pub(super) fn seen_replaced(open: &mut OpenDoc) -> bool {
     if !open.doc.take_file_changed() {
         return false;
     }
@@ -559,7 +585,6 @@ fn renderer_for<'a>(
         );
     }
     let open = renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))?;
-    open.doc.hidden.draw_for(tab, super::selection::hidden_for(shared, tab, path));
     Ok(open)
 }
 
@@ -600,8 +625,14 @@ fn refused_now(shared: &Shared, job: &Job) -> (Option<&'static str>, bool) {
     (changed.then_some(ADDED_FILE_CHANGED), own)
 }
 
+/// **Whether a job may be drawn from a renderer that's already open, by the checks every job meets** ([`refused_now`], [`OpenDoc::serves`]), and if so whether the file is the tab's own. For what's done with an open renderer outside the loop's own jobs (`engine/look/heal.rs`); a draw made so ends as [`as_an_added_files`] makes it.
+pub(super) fn drawable_by(shared: &Shared, open: &OpenDoc, job: &Job) -> Option<bool> {
+    let (refused, own) = refused_now(shared, job);
+    (refused.is_none() && open.serves(job.tab, own)).then_some(own)
+}
+
 /// What a job for a PDF added to the tab came to: a want of a password is the page's, never its document's ([`added_needs_password`]).
-fn as_an_added_files(outcome: Outcome, job: &Job) -> Outcome {
+pub(super) fn as_an_added_files(outcome: Outcome, job: &Job) -> Outcome {
     match outcome {
         Outcome::DocumentFailed { needs_key: true, .. } => added_needs_password(job),
         outcome => outcome,
@@ -614,6 +645,16 @@ fn document_failed(failure: RenderFailure) -> Outcome {
         message: failure.message(),
         needs_key: matches!(failure, RenderFailure::NeedsPassword),
     }
+}
+
+/// **Every step between "this tab's job on this renderer" and the draw, in one place, for the job loop and for the healing swap alike** (`engine/look/heal.rs`), so a step added here can't be left out of one of them (the heal's preview once drew a highlight the shown tab had taken out, for want of the third). In order: a renderer keyed to another tab's password isn't drawn from, as though it had none, so its own tab is asked for it and an added page says why it isn't shown ([`OpenDoc::serves`]); the job's tab's set of hidden highlights goes to the renderer ([`super::selection::hidden_for`]); the job is made cancellable by its tab; then [`do_job`]. What comes before it, which doesn't need an open renderer ([`refused_now`], and [`drawable_by`] for a step that asks first), is the caller's, since it decides whether a renderer's opened at all. The only call of `do_job`: a source scan holds that (`engine/selection.rs`).
+pub(super) fn job_on(shared: &Shared, open: &mut OpenDoc, job: &Job, own: bool) -> Outcome {
+    if !open.serves(job.tab, own) {
+        return document_failed(RenderFailure::NeedsPassword);
+    }
+    open.doc.hidden.draw_for(job.tab, super::selection::hidden_for(shared, job.tab, &job.file));
+    lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
+    do_job(open, job)
 }
 
 fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {

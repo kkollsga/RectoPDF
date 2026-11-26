@@ -18,6 +18,7 @@ mod look_again;
 mod marks;
 mod place;
 mod pointer;
+mod relook;
 mod wake;
 mod zoom;
 

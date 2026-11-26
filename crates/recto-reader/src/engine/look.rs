@@ -6,10 +6,15 @@ use crate::paper::PageLook;
 use crate::tiles::{Outcome, TRY_AGAIN_AFTER};
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
-use recto_render_service::{DocRenderer, RenderFailure, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, Places, RenderFailure, TileRequest, TileResult};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+mod heal;
+#[cfg(test)]
+use heal::{Healed, ends_the_step, heal};
+pub(super) use heal::{at_rest, next_heal};
 
 /// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
 const MAX_LOOKS: usize = 4096;
@@ -19,6 +24,8 @@ const LOOK_PICTURE_EDGE: f32 = 512.0;
 const IMAGELESS_LOOK_EDGE: f32 = 128.0;
 /// **How many times a page's picture may fail for a reason that may pass before the page takes [`PageLook::undecided`] and keeps it** (review of 2026-11-13, S2), the tries spaced by the page view's own wait for a page that couldn't be drawn for a reason that may pass, `TRY_AGAIN_AFTER`, 3 s (second review, 2026-11-14: counted per job, three back-to-back tile draws used them up in milliseconds, under just the memory pressure that makes a surface fail, and a dark slide turned light for the renderer's life). After a try fails the job ends as [`Outcome::LookLater`]: its tile isn't shown, nothing's kept, and the page view asks nothing of the page till the wait is over, so no tile's drawn to be thrown away meanwhile; what's shown of the page stays, the sleep picture or the preview, with no note, as nothing's failed. A try asked before its time, as by a second tab on the same file, isn't one: nothing's drawn for it and the job ends the same way. Three tries over at least 6 s: a heavy page whose larger limit is busy for a moment, or a Mac short of memory for a few seconds, gets it, and a page that can never be drawn small still draws, after three tiles' worth of work.
 const LOOK_TRIES: u8 = 3;
+/// **How long after a page's look was kept for want of an answer ([`PageLook::undecided`], its image checks having stayed busy through [`LOOK_TRIES`]) it is asked again, and how long the pages of a file are left alone after a busy ask of it** ([`heal`]). The tries end at about 6 s and a Mac starved after a wake or a build is so for tens of seconds, so this is past them; while it stays starved the file costs one walk (a page deadline) per this, whatever is drawn between.
+pub(super) const HEAL_AFTER: Duration = Duration::from_secs(30);
 
 /// What asking where a page's images are came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +44,8 @@ pub(super) trait LookSource {
     fn take_image_places_cleared(&mut self) -> bool;
     fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked;
     fn is_stale(&self, generation: u64) -> bool;
+    /// Whether the renderer's worker is running now. A heal asks only of a worker that is: it never starts one ([`heal`]).
+    fn worker_alive(&mut self) -> bool;
     fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>;
     fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>;
 }
@@ -47,17 +56,20 @@ impl LookSource for DocRenderer {
     }
 
     fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked {
-        let too_busy = self.stats().too_busy;
-        match DocRenderer::image_boxes(self, page, generation) {
-            Some(boxes) => ImagesAsked::Known(boxes),
-            // Nothing's remembered of a check the Mac was too busy for, so the count moved during this ask and only for it.
-            None if self.stats().too_busy > too_busy => ImagesAsked::Busy,
-            None => ImagesAsked::Unknown,
+        match recto_render_service::image_boxes_asked(self, page, generation) {
+            Places::Known(Some(boxes)) => ImagesAsked::Known(boxes),
+            Places::Known(None) => ImagesAsked::Unknown,
+            // The host says so itself, whatever the Mac was too busy for: a starved check, one not started, a worker it gave up starting.
+            Places::NotNow => ImagesAsked::Busy,
         }
     }
 
     fn is_stale(&self, generation: u64) -> bool {
         DocRenderer::is_stale(self, generation)
+    }
+
+    fn worker_alive(&mut self) -> bool {
+        self.worker_pid().is_some()
     }
 
     fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure> {
@@ -74,6 +86,8 @@ impl LookSource for DocRenderer {
 pub(super) struct Looks {
     decided: HashMap<u32, Arc<PageLook>>,
     tries: HashMap<u32, Tries>,
+    /// Pages whose look in `decided` was kept for want of an answer, when each is asked again ([`heal`]). At most [`MAX_LOOKS`] of about 24 bytes, and only for starved pages. Never has a page `decided` doesn't.
+    healing: HashMap<u32, Instant>,
 }
 
 /// A page's tries at a picture that failed for a reason that may pass.
@@ -90,17 +104,39 @@ impl Looks {
     pub(super) fn clear(&mut self) {
         self.decided.clear();
         self.tries.clear();
+        self.healing.clear();
     }
 
     /// Keeps a page's look, at most [`MAX_LOOKS`] of them.
     fn keep(&mut self, page: u32, look: PageLook) -> Arc<PageLook> {
         if self.decided.len() >= MAX_LOOKS {
             self.decided.clear();
+            self.healing.clear();
         }
         self.tries.remove(&page);
+        self.healing.remove(&page);
         let look = Arc::new(look);
         self.decided.insert(page, Arc::clone(&look));
         look
+    }
+
+    /// Whether a page kept for want of an answer is due to be asked at `now` ([`heal`]).
+    fn due(&self, page: u32, now: Instant) -> bool {
+        self.healing.get(&page).is_some_and(|&due| now >= due)
+    }
+
+    /// A kept page asked no more for now: its next ask is [`HEAL_AFTER`] from `now`.
+    pub(super) fn push_back(&mut self, page: u32, now: Instant) {
+        if let Some(due) = self.healing.get_mut(&page) {
+            *due = now + HEAL_AFTER;
+        }
+    }
+
+    /// A heal that didn't come to a drawn page: the look it lifted out is kept again, with the page's next ask [`HEAL_AFTER`] from `now`, whatever was decided meanwhile (the old tiles are still the page's, so they go by the old look).
+    pub(super) fn put_back(&mut self, page: u32, kept: Arc<PageLook>, now: Instant) {
+        self.tries.remove(&page);
+        self.decided.insert(page, kept);
+        self.healing.insert(page, now + HEAL_AFTER);
     }
 
     /// Whether a page's next try is still to wait at `now`.
@@ -187,13 +223,30 @@ pub(super) fn page_look(
     if doc.is_stale(generation) {
         return Err(NoLook::Stale);
     }
-    // Before any picture at hand decides: a look decided without knowing where the images are is kept for the renderer's life. Bounded by [`LOOK_TRIES`], after which the page takes what a page whose images can't be told takes.
+    // Before any picture at hand decides: a look decided without knowing where the images are is kept for the renderer's life. Bounded by [`LOOK_TRIES`], after which the page takes what a page whose images can't be told takes, which is asked again after [`HEAL_AFTER`] ([`heal`]).
     if asked == ImagesAsked::Busy {
         if looks.try_again(page, now, true) {
             return Err(NoLook::Again);
         }
-        return Ok(looks.keep(page, PageLook::undecided(false)));
+        let kept = looks.keep(page, PageLook::undecided(false));
+        looks.healing.insert(page, now + HEAL_AFTER);
+        return Ok(kept);
     }
+    decided_from(doc, looks, page, generation, asked, whole, tile, now)
+}
+
+/// A page's look from where its images are told to be (not busy: see [`page_look`]) and the picture at hand or drawn, kept if it's an answer. [`page_look`] is its only caller.
+#[allow(clippy::too_many_arguments)]
+fn decided_from(
+    doc: &mut impl LookSource,
+    looks: &mut Looks,
+    page: u32,
+    generation: u64,
+    asked: ImagesAsked,
+    whole: Option<(&PixelSurface, TileRect)>,
+    tile: Option<(&PixelSurface, TileRect, f32)>,
+    now: Instant,
+) -> Result<Arc<PageLook>, NoLook> {
     let boxes = match asked {
         ImagesAsked::Known(boxes) => Some(boxes),
         ImagesAsked::Unknown | ImagesAsked::Busy => None,
@@ -280,5 +333,7 @@ fn covers_page(doc: &mut impl LookSource, page: u32, scale: f32, rect: TileRect)
             == Some((rect.width, rect.height))
 }
 
+#[cfg(test)]
+mod at_rest_tests;
 #[cfg(test)]
 mod tests;

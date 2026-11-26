@@ -112,3 +112,48 @@ fn a_draw_in_flight_across_a_set_change_is_not_kept() {
     let again = std::iter::from_fn(|| reader.next_job()).any(|job| job.position == position && matches!(job.kind, JobKind::Draw { .. }));
     assert!(again, "its page is drawn again, under the set as it is now");
 }
+
+/// **Failure (review round 1 of `build/look-heals`): the hidden-highlights toggle drops a page's tiles without telling the host about a one-colour tile
+/// that isn't the paper's colour**, which is attached with a `rgb` and no surface: `forget` sent `Detach` only for an entry with a surface, so the host kept
+/// the old coloured square on the page for good. Every attached entry the host was given goes with a `Detach`, a surfaceless coloured one too. Seen
+/// failing with `forget` detaching only an entry that has a surface (the coloured tile's id has no `Detach`).
+#[test]
+fn dropping_a_page_detaches_a_one_colour_tile_that_is_not_the_papers() {
+    let mut reader = reader_on(3);
+    reader.set_paper(PaperKind::Dark);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    let (tab, position, source_page) = (job.tab, job.position, job.source_page);
+    reader.work.note_started(&job, None);
+    reader.finish(
+        job,
+        Outcome::Drawn {
+            kind: TileKind::Blank { rgb: 0xFF_00_00 },
+            low_res: None,
+        },
+    );
+    let coloured = reader
+        .cache
+        .entries
+        .values()
+        .find(|entry| entry.page == position && entry.rgb == Some(0xFF_00_00))
+        .map(|entry| entry.id)
+        .expect("the one-colour tile is kept");
+    reader.refresh(MAX_ATTACH_PER_TURN);
+    assert!(
+        reader
+            .host
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::Attach { id, rgb: Some(0xFF_00_00), .. } if *id == coloured)),
+        "the host was given the coloured square: {:?}",
+        reader.host.ops
+    );
+    reader.host.take_ops();
+    super::super::redraw_own_pages(&mut reader, tab, &[source_page]);
+    assert!(!reader.cache.entries.contains_key(&coloured), "the tile is forgotten");
+    assert!(
+        reader.host.ops.iter().any(|op| matches!(op, Op::Detach { id } if *id == coloured)),
+        "and the host is told it went: {:?}",
+        reader.host.ops
+    );
+}

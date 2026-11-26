@@ -191,7 +191,8 @@ impl TileCache {
             && let Some(ids) = self.attached.get_mut(&entry.page)
         {
             ids.retain(|other| *other != id);
-            if entry.surface.is_some() {
+            // What the host was given: a surface, or a square of one colour that isn't the paper's (`attach`).
+            if entry.surface.is_some() || entry.rgb.is_some_and(|rgb| rgb != entry.paper.rgb()) {
                 host.ops.push_back(Op::Detach { id });
             }
         }

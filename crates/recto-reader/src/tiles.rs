@@ -26,6 +26,7 @@ mod place;
 mod plan;
 mod pointer;
 mod refresh;
+pub(crate) mod relook;
 mod report;
 mod scratch;
 mod wake;

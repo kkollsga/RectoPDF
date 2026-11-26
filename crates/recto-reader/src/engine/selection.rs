@@ -181,23 +181,50 @@ pub(super) fn hidden_for(shared: &super::Shared, tab: u32, file: &std::path::Pat
 
 #[cfg(test)]
 mod tests {
-    /// Failure (review of R4.3, S2): a job is drawn by a renderer found some other way than `renderer_for`, which hands it the tab's set of hidden
-    /// file highlights, so that job draws a highlight the person has taken out. A source scan: jobs are done in one place, with what
-    /// `renderer_for` gave, and it gives the job's tab's set.
+    /// Failure (review of R4.3, S2, and the heal's final review): a job is drawn by a renderer found, or a draw made, some other way than through `job_on`,
+    /// which hands the renderer the job's tab's set of hidden file highlights and checks the tab may use it, so that draw shows a highlight the person has
+    /// taken out. A source scan of every production line under `engine/`: `do_job` is called in `job_on` and nowhere else, `job_on` is the only thing
+    /// that reaches it, and the loop finds its renderer by `renderer_for` before it.
     #[test]
-    fn every_job_reaches_its_renderer_through_renderer_for() {
+    fn every_job_is_drawn_through_job_on() {
         let run = include_str!("run.rs");
         let body = |name: &str| {
             let start = run.find(&format!("fn {name}")).expect("the function");
             &run[start..run[start..].find("\n}\n").map_or(run.len(), |end| start + end)]
         };
-        assert_eq!(run.matches("do_job(").count(), 2, "do_job is defined once and called once");
-        let job_loop = body("run(shared");
-        let (found, done) = (
-            job_loop.find("renderer_for(").expect("run finds a renderer"),
-            job_loop.find("do_job(").expect("and does the job"),
+        let mut calls = Vec::new();
+        let mut folders = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine"))];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).expect("the engine's folder") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") && !path.to_string_lossy().contains("tests") {
+                    let source = std::fs::read_to_string(&path).expect("a source file");
+                    let production = source.split("#[cfg(test)]\nmod ").next().unwrap_or(&source);
+                    for line in production.lines() {
+                        if !line.trim_start().starts_with("//") && line.contains("do_job(") && !line.contains("fn do_job(") {
+                            calls.push(path.file_name().expect("a name").to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(calls, ["run.rs"], "`do_job` is called once, and by `job_on`");
+        let job_on = body("job_on");
+        assert!(job_on.contains("do_job("), "the one call is in job_on");
+        assert!(
+            job_on.contains("hidden.draw_for(") && job_on.contains("serves("),
+            "which gives the job's tab's set and checks the tab may use the renderer"
         );
-        assert!(found < done, "with what renderer_for found");
-        assert!(body("renderer_for<").contains("hidden.draw_for("), "and renderer_for gives the job's tab's set");
+        let job_loop = body("run(shared");
+        assert!(
+            job_loop.find("renderer_for(").expect("run finds a renderer") < job_loop.find("job_on(").expect("and does the job"),
+            "with what renderer_for found"
+        );
+        assert!(
+            !body("renderer_for<").contains("hidden.draw_for("),
+            "and the set is given in one place, job_on, not twice"
+        );
     }
 }

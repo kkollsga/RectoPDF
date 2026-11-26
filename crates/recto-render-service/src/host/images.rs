@@ -7,6 +7,25 @@ use std::collections::{HashMap, HashSet};
 /// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
 const MAX_IMAGE_PLACES: usize = 4096;
 
+/// **What asking where a page's images are, for dark paper, came to** ([`image_boxes_asked`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Places {
+    /// An answer, remembered: where the images are, or `None` if that can't be told (the page couldn't be asked, the asking failed or was refused, or this job went stale, which says nothing of the page and isn't remembered).
+    Known(Option<Vec<[u16; 4]>>),
+    /// The Mac was too busy to run the worker that would have said (starved at the deadline, not started, or a start given up as `Unavailable`). That says nothing of the page and is never remembered or counted in a page's busy draws, so whoever asked can ask again, whenever it chooses: the engine's look heals on its own clock.
+    NotNow,
+}
+
+/// What a walk over a page's images came to, for whoever asked.
+enum Walk<T> {
+    /// This job went stale: not about the page, so nothing's remembered.
+    Stale,
+    /// Dark paper's walk that the Mac was too busy for ([`Places::NotNow`]).
+    NotNow,
+    /// An answer, or its failure (`None`).
+    Answer(Option<T>),
+}
+
 /// **What's known of pages' images,** for those asked about (out of `DocRenderer`'s fields unchanged, R4.3, to make room for the hidden highlights).
 #[derive(Debug, Default)]
 pub(super) struct Known {
@@ -88,23 +107,12 @@ impl DocRenderer {
         Ok(pixels)
     }
 
-    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. A check the Mac was too busy for (starved, or not started) is also `None` and is NOT remembered, so it's asked again, until `MAX_BUSY` of them in a row, after which it's an answer.
+    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. A check the Mac was too busy for (starved, or not started) is also `None` and is NOT remembered or counted, so it's asked again whenever the caller asks ([`image_boxes_asked`] says which `None` it is, and the engine spaces the asks, `engine/look/heal.rs`).
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
-        forget_places_of_a_replaced_file(self);
-        if let Some(known) = self.images.places.get(&page) {
-            return known.clone();
+        match image_boxes_asked(self, page, generation) {
+            Places::Known(boxes) => boxes,
+            Places::NotNow => None,
         }
-        // Stale says nothing about the page, so nothing's remembered.
-        let boxes = places_asked(self, page, generation, Ask::Dark, |payload| {
-            proto::PageImages::decode(payload).map(|images| (images.job_id, images.boxes))
-        })?;
-        // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
-        if self.images.places.len() >= MAX_IMAGE_PLACES {
-            self.images.places.clear();
-            self.images.places_cleared = true;
-        }
-        self.images.places.insert(page, boxes.clone());
-        boxes
     }
 
     /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, the walk's answer to a request
@@ -117,9 +125,11 @@ impl DocRenderer {
         if let Some(known) = self.images.click_places.get(&page) {
             return known.clone();
         }
-        let places = places_asked(self, page, generation, Ask::Click, |payload| {
+        let Walk::Answer(places) = places_asked(self, page, generation, Ask::Click, |payload| {
             proto::PageImagesForAClick::decode(payload).map(|images| (images.job_id, images.places))
-        })?;
+        }) else {
+            return None;
+        };
         if self.images.click_places.len() >= MAX_IMAGE_PLACES {
             self.images.click_places.clear();
         }
@@ -131,6 +141,28 @@ impl DocRenderer {
     pub fn take_image_places_cleared(&mut self) -> bool {
         std::mem::take(&mut self.images.places_cleared)
     }
+}
+
+/// [`DocRenderer::image_boxes`], saying which `None` it is: a check the Mac was too busy for is [`Places::NotNow`], and is never remembered or counted in a page's busy draws (it is the engine's to ask again, on its own clock), where any other `None` is an answer ([`Places::Known`]). A function of the renderer's, not one of its methods, which are many.
+pub fn image_boxes_asked(doc: &mut DocRenderer, page: u32, generation: u64) -> Places {
+    forget_places_of_a_replaced_file(doc);
+    if let Some(known) = doc.images.places.get(&page) {
+        return Places::Known(known.clone());
+    }
+    let boxes = match places_asked(doc, page, generation, Ask::Dark, |payload| {
+        proto::PageImages::decode(payload).map(|images| (images.job_id, images.boxes))
+    }) {
+        Walk::Stale => return Places::Known(None),
+        Walk::NotNow => return Places::NotNow,
+        Walk::Answer(boxes) => boxes,
+    };
+    // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
+    if doc.images.places.len() >= MAX_IMAGE_PLACES {
+        doc.images.places.clear();
+        doc.images.places_cleared = true;
+    }
+    doc.images.places.insert(page, boxes.clone());
+    Places::Known(boxes)
 }
 
 /// **What's kept of the file's pictures isn't served for a file another app has rewritten.** An answer kept is given with no job, so the stamp check every job makes
@@ -177,7 +209,7 @@ pub fn prefetch_click_places(doc: &mut DocRenderer, page: u32, generation: u64) 
     });
     doc.images.prefetching = false;
     // Only an answer is kept: stale and failed say nothing about the page.
-    if let Some(Some(places)) = asked {
+    if let Walk::Answer(Some(places)) = asked {
         if doc.images.click_places.len() >= MAX_IMAGE_PLACES {
             doc.images.click_places.clear();
         }
@@ -196,16 +228,16 @@ enum Ask {
 
 /// Asks `doc`'s worker where a page's images are, dark paper's way or a click's, its answer read by `decode`, the one for that request's shape, so a
 /// worker answering with the other's is a violation (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went
-/// stale, or a check the Mac was too busy for (starved or not started) was stopped, which say nothing about the page and are not remembered, until `MAX_BUSY` in a row.
-fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, decode: impl Fn(&[u8]) -> Result<(u32, T), ProtoError>) -> Option<Option<T>> {
+/// stale, or a check the Mac was too busy for (starved or not started) was stopped, which say nothing about the page and are not remembered: a click's until `MAX_BUSY` in a row, dark paper's ([`Walk::NotNow`]) never counted.
+fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, decode: impl Fn(&[u8]) -> Result<(u32, T), ProtoError>) -> Walk<T> {
     if doc.control.is_stale(generation) {
-        return None;
+        return Walk::Stale;
     }
     // A page whose drawing failed for time or a crash goes unasked: that's remembered at every zoom. Asking walks its objects and decodes nothing, so one needing the larger limit, drawn lower, or failed for memory even at its lower resolution (remembered from that scale down, not at every zoom), is asked as any page, and its look doesn't hang on which draw went first.
     let state = doc.page_draw_state(page);
     let unaskable = matches!(doc.page_draw_state_at(page, 0.0), PageDrawState::Failed(_));
     if unaskable || doc.stopped() || (ask != Ask::Prefetch && doc.left_out.walk >= MAX_ASKING_KILLS) {
-        return Some(None);
+        return Walk::Answer(None);
     }
     // The worker that's there, which has just drawn it. With none, one that can hold the page.
     let class = if doc.worker.is_none() && state == PageDrawState::NeedsHeavy {
@@ -241,14 +273,19 @@ fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, 
     }
     // Stale: not about the page, so nothing's remembered.
     if doc.control.is_stale(generation) {
-        return None;
+        return Walk::Stale;
     }
-    // A check the Mac was too busy for says nothing about the page, so nothing's remembered and whoever asked asks again; past `MAX_BUSY` in a row it's an answer after all.
-    if busy::walk_stopped(doc, page, &reply, busy_before) {
-        return None;
+    if ask == Ask::Dark {
+        // Dark paper's check the Mac was too busy for: never remembered and never counted, whoever asked it asks again when it chooses.
+        if busy::walk_was_starved(&reply, busy_before, doc) {
+            return Walk::NotNow;
+        }
+    } else if busy::walk_stopped(doc, page, &reply, busy_before) {
+        // A click's: not remembered, until `MAX_BUSY` in a row, after which it's an answer after all.
+        return Walk::Stale;
     }
     if reply.is_ok() {
         busy::landed(doc, page);
     }
-    Some(reply.ok())
+    Walk::Answer(reply.ok())
 }
