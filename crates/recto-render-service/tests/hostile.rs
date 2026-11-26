@@ -732,6 +732,37 @@ fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
     );
 }
 
+/// Failure: checks that stop their worker, however it was stopped, are counted against the document's kills, and a copy of a file whose pages all stop
+/// their check ends up unable to draw anything. Their cost is `left_out.check` and not a kill of the document, so the plain reads still come back (not
+/// checked), and drawing goes on past more crashes than `max_kills_per_document` allows. The stand-in's check aborts the worker, so no machine speed decides
+/// it. Replaces `checks_past_their_deadline_cant_stop_a_document_drawing` (`tests/worker.rs`), which made every check meet a 500 ms deadline that the reads after
+/// it had to beat too, so a read lost the race to the clock on a slow runner (CI run 45876504679: 4 spawns, 4 deadline kills, a read killed on its fresh worker).
+/// The deadline's own case stays in `a_check_past_its_deadline_says_not_checked_and_leaves_drawing_and_text_alone`.
+#[test]
+fn checks_that_stop_their_worker_cant_stop_a_document_drawing() {
+    let (mut doc, _file) = doc(
+        "dies_drawing_for_the_check",
+        Policy {
+            max_kills_per_document: 2,
+            ..policy()
+        },
+    );
+    for page in 0..3 {
+        let read = doc
+            .page_characters(page, false, true)
+            .unwrap_or_else(|failure| panic!("page {page}: {failure:?}, {:?}", doc.stats()));
+        assert!(!read.hidden_checked, "page {page}");
+        assert_eq!(read.chars.len(), 1, "page {page}");
+    }
+    assert!(doc.stats().crashes >= 3, "more stops than the document is allowed: {:?}", doc.stats());
+    assert!(
+        matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))),
+        "the document still draws: {:?}",
+        doc.stats()
+    );
+    assert!(doc.page_size(0).is_ok(), "the document hasn't been stopped");
+}
+
 /// Failure: reading text for a copy stops a slow page drawing for the rest of the session. The hidden-text check draws the whole page at 2x, and passing the
 /// deadline at that marked the page as failed at every scale, on the same renderer tiles use: a page that draws in 3.2 s at half zoom said "took too long to
 /// draw" after ⌘A ⌘C. A check that fails means not checked, and nothing about drawing or the page's text. It's remembered as that, so it isn't tried
