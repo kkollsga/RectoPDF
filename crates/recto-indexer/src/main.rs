@@ -3,7 +3,8 @@
 //! It holds no PDFium. Pages come from a worker like any other, under limits of its own. It's a process of its own, rather than a thread in the session, because what it uses goes when it exits, and a page of two million characters takes tens of megabytes to read: the session's footprint stays where it was.
 
 use recto_core::OpenError;
-use recto_index::corpus::{self, BuildLimits, BuildOutcome, CorpusKey, DocMeta, FailReason, FedPage, FeedError, PageFeed};
+use recto_core::page_id::PageRead;
+use recto_index::corpus::{self, BuildLimits, BuildOutcome, CorpusKey, DocMeta, FailReason, FedPage, FeedError, FileIdentities, IdentityInfo, PageFeed};
 use recto_render_service::{DocRenderer, KillReason, MAX_BUSY, Policy, RenderFailure, RenderStats, ServiceConfig};
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
@@ -29,6 +30,31 @@ struct WorkerFeed {
     renderer: Option<DocRenderer>,
     check_hidden: bool,
     hidden_check_failures: u32,
+    /// The file's version as `main` saw it right after the key check, and lopdf's reading of exactly that version, opened when the first identity is asked for.
+    identities: Identities,
+}
+
+/// What lopdf reads of the file for the page identities. Opened once, and only if the build gets as far as asking.
+struct Identities {
+    stamp: Option<recto_platform::FileStamp>,
+    opened: Option<Option<FileIdentities>>,
+}
+
+impl Identities {
+    fn of(path: &Path) -> Self {
+        Self {
+            stamp: recto_platform::file_stamp(path).ok(),
+            opened: None,
+        }
+    }
+
+    /// `None` when the file can't be read by lopdf, or isn't the version that was stamped.
+    fn files(&mut self, path: &Path) -> Option<&FileIdentities> {
+        let stamp = self.stamp;
+        self.opened
+            .get_or_insert_with(|| stamp.and_then(|stamp| FileIdentities::open(path, stamp)))
+            .as_ref()
+    }
 }
 
 impl WorkerFeed {
@@ -163,6 +189,16 @@ impl PageFeed for WorkerFeed {
             renderer.forget_failures();
         }
     }
+
+    fn identities(&mut self) -> Option<IdentityInfo> {
+        self.identities.files(&self.path).map(FileIdentities::info)
+    }
+
+    fn identity(&mut self, page: u32) -> PageRead {
+        self.identities
+            .files(&self.path)
+            .map_or(PageRead { identity: None, bytes: 0 }, |files| files.read(page))
+    }
 }
 
 /// What goes in the manifest beside the pages. A file only the renderer can read has none of it, and says so.
@@ -262,6 +298,8 @@ fn main() {
         say(&json!({ "state": "changed" }));
         return;
     }
+    // Straight after the key check, so what lopdf reads for the identities is the version the key names, or nothing.
+    let identities = Identities::of(&file);
     let mut limits = BuildLimits::default();
     if let Some(bytes) = job["max_doc_bytes"].as_u64() {
         limits.max_doc_bytes = bytes;
@@ -285,6 +323,7 @@ fn main() {
         renderer: None,
         check_hidden: true,
         hidden_check_failures: 0,
+        identities,
     };
     let built = corpus::build_for_file(&find_key, &file, &root, key, &mut feed, &meta, &limits);
     report(built, feed.stats(), feed.hidden_check_failures);
@@ -421,6 +460,7 @@ mod tests {
             renderer: Some(renderer),
             check_hidden: false,
             hidden_check_failures: 0,
+            identities: Identities::of(&path),
         };
         let error = feed.read(0).unwrap_err();
         let _ = std::fs::remove_dir_all(&folder);
@@ -456,5 +496,27 @@ mod tests {
         let mut renderer = scripted(vec![]);
         assert_eq!(ask_scripted(&mut renderer), Err(FeedError::Cant(TOO_BUSY)));
         assert_eq!(renderer.tries, 2 * u32::from(MAX_BUSY), "asks again no more than a start's and an open's bound");
+    }
+
+    /// Failure: the identities are read from whatever is at the path when the first one is asked for (a file swapped in after the key check is identified as the
+    /// version the key names), or opened for a build that never asks (a cost for every build), or read twice.
+    #[test]
+    fn the_identities_open_the_stamped_version_once_and_only_when_asked() {
+        let folder = recto_testpdf::TempDir::new("recto-indexer-ids-");
+        let path = folder.join("doc.pdf");
+        std::fs::write(&path, recto_testpdf::pages(&[recto_testpdf::Page::new("BT /F1 12 Tf 72 700 Td (A) Tj ET")])).unwrap();
+        let mut identities = Identities::of(&path);
+        assert!(identities.opened.is_none(), "nothing is opened before the first is asked for");
+        assert_eq!(identities.files(&path).map(|files| files.info().pages), Some(1));
+        assert!(matches!(identities.opened, Some(Some(_))));
+        // Another version put at the path after the stamp: nothing is identified for it.
+        let mut stale = Identities::of(&path);
+        std::fs::write(
+            &path,
+            recto_testpdf::pages(&[recto_testpdf::Page::new("BT /F1 12 Tf 72 700 Td (B) Tj ET"), recto_testpdf::Page::new("")]),
+        )
+        .unwrap();
+        assert!(stale.files(&path).is_none());
+        assert!(matches!(stale.opened, Some(None)), "and it isn't tried again");
     }
 }
