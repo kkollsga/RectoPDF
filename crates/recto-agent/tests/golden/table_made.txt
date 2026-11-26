@@ -54,21 +54,21 @@ row 13 text: b03f0f7b01a1ed00 2675 bytes
 help text: e1cd456ae6bfdab5 2330 bytes
 usage text: 371ce5f6433d4c5d 54 bytes
 by tag text: fa04f4ef1995407e 4 bytes
-row 14 select: 870aeaa4174bcf82 3027 bytes
-help select: eda80f00770c25d3 2377 bytes
-usage select: 476b849e32b8419a 141 bytes
+row 14 select: ffcc7fbdd0b989d9 3623 bytes
+help select: 7618255088f86927 2919 bytes
+usage select: b98554d6bc04b83e 155 bytes
 by tag select: bd76100bd58c9c0d 6 bytes
-row 15 copy: f83fdf08194cf0d7 2768 bytes
-help copy: e2e340e1a9e3ff6f 2122 bytes
-usage copy: 9a10490a69d0bc71 139 bytes
+row 15 copy: 1f885bdda51c2eb3 3362 bytes
+help copy: 6d08ef00016d9874 2662 bytes
+usage copy: eb41a063ed05e6f1 153 bytes
 by tag copy: 0bf903911984eee4 4 bytes
 row 16 render: ea40d6178d0db036 2283 bytes
 help render: 39074346d12e25b8 1774 bytes
 usage render: a61b7456cf52d201 97 bytes
 by tag render: 393ee15f7d35d08d 6 bytes
-row 17 export svg: 1c878a1895d6adc1 4302 bytes
-help export svg: 340baef3c4935866 3650 bytes
-usage export svg: 63ca8c79b45d8739 136 bytes
+row 17 export svg: db5971aa68f2746c 4755 bytes
+help export svg: 1b0cc3722ef13a87 4050 bytes
+usage export svg: 4794fa9f54960807 152 bytes
 by tag export_svg: 16e673e7f8dfd83d 10 bytes
 row 18 images: db1ba25fe1fc21c7 1807 bytes
 help images: 17d0bf926bd4a3c5 1493 bytes
@@ -78,9 +78,9 @@ row 19 image: 8832ace68ae6f814 1993 bytes
 help image: d71e3881e3410a36 1559 bytes
 usage image: e09f91ac73d01162 80 bytes
 by tag image: 2ab612888528489a 5 bytes
-row 20 snapshot: 7989e774517e880b 2738 bytes
-help snapshot: 8b9daf127891df83 2182 bytes
-usage snapshot: 52210e6d86fa0ba5 109 bytes
+row 20 snapshot: ae1e219a8a4c4a6f 3205 bytes
+help snapshot: 8e6a0c0e15dc1c13 2596 bytes
+usage snapshot: 3ddd1f55e771f72f 125 bytes
 by tag snapshot: cbd94d6698379dad 8 bytes
 row 21 print: 7b14817a72f299fb 1971 bytes
 help print: 700eedec15762bd6 1536 bytes
@@ -106,9 +106,9 @@ row 26 open: d51dbb6270f0a0a8 1111 bytes
 help open: 2ad439838facb3ab 799 bytes
 usage open: 8933edf00478aa89 33 bytes
 by tag open: f84f97b4633670e9 4 bytes
-row 27 goto: 8ca897df14383406 1611 bytes
-help goto: 08d885d640cc321e 1252 bytes
-usage goto: 43eb9175e47f52f2 69 bytes
+row 27 goto: c4b6ec989ceeb034 2286 bytes
+help goto: 17f645f17e4f15a6 1874 bytes
+usage goto: e3a898d51cf2b7d4 85 bytes
 by tag goto: 9d40d1720eeae746 4 bytes
 row 28 goto label: 93ccf3dd87268f9f 1197 bytes
 help goto label: 9f196824bc15ea32 917 bytes
@@ -218,9 +218,9 @@ row 54 edit mode: 1691a0130bb5e2cc 761 bytes
 help edit mode: 0c75882ab251b933 517 bytes
 usage edit mode: a8c61a9034813e65 21 bytes
 by tag edit_mode: 099ec519545c15ec 9 bytes
-row 55 highlight: 8d2c97e9b3406bfe 2013 bytes
-help highlight: 1ba51de5a8fbe069 1491 bytes
-usage highlight: 4b16ec3e7961ead4 125 bytes
+row 55 highlight: e9c89fca0aa69e32 2631 bytes
+help highlight: fd0ea4b96ca330d4 2055 bytes
+usage highlight: bb59984cbfd84268 139 bytes
 by tag highlight: 4c5803d8a5526c67 9 bytes
 row 56 highlight remove: 78d21a8c58b3a24d 1980 bytes
 help highlight remove: 85ad333f841de56d 1428 bytes
@@ -761,6 +761,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: 2ecb80f2861d848a 12724 bytes
-help --json: edbf6d7b65be243c 141674 bytes
-SKILL.md: 13b763b501d59d81 27153 bytes
-REFERENCE.md: 01a6436007651873 90174 bytes
+help --json: 50ef1fa210b63340 144915 bytes
+SKILL.md: 4f2bdd448ca3db4a 27459 bytes
+REFERENCE.md: 7aed75b347ef328b 93178 bytes

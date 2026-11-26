@@ -3117,6 +3117,7 @@ mod tests {
                 within: Some(0.25),
                 entry: Some(entry),
                 link: false,
+                reference: None,
             })
         };
         let page = |s: &Session<Fake>| s.tabs().tab(TabId(1)).unwrap().page;
@@ -3138,6 +3139,7 @@ mod tests {
             within: None,
             entry: Some(0),
             link: false,
+            reference: None,
         });
         assert_eq!(run(&mut s, Level::Control, &with_label).unwrap_err().code, "usage");
     }
@@ -3217,6 +3219,7 @@ mod tests {
                 within: None,
                 entry: None,
                 link: false,
+                reference: None,
             }),
         )
         .unwrap_err();
@@ -3232,6 +3235,7 @@ mod tests {
                     within: None,
                     entry: None,
                     link: false,
+                    reference: None,
                 })
             )
             .unwrap_err()
@@ -3249,6 +3253,7 @@ mod tests {
                     within: None,
                     entry: None,
                     link: false,
+                    reference: None,
                 })
             )
             .unwrap()["page"],
@@ -3541,6 +3546,7 @@ mod protected_tests {
                     within: None,
                     entry: None,
                     link: false,
+                    reference: None,
                 }),
                 Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
@@ -3549,6 +3555,7 @@ mod protected_tests {
                     within: None,
                     entry: None,
                     link: false,
+                    reference: None,
                 }),
                 Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
                 Command::from(crate::commands::linking::Follow {

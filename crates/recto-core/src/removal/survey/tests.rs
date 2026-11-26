@@ -18,6 +18,34 @@ fn limits(max: u32) -> Limits {
     }
 }
 
+/// A ledger with nothing lost: no links, no gap.
+fn whole() -> Ledger {
+    Ledger {
+        links: Vec::new(),
+        began_ns: 0,
+        gap: None,
+        stopped: None,
+        good_len: 0,
+        frames: 0,
+        overflowed: false,
+    }
+}
+
+fn version() -> FileVersion {
+    FileVersion {
+        volume: Some([1; 16]),
+        inode: 5,
+        size: 1,
+        mtime_ns: 1,
+    }
+}
+
+/// Notes a lineage made from `ledger`, as an adapter does.
+fn note(survey: &mut Survey, ledger: &Ledger) {
+    let lineage = lineage(ledger, version(), std::path::Path::new("/d/a.pdf"), &LEDGER_LIMITS).unwrap();
+    survey.history(&lineage);
+}
+
 fn all_complete(survey: &mut Survey) {
     for store in Store::ALL.into_iter().filter(|s| s.enumerated()) {
         survey.mark_complete(store);
@@ -27,6 +55,7 @@ fn all_complete(survey: &mut Survey) {
 fn surveyed(items: &[Found]) -> Result<Surveyed, Refusal> {
     let mut survey = Survey::new(&DESIGN_LIMITS);
     all_complete(&mut survey);
+    note(&mut survey, &whole());
     for f in items {
         survey.add(*f).unwrap();
     }
@@ -127,6 +156,7 @@ fn a_store_not_marked_complete_refuses_the_plan() {
     for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
         survey.mark_complete(store);
     }
+    note(&mut survey, &whole());
     let missing = survey.finish().unwrap();
     assert_eq!(
         plan(&request(TargetMode::Save, false), &missing.inventory(), &DESIGN_LIMITS).unwrap_err(),
@@ -134,7 +164,49 @@ fn a_store_not_marked_complete_refuses_the_plan() {
     );
     let mut survey = Survey::new(&DESIGN_LIMITS);
     all_complete(&mut survey);
+    note(&mut survey, &whole());
     assert!(plan(&request(TargetMode::Save, false), &survey.finish().unwrap().inventory(), &DESIGN_LIMITS).is_ok());
+}
+
+/// Failure: a later adapter that forgets the history gate (or a survey made against a ledger with a gap or a fork) lets a plan be made from a
+/// history that is only partly known, so another document's files, or none of the target's, are what it purges.
+#[test]
+fn a_history_never_noted_or_incomplete_refuses_the_plan() {
+    let refused = |ledger: Option<&Ledger>| {
+        let mut survey = Survey::new(&DESIGN_LIMITS);
+        all_complete(&mut survey);
+        if let Some(ledger) = ledger {
+            note(&mut survey, ledger);
+        }
+        plan(&request(TargetMode::Save, false), &survey.finish().unwrap().inventory(), &DESIGN_LIMITS)
+    };
+    assert_eq!(refused(None).unwrap_err(), Refusal::HistoryIncomplete, "never noted");
+    let mut gapped = whole();
+    gapped.gap = Some(Gap::Torn);
+    assert_eq!(refused(Some(&gapped)).unwrap_err(), Refusal::HistoryIncomplete, "a gap");
+    let mut forked = whole();
+    let to = |inode| FileVersion { inode, ..version() };
+    forked.links = vec![Link::Saved { from: version(), to: to(70) }, Link::Saved { from: version(), to: to(71) }];
+    assert_eq!(refused(Some(&forked)).unwrap_err(), Refusal::HistoryIncomplete, "a fork");
+    assert!(refused(Some(&whole())).is_ok());
+}
+
+/// Failure: two adapters note the lineage and a later one, given a whole lineage, undoes an earlier one's incomplete note, so a plan is made from a
+/// history that is only partly known.
+#[test]
+fn an_incomplete_history_stays_incomplete_when_a_whole_one_is_noted_later() {
+    let mut gapped = whole();
+    gapped.gap = Some(Gap::Torn);
+    let after = |first: &Ledger, second: &Ledger| {
+        let mut survey = Survey::new(&DESIGN_LIMITS);
+        all_complete(&mut survey);
+        note(&mut survey, first);
+        note(&mut survey, second);
+        plan(&request(TargetMode::Save, false), &survey.finish().unwrap().inventory(), &DESIGN_LIMITS)
+    };
+    assert_eq!(after(&gapped, &whole()).unwrap_err(), Refusal::HistoryIncomplete, "a gap, then a whole one");
+    assert_eq!(after(&whole(), &gapped).unwrap_err(), Refusal::HistoryIncomplete, "a whole one, then a gap");
+    assert!(after(&whole(), &whole()).is_ok());
 }
 
 /// Failure: purge acts on the wrong file, because the number a plan step names does not map back to the key of the file it was made for.

@@ -539,6 +539,7 @@ mod tests {
             within: None,
             entry: None,
             link: false,
+            reference: None,
         });
         let open = Command::from(Open {
             path: "/nowhere/a.pdf".into(),
@@ -559,6 +560,7 @@ mod tests {
             at: None,
             to: None,
             unit: None,
+            reference: None,
         }));
         let remove = Command::Edit(recto_agent::commands::Edit::HighlightRemove(HighlightRemove {
             tab: TabRef::Id(TabId(1)),

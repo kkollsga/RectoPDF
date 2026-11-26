@@ -38,6 +38,11 @@ const OPENS: &[&str] = &[
     // The platform's reads of a path it's handed: a new caller of either is counted where it calls.
     "open_untrusted(",
     "open_private_file(",
+    // A descriptor-relative open, and the folder helper's two: a folder by its path, and a file by a name in an open folder.
+    "openat(",
+    "libc::open(",
+    "Folder::open(",
+    "open_private_in(",
 ];
 
 /// **The reviewed list:** each file of those crates that opens a file by its path other than through the wall, how many times, and why none of those
@@ -70,6 +75,19 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-control/src/record_store/went_back.rs",
         1,
         "the state folder's own list kept beside a tab after a copy went back, its first line read (no link followed) to say whose it is",
+    ),
+    (
+        "recto-control/src/removal_store/backups.rs",
+        1,
+        "the original-backup folder the caller of `survey_backups` names (`pub`, with no production caller yet; the design names the state folder's), opened \
+         through the folder helper (no link followed) and only listed: a backup's name is read, never its bytes",
+    ),
+    (
+        "recto-control/src/removal_store/journals.rs",
+        2,
+        "the `session` and `session-windowless` folders of the root the caller of `survey_journals` names (`pub`, with no production caller yet; the design names \
+         the state folder), opened through the folder helper (no link followed), and the `journals` folder in each; the first line of a journal (at most 8 KiB) and \
+         a sidecar's 110-byte header read in `session*/journals` through that folder's descriptor (a plain private file only): never a document",
     ),
     (
         "recto-control/src/removal_store/ledger.rs",
@@ -126,10 +144,23 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the app's own files and tools, never a document: a test state folder's key file put in place, and the test-only look at a built program for the Keychain's code",
     ),
     (
+        "recto-platform/src/folder_mac.rs",
+        5,
+        "the five opens of `Folder`, which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
+         a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
+         `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used today \
+         only by removal's surveys (`journals.rs`, `backups.rs`); a new caller is counted where it calls",
+    ),
+    (
+        "recto-platform/src/folder_stub.rs",
+        1,
+        "the folder helper's stand-in on another system: opens nothing",
+    ),
+    (
         "recto-platform/src/local_mac.rs",
-        16,
+        17,
         "the platform's file primitives, each handed its path by a caller: private state files (links not followed), clones, the untrusted open of \
-         `recto`'s update zip in `recto`, a folder flushed. Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
+         `recto`'s update zip in `recto`, a folder flushed, a path opened only to watch it (`O_EVTONLY`, no read). Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
          are counted again where a caller in these crates makes them",
     ),
     ("recto-platform/src/local_stub.rs", 4, "the same primitives' stand-ins on another system"),
