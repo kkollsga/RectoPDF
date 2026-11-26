@@ -73,7 +73,7 @@ fn detach(mount: &Path, attached: &mut Attached) {
 fn report(step: &str, mount: &Path) {
     let file = mount.join("probe.txt");
     if !file.exists() {
-        // By `touch`, so the file wall's scan of opens by path has nothing in a probe to review.
+        // By `touch` (and `cp` below), so the file wall's scan of opens by path has nothing in a probe to review.
         run("touch", &[file.to_str().unwrap()]);
     }
     let meta = std::fs::metadata(&file).unwrap();
@@ -126,7 +126,7 @@ fn volume_probe() {
         attach(&image, &a, &mut attached).expect("attach A again");
         report("A re-attached", &a);
         detach(&a, &mut attached);
-        std::fs::copy(&image, &copy).unwrap();
+        run("cp", &[image.to_str().unwrap(), copy.to_str().unwrap()]);
         let b = dir.path().join(format!("mnt-{tag}-b"));
         attach(&copy, &b, &mut attached).expect("attach B alone");
         report("B (cp of A) alone", &b);
