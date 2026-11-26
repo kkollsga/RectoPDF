@@ -1,4 +1,4 @@
-//! What the surveys' tests share: a file version, limits, a pipe, a bounded run. Only compiled for tests.
+//! What the surveys' tests share: a file version, limits, a pipe (the bounded run is `recto_testpdf::returns_in_time`). Only compiled for tests.
 
 use recto_core::removal::{FileVersion, Limits};
 use std::num::NonZeroU16;
@@ -38,15 +38,6 @@ pub(super) fn mkfifo(path: &Path) {
 
 pub(super) fn mode(path: &Path, bits: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
-}
-
-/// Runs `work` on a thread and fails if it takes over 10 s, so a pipe waited on fails the test and doesn't hang the run.
-pub(super) fn bounded<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(work());
-    });
-    receiver.recv_timeout(Duration::from_secs(10)).expect("the survey waited on something")
 }
 
 /// Puts a mode back on drop so a failed run can't leave a folder a `TempDir` can't remove.
