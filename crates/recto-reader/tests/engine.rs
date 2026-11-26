@@ -513,6 +513,27 @@ fn open_fifo_writer(engine: &Engine, path: &std::path::Path) -> std::fs::File {
     }
 }
 
+/// Failure: the fifo helper tried once, so a reader that starts a moment after the engine lists its open (the `recto-open` thread isn't at `File::open` yet) gave ENXIO and failed `a_count_of_one_files_opens_isnt_another_files_open` on CI. A reader that comes late, here by 150 ms, is found by the helper, where one plain attempt gets ENXIO.
+#[test]
+fn the_fifo_helper_finds_a_reader_that_comes_late() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let folder = recto_testpdf::TempDir::new("recto-fifo-late-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let fifo = fifo_in(&folder, "late.pdf");
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    let plain = std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(&fifo);
+    assert_eq!(plain.err().and_then(|error| error.raw_os_error()), Some(ENXIO), "a single try with no reader yet");
+    let reader = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150)); // the late reader the test makes
+            std::fs::File::open(fifo).map(drop)
+        })
+    };
+    drop(open_fifo_writer(&engine, &fifo));
+    reader.join().unwrap().unwrap();
+}
+
 /// The opens of this one file that haven't returned (`reader.opening`), not all files' (`opens_waiting`).
 fn opens_of(engine: &Engine, path: &std::path::Path) -> u64 {
     let report = engine.report().0;
