@@ -29,7 +29,7 @@ const KEY: CorpusKey = CorpusKey([77; 32]);
 fn made_up(page: u32) -> PageRead {
     PageRead {
         identity: (page % 5 != 4).then(|| PageIdentity {
-            digest: [page as u8 + 1; 32],
+            digest: [(page as u8).wrapping_add(1); 32],
             object: (page + 10, 0),
             frame: page * 4,
         }),
