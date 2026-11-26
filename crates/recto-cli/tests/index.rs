@@ -642,6 +642,30 @@ fn an_index_built_before_identities_were_stored_answers_with_the_scans_reference
     assert!(!bin.exists() && !header.exists(), "nothing was made of it");
 }
 
+/// Failure: stored identities with a flipped byte are believed (the hits get tokens made from bad records), or the search's hits are given a reference from the
+/// live file as if nothing were wrong (the search wiring dropped the corpus key, so the stored identities were never read; every other test passes then, as the
+/// stored and the live tokens are equal). The hits are counted `file_unreadable`, and the identity files are removed.
+#[test]
+fn damaged_stored_identities_are_withdrawn_and_removed() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("damaged-ids.pdf", 4);
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
+    let bin = paths.app.join("ids.bin");
+    let mut bytes = std::fs::read(&bin).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&bin, bytes).unwrap();
+    let (found, code) = state.json(&["search", "common", "--limit", "20"]);
+    assert_eq!(code, 0, "{found}");
+    assert!(found["data"]["references"]["missing"]["file_unreadable"].as_u64() > Some(0), "{found}");
+    assert!(!bin.exists(), "the damaged identities are still there");
+}
+
 /// Failure: `recto local`, used by QA, starts a build it can't finish, or doesn't use what's built. Its route reads what's there and starts nothing.
 #[test]
 fn the_local_route_reads_an_index_and_builds_none() {
@@ -813,10 +837,11 @@ fn real_pages_answer_the_same_from_the_index() {
         .collect()
     };
     files.sort();
+    let tried = files.len();
     let state = State::at(Level::Full);
     let _serving = state.serve();
     let (mut documents, mut compared, mut compared_regex, mut compared_ranked) = (0, 0, 0, 0);
-    // A quiet run only opens files in the system's temp folders (`outside_quiet_run`), so each is cloned there first (no disk used on APFS). Before this, every
+    // A quiet run only opens files in the system's temp folders (`outside_quiet_run`), so each is cloned there first (cloned on the same APFS volume, else copied). Before this, every
     // file was refused, "0 documents compared" was printed and the test passed.
     let copies = recto_testpdf::TempDir::new("recto-real-pages-");
     for file in files {
@@ -852,6 +877,12 @@ fn real_pages_answer_the_same_from_the_index() {
     assert!(
         documents > 0 && compared > 0 && compared_regex > 0 && compared_ranked > 0,
         "nothing was compared: a test that compares nothing passes for ever"
+    );
+    assert_eq!(
+        documents,
+        tried,
+        "{} of the {tried} files were skipped (didn't open or weren't indexed)",
+        tried - documents
     );
 }
 
