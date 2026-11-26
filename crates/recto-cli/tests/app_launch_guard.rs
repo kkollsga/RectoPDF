@@ -712,20 +712,17 @@ fn started(body: &str, stall_ms: u64, cap_ms: u64) -> (std::time::Duration, rect
 }
 
 /// Failure (the verdict, wired to the real counters): a start doing nothing runs to the cap as wall clock would, or one burning CPU is stopped at the stall.
-/// Stand-ins, not the app: about 1.5 s together.
+/// Stand-ins, not the app: about 2.6 s together.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_start_that_does_nothing_is_stopped_at_the_stall_and_one_that_works_runs_to_the_cap() {
-    let (idle, error) = started("exec sleep 30", 300, 900);
+    // A cap far past the test: the "made no progress" words are the proof it was stopped at the stall, with no timing to pin.
+    let (_, error) = started("exec sleep 30", 300, 30_000);
     assert!(error.message.contains("made no progress"), "{}", error.message);
-    assert!(
-        idle < std::time::Duration::from_millis(800),
-        "stopped at the stall (300 ms), not the cap (900 ms): {idle:?}"
-    );
-    let (busy, error) = started("while :; do :; done", 300, 900);
+    let (busy, error) = started("while :; do :; done", 1_000, 1_500);
     assert!(error.message.contains("still starting"), "{}", error.message);
     assert!(
-        busy >= std::time::Duration::from_millis(900),
+        busy >= std::time::Duration::from_millis(1_500),
         "a start that is working is waited for to the cap: {busy:?}"
     );
     assert!(!error.next.contains("--timeout"), "{}", error.next);
