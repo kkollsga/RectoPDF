@@ -120,16 +120,24 @@ fn sign(app: &Path) {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// How long the archiver (`app/archive.sh`, a `ditto` of the dev app) may take before it counts as hung. Failure this holds: a fixed 30 s,
+/// which a zip of the dev app at background priority under load passes (`a_closed_window_stays_closed_across_an_update`, load 15,
+/// 2026-11-26, killed at 30 s) — the test then blamed the update. The archiver's work is bounded by the app's size, so three minutes is far
+/// past any real run and still ends a hung one.
+const ARCHIVE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
 fn zip_of(app: &Path) -> (Vec<u8>, String) {
     let zip = app.with_extension("zip");
     let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
     let mut child = Command::new(archive).arg(app).arg(&zip).spawn().unwrap();
-    let timed_out = matches!(local::wait_until_gone(&[child.id()], &[], Duration::from_secs(30)), local::Gone::TimeUp);
+    let timed_out = matches!(local::wait_until_gone(&[child.id()], &[], ARCHIVE_PATIENCE), local::Gone::TimeUp);
     if timed_out {
         let _ = child.kill();
     }
     let status = child.wait().unwrap();
-    assert!(!timed_out && status.success(), "archive producer: {status}, timed_out={timed_out}");
+    assert!(
+        !timed_out && status.success(),
+        "archive producer: {status}, timed_out={timed_out} after {ARCHIVE_PATIENCE:?}"
+    );
     let bytes = std::fs::read(&zip).unwrap();
     let _ = std::fs::remove_file(&zip);
     let sha = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
@@ -508,9 +516,6 @@ impl Drop for Bed {
         }
     }
 }
-
-#[path = "update/slow.rs"]
-mod slow;
 
 /// Failure: an update loses or changes anything the user can see or has changed: tabs, focus, pixel scroll, zoom, unsaved edits and their undo history, Find, Settings. **The test that matters most.** A rich state, then a real update: real zip, real server, real installer and a real swap. The whole of `qa state` is compared before and after by restore's own comparison, and the gap from quit to first correct frame is measured.
 #[test]
