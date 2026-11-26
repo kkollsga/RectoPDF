@@ -457,6 +457,25 @@ fn a_resume_under_other_rules_reads_every_record_again() {
     assert_eq!(every_read(&stored(&temp.0)).len(), 8);
 }
 
+/// Failure: a map far longer than the renderer's count (a hostile file) makes the identity reads outlast the build's time with nothing to stop them. Past
+/// `max_time` the identities are given up (no header, no records, references read live) and the text build still finishes.
+#[test]
+fn identity_reads_stop_at_the_builds_time_limit_and_the_text_build_still_finishes() {
+    let temp = Temp::new();
+    let mut feed = Feed::made_up(2);
+    feed.map = Some(100);
+    feed.spin = Some(std::time::Duration::from_millis(20));
+    let limits = BuildLimits {
+        max_time: std::time::Duration::from_millis(300),
+        ..BuildLimits::default()
+    };
+    assert!(matches!(built(&temp.0, &mut feed, &limits), BuildOutcome::Ready { .. }));
+    assert!(feed.asked.len() < 100, "stopped after {} of 100 reads", feed.asked.len());
+    assert!(!paths(&temp.0).ids_file().exists() && !paths(&temp.0).ids_header().exists());
+    assert!(matches!(Identities::open(tk(), &temp.0, KEY), Ok(None)));
+    assert!(ReadyCorpus::open(tk(), &temp.0, KEY).unwrap().is_some(), "the text is there");
+}
+
 fn rewrite_records(root: &Path, change: impl FnOnce(&mut Vec<u8>)) {
     let file = paths(root).ids_file();
     let mut bytes = fs::read(&file).unwrap();

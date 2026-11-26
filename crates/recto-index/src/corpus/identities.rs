@@ -11,8 +11,8 @@
 //! caps never answer), `ids.bin` is exactly the header's map length times a record, and each record read opens as its own page's. A rules tag that is
 //! another build's is not damage: nothing is used and nothing is thrown away. An old corpus has neither file and is answered as before.
 //!
-//! **All or nothing.** The header is not written when the file can't be opened by lopdf, when its map is past [`MAX_PAGES`], or when the reads cost more than
-//! [`BuildLimits::identity_bytes`](super::BuildLimits). A build records page `p`'s identity beside its text, so the helper holds nothing for each page.
+//! **All or nothing.** The header is not written when the file can't be opened by lopdf, when its map is past [`MAX_PAGES`], when the reads cost more than
+//! [`BuildLimits::identity_bytes`](super::BuildLimits), or when they run past [`BuildLimits::max_time`](super::BuildLimits) (never a reason to pause or fail the text build). A build records page `p`'s identity beside its text, so the helper holds nothing for each page.
 
 use super::{BuildLimits, CorpusPaths, Damaged, FindKey, MAX_PAGES, PageFeed, read_seal};
 use crate::seal::{self, CorpusSeal, Purpose};
@@ -22,6 +22,7 @@ use recto_platform::local;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 thread_local! {
@@ -144,6 +145,9 @@ pub(super) struct IdentityRun {
     /// What the reads were charged, against the limit.
     work: u64,
     limit: u64,
+    /// When the build began and how long it may take: the identity reads are the build's work too, and past this they are given up.
+    started: Instant,
+    max_time: Duration,
 }
 
 impl IdentityRun {
@@ -155,6 +159,7 @@ impl IdentityRun {
         info: IdentityInfo,
         resumed: u32,
         limit: u64,
+        (started, max_time): (Instant, Duration),
         mut read: impl FnMut(u32) -> PageRead,
     ) -> io::Result<Option<Self>> {
         let _ = fs::remove_file(paths.ids_header());
@@ -177,6 +182,8 @@ impl IdentityRun {
             written: if kept.is_some() { keep } else { 0 },
             work: kept.unwrap_or(0),
             limit,
+            started,
+            max_time,
         };
         if run.work > limit {
             run.abandon(paths);
@@ -200,10 +207,15 @@ impl IdentityRun {
         (0..keep).try_fold(0u64, |work, page| Some(work.saturating_add(open_record(&file, seal, page)?.bytes)))
     }
 
-    /// Page `page`'s record, once the pages before it are in. `Ok(false)` when the reads went over the limit: nothing is left of the identities.
+    /// Page `page`'s record, once the pages before it are in. `Ok(false)` when the reads went over the limit or the build's time ran out: nothing is left of the
+    /// identities, and the text build goes on without them.
     pub(super) fn record(&mut self, paths: &CorpusPaths, seal: &CorpusSeal, page: u32, read: &mut impl FnMut(u32) -> PageRead) -> io::Result<bool> {
         if page != self.written || page >= self.info.pages {
             return Ok(true);
+        }
+        if self.started.elapsed() >= self.max_time {
+            self.abandon(paths);
+            return Ok(false);
         }
         let read = read(page);
         self.work = self.work.saturating_add(read.bytes);
@@ -340,12 +352,21 @@ pub(super) fn remove_files(paths: &CorpusPaths) {
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// Starts a build's identities, if its feed can read them, and takes away what an older build left if not.
-pub(super) fn start(paths: &CorpusPaths, seal: &CorpusSeal, feed: &mut impl PageFeed, resumed: u32, limits: &BuildLimits) -> io::Result<Option<IdentityRun>> {
+pub(super) fn start(
+    paths: &CorpusPaths,
+    seal: &CorpusSeal,
+    feed: &mut impl PageFeed,
+    resumed: u32,
+    started: Instant,
+    limits: &BuildLimits,
+) -> io::Result<Option<IdentityRun>> {
     let Some(info) = feed.identities() else {
         remove_files(paths);
         return Ok(None);
     };
-    IdentityRun::begin(paths, seal, info, resumed, limits.identity_bytes, |page| feed.identity(page))
+    IdentityRun::begin(paths, seal, info, resumed, limits.identity_bytes, (started, limits.max_time), |page| {
+        feed.identity(page)
+    })
 }
 
 /// Page `page`'s record. Past the limit the identities are given up: `run` is `None` after, and no file is left.

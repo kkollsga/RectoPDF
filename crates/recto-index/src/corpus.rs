@@ -751,7 +751,7 @@ fn build_with_lock(
     let mut pack = local::append_private_file(&paths.pack)?;
     let (mut offset, mut bytes) = (resumed.pack_end, resumed.bytes);
     let (mut blob, mut chunk) = (crate::seal::Plain::default(), Vec::new());
-    let mut ids = identities::start(&paths, &seal, feed, resumed.pages, limits)?;
+    let mut ids = identities::start(&paths, &seal, feed, resumed.pages, started, limits)?;
     for page in resumed.pages..pages {
         if started.elapsed() >= limits.max_time {
             return Ok(BuildOutcome::Paused("out_of_time"));
