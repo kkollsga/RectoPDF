@@ -46,6 +46,12 @@ pub fn page_link(name: &[u8], file_page: u32) -> Result<String, LinkError> {
     Ok(link)
 }
 
+/// The link to `file_page` (counted from 1) of the file at `path`, by the file's own last component and no folder: [`page_link`] over that name. A path
+/// with no last component is [`LinkError::Name`].
+pub fn link_of(path: &std::path::Path, file_page: u32) -> Result<String, LinkError> {
+    page_link(path.file_name().map(|name| name.as_encoded_bytes()).unwrap_or_default(), file_page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

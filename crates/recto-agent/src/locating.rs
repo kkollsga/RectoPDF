@@ -30,7 +30,7 @@ const UNRESOLVED_TEXT_CHANGED: &str = "The page is there, but its text at those 
 
 /// What a search answer says of the references on its hits.
 pub(crate) const HIT_REFS_NOTE: &str = "Each hit's `ref` points at its words, as `recto ref --chars` makes one, for `recto resolve` and `--ref`, and `chars` are those characters in `recto text`'s text of the page. A ranked hit's points at the word its line shows. Another spelling gets a reference to its page. `missing` counts the hits with none, by why.";
-pub(crate) const HIT_REFS_WITHDRAWN: &str = "The file changed during the search, so no hit has a reference: it would name a version that's gone. Search again.";
+pub(crate) const HIT_REFS_WITHDRAWN: &str = "The file changed during the search, so no hit has a reference: it would name a version that's gone. A hit's `untrusted.link` stays, but it names a page number only, and that page may now hold other words. Search again.";
 
 const TAB_CHANGED: &str = "The tab changed while the reference was being found. Try again.";
 const BAD_REFERENCE: &str = "That isn't a reference RectoPDF made.";

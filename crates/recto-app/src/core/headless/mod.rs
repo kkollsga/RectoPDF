@@ -20,6 +20,7 @@ mod find_text_sealed;
 mod finding;
 mod first_show;
 mod highlight;
+mod hit_links;
 mod image_select;
 mod inner_guards;
 mod input_to_frame;
