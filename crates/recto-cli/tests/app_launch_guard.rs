@@ -691,16 +691,16 @@ fn stand_in(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn started(body: &str) -> (std::time::Duration, recto_agent::AgentError) {
-    let dir = std::env::temp_dir().join(format!("recto-ready-patience-{}-{}", std::process::id(), body.len()));
+fn started(body: &str, stall_ms: u64, cap_ms: u64) -> (std::time::Duration, recto_agent::AgentError) {
+    let dir = std::env::temp_dir().join(format!("recto-ready-patience-{}-{}", std::process::id(), body.len() + stall_ms as usize));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let app = stand_in(&dir, body);
     let paths = recto_control::StatePaths::overridden(&dir.join("state")).expect("a state folder in the temp folder");
     let options = qa_launch::Launch {
         patience: qa_launch::Patience {
-            stall: std::time::Duration::from_millis(300),
-            cap: std::time::Duration::from_millis(900),
+            stall: std::time::Duration::from_millis(stall_ms),
+            cap: std::time::Duration::from_millis(cap_ms),
         },
         ..Default::default()
     };
@@ -716,17 +716,72 @@ fn started(body: &str) -> (std::time::Duration, recto_agent::AgentError) {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_start_that_does_nothing_is_stopped_at_the_stall_and_one_that_works_runs_to_the_cap() {
-    let (idle, error) = started("exec sleep 30");
+    let (idle, error) = started("exec sleep 30", 300, 900);
     assert!(error.message.contains("made no progress"), "{}", error.message);
     assert!(
         idle < std::time::Duration::from_millis(800),
         "stopped at the stall (300 ms), not the cap (900 ms): {idle:?}"
     );
-    let (busy, error) = started("while :; do :; done");
+    let (busy, error) = started("while :; do :; done", 300, 900);
     assert!(error.message.contains("still starting"), "{}", error.message);
     assert!(
         busy >= std::time::Duration::from_millis(900),
         "a start that is working is waited for to the cap: {busy:?}"
     );
     assert!(!error.next.contains("--timeout"), "{}", error.next);
+}
+
+/// Failure (review, 2026-11-26): any rise in CPU time counts as progress, and the app's own watchdog wakes every 250 ms while its UI thread is stuck, so a start hung
+/// on the UI thread ran to the cap and was called "busy". A process that wakes often and does almost nothing is stopped at the stall.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_start_that_wakes_often_and_does_almost_nothing_is_stopped_at_the_stall() {
+    let (_, error) = started("exec perl -e 'select(undef,undef,undef,0.05) while 1'", 400, 30_000);
+    assert!(error.message.contains("made no progress"), "{}", error.message);
+}
+
+/// Failure: CPU counts as progress at any amount, or at one a hung start's wake-ups reach: it takes a hundredth of the stall since the last mark; a page-in always counts.
+#[test]
+fn cpu_is_progress_only_at_a_hundredth_of_the_stall_and_a_page_in_always() {
+    use qa_launch::{Marks, Patience, progressed};
+    use std::time::Duration;
+    let patience = Patience {
+        stall: Duration::from_secs(10),
+        cap: Duration::from_secs(180),
+    };
+    let mut marks = Marks { cpu_ns: 1_000, page_ins: 5 };
+    assert!(
+        !progressed(
+            &mut marks,
+            Marks {
+                cpu_ns: 1_000 + 99_000_000,
+                page_ins: 5
+            },
+            patience
+        ),
+        "99 ms of CPU in a 10 s stall is a watchdog's wake-ups"
+    );
+    assert!(
+        progressed(
+            &mut marks,
+            Marks {
+                cpu_ns: 1_000 + 100_000_000,
+                page_ins: 5
+            },
+            patience
+        ),
+        "100 ms is work, counted from the mark that was kept"
+    );
+    assert_eq!(marks.cpu_ns, 1_000 + 100_000_000);
+    assert!(
+        progressed(
+            &mut marks,
+            Marks {
+                cpu_ns: 1_000 + 100_000_000,
+                page_ins: 6
+            },
+            patience
+        ),
+        "a page-in is progress"
+    );
 }

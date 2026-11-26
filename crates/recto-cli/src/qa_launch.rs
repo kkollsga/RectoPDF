@@ -113,9 +113,29 @@ pub fn ready_verdict(elapsed: Duration, since_progress: Duration, patience: Pati
     }
 }
 
-/// The two numbers whose rise is progress: CPU time, and pages read in (a start held up by swap reads pages and uses almost no CPU).
-fn progress_of(pid: u32) -> Option<(u64, u64)> {
-    recto_platform::local::process_counters(pid).map(|counters| (counters.cpu_ns, counters.page_ins))
+/// What a process had used at a moment: CPU time, and pages read in (a start held up by swap reads pages and uses almost no CPU).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Marks {
+    pub cpu_ns: u64,
+    pub page_ins: u64,
+}
+
+fn marks_of(pid: u32) -> Option<Marks> {
+    recto_platform::local::process_counters(pid).map(|counters| Marks {
+        cpu_ns: counters.cpu_ns,
+        page_ins: counters.page_ins,
+    })
+}
+
+/// Whether the process has made progress since `mark`, which moves to `now` when it has. A page-in is progress. CPU is progress only at a hundredth of the stall
+/// since the mark (100 ms in 10 s): the app's own watchdog wakes every 250 ms while its UI thread is stuck, and those wake-ups are not a start working (review, 2026-11-26).
+pub fn progressed(mark: &mut Marks, now: Marks, patience: Patience) -> bool {
+    let enough = u64::try_from(patience.stall.as_nanos() / 100).unwrap_or(u64::MAX);
+    let worked = now.page_ins > mark.page_ins || now.cpu_ns.saturating_sub(mark.cpu_ns) >= enough;
+    if worked {
+        *mark = now;
+    }
+    worked
 }
 
 /// Starts the app and waits for its ready line.
@@ -216,7 +236,7 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
 /// The ready line, or why the wait ended without one. Progress is read about four times a stall, so a stuck start is called within a quarter of it past.
 fn wait_ready(receive: &mpsc::Receiver<std::io::Result<String>>, pid: u32, patience: Patience) -> Result<std::io::Result<String>, Verdict> {
     let began = Instant::now();
-    let mut last_seen = progress_of(pid);
+    let mut mark = marks_of(pid);
     let mut last_progress = began;
     let poll = (patience.stall / 4).clamp(Duration::from_millis(10), Duration::from_millis(500));
     loop {
@@ -226,12 +246,18 @@ fn wait_ready(receive: &mpsc::Receiver<std::io::Result<String>>, pid: u32, patie
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(Ok(String::new())),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        let now = progress_of(pid);
         // Counters that can't be read say nothing about progress, so only the cap ends such a wait.
-        if now.is_none() || now != last_seen {
-            last_progress = Instant::now();
+        match (mark.as_mut(), marks_of(pid)) {
+            (Some(mark), Some(now)) => {
+                if progressed(mark, now, patience) {
+                    last_progress = Instant::now();
+                }
+            }
+            (_, now) => {
+                mark = now;
+                last_progress = Instant::now();
+            }
         }
-        last_seen = now;
         match ready_verdict(began.elapsed(), last_progress.elapsed(), patience) {
             Verdict::Wait => {}
             stop => return Err(stop),
