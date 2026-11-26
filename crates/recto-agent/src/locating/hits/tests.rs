@@ -5,6 +5,12 @@ use super::*;
 use recto_core::locator::{Target, TextMatch};
 use recto_testpdf::{Page, TempPdf};
 use serde_json::{Value, json};
+use std::time::{Duration, Instant};
+
+/// A deadline no test reaches.
+fn far() -> Instant {
+    Instant::now() + Duration::from_secs(3600)
+}
 
 fn numbered(count: usize) -> TempPdf {
     let pages: Vec<Page> = (0..count)
@@ -39,7 +45,7 @@ fn missing(refs: HitRefs<'_>, hits: &mut Value) -> (u64, Value) {
 fn a_hits_chars_are_unicode_characters_of_the_page_text_and_its_ref_checks_same() {
     let file = numbered(3);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let text = "Straße ﬁnal café";
     let start = text.find('ﬁ').expect("the ligature");
     let mut hit = hit();
@@ -57,7 +63,7 @@ fn a_hits_chars_are_unicode_characters_of_the_page_text_and_its_ref_checks_same(
 fn a_phrase_hits_range_that_runs_on_to_the_next_word_is_trimmed_to_its_words() {
     let file = numbered(1);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let text = "Mine page 3";
     let mut hit = hit();
     refs.mark(&mut hit, false, 0, text, Some(&(0..10)));
@@ -71,7 +77,7 @@ fn a_phrase_hits_range_that_runs_on_to_the_next_word_is_trimmed_to_its_words() {
 fn a_range_off_characters_empty_or_past_the_cap_gets_no_ref_is_counted_and_opens_nothing() {
     let file = numbered(1);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let mut hits = json!([hit(), hit(), hit(), hit(), hit()]);
     let big = "x".repeat(locator::MAX_CHARACTER as usize + 1);
     for (text, range) in [("é", 1..2), ("abc", 3..3), ("a    ", 1..5), ("é", 0..9), (big.as_str(), 0..big.len())] {
@@ -91,7 +97,7 @@ fn a_range_off_characters_empty_or_past_the_cap_gets_no_ref_is_counted_and_opens
 fn a_hit_on_an_added_files_page_gets_no_ref_and_another_spelling_gets_its_pages() {
     let file = numbered(3);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let (mut added, mut added_other, mut other) = (hit(), hit(), hit());
     refs.mark(&mut added, true, 1, "words", Some(&(0..5)));
     refs.mark(&mut added_other, true, 1, "words", None);
@@ -111,7 +117,7 @@ fn hit_ref_caps_at_their_limit_refer_and_one_more_page_is_counted_caps() {
     assert_eq!(HIT_REF_CAPS.pages, locator::TAG_PAGES as u32 + crate::search::MAX_LIMIT);
     let file = numbered(230);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let mut hits = Vec::new();
     for page in 16..16 + crate::search::MAX_LIMIT {
         let mut hit = hit();
@@ -123,7 +129,7 @@ fn hit_ref_caps_at_their_limit_refer_and_one_more_page_is_counted_caps() {
 
     let small = ScanCaps { pages: 4, ..HIT_REF_CAPS };
     let opened = OnceCell::new();
-    let mut refs = HitRefs::with_caps(Some(file.0.as_path()), &opened, &small);
+    let mut refs = HitRefs::with_caps(Some(file.0.as_path()), &opened, &small, far());
     let mut three = Value::Array(
         (20..24)
             .map(|page| {
@@ -149,7 +155,7 @@ fn replace_with_another_file(file: &TempPdf) {
 fn a_file_changed_during_the_search_withdraws_every_ref() {
     let file = numbered(4);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let mut hits = json!([hit(), hit(), hit()]);
     for (index, page) in [0, 1, 2].into_iter().enumerate() {
         refs.mark(&mut hits[index], false, page, "words", Some(&(0..5)));
@@ -164,7 +170,7 @@ fn a_file_changed_during_the_search_withdraws_every_ref() {
 
     let file = numbered(4);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     replace_with_another_file(&file);
     let mut hits = json!([hit(), hit()]);
     for index in 0..2 {
@@ -183,7 +189,7 @@ fn a_file_changed_during_the_search_withdraws_every_ref() {
 fn two_hundred_hits_on_a_two_million_character_page_walk_it_once() {
     let file = numbered(2);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let text = format!("x{}", " ".repeat(9_999)).repeat(200);
     let mut hits = Vec::new();
     for index in 0..200 {
@@ -207,7 +213,7 @@ fn two_hundred_hits_on_a_two_million_character_page_walk_it_once() {
 fn a_search_that_finds_nothing_opens_nothing_for_references() {
     let file = numbered(2);
     let opened = OnceCell::new();
-    let refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let said = refs.finish(&mut json!([]));
     assert_eq!((said["made"].clone(), said["missing"].clone()), (json!(0), json!({})));
     assert!(opened.get().is_none());
@@ -221,7 +227,7 @@ fn an_unreadable_file_gives_every_hit_no_ref_counted_file_unreadable() {
     std::fs::write(&garbage, b"not a pdf").expect("write");
     for path in [Some(garbage.as_path()), Some(folder.join("missing.pdf").as_path()), None] {
         let opened = OnceCell::new();
-        let mut refs = HitRefs::new(path, &opened);
+        let mut refs = HitRefs::new(path, &opened, far());
         let mut hits = json!([hit(), hit()]);
         for index in 0..2 {
             refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)));
@@ -236,7 +242,7 @@ fn an_unreadable_file_gives_every_hit_no_ref_counted_file_unreadable() {
 fn a_searchs_log_entry_never_carries_a_hits_reference() {
     let file = numbered(1);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened);
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
     let mut hits = json!([hit()]);
     refs.mark(&mut hits[0], false, 0, "hunter2", Some(&(0..7)));
     assert!(hits[0]["ref"].as_str().is_some_and(|token| token.starts_with("r1.")));
@@ -264,7 +270,7 @@ fn a_searchs_log_entry_never_carries_a_hits_reference() {
 fn references_stop_at_the_searchs_deadline_and_are_counted_caps() {
     let file = numbered(2);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened).with_deadline(std::time::Instant::now());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, std::time::Instant::now());
     let mut hits = json!([hit(), hit(), hit()]);
     for index in 0..3 {
         refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)));
