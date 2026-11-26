@@ -77,13 +77,18 @@ fn compared(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Optio
     let structure = match read.flatten() {
         Some(Ok(view)) => view,
         // lopdf needs a password: a save refuses an encrypted file itself. They differ only if PDFium opened it without one.
-        Some(Err(OpenError::PasswordNeeded)) => return doc.page_count().is_ok().then_some(Disagreement::Encryption),
+        Some(Err(OpenError::PasswordNeeded)) => return password_half(doc, deadline),
         // lopdf can't read the very descriptor the renderer opened: that's the file's answer, kept (review round 2).
         Some(Err(OpenError::NotPdf | OpenError::TooComplex)) => return Some(Disagreement::StructureUnreadable),
         // Any other failed read may be the disk's, not the file's: never taken as agreement, and looked at again by the next save (review round 1).
         Some(Err(_)) | None => return Some(Disagreement::Unchecked),
     };
     renderer_half(doc, &structure, deadline)
+}
+
+/// lopdf needs a password; they differ only if the renderer opened the file without one.
+fn password_half(r: &mut impl RendererHalf, _deadline: Instant) -> Option<Disagreement> {
+    r.page_count().is_ok().then_some(Disagreement::Encryption)
 }
 
 /// What the renderer can be asked for the renderer's half of a look, so a test can script its answers.
@@ -909,5 +914,15 @@ mod tests {
         });
         assert_eq!(check_until(&file.0, stamp, deadline, looker), None);
         assert_eq!(*given.lock().unwrap(), Some(deadline));
+    }
+
+    /// Failure (review round 1): the encrypted-file branch asked the renderer once, so a busy answer was read as "it can't open it either" and the two
+    /// readers agreed. A busy answer is asked again; one that stays busy is about the moment, never agreement.
+    #[test]
+    fn the_password_branch_asks_again_while_busy() {
+        let mut renderer = busy_then_ok();
+        assert_eq!(password_half(&mut renderer, Instant::now() + LOOK_DEADLINE), Some(Disagreement::Encryption));
+        let mut busy = always_busy();
+        assert_eq!(password_half(&mut busy, Instant::now() + LOOK_DEADLINE), Some(Disagreement::Unchecked));
     }
 }
