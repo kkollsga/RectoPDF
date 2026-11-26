@@ -20,7 +20,7 @@ use recto_core::removal::{CONFIRM_LIMITS, ConfirmRefusal, Confirmations, Refusal
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// How long a QA hold waits for its release before the clear goes on, so a test that forgot can't hold an app for ever.
