@@ -387,10 +387,10 @@ fn a_destination_is_dropped_only_by_a_file_seen_after_it() {
     assert!(dests(&[copy(), landed()]).is_empty(), "landed after it");
     assert_eq!(
         dests(&[landed(), copy()]),
-        [copy_path.clone()],
+        std::slice::from_ref(&copy_path),
         "a second save to the name, after the first landed"
     );
-    assert_eq!(dests(&[copy(), landed(), copy()]), [copy_path.clone()]);
+    assert_eq!(dests(&[copy(), landed(), copy()]), std::slice::from_ref(&copy_path));
     assert!(dests(&[copy(), landed(), copy(), landed()]).is_empty());
     assert!(
         dests(&[copy(), Entry::Link(Link::Unplaced { path: "/docs/copy.pdf".into() })]).is_empty(),
