@@ -284,6 +284,8 @@ pub enum Moment {
     Acted,
     /// The acknowledgment is made.
     Acknowledged,
+    /// The leases are taken, before anything is looked at again.
+    Leased,
 }
 
 /// What a caller sees of the walk and may stop: the app's QA hold, and a test's crash. `false` stops the walk where it is, as a crash would.
@@ -356,13 +358,15 @@ pub fn clear<A: Copy + Eq>(
     now: Instant,
     steps: &mut dyn Steps,
 ) -> Result<Cleared, ClearError> {
+    let deadline = now + steps.limit();
     let mut leases = Leases::take(asked.root, outside).map_err(ClearError::Busy)?;
+    steps.at(0, Moment::Leased, deadline);
     let looked = look(asked.root, asked.document, asked.stamp, world).map_err(ClearError::Look)?;
+    // An `update/` that has appeared since the leases is leased now, or the clear doesn't go; and before the confirmation is taken, so a refusal here
+    // doesn't use the plan up.
+    leases.look_again().map_err(ClearError::Busy)?;
     let confirmed = lock(store).take(id, &looked.binding(asked), &looked.plan, now).map_err(ClearError::Confirm)?;
     let mut progress = Progress::start(&looked.plan, confirmed).map_err(|_| ClearError::Confirm(ConfirmRefusal::PlanChanged))?;
-    // Right before the first act: an `update/` that has appeared since is leased now, or the clear doesn't go.
-    leases.look_again().map_err(ClearError::Busy)?;
-    let deadline = now + steps.limit();
     Ok(walk(asked, &looked, &mut progress, world, Some(leases), deadline, steps))
 }
 

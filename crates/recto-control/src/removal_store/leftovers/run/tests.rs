@@ -495,3 +495,47 @@ fn a_long_copies_step_stops_at_the_deadline_part_way_and_says_so() {
         "what is left is left for the next check"
     );
 }
+
+/// An installer that starts between the leases and the confirmation: its folder appears and its lock is held.
+struct LateInstaller {
+    root: PathBuf,
+    lock: Option<std::fs::File>,
+}
+
+impl Hooks for LateInstaller {}
+
+impl Steps for LateInstaller {
+    fn at(&mut self, _step: u32, moment: Moment, _deadline: Instant) -> bool {
+        if moment == Moment::Leased && self.lock.is_none() {
+            std::fs::create_dir_all(self.root.join("update")).unwrap();
+            let file = recto_platform::local::open_private_for_writing(&self.root.join("update").join("installer.lock"), true).unwrap();
+            file.try_lock().unwrap();
+            self.lock = Some(file);
+        }
+        true
+    }
+}
+
+/// Failure (review round 1, 5): a late `update/` whose lock is held is looked for after the confirmation was taken, so the refusal uses the plan up and the person
+/// has to look again for nothing. The refusal comes before the confirmation: the same plan is good once the installer is gone.
+#[test]
+fn a_late_installer_refuses_before_the_plan_is_used_up() {
+    let fx = fx();
+    // No update folder yet: the leases take no installer lock, and one that starts later brings its folder.
+    std::fs::remove_dir_all(fx.fixture.root().join("update")).unwrap();
+    let id = id_of(&fx.check(Who::Person));
+    let mut late = LateInstaller {
+        root: fx.fixture.root().to_path_buf(),
+        lock: None,
+    };
+    assert_eq!(
+        fx.clear(id, Who::Person, Instant::now(), &mut late).unwrap_err(),
+        ClearError::Busy(Busy::Installer)
+    );
+    assert_eq!(fx.trashed(), 0, "nothing was done");
+    drop(late);
+    assert!(
+        fx.clear(id, Who::Person, Instant::now(), &mut Unwatched).is_ok(),
+        "the plan was not used up by a lease that wasn't had"
+    );
+}

@@ -1,10 +1,13 @@
 //! The leases a clear holds from before its recheck to after its last act (`docs/design/removal.md` §10, D5). Each is **tried once and never waited for**: one
 //! that isn't had is `Busy`, with nothing done.
 //!
-//! - **The installer's lock** (`update/installer.lock`): blocks the installer's `copy_record`, `restore_record`, the week's cleanup and the swap, which all
-//!   touch `update/before` and the session copies. An installer started meanwhile waits its quit limit and stands down. Taken only if `update/` is a real
-//!   folder: it is never made just to be locked, since an installer needs its plan there. [`Leases::look_again`] looks again for it right before the first act,
-//!   and takes the lock then, or refuses, so the clear never acts with an update folder present and the lock not held.
+//! - **The installer's lock** (`update/installer.lock`): blocks the installer's `copy_record`, `restore_record` and the swap, which touch `update/before` and
+//!   the session copies. An installer started meanwhile waits its quit limit and stands down. Taken only if `update/` is a real folder: it is never made just
+//!   to be locked, since an installer needs its plan there. [`Leases::look_again`] looks again for it after the recheck and before the confirmation is taken,
+//!   and takes the lock then, or refuses, so a refusal there uses no plan up and the clear never acts with an update folder present and the lock not held.
+//!   **The updater's week-old cleanup of `update/before` does not take this lock** (it runs in this app, on the launch's own thread). The race is harmless: it
+//!   and the clear only delete, the clear's walk counts a pinned name already gone as done (`already_gone`), and each deletes the update's copy whole, so
+//!   whichever is second finds nothing or the rest of the same copy.
 //! - **The windowless session's lock** (`run/session-windowless.lock`): blocks a `recto session` load, where the `.damaged` rotation and the `.v<N>` copy happen.
 //! - **What only the app knows** ([`Outside`]): it keeps its own record (`session.lock`), the record isn't beside a newer app's, and the sleeper's pass over older
 //!   sleep files, which touches `update/before/journals`, has finished. The app's own rotation runs only in `load`, before any command is taken.
