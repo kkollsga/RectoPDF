@@ -574,4 +574,146 @@ mod tests {
             "what the window or a test builds prints as a line an agent could send"
         );
     }
+
+    /// The six commands that take `--ref` beside `text` and `render`, each with the fields its line needs besides the reference.
+    const REF_COMMANDS: [(&str, &str); 6] = [
+        ("goto", "{}"),
+        ("select", "{}"),
+        ("copy", "{}"),
+        ("highlight", "{}"),
+        ("snapshot", r#"{"rect":[0,0,10,10],"as":"text"}"#),
+        ("export_svg", r#"{"out":"/d/x.svg"}"#),
+    ];
+
+    /// A line for one of [`REF_COMMANDS`] with `fields` beside its own.
+    fn line_of(cmd: &str, base: &str, fields: Value) -> Value {
+        let mut line: Value = serde_json::from_str(base).expect("base");
+        line["cmd"] = json!(cmd);
+        for (key, value) in fields.as_object().into_iter().flatten() {
+            line[key] = value.clone();
+        }
+        line
+    }
+
+    /// Failure: one of the commands that takes `--ref` reads a reference beside a page or a pick (so which one it goes by depends on which the code looks at
+    /// first), or refuses one in words that say another command's, or refuses a line with only the reference. Both are usage in the command's own constant
+    /// words; the reference alone reads; `ref: null` is no reference. `snapshot` and `export svg`, which need one of the two, say so when neither is given.
+    #[test]
+    fn every_ref_command_takes_the_reference_alone_and_refuses_it_beside_a_place() {
+        let usage = |cmd: &str, base: &str, fields: Value| {
+            let error = read_line(line_of(cmd, base, fields.clone())).map(|_| ()).expect_err(&format!("{cmd} {fields}"));
+            assert_eq!((error.code, error.exit), (Code::USAGE, exit::USAGE), "{cmd} {fields}: {}", error.message);
+            error.message
+        };
+        for (cmd, base) in REF_COMMANDS {
+            read_line(line_of(cmd, base, json!({ "ref": EXAMPLE_REF_CHARS }))).unwrap_or_else(|error| panic!("{cmd} alone: {}", error.message));
+            read_line(line_of(cmd, base, json!({ "ref": EXAMPLE_REF_CHARS, "tab": "#2" })))
+                .unwrap_or_else(|error| panic!("{cmd} with a tab: {}", error.message));
+            let nothing = read_line(line_of(cmd, base, json!({ "ref": null })));
+            assert_eq!(nothing.is_err(), matches!(cmd, "snapshot" | "export_svg"), "{cmd}: a null ref is none");
+        }
+        assert_eq!(usage("goto", "{}", json!({ "page": 3, "ref": EXAMPLE_REF })), GOTO_REF_ALONE);
+        for beside in [json!({ "label": "iv" }), json!({ "entry": 2 }), json!({ "link": true })] {
+            let mut line = beside.clone();
+            line["ref"] = json!(EXAMPLE_REF);
+            assert_eq!(usage("goto", "{}", line), GOTO_REF_ALONE, "{beside}");
+        }
+        read_line(line_of("goto", "{}", json!({ "ref": EXAMPLE_REF, "within": 0.3 }))).expect("`--within` goes with a reference");
+        for cmd in ["select", "copy", "highlight"] {
+            for beside in [
+                json!({ "page": 3 }),
+                json!({ "to_page": 3 }),
+                json!({ "chars": "0-4" }),
+                json!({ "at": "1,2" }),
+                json!({ "to": "1,2" }),
+                json!({ "unit": "word" }),
+            ] {
+                let mut line = beside.clone();
+                line["ref"] = json!(EXAMPLE_REF_CHARS);
+                assert_eq!(usage(cmd, "{}", line), PICK_REF_ALONE, "{cmd} {beside}");
+            }
+        }
+        for cmd in ["select", "copy"] {
+            assert_eq!(usage(cmd, "{}", json!({ "all": true, "ref": EXAMPLE_REF })), PICK_REF_ALONE, "{cmd} --all");
+        }
+        let (snap, svg) = (REF_COMMANDS[4], REF_COMMANDS[5]);
+        assert_eq!(usage(snap.0, snap.1, json!({ "page": 3, "ref": EXAMPLE_REF })), SNAPSHOT_BOTH);
+        assert_eq!(usage(snap.0, snap.1, json!({})), SNAPSHOT_NEITHER);
+        assert_eq!(usage(svg.0, svg.1, json!({ "page": 3, "ref": EXAMPLE_REF })), EXPORT_SVG_BOTH);
+        assert_eq!(usage(svg.0, svg.1, json!({})), EXPORT_SVG_NEITHER);
+    }
+
+    /// Failure: `highlight --ref` takes a reference to a page or a spot (an `also_spelled` hit's, say) and highlights the whole page, an edit nobody asked for;
+    /// or `snapshot --ref` goes to the person's clipboard, which is made for the page they saw. Both are refused as the line is read, in their own words.
+    #[test]
+    fn highlight_takes_only_characters_and_a_snapshot_by_ref_never_goes_to_the_clipboard() {
+        let spot = locator::encode(&made_up_locator(locator::Target::Spot(locator::Spot::point(10, 20).expect("a point"))));
+        for token in [EXAMPLE_REF, spot.as_str()] {
+            let error = read_line(line_of("highlight", "{}", json!({ "ref": token })))
+                .map(|_| ())
+                .expect_err("not characters");
+            assert_eq!((error.code, error.message.as_str()), (Code::USAGE, HIGHLIGHT_REF_CHARS), "{token}");
+        }
+        read_line(line_of("highlight", "{}", json!({ "ref": EXAMPLE_REF_CHARS }))).expect("characters");
+        let error = read_line(line_of(
+            "snapshot",
+            r#"{"rect":[0,0,10,10],"as":"png"}"#,
+            json!({ "ref": EXAMPLE_REF, "to_clipboard": true }),
+        ))
+        .map(|_| ())
+        .expect_err("not the clipboard");
+        assert_eq!((error.code, error.message.as_str()), (Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD));
+    }
+
+    /// Failure: a token that can't be a reference, on one of the six, reaches the level or the tab (an agent at Off is told about its level, a hostile token
+    /// is looked at beside the session), or is judged only after the combination (a page beside it is "both" and not "bad reference"), or its refusal repeats
+    /// it. Refused as the line is read, with constant words; a newer version says so.
+    #[test]
+    fn a_hostile_ref_on_any_ref_command_is_bad_reference_before_the_level_or_the_combination() {
+        let long = format!("r1.{}", "a".repeat(126));
+        for (cmd, base) in REF_COMMANDS {
+            for hostile in [long.as_str(), "r1.é", "", "nonsense"] {
+                for beside in [json!({}), json!({ "page": 3 })] {
+                    let mut line = beside.clone();
+                    line["ref"] = json!(hostile);
+                    let error = read_line(line_of(cmd, base, line)).map(|_| ()).expect_err(hostile);
+                    assert_eq!((error.code, error.exit), (Code::BAD_REFERENCE, exit::USAGE), "{cmd} {hostile:?} {beside}");
+                    assert!(!error.message.contains("nonsense") && !error.message.contains("r1."), "{}", error.message);
+                }
+            }
+            let error = read_line(line_of(cmd, base, json!({ "ref": "r2.040g2081040g2.p1-081040g2081040g2081040g208-0000000" })))
+                .map(|_| ())
+                .expect_err("r2");
+            assert_eq!(error.code, Code::REFERENCE_TOO_NEW, "{cmd}");
+        }
+    }
+
+    /// Failure: the activity log, or a command printed in a test failure, carries the token or a piece of its checks (which name a page's content) on one of
+    /// the six, or loses the page it hints at; or what the window or a test builds prints as a line an agent couldn't send.
+    #[test]
+    fn every_ref_command_logs_only_the_page_its_reference_hints_at() {
+        for (cmd, base) in REF_COMMANDS {
+            let command = read_line(line_of(cmd, base, json!({ "ref": EXAMPLE_REF_CHARS }))).expect("example");
+            let shown = format!("{:?} {}", command, command.log_details());
+            for piece in ["040g2081040g2", "081040g2081040g2081040g208", "0000000", "c1g6"] {
+                assert!(!shown.contains(piece), "{cmd}: {shown}");
+            }
+            assert_eq!(command.log_details()["ref_page"], 1, "{cmd}: {}", command.log_details());
+            let again = crate::parse(&command.wire()).unwrap_or_else(|error| panic!("{cmd}: what it prints reads back: {}", error.message));
+            assert_eq!(again.log_details(), command.log_details(), "{cmd}");
+        }
+    }
+
+    /// Failure: a `--ref` line takes no place under the draw cap, or is run on the window's session thread, or reads no pages while it scans a hostile file for
+    /// its page (the cap and the gate are by what a line says it does), or a plain `goto 3`, which reads nothing, is held to that. Each `--ref` line draws,
+    /// waits and reads pages; `goto` by number draws, waits and reads none.
+    #[test]
+    fn each_ref_line_draws_waits_and_reads_pages_and_goto_by_number_does_none() {
+        for (cmd, base) in REF_COMMANDS {
+            let command = read_line(line_of(cmd, base, json!({ "ref": EXAMPLE_REF_CHARS }))).expect("example");
+            assert_eq!((command.draws(), command.waits(), command.reads_pages()), (true, true, true), "{cmd}");
+        }
+        let by_number = read_line(json!({ "cmd": "goto", "page": 3 })).expect("goto 3");
+        assert_eq!((by_number.draws(), by_number.waits(), by_number.reads_pages()), (false, false, false));
+    }
 }

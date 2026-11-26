@@ -677,4 +677,16 @@ mod tests {
         assert!(words(&["goto", "3", "--within", "1.5"]).is_err());
         assert!(words(&["goto", "3", "--within", "0.25"]).unwrap().contains("0.25"));
     }
+
+    /// Failure: `goto` with no page, no label and no reference moves the tab somewhere (page 1, say) or fails with a message that isn't about what's missing,
+    /// now that the line is read with none of the three required. It is usage, with what to type, and nothing moves.
+    #[test]
+    fn goto_with_nothing_to_go_to_is_usage_and_moves_nothing() {
+        let mut session = Session::new(Fake);
+        let id = session.open(Path::new("/d/a.pdf")).unwrap();
+        let access = Mutex::new(session);
+        let error = execute(&access, Actor::Agent(Level::Control), &parse(r#"{"cmd":"goto"}"#).unwrap(), &mut Vec::new()).unwrap_err();
+        assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE));
+        assert!(access.lock().unwrap().mail_mut().take_jump(id).is_none(), "nothing was told to move");
+    }
 }

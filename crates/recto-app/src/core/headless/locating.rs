@@ -12,23 +12,23 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 /// `pages`' pages, page by page: each says `who` and its number, so `text` tells which page it is.
-fn pages_saying(who: &[&str]) -> Vec<u8> {
+pub(super) fn pages_saying(who: &[&str]) -> Vec<u8> {
     let pages: Vec<recto_testpdf::Page> = who.iter().map(|words| recto_testpdf::Page::new(recto_testpdf::text_lines(&[words]))).collect();
     recto_testpdf::pages(&pages)
 }
 
-fn reference(app: &HeadlessApp, page: u32) -> String {
+pub(super) fn reference(app: &HeadlessApp, page: u32) -> String {
     let made = app
         .agent(Level::ReadOnly, &json!({ "cmd": "ref", "page": page, "tab": "#1" }).to_string())
         .expect("a reference");
     made["ref"].as_str().expect("its token").to_owned()
 }
 
-fn resolve(app: &HeadlessApp, level: Level, token: &str) -> Result<Value, recto_agent::AgentError> {
+pub(super) fn resolve(app: &HeadlessApp, level: Level, token: &str) -> Result<Value, recto_agent::AgentError> {
     app.agent(level, &json!({ "cmd": "resolve", "ref": token, "tab": "#1" }).to_string())
 }
 
-fn page_text(app: &HeadlessApp, page: u64) -> String {
+pub(super) fn page_text(app: &HeadlessApp, page: u64) -> String {
     let said = app.recto(Level::ReadOnly, &["text", "--page", &page.to_string()]).expect("its text");
     said["untrusted"]["text"].as_str().unwrap_or_default().trim().to_owned()
 }
@@ -199,7 +199,7 @@ fn ref_page_zero_is_refused_before_the_file_is_looked_at() {
 }
 
 /// Everything of the owner's tab an agent could change: what `edits` says, the session's list, and the file's bytes and time.
-fn owners_tab(app: &HeadlessApp, file: &Path) -> (Value, Value, Vec<u8>, std::time::SystemTime) {
+pub(super) fn owners_tab(app: &HeadlessApp, file: &Path) -> (Value, Value, Vec<u8>, std::time::SystemTime) {
     let edits = app.recto(Level::Full, &["edits"]).expect("edits");
     let modified = std::fs::metadata(file).and_then(|meta| meta.modified()).expect("its time");
     (
@@ -332,14 +332,14 @@ fn a_protected_document_gives_an_agent_neither_a_reference_nor_an_answer() {
 }
 
 /// What a command left of draws: whether it told the host a page was drawn or failed to draw.
-fn drew(events: &[recto_agent::Event]) -> bool {
+pub(super) fn drew(events: &[recto_agent::Event]) -> bool {
     events
         .iter()
         .any(|event| matches!(event, recto_agent::Event::PageDrawn { .. } | recto_agent::Event::PageFailed { .. }))
 }
 
 /// `line` as an agent at `level` sends it, with what it told the host.
-fn run_saying(app: &HeadlessApp, level: Level, line: &Value) -> (Result<Value, recto_agent::AgentError>, Vec<recto_agent::Event>) {
+pub(super) fn run_saying(app: &HeadlessApp, level: Level, line: &Value) -> (Result<Value, recto_agent::AgentError>, Vec<recto_agent::Event>) {
     let command = recto_agent::parse(&line.to_string()).expect("a command");
     let mut events = Vec::new();
     let answer = app.core().host.run(recto_agent::Actor::Agent(level), &command, &mut events);
@@ -468,7 +468,7 @@ fn recto_cli_words_reach_resolve() {
 }
 
 /// A reference to characters `[start, end)` of tab `#1`'s page, as an agent at Read-only is given it.
-fn chars_reference(app: &HeadlessApp, page: u32, start: u32, end: u32) -> Result<String, recto_agent::AgentError> {
+pub(super) fn chars_reference(app: &HeadlessApp, page: u32, start: u32, end: u32) -> Result<String, recto_agent::AgentError> {
     app.agent(
         Level::ReadOnly,
         &json!({ "cmd": "ref", "page": page, "chars": format!("{start}-{end}"), "tab": "#1" }).to_string(),
@@ -478,7 +478,7 @@ fn chars_reference(app: &HeadlessApp, page: u32, start: u32, end: u32) -> Result
 
 /// The same reference with its text check, or its end, set by the core API as a hand-made token would: a page that is found, and characters that are not
 /// the ones the reference says.
-fn hostile_chars(token: &str, start: u32, end: u32) -> String {
+pub(super) fn hostile_chars(token: &str, start: u32, end: u32) -> String {
     use recto_core::locator::{CharacterRange, Locator, Target, decode, encode};
     let made = decode(token).expect("a token");
     let range = CharacterRange::new(start, end, [0xAB; 8]).expect("a range");

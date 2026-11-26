@@ -501,6 +501,35 @@ mod tests {
         assert!(counted.most_workers <= MAX_WORKERS, "{}", counted.most_workers);
     }
 
+    /// Failure: a select by a reference to characters reads the page found a second time to check them (or the neighbours of a page it needn't), so `--ref`
+    /// costs more worker reads than the `--page --chars` it is the same as; or it gives other words than those, or none of how the page was found.
+    #[test]
+    fn a_pick_by_a_character_reference_reads_what_a_page_and_chars_read() {
+        let pages_of: Vec<Page> = (1..=5).map(|page| Page::new(text_lines(&[&format!("Mine page {page}")]))).collect();
+        let file = TempPdf::new("mine.pdf", &pages(&pages_of));
+        let mut session = opened(&file);
+        let access = Direct(RefCell::new(&mut session), None);
+        let tab: &TabRef = &crate::tab_ref::ACTIVE;
+        let made = crate::locating::reference(&access, tab, 3, Some((0, 4))).expect("a reference to characters");
+        let token = crate::locating::read_reference(made["ref"].as_str().expect("its token")).expect("a reference");
+        let found = crate::locating::page_of(&access, tab, &token, crate::locating::CharsChecked::AgainstItsText).expect("found");
+        let by = |page, chars, found| Pick {
+            page,
+            chars,
+            found,
+            all: false,
+            ..whole()
+        };
+        let (mut by_ref, mut by_page) = (Counted::default(), Counted::default());
+        let said = run_counted(&access, &by(Some(found.page), Some("0-4"), Some(&found)), true, &mut by_ref).expect("by reference");
+        let plain = run_counted(&access, &by(Some(3), Some("0-4"), None), true, &mut by_page).expect("by page");
+        assert_eq!(by_ref.reads, by_page.reads, "the reference reads no more than the pick it is");
+        assert_eq!(said["untrusted"]["text"], "Mine");
+        assert_eq!(said["untrusted"]["text"], plain["untrusted"]["text"]);
+        assert_eq!(said["ref"]["status"], "found");
+        assert!(plain.get("ref").is_none(), "a pick that wasn't by reference says nothing of one");
+    }
+
     /// Failure: a page a drag ends on is read a second time, without the hidden-text check, as a neighbour of the page before it, so pages before it compare with an unchecked read (review of e3fc6e0), and a pick costs a worker read more than it needs. A drag over pages 2 and 3 of 6 reads its ends, then pages 1, 4 and 5 for their edges, and nothing twice.
     #[test]
     fn an_end_page_isnt_read_again_as_a_neighbour() {
