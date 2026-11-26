@@ -23,6 +23,16 @@ fn the_same_folder_gives_the_same_answer_twice() {
     }
 }
 
+/// Failure: the type name is read from the wrong place in the one `getattrlist` reply (an offset taken from the wrong end), so APFS reads as
+/// no type and every file on it joins nothing, or a name is read past the reply.
+#[test]
+fn the_one_call_names_the_type_statfs_names() {
+    let here = std::env::temp_dir();
+    let (one, two) = (volume_of(&here).expect("getattrlist"), mount_of(&here).expect("statfs"));
+    assert_eq!(one.fs_type, two.fs_type);
+    assert!(!one.fs_type.is_empty() && one.fs_type.iter().all(u8::is_ascii_alphanumeric));
+}
+
 /// Every image this probe attached, detached on drop (a failed assertion or a panic included), by the mount folder it made. `-force` only
 /// after a plain detach is refused, and only of its own mount points.
 struct Attached(Vec<PathBuf>);
@@ -77,15 +87,18 @@ fn report(step: &str, mount: &Path) {
         run("touch", &[file.to_str().unwrap()]);
     }
     let meta = std::fs::metadata(&file).unwrap();
-    let seen = look(&file).expect("statfs");
-    let by_mount = look(Path::new(std::str::from_utf8(&seen.mount_point).unwrap())).and_then(|s| s.uuid);
+    let seen = mount_of(&file).expect("statfs");
+    let by_file = volume_of(&file);
+    let by_mount = volume_of(Path::new(std::str::from_utf8(&seen.mount_point).unwrap()));
+    let uuid = |v: &Option<Volume>| hex(v.as_ref().map(|v| v.uuid));
     println!(
-        "{step:<28} st_dev={:<10} fsid={:?} type={:<6} uuid(file)={} uuid(mnt)={} identity={} ino={} size={} mtime_ns={}",
+        "{step:<28} st_dev={:<10} fsid={:?} type={:<6} getattrlist_type={:<6} uuid(file)={} uuid(mnt)={} identity={} ino={} size={} mtime_ns={}",
         meta.dev(),
         seen.fsid,
         String::from_utf8_lossy(&seen.fs_type),
-        hex(seen.uuid),
-        hex(by_mount),
+        by_file.as_ref().map_or("none".into(), |v| String::from_utf8_lossy(&v.fs_type).into_owned()),
+        uuid(&by_file),
+        uuid(&by_mount),
         hex(volume_identity(&file)),
         meta.ino(),
         meta.len(),
