@@ -442,8 +442,6 @@ final class Bridge: AppListener, @unchecked Sendable {
                 item.target = isSystem ? nil : self
                 item.representedObject = entry.id
                 item.identifier = AppDelegate.builtItem(entry.id)
-                let help = core.menuHelp(id: entry.id)
-                item.toolTip = help.isEmpty ? nil : help
                 if entry.id == "app.services" {
                     let services = NSMenu(title: entry.title)
                     item.submenu = services
