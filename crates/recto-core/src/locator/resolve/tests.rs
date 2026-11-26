@@ -2,7 +2,7 @@
 //! pages, what a cap does to an answer, and what a target becomes on a page found. Each test names the failure it catches.
 
 use super::*;
-use crate::locator::{CharacterRange, PageRef, Spot};
+use crate::locator::{CharacterRange, PageRef, PageSource, SourceRead, Spot, stored_rules_tag};
 use crate::page_id::{self, Caps, open_bytes_for_identity};
 use recto_testpdf::Page;
 use std::sync::Arc;
@@ -431,4 +431,107 @@ fn a_tag_page_refused_by_the_byte_cap_is_never_replaced_by_a_later_page_already_
     let one_page = page_id::read_page(&reader, map.get(5).expect("page"), &STANDARD.page).bytes;
     let caps = ScanCaps { bytes: one_page, ..STANDARD };
     assert_eq!(Referrer::new(&reader, &map, &caps).page(5), Err(Unreferenceable::Capped));
+}
+
+/// A source made of reads taken beforehand, as a stored one is: what an indexer keeps. `broken` pages say they can't be answered.
+struct Copied {
+    reads: Vec<PageRead>,
+    id: Option<[u8; 8]>,
+    made_under: Option<Caps>,
+    broken: Vec<u32>,
+}
+
+impl Copied {
+    fn of(reader: &IndexedReader, map: &PageMap) -> Self {
+        Self {
+            reads: map.iter().map(|entry| page_id::read_page(reader, entry, &STANDARD.page)).collect(),
+            id: page_id::document_ids(reader).map(|ids| ids.first[..8].try_into().expect("eight")),
+            made_under: Some(STANDARD.page),
+            broken: Vec::new(),
+        }
+    }
+}
+
+impl PageSource for Copied {
+    fn len(&self) -> usize {
+        self.reads.len()
+    }
+    fn read(&self, index: u32, _: &Caps) -> SourceRead {
+        match self.reads.get(index as usize) {
+            _ if self.broken.contains(&index) => SourceRead::Unreadable,
+            Some(read) => SourceRead::Read(*read),
+            None => SourceRead::Absent,
+        }
+    }
+    fn document_id(&self) -> Option<[u8; 8]> {
+        self.id
+    }
+    fn caps(&self) -> Option<Caps> {
+        self.made_under
+    }
+}
+
+/// Failure: references over stored reads differ from the file's own (another token for the same page, another charge against the caps, another answer
+/// past the last page), so a search answered from an index says what a search of the pages would not.
+#[test]
+fn a_referrer_over_copied_reads_makes_every_reference_the_live_one_does() {
+    let (reader, map) = open(&numbered(25));
+    let copied = Copied::of(&reader, &map);
+    let mut stored = Referrer::over(&copied, &STANDARD).expect("made under the standard caps");
+    let mut live = Referrer::new(&reader, &map, &STANDARD);
+    for page in (0..26).chain([3, 3, 24]) {
+        assert_eq!(stored.page(page), live.page(page), "page {page}");
+        assert_eq!(stored.spent(), live.spent(), "after page {page}");
+    }
+    let caps = ScanCaps { pages: 4, ..STANDARD };
+    let (mut stored, mut live) = (
+        Referrer::over(&copied, &caps).expect("standard digest caps"),
+        Referrer::new(&reader, &map, &caps),
+    );
+    for page in [20, 21, 22, 23, 0] {
+        assert_eq!(stored.page(page), live.page(page), "under a page cap of 4: page {page}");
+    }
+}
+
+/// Failure: a source that can't answer for a page is told as a page with no identity or a document with no tag, which are claims about the document
+/// where nothing was read: it is `Unreadable`, for the page and for the tag page alike.
+#[test]
+fn a_source_that_cannot_answer_is_unreadable_and_never_a_claim_about_the_document() {
+    let (reader, map) = open(&numbered(25));
+    let mut copied = Copied::of(&reader, &map);
+    copied.broken = vec![7];
+    let mut referrer = Referrer::over(&copied, &STANDARD).expect("standard");
+    assert_eq!(referrer.page(7), Err(Unreferenceable::Unreadable));
+    assert!(referrer.page(8).is_ok(), "the other pages still answer");
+    copied.broken = vec![0];
+    assert_eq!(
+        Referrer::over(&copied, &STANDARD).expect("standard").page(8),
+        Err(Unreferenceable::Unreadable),
+        "the tag page"
+    );
+}
+
+/// Failure: reads made under other digest caps answer for a referrer asking for the standard ones.
+#[test]
+fn a_source_made_under_other_caps_is_not_used_for_the_standard_ones() {
+    let (reader, map) = open(&numbered(3));
+    let mut copied = Copied::of(&reader, &map);
+    copied.made_under = Some(Caps {
+        page_bytes: 1,
+        ..STANDARD.page
+    });
+    assert!(Referrer::over(&copied, &STANDARD).is_none());
+}
+
+/// Failure: the rules tag is changed without anyone meaning to, which would make every stored identity read as stale (a rebuild of every index), or it
+/// isn't changed when the rules are, which would let identities made under other rules answer. Changing the caps or the digest on purpose means changing
+/// this line, and that is the point.
+#[test]
+fn the_stored_rules_tag_is_pinned_so_a_change_to_the_rules_is_meant() {
+    assert_eq!(stored_rules_tag(), stored_rules_tag());
+    let hex: String = stored_rules_tag().iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        hex, "3cf043730d294fd9e13511621692ef37",
+        "the tag of recto-page/1, the standard caps, 16 tag pages and recto-doc-c/1"
+    );
 }

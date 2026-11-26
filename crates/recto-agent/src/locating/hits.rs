@@ -54,6 +54,7 @@ impl Why {
             Self::Page(Unreferenceable::NoIdentity) => "no_identity",
             Self::Page(Unreferenceable::NoDocumentTag) => "no_document_tag",
             Self::Page(Unreferenceable::Capped) => "caps",
+            Self::Page(Unreferenceable::Unreadable) => "file_unreadable",
         }
     }
 }

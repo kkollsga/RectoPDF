@@ -97,6 +97,7 @@ fn reference_reading<A: SessionAccess>(access: &A, tab: &TabRef, page: u32, char
         Unreferenceable::NoSuchPage => crate::no_such_page(),
         Unreferenceable::NoIdentity | Unreferenceable::Capped => not_referenceable(NO_IDENTITY),
         Unreferenceable::NoDocumentTag => not_referenceable(NO_DOCUMENT_TAG),
+        Unreferenceable::Unreadable => AgentError::new(Code::FILE_UNREADABLE, "The tab's file can't be read just now.", exit::FAILED),
     })?;
     let Some((start, end)) = chars else {
         return Ok(json!({ "tab": file.id(), "page": page, "file_page": file_page + 1, "ref": locator::encode(&made) }));
