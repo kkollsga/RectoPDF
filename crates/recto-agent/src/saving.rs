@@ -418,15 +418,19 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     });
     if let Some(support) = support {
         support.after_save(id);
-        let path = saved_as.as_deref().unwrap_or(&snapshot.path);
-        support.provenance(&SaveNote::Landed {
-            path,
-            to: stamp,
-            original: &snapshot.path,
-            backup: outcome.backup.as_deref(),
-        });
+        note_landed(support, &snapshot.path, saved_as.as_deref(), stamp, outcome.backup.as_deref());
     }
     Ok(data)
+}
+
+/// Tells the host the file is in place (`SaveNote::Landed`), kept out of `save` for its length.
+fn note_landed(support: &dyn SaveSupport, original: &Path, saved_as: Option<&Path>, to: Option<FileStamp>, backup: Option<&Path>) {
+    support.provenance(&SaveNote::Landed {
+        path: saved_as.unwrap_or(original),
+        to,
+        original,
+        backup,
+    });
 }
 
 /// **What this actor may not save,** once what the save would write is known: the owner's steps about the file's highlights on a page it leaves out,
