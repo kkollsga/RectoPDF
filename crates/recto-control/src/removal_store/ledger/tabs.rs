@@ -97,7 +97,7 @@ pub fn take_new(root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)
     if seen.running {
         return Vec::new();
     }
-    let mut new = Vec::new();
+    let mut new: Vec<(u64, PathBuf, FileStamp)> = Vec::new();
     for tab in tabs {
         let Some(file) = tab.file else { continue };
         let Some(path) = tab.path.to_path().filter(|p| p.is_absolute()) else {
