@@ -20,8 +20,8 @@ fn opened(path: &Path) -> Folder {
     }
 }
 
-/// Failure: a link, a file or a missing path is taken for a folder (a link followed to a folder somewhere else), or a missing one is called
-/// something else than missing.
+/// Failure: a link, a file, a pipe or a missing path is taken for a folder (a link followed to a folder somewhere else), a pipe with no writer is
+/// waited on, or a missing one is called something else than missing.
 #[test]
 fn only_a_real_folder_of_ours_opens() {
     let dir = TempDir::new("recto-folder-");
@@ -34,6 +34,13 @@ fn only_a_real_folder_of_ours_opens() {
     assert!(matches!(Folder::open(&dir.join("link")), Opened::Other), "a link to a folder");
     assert!(matches!(Folder::open(&dir.join("dangling")), Opened::Other), "a link to nothing");
     assert!(matches!(Folder::open(&dir.join("file")), Opened::Other), "a file");
+    assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
+    let pipe = dir.join("pipe");
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(matches!(Folder::open(&pipe), Opened::Other));
+    });
+    assert!(receiver.recv_timeout(Duration::from_secs(10)).expect("a pipe was waited on"), "a pipe");
     assert!(matches!(Folder::open(&dir.join("nowhere")), Opened::Missing));
     let parent = opened(dir.path());
     assert!(matches!(parent.open_in(OsStr::new("real")), Opened::Folder(_)));
