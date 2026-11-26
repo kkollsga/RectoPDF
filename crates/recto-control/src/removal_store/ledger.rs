@@ -96,17 +96,36 @@ fn verified(real: &Path, expect: FileStamp) -> Option<FileVersion> {
     (now == expect).then(|| FileVersion::new(now, recto_platform::volume::volume_identity(real)))
 }
 
+/// **Where a Save As or a Replace is going, before it is there.** The writer makes its temporary, named for the destination's file name, in the
+/// destination's folder before anything lands, so a crash leaves it there with the whole document in it, and the survey can only list that folder if the
+/// ledger names a path in it. The file may not exist yet, so the folder (the destination's parent, `.` for a bare name) is canonicalized and the file name
+/// appended, and the path is `Unplaced`: seen, and not proven to be any version, so its temp reads `Unknown`. A parent that can't be canonicalized
+/// (missing, unreadable) records nothing and leaves a gap, the safe direction: the lineage is then not the whole story and every removal refuses.
+fn destination_entry(destination: &Path) -> Entry {
+    let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    match (parent.canonicalize(), destination.file_name()) {
+        (Ok(parent), Some(name)) => Entry::Link(Link::Unplaced { path: parent.join(name) }),
+        _ => Entry::Gap(Gap::WriteFailed),
+    }
+}
+
 /// What a save's step adds to the ledger. Pure over the files' stats.
 fn entries_for(note: &SaveNote<'_>) -> Vec<Entry> {
     match note {
-        SaveNote::Starting { path, from } => {
-            let Ok(real) = path.canonicalize() else { return Vec::new() };
-            // A version that can't be proven is still a file that was here: its path reads on both sides.
-            let found = from.and_then(|from| verified(&real, from));
-            vec![Entry::Link(match found {
-                Some(version) => Link::At { version, path: real },
-                None => Link::Unplaced { path: real },
-            })]
+        SaveNote::Starting { path, from, destination } => {
+            let mut out = Vec::new();
+            if let Ok(real) = path.canonicalize() {
+                // A version that can't be proven is still a file that was here: its path reads on both sides.
+                let found = from.and_then(|from| verified(&real, from));
+                out.push(Entry::Link(match found {
+                    Some(version) => Link::At { version, path: real },
+                    None => Link::Unplaced { path: real },
+                }));
+            }
+            if let Some(destination) = destination {
+                out.push(destination_entry(destination));
+            }
+            out
         }
         // A Save As starts a history of its own: the new file is recorded when it lands, and nothing joins it to the one it was made from.
         SaveNote::Prepared { over_itself: false, .. } => Vec::new(),

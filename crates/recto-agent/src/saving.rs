@@ -25,8 +25,13 @@ use std::path::{Path, PathBuf};
 
 /// A save's steps a host may keep the lineage by: where the file was, what it became, and where its one backup went.
 pub enum SaveNote<'a> {
-    /// The save is about to write: the file at `path` is `from`, if its stamp is known.
-    Starting { path: &'a Path, from: Option<FileStamp> },
+    /// The save is about to write: the file at `path` is `from`, if its stamp is known. `destination` is where a Save As or a Replace is going (the
+    /// file may not be there yet): the writer makes its temporary beside it, named for it, before anything lands, so it is noted before the write.
+    Starting {
+        path: &'a Path,
+        from: Option<FileStamp>,
+        destination: Option<&'a Path>,
+    },
     /// The new file is written and is about to be moved into place: `from` (the file at `path`) turns into `to`. `over_itself` is a Save, not a Save As.
     Prepared {
         path: &'a Path,
@@ -329,10 +334,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     let ending = Ending::new(access, id);
     if let Some(support) = access.saving() {
         support.before_writing(id);
-        support.provenance(&SaveNote::Starting {
-            path: &snapshot.path,
-            from: snapshot.stamp,
-        });
+        note_starting(support, &snapshot.path, snapshot.stamp, to);
     }
     // The agreement gate again, now the tab's held: anything added since is looked at, the rest is what was kept.
     if let Some(refusal) = crate::agreement::save_refusal(&snapshot) {
@@ -421,6 +423,15 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         note_landed(support, &snapshot.path, saved_as.as_deref(), stamp, outcome.backup.as_deref());
     }
     Ok(data)
+}
+
+/// Tells the host the save is about to write (`SaveNote::Starting`), naming where a Save As or a Replace is going, kept out of `save` for its length.
+fn note_starting(support: &dyn SaveSupport, path: &Path, from: Option<FileStamp>, to: &SaveTo) {
+    let destination = match to {
+        SaveTo::Same => None,
+        SaveTo::As { out, .. } => Some(out.as_path()),
+    };
+    support.provenance(&SaveNote::Starting { path, from, destination });
 }
 
 /// Tells the host the file is in place (`SaveNote::Landed`), kept out of `save` for its length.

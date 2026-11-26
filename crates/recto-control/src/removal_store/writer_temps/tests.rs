@@ -279,3 +279,61 @@ fn caps_are_exact_and_errors_leave_the_store_unmarked() {
     .unwrap();
     assert!(plan_of(&s, TargetMode::Save).is_ok());
 }
+
+/// A real ledger fed by a save's own first note (`Starting`), as the session sends it before the writer makes anything.
+fn begin_save(root: &Path, source: &Path, destination: &Path) {
+    let stamp = recto_platform::file_stamp(source).unwrap();
+    crate::removal_store::ledger::note_save(
+        &root.join("backups.noindex"),
+        &recto_agent::saving::SaveNote::Starting {
+            path: source,
+            from: Some(stamp),
+            destination: Some(destination),
+        },
+    );
+}
+
+/// The survey of the lineage of the file at `source` in the ledger of `root`. Every store but the writer temps is marked complete, so the plan decides
+/// on the temps alone.
+fn survey_of_root(root: &Path, source: &Path) -> Surveyed {
+    let ledger = crate::removal_store::ledger::read(root);
+    let current = recto_platform::file_stamp(source).unwrap();
+    let version = recto_core::removal::FileVersion::new(current, recto_platform::volume::volume_identity(source));
+    let lineage = lineage(&ledger, version, source, &LEDGER_LIMITS).unwrap();
+    let mut survey = Survey::new(&limits(64));
+    for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::WriterTemp) {
+        survey.mark_complete(store);
+    }
+    survey.history(&lineage);
+    survey_writer_temps_with(&lineage, TargetMode::Save, &mut survey, &TempCaps::default()).unwrap();
+    survey.finish().unwrap()
+}
+
+/// Failure (review round 1): a Save As of `mine.pdf` to `copy.pdf` crashes while the writer builds its temp, which is named for `copy.pdf` and holds the
+/// whole target with the edits. The save's first note named only the source, so the destination's folder was never listed (another folder) or its temp
+/// was ignored as "changed after the ledger began, of a save that recorded its path" (the same folder): the plan said none found. The destination is
+/// recorded at `Starting`, so its folder is listed and its temp reads `Unknown`: the plan refuses.
+#[test]
+fn a_crashed_save_as_leaves_a_temp_the_survey_finds_in_the_destinations_folder() {
+    let dir = TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-wtemps-");
+    for n in 0..2 {
+        // A folder of its own for each, so one's temp is not in the other's survey.
+        let home = dir.join(format!("home-{n}"));
+        std::fs::create_dir_all(home.join("elsewhere")).unwrap();
+        let source = put(&home, "mine.pdf", b"%PDF-1.4");
+        let folder = if n == 0 { home.clone() } else { home.join("elsewhere") };
+        let root = dir.join(format!("state-{n}"));
+        let destination = folder.join("copy.pdf");
+        begin_save(&root, &source, &destination);
+        // The temp is made after the note, as lopdf makes it after the save began.
+        put(&folder, &temp(&folder, "copy.pdf", "9-1.tmp"), b"the whole document and its edits");
+        let surveyed = survey_of_root(&root, &source);
+        assert_eq!(
+            (count(&surveyed, Owner::Unknown), total(&surveyed)),
+            (1, 1),
+            "the temp of a save to {}",
+            destination.display()
+        );
+        assert_eq!(plan_of(&surveyed, TargetMode::Save).unwrap_err(), INCOMPLETE, "{}", destination.display());
+    }
+}
