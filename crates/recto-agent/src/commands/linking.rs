@@ -301,10 +301,11 @@ impl Goto {
     /// Goes to the page a reference points at now, as the tab has it among its edits. Anything but `found` and `moved` is `page_of`'s refusal, and nothing
     /// is done then: no jump, no notice.
     fn go_by_reference<A: SessionAccess>(&self, cx: &mut Cx<'_, A>, reference: &Locator) -> Result<Value, AgentError> {
-        cx.access.take_places();
         let found = locating::page_of(cx.access, &self.tab, reference, locating::CharsChecked::First)?;
         locating::still_located(cx.access, &found)?;
         let within = self.within.unwrap_or(0.0);
+        // Taken in last, after a scan that can take seconds, so the trail marks the page showing when the jump is made.
+        cx.access.take_places();
         let (actor, events) = (cx.actor, &mut *cx.events);
         cx.access.with(|s| {
             let id = found.tab;
@@ -571,6 +572,7 @@ pub(crate) const ROWS_FOLLOW: &[Spec] = &[Spec {
 mod tests {
     use crate::*;
     use recto_core::{DocFacts, OpenError, Toc};
+    use recto_session::DiskLoader;
     use std::path::Path;
     use std::sync::Mutex;
 
@@ -658,6 +660,57 @@ mod tests {
         assert_eq!(page(access.run(r#"{"cmd":"back"}"#)), 3, "forward: the way back is the page that was showing");
     }
 
+    /// A session on real files that notes, in order, each time a command reads the session and each time it takes in the page view's place.
+    struct Noting {
+        session: Mutex<Session<DiskLoader>>,
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl SessionAccess for Noting {
+        type Loader = DiskLoader;
+        fn with<R>(&self, step: impl FnOnce(&mut Session<DiskLoader>) -> R) -> R {
+            self.calls.lock().unwrap().push("with");
+            self.session.with(step)
+        }
+        fn take_places(&self) {
+            self.calls.lock().unwrap().push("take_places");
+        }
+    }
+
+    /// Failure: `goto --ref` takes in the page view's place before it scans the file for the page, which can take seconds, so a reader who scrolls during
+    /// the scan is marked on the trail as where they were before it, and Back returns there instead of to the page that was showing when it jumped.
+    /// The place is taken in after the scan's reads of the tab.
+    #[test]
+    fn a_goto_by_reference_takes_in_the_page_showing_just_before_it_jumps_not_before_its_scan() {
+        let pages: Vec<recto_testpdf::Page> = (1..=9)
+            .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")])))
+            .collect();
+        let file = recto_testpdf::TempPdf::new("nine.pdf", &recto_testpdf::pages(&pages));
+        let access = Noting {
+            session: Mutex::new(Session::new(DiskLoader)),
+            calls: Mutex::new(Vec::new()),
+        };
+        access.session.lock().unwrap().open(&file.0).unwrap();
+        let made = crate::locating::reference(&access, &TabRef::Active, 7, None).expect("a reference to page 7");
+        let line = format!(r#"{{"cmd":"goto","ref":"{}"}}"#, made["ref"].as_str().expect("its token"));
+        // Where the place is taken in, counted in reads of the session before it: a plain jump reads nothing for a scan.
+        let reads_before_taking_in = |line: &str| {
+            access.calls.lock().unwrap().clear();
+            execute(&access, Actor::Agent(Level::Control), &parse(line).unwrap(), &mut Vec::new()).expect("went");
+            let calls = access.calls.lock().unwrap().clone();
+            calls
+                .iter()
+                .position(|call| *call == "take_places")
+                .unwrap_or_else(|| panic!("the place is taken in: {calls:?}"))
+        };
+        let plain = reads_before_taking_in(r#"{"cmd":"goto","page":7}"#);
+        let by_reference = reads_before_taking_in(&line);
+        assert!(
+            by_reference >= plain + 2,
+            "the scan's reads of the tab (2) come before the place is taken in: {by_reference} reads, a plain jump {plain}"
+        );
+    }
+
     /// Failure: `goto --within` takes a place on the page from a link's destination, which comes from the PDF, so a place past the page's end lands off
     /// it, or one with a label lands somewhere unsaid; or the CLI lets through what the wire would clamp without a word. It lands that far down, clamped
     /// to the page as a link's is; with a label it's refused; and the CLI refuses a share outside 0 to 1.
@@ -691,10 +744,29 @@ mod tests {
         let access = Mutex::new(session);
         // As the line is read, in its own words, before any level is asked.
         let error = parse(r#"{"cmd":"goto"}"#).map(|_| ()).unwrap_err();
-        assert_eq!((error.code.as_str(), error.exit, error.message.as_str()), ("usage", exit::USAGE, crate::commands::locating::GOTO_NEITHER));
+        assert_eq!(
+            (error.code.as_str(), error.exit, error.message.as_str()),
+            ("usage", exit::USAGE, crate::commands::locating::GOTO_NEITHER)
+        );
         // One built in Rust, which never passes through the line, is refused when it runs.
-        let bare = super::Goto { tab: TabRef::default(), page: None, label: None, within: None, entry: None, link: false, reference: None };
-        let error = crate::commands::Cmd::run(&bare, &mut crate::commands::Cx { access: &access, actor: Actor::Agent(Level::Control), events: &mut Vec::new() }).unwrap_err();
+        let bare = super::Goto {
+            tab: TabRef::default(),
+            page: None,
+            label: None,
+            within: None,
+            entry: None,
+            link: false,
+            reference: None,
+        };
+        let error = crate::commands::Cmd::run(
+            &bare,
+            &mut crate::commands::Cx {
+                access: &access,
+                actor: Actor::Agent(Level::Control),
+                events: &mut Vec::new(),
+            },
+        )
+        .unwrap_err();
         assert_eq!((error.code.as_str(), error.exit), ("usage", exit::USAGE));
         assert!(access.lock().unwrap().mail_mut().take_jump(id).is_none(), "nothing was told to move");
     }
