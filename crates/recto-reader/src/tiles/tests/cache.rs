@@ -288,3 +288,39 @@ fn a_closed_window_holds_no_tiles_and_comes_back() {
     assert!(reader.is_settled());
     assert!(!reader.cache.entries.is_empty());
 }
+
+/// Failure (the app test `the_panels_rotate_turns_every_page_and_undoes_in_one`, one full check in five at load): a turn and its undo draw again. The rule is that they drop nothing that was drawn, so every draw after the way back
+/// is one the system made necessary, a kept tile it took back (`discards_lost`). Here the system takes nothing by itself, so turning back draws nothing; when a test empties what's kept, it draws exactly what was found gone.
+#[test]
+fn turning_back_draws_only_what_the_system_took() {
+    let mut reader = reader_on(10);
+    reader.place.scrolled_to = 0;
+    settle(&mut reader);
+    let at = view(0.0);
+    let turned = || PageMap {
+        turns: Some(Arc::from(vec![1u8; 10])),
+        ..map()
+    };
+    let turn_to = |reader: &mut Reader, map: PageMap| {
+        reader.activate(1, 10, 0, map, &[], None, Spread::Single);
+        follow_host(reader, at);
+        settle(reader);
+    };
+    let first = reader.counts().drawn;
+    turn_to(&mut reader, turned());
+    let turned_at = reader.counts().drawn;
+    assert!(turned_at > first, "the turn draws at the new scale: {first} then {turned_at}");
+    turn_to(&mut reader, map());
+    assert_eq!(
+        reader.counts().drawn,
+        turned_at,
+        "turning back draws nothing: the kernel takes nothing in these tests"
+    );
+    turn_to(&mut reader, turned());
+    let (drawn, lost) = (reader.counts().drawn, reader.counts().discards_lost);
+    assert!(reader.cache.empty_discardable() > 0, "something was kept off the layers to take");
+    turn_to(&mut reader, map());
+    let (drew, found) = (reader.counts().drawn - drawn, reader.counts().discards_lost - lost);
+    assert!(found > 0, "the way back found what was taken gone");
+    assert_eq!(drew, found, "and drew just that again");
+}

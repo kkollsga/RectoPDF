@@ -1,10 +1,11 @@
 //! The adapter lists real folders in a temp root and places by the writer's own names; the plan made from it is what a person would be shown.
 
 use super::*;
-use crate::removal_store::testing::{Restore, bounded, limits, mkfifo, mode, put, version};
+use crate::removal_store::testing::{Restore, limits, mkfifo, mode, put, version};
 use recto_core::removal::{DESIGN_LIMITS, Kinds, LEDGER_LIMITS, Ledger, Link, Plan, Request, Surveyed, TargetMode, lineage};
 use recto_core::save::writer_temp_prefix;
 use recto_testpdf::TempDir;
+use recto_testpdf::returns_in_time;
 use std::sync::Arc;
 
 const INCOMPLETE: Refusal = Refusal::Incomplete(Store::WriterTemp);
@@ -84,7 +85,7 @@ fn a_pipe_or_a_link_named_as_a_temp_is_unknown_and_never_opened() {
     std::os::unix::fs::symlink(&pdf, dir.join(temp(&dir, "mine.pdf", "2-0.tmp"))).unwrap();
     std::os::unix::fs::symlink(other_folder.path(), dir.join(temp(&dir, "mine.pdf", "1-0.d"))).unwrap();
     let path = dir.path().to_path_buf();
-    let s = bounded(move || survey(&path, TargetMode::Save));
+    let s = returns_in_time("the survey waited on something", move || survey(&path, TargetMode::Save));
     assert_eq!((count(&s, Owner::Unknown), total(&s)), (3, 3));
     assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), INCOMPLETE);
 }
@@ -192,7 +193,7 @@ fn nothing_in_the_folder_is_opened() {
     crashed_folder(&dir, &temp(&dir, "mine.pdf", "2-0.d"));
     mode(&dir.join(temp(&dir, "mine.pdf", "2-0.d")), 0o000);
     let path = dir.path().to_path_buf();
-    let s = bounded(move || survey(&path, TargetMode::Save));
+    let s = returns_in_time("the survey waited on something", move || survey(&path, TargetMode::Save));
     mode(&dir.join(temp(&dir, "mine.pdf", "2-0.d")), 0o700);
     assert_eq!((count(&s, Owner::Unknown), total(&s)), (2, 2));
 }

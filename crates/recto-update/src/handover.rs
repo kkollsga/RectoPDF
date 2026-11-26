@@ -394,12 +394,8 @@ mod tests {
         assert_eq!(open_inside(&link, &folder).unwrap_err(), Refusal::NotAFile, "a link");
         let fifo = folder.join("RectoPDF-0.1.0.4.zip");
         assert!(Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap().success());
-        let (sender, receiver) = mpsc::channel();
         let (folder_copy, fifo_copy) = (folder.clone(), fifo.clone());
-        std::thread::spawn(move || {
-            let _ = sender.send(open_inside(&fifo_copy, &folder_copy).map(|_| ()));
-        });
-        let answer = receiver.recv_timeout(Duration::from_secs(10)).expect("a FIFO with no writer held the open");
+        let answer = recto_testpdf::returns_in_time("a FIFO with no writer held the open", move || open_inside(&fifo_copy, &folder_copy).map(|_| ()));
         assert_eq!(answer.unwrap_err(), Refusal::NotAFile, "a FIFO");
         let big = folder.join("RectoPDF-0.1.0.5.zip");
         File::create(&big).unwrap().set_len(MAX_BYTES + 1).unwrap();

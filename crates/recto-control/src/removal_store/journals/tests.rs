@@ -2,11 +2,12 @@
 
 use super::*;
 use crate::removal_store::placing::key_of;
-use crate::removal_store::testing::{Restore, bounded, limits, mkfifo, mode, put, version};
+use crate::removal_store::testing::{Restore, limits, mkfifo, mode, put, version};
 use recto_core::removal::{DESIGN_LIMITS, Disposition, Effect, FileVersion, Kinds, LEDGER_LIMITS, Ledger, Link, Plan, Request, Surveyed, lineage};
 use recto_platform::FileStamp;
 use recto_session::record::{JournalHeader, journal_line, journal_start};
 use recto_testpdf::TempDir;
+use recto_testpdf::returns_in_time;
 use std::path::PathBuf;
 
 const MINE: &str = "/pdfs/mine.pdf";
@@ -122,7 +123,7 @@ fn a_pipe_or_a_link_at_any_name_is_unknown_and_never_followed() {
         mkfifo(&folder(&dir).join(&name));
         let path = dir.path().to_path_buf();
         assert_eq!(
-            bounded(move || refusal(&path, TargetMode::Save)),
+            returns_in_time("the survey waited on something", move || refusal(&path, TargetMode::Save)),
             Refusal::Incomplete(store),
             "a pipe at {name}"
         );
@@ -134,7 +135,7 @@ fn a_pipe_or_a_link_at_any_name_is_unknown_and_never_followed() {
         std::os::unix::fs::symlink(&precious, folder(&dir).join(&name)).unwrap();
         let path = dir.path().to_path_buf();
         assert_eq!(
-            bounded(move || refusal(&path, TargetMode::Save)),
+            returns_in_time("the survey waited on something", move || refusal(&path, TargetMode::Save)),
             Refusal::Incomplete(store),
             "a link at {name}"
         );
@@ -190,7 +191,9 @@ fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
                 before_open: Some(hook),
                 ..Caps::default()
             };
-            let s = bounded(move || survey_with(&root, &ledger(), version(7), TargetMode::Save, 64, &caps));
+            let s = returns_in_time("the survey waited on something", move || {
+                survey_with(&root, &ledger(), version(7), TargetMode::Save, 64, &caps)
+            });
             let refused = plan_of(&s.unwrap(), TargetMode::Save).unwrap_err();
             assert_eq!(refused, Refusal::Incomplete(store), "{file} swapped for a {swapped}");
         }
@@ -304,7 +307,9 @@ fn a_documents_path_in_a_header_is_never_touched() {
     });
     put(&folder(&dir), &format!("journal-{}.log", k(7)), &journal(&path, 7));
     let root = dir.path().to_path_buf();
-    let s = bounded(move || survey_with(&root, &ledger, version(7), TargetMode::Save, 64, &Caps::default()));
+    let s = returns_in_time("the survey waited on something", move || {
+        survey_with(&root, &ledger, version(7), TargetMode::Save, 64, &Caps::default())
+    });
     let p = plan_of(&s.unwrap(), TargetMode::Save).unwrap();
     assert_eq!(purged(&p, Store::Journal), 1);
 }

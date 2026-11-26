@@ -163,3 +163,10 @@ pub(super) fn open_stopped(doc: &mut DocRenderer, failed: RenderFailure, starved
         failed
     }
 }
+
+impl RenderFailure {
+    /// The Mac was too busy to give the worker the processor ([`Self::TooBusy`], [`Self::TooBusyToStart`]): it says nothing of the file, nothing is remembered, and asking again tries again.
+    pub fn is_busy(self) -> bool {
+        matches!(self, Self::TooBusy { .. } | Self::TooBusyToStart)
+    }
+}

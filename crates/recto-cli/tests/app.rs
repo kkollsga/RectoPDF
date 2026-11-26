@@ -621,7 +621,6 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     wait_for(&run, |state| state["app"]["document_edited"] == true);
     run.settled();
     let turned = run.report();
-    let drawn = turned["reader"]["counts"]["drawn"].as_u64().unwrap();
     assert!(
         turned["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 1),
         "every page shows turned: {}",
@@ -644,12 +643,43 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
         back["app"]["pages"]
     );
     assert_eq!(run.ok(&["edits"])["can_undo"], false, "it was one step");
-    // A landscape page fits at another scale, so a turn draws at that scale; what was drawn before isn't dropped, so turning back draws nothing new.
+    // The rule: a turn and its undo drop nothing that was drawn, so after the undo nothing is drawn again except what the system took back (`discards_lost`, a
+    // tile found emptied when it was put back) and the one more the re-anchored place may show. Open question: what that one is for (it came in unexplained, 11f1578a).
+    let draws = |state: &serde_json::Value| {
+        (
+            state["reader"]["counts"]["drawn"].as_u64().unwrap(),
+            state["reader"]["counts"]["discards_lost"].as_u64().unwrap(),
+        )
+    };
+    let within = |from: &serde_json::Value, to: &serde_json::Value| {
+        let (drawn, lost) = draws(from);
+        let (now, now_lost) = draws(to);
+        let message = format!(
+            "turning back drew again: drawn {drawn} then {now}, discards_lost {lost} then {now_lost}, system pressure {}",
+            to["record"]["sleep"]["system_pressure"]
+        );
+        (now <= drawn + 1 + (now_lost - lost), message)
+    };
+    let (ok, message) = within(&turned, &back);
+    assert!(ok, "{message}");
+    run.ok(&["qa", "key-action", "redo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    let turned2 = run.report();
+    // The system takes back what's kept off the layers, as it does without a word when it needs the pages: what's drawn again is then exactly what it took.
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"]);
+    assert!(emptied["emptied"].as_u64().unwrap() > 0, "{emptied}");
+    run.ok(&["qa", "key-action", "undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.settled();
+    let back2 = run.report();
     assert!(
-        back["reader"]["counts"]["drawn"].as_u64().unwrap() <= drawn + 1,
-        "turning back drew again: {drawn} then {}",
-        back["reader"]["counts"]["drawn"]
+        draws(&back2).1 > draws(&turned2).1,
+        "the system took tiles, and the way back found them gone: {}",
+        back2["reader"]["counts"]
     );
+    let (ok, message) = within(&turned2, &back2);
+    assert!(ok, "{message}");
     run.ok(&["qa", "key-action", "redo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == true);
     // An agent's way, the same method.
@@ -2362,7 +2392,7 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
     let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true);
     assert_eq!(edited["app"]["document_edited"], true);
     run.ok(&["qa", "button", "save"]);
-    wait_for(&run, |state| {
+    common::app::wait_for_within(&run, common::app::save_within(), |state| {
         state["app"]["save_button"]["visible"] == false && state["app"]["document_edited"] == false
     });
     let saved = std::fs::read(&first.0).unwrap();
@@ -2395,7 +2425,7 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
     run.ok(&["qa", "sheet-answer", "cancel"]);
     let copy = first.0.with_file_name("first-copy.pdf");
     run.ok(&["qa", "save-as", copy.to_str().unwrap()]);
-    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    common::app::wait_for_within(&run, common::app::save_within(), |state| state["app"]["document_edited"] == false);
     assert!(std::fs::read(&copy).unwrap().starts_with(&saved), "the copy is of the tab it was for");
 
     // Only undone steps: nothing to save, so the prompt offers Close, says the steps go, and closing lets them go.
@@ -2434,7 +2464,7 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
     run.ok(&["qa", "menu", "file.close"]);
     wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
     run.ok(&["qa", "sheet-answer", "first"]);
-    wait_for(&run, |state| state["app"]["home"] == true);
+    common::app::wait_for_within(&run, common::app::save_within(), |state| state["app"]["home"] == true);
     assert!(std::fs::read(&second.0).unwrap().len() > before.len(), "saved before it closed");
     run.ok(&["watch", "stop"]);
     let heard = String::from_utf8(watching.wait_with_output().unwrap().stdout).unwrap();
@@ -2765,7 +2795,7 @@ fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
     // the temp folder by any name.
     let out = file.0.with_file_name(format!("locked-printed-{}.pdf", std::process::id()));
     run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
-    let printed = wait_for(&run, |state| state["printing"]["busy"] == false);
+    let printed = common::app::wait_for_within(&run, common::app::print_patience(2), |state| state["printing"]["busy"] == false);
     let facts = State::at(Level::Full).json(&["local", out.to_str().unwrap(), "facts", "--json"]).0;
     let named: Vec<String> = std::fs::read_dir(std::env::temp_dir())
         .unwrap()
@@ -3334,7 +3364,7 @@ fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
         edited["app"]["save_button"]
     );
     run.ok(&["qa", "button", "save"]);
-    wait_for(&run, |state| {
+    common::app::wait_for_within(&run, common::app::save_within(), |state| {
         state["app"]["document_edited"] == false && state["app"]["save_button"]["visible"] == false
     });
     let bytes = std::fs::read(&file.0).unwrap();
@@ -3414,7 +3444,9 @@ fn a_signed_files_delete_turns_save_off_and_save_as_is_unsigned() {
         wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
         let copy = file.0.with_file_name(format!("{kind} unsigned copy.pdf"));
         run.ok(&["qa", "save-as", copy.to_str().unwrap()]);
-        let saved = wait_for(&run, |state| state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null());
+        let saved = common::app::wait_for_within(&run, common::app::save_within(), |state| {
+            state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null()
+        });
         assert!(
             saved["app"]["copy_notice"]["text"]
                 .as_str()
@@ -3448,7 +3480,9 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
         edited["app"]["save_button"]
     );
     run.ok(&["qa", "button", "save"]);
-    let saved = wait_for(&run, |state| state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null());
+    let saved = common::app::wait_for_within(&run, common::app::save_within(), |state| {
+        state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null()
+    });
     assert!(
         saved["app"]["copy_notice"]["text"].as_str().is_some_and(|note| note.contains("usage rights")),
         "{}",
@@ -3834,7 +3868,7 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
     wait_for(&run, |state| state["app"]["find"]["open"] == false);
     // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
     run.ok(&["qa", "menu", "find.previous"]);
-    // Find reads all 300 pages, each a worker's job, before the last hit is known: as long as that takes, which with the worker's answers 60 ms late (slow mode) is about 18 s, not the 4 s of `wait_for`. What's checked is that it gets there, not how soon.
+    // Find reads all 300 pages, each a worker's job, before the last hit is known: as long as that takes, which with the worker's answers 60 ms late (slow mode) is about 18 s, more than a state change takes (`state_change_within`). What's checked is that it gets there, not how soon.
     let read_through = std::time::Duration::from_secs(90);
     common::app::wait_for_within(&run, read_through, |state| state["app"]["place"] == "300 of 300");
     // The status is published on its own beat, so it can say a few pages less for a moment after the step has gone to the last hit (seen in a full run: "291 matches on 291 pages, searching…" with the place already at 300). Once the query's done, it says all of them, and the place is still the last hit.
@@ -3856,7 +3890,7 @@ fn find_in_a_protected_document_works_for_the_person_and_never_for_an_agent() {
     run.ok(&["qa", "menu", "find.open"]);
     wait_for(&run, |state| state["app"]["find"]["open"] == true);
     run.ok(&["qa", "find-type", "locked page"]);
-    let found = wait_for(&run, |state| {
+    let found = common::app::wait_for_within(&run, common::app::print_patience(2), |state| {
         state["app"]["find"]["status"].as_str().is_some_and(|status| status.contains("2 matches"))
     });
     assert_eq!(
