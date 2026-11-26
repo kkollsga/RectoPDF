@@ -537,3 +537,18 @@ fn the_identity_files_do_not_change_what_a_corpus_says_of_itself() {
         BuildOutcome::AlreadyReady(_)
     ));
 }
+
+/// Failure: a build killed after its header but before `ready.sealed`, started again with identities it can't keep (over the limit), leaves the old header
+/// naming records that are gone, so the corpus is read as damaged where it only has none. The header goes before the records change.
+#[test]
+fn a_new_build_takes_the_old_header_away_before_it_changes_the_records() {
+    let temp = Temp::new();
+    built(&temp.0, &mut Feed::made_up(4), &BuildLimits::default());
+    fs::remove_file(paths(&temp.0).ready).unwrap();
+    let limits = BuildLimits {
+        identity_bytes: 0,
+        ..BuildLimits::default()
+    };
+    assert!(matches!(built(&temp.0, &mut Feed::made_up(4), &limits), BuildOutcome::Ready { .. }));
+    assert!(matches!(Identities::open(tk(), &temp.0, KEY), Ok(None)));
+}
