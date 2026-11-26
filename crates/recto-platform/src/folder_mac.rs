@@ -172,9 +172,7 @@ impl Entries<'_> {
             }
             st.assume_init()
         };
-        let modified_ns = i64::from(st.st_mtime)
-            .checked_mul(1_000_000_000)
-            .and_then(|s| s.checked_add(i64::from(st.st_mtime_nsec)));
+        let modified_ns = st.st_mtime.checked_mul(1_000_000_000).and_then(|s| s.checked_add(st.st_mtime_nsec));
         Ok(Entry {
             name: OsString::from_vec(name.to_bytes().to_vec()),
             is_file: st.st_mode & libc::S_IFMT == libc::S_IFREG,
