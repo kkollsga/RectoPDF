@@ -73,6 +73,15 @@ fn wait_for(root: &Path, what: &str, ready: impl Fn(&Ledger) -> bool) -> Ledger 
     }
 }
 
+/// Waits, up to 10 s, for the `recto-ledger` thread of `root` to end: adoption is done by it, after the append that began the ledger has returned.
+fn wait_idle(root: &Path) {
+    let until = Instant::now() + Duration::from_secs(10);
+    while running(root) {
+        assert!(Instant::now() < until, "the ledger's thread didn't end");
+        std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+    }
+}
+
 /// Failure: the ledger records the path as it was reached, so a file reached through a link is named by a path `backup_of` doesn't hash and its backup can't be
 /// placed; or, with no stamp check, a link retargeted at another file records that file as the version that was seen.
 #[test]
@@ -432,6 +441,38 @@ fn patient() -> Config {
     }
 }
 
+/// Failure: adoption runs on the thread of the save that began the ledger, under the lock, so a save is held up by as long as the journals take to read
+/// (a hung mount under one header's path holds it for ever). The first writer's call returns, with its own entry in the ledger, while adoption is held
+/// at its seam; what the journals prove lands after the release.
+#[test]
+fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
+    let dir = temp();
+    let root = dir.join("state");
+    let file = dir.join("a.pdf");
+    std::fs::write(&file, pdf("a")).unwrap();
+    journal(&root, "session", 1, &file, Some(stamp(&file)), None);
+    let (reached, at_seam) = mpsc::channel::<()>();
+    let (release, released) = mpsc::channel::<()>();
+    let (reached, released) = (Mutex::new(reached), Mutex::new(released));
+    let config = Config {
+        before_adoption: Some(Arc::new(move || {
+            let _ = reached.lock().unwrap().send(());
+            let _ = released.lock().unwrap().recv_timeout(Duration::from_secs(20));
+        })),
+        ..patient()
+    };
+    let own = dir.join("own.pdf");
+    std::fs::write(&own, pdf("own")).unwrap();
+    // The save's own call, on this thread: it returns with the thread's seam not yet passed.
+    note_save_with(&root.join("backups.noindex"), &SaveNote::Starting { path: &own, from: None }, &config);
+    at_seam.recv_timeout(Duration::from_secs(10)).expect("adoption was handed to the ledger's thread");
+    let held = read(&root);
+    assert_eq!((held.links.len(), held.gap), (1, None), "the save's own entry only: {:?}", held.links);
+    release.send(()).unwrap();
+    wait_idle(&root);
+    assert_eq!(read(&root).links.len(), 2, "then the journal's file");
+}
+
 /// Failure: adoption has no time bound (a slow disk or a folder of a thousand journals holds the first save's thread for as long as it takes), or it runs out
 /// of time and says nothing (the removal then reads a ledger that is missing links as the whole story). With no time, nothing is read and it says so.
 #[test]
@@ -449,6 +490,7 @@ fn adoption_out_of_time_says_so() {
         },
         Vec::new(),
     );
+    wait_idle(&root);
     let ledger = read(&root);
     assert_eq!((ledger.links.len(), ledger.gap), (0, Some(Gap::AdoptionCut)));
 }
@@ -492,6 +534,7 @@ fn adoption_takes_what_the_journals_prove_and_nothing_else() {
     // A journal that is a link to a file elsewhere is not read.
     std::os::unix::fs::symlink(&still, root.join("session/journals/journal-0000000000000005.log")).unwrap();
     append(&root, &patient(), Vec::new());
+    wait_idle(&root);
     note_save(&root.join("backups.noindex"), &SaveNote::Starting { path: &still, from: None });
     let ledger = read(&root);
     let paths: Vec<&Path> = ledger
@@ -532,6 +575,7 @@ fn adoption_stops_at_its_cap_and_says_so() {
             },
             Vec::new(),
         );
+        wait_idle(&root);
         let ledger = read(&root);
         assert_eq!(ledger.gap, cut.then_some(Gap::AdoptionCut), "{journals} journals");
         assert_eq!(ledger.links.len(), 3, "the three it read are in");
@@ -588,6 +632,7 @@ fn a_record_write_never_waits_for_the_ledger() {
     assert!(std::fs::metadata(ledger_path(&root)).is_err(), "nothing was written while it was held");
     release.send(()).unwrap();
     wait_for(&root, "the first tab", |l| l.links.len() == 1);
+    wait_idle(&root);
     // Nothing new: no thread, so nothing running at once after the call.
     note_tabs_with(&root, &[tab(&dir.join("a.pdf"))], &Config::default());
     assert!(!running(&root), "a tab already noted starts no thread");

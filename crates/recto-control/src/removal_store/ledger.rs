@@ -3,8 +3,9 @@
 //! journals, and the lock that keeps two writers from appending the same thing twice.
 //!
 //! It records paths and numbers, and opens a document never: only a stat and `canonicalize` ([`canonical_version`]). A save never fails, or waits longer than the lock's
-//! bound ([`Config::lock_wait`], 250 ms), because of it: whatever can't be written leaves `removal/ledger.gap`, and the ledger then reads as having a gap, so a
-//! removal refuses rather than reads "nothing found".
+//! bound ([`Config::lock_wait`], 250 ms), because of it: the one adoption of the older journals, which can take as long as a slow disk takes, is done by the
+//! `recto-ledger` thread, never on a save's own. Whatever can't be written leaves `removal/ledger.gap` (a link or a pipe at its name isn't followed or waited
+//! on); the ledger then reads as having a gap, so a removal refuses rather than reads "nothing found".
 //!
 //! **Why a note is not flushed to the drive.** A note lost to a crash or a power cut leaves a backup with no record, which reads `Unknown` and refuses a removal:
 //! a false refusal, never a wrong answer. A flush on the save's own path would be an unbounded wait on the disk, which a save must not do for this.
@@ -23,7 +24,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod adopt;
 mod tabs;
 
-pub use tabs::{finish, note_tabs, running, take_new};
+pub use tabs::note_tabs;
+#[cfg(any(test, feature = "test-seams"))]
+pub use tabs::{finish, running, take_new};
 #[cfg(test)]
 pub(crate) use tabs::{held, note_tabs_with};
 
@@ -47,6 +50,9 @@ pub struct Config {
     pub(crate) before_write: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     pub(crate) in_thread: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Test seam: called by the `recto-ledger` thread when it has been handed the adoption, before it reads a journal.
+    #[cfg(test)]
+    pub(crate) before_adoption: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for Config {
@@ -60,6 +66,8 @@ impl Default for Config {
             before_write: None,
             #[cfg(test)]
             in_thread: None,
+            #[cfg(test)]
+            before_adoption: None,
         }
     }
 }
@@ -261,7 +269,13 @@ impl Room {
 /// (and adoption's).
 pub(crate) fn append(root: &Path, config: &Config, entries: Vec<Entry>) {
     match try_append(root, config, entries) {
-        Ok(()) | Err(Failed::Unwritable) => {}
+        Ok(began) => {
+            // A ledger just begun is adopted into by the ledger's thread, never by this one: the older journals are many, and this may be a save.
+            if began {
+                tabs::request_adoption(root, config);
+            }
+        }
+        Err(Failed::Unwritable) => {}
         Err(Failed::Lost) => mark_gap(root),
     }
 }
@@ -291,7 +305,8 @@ enum Failed {
     Lost,
 }
 
-fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<(), Failed> {
+/// `Ok(true)` if this call began the ledger (wrote its header).
+fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<bool, Failed> {
     let dir = dir_of(root);
     let made = !dir.exists();
     local::ensure_private_dir(&dir).map_err(|_| Failed::Lost)?;
@@ -334,15 +349,11 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<(), F
     };
     // A ledger just begun has no gap yet: the one a cut-short header read as was its own.
     let mut known_gap = !first && (ledger.gap.is_some() || !out.is_empty());
-    let mut adopted = Vec::new();
     if first {
         out.extend_from_slice(&encode_header(now_ns()));
-        let (found, cut) = adopt::adopt(root, config);
-        adopted = found;
-        adopted.extend(cut.then_some(Entry::Gap(Gap::AdoptionCut)));
     }
     let mut seen: Vec<&Link> = ledger.links.iter().collect();
-    for entry in adopted.iter().chain(entries.iter()) {
+    for entry in &entries {
         match entry {
             Entry::Link(link) => {
                 if seen.contains(&link) {
@@ -356,13 +367,28 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<(), F
         room.admit(entry, &mut out);
     }
     if out.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     #[cfg(test)]
     if let Some(seam) = &config.before_write {
         seam();
     }
-    (&file).write_all(&out).map_err(|_| Failed::Lost)
+    (&file).write_all(&out).map_err(|_| Failed::Lost)?;
+    Ok(first)
+}
+
+/// **Adoption, on the `recto-ledger` thread:** what the older journals prove, read with no lock held, then appended once like any other note (a link already
+/// there is not added again).
+pub(super) fn adopt_now(root: &Path, config: &Config) {
+    #[cfg(test)]
+    if let Some(seam) = &config.before_adoption {
+        seam();
+    }
+    let (mut found, cut) = adopt::adopt(root, config);
+    found.extend(cut.then_some(Entry::Gap(Gap::AdoptionCut)));
+    if !found.is_empty() {
+        append(root, config, found);
+    }
 }
 
 #[cfg(test)]

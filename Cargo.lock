@@ -793,6 +793,7 @@ name = "recto-control"
 version = "0.1.3"
 dependencies = [
  "recto-agent",
+ "recto-control",
  "recto-core",
  "recto-index",
  "recto-platform",
