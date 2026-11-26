@@ -711,6 +711,9 @@ fn roots_are_held_only_with_something_to_note_and_never_while_running() {
     let dir = temp();
     let roots: Vec<PathBuf> = (0..9).map(|n| dir.join(format!("state-{n}"))).collect();
     let nothing = dir.join("nothing");
+    // A neighbour's root on the process's static, left running as a neighbouring test's saves leave theirs.
+    let neighbour = dir.join("neighbour");
+    assert_eq!(take_new(&neighbour, &[tab_n(99)]).len(), 1);
     assert!(take_new(&nothing, &[]).is_empty());
     assert!(take_new(&nothing, &[recto_session::record::TabEntry { file: None, ..tab_n(1) }]).is_empty());
     assert_eq!(held(&nothing).0, 0, "a call with no tabs holds no root");
