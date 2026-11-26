@@ -1036,6 +1036,13 @@ ci_part heavy
 # crate at the end of the heavy job, outside every stage. A heavy run, with its record kept (STUB_JUNIT) and the list answered, makes no `-p recto-cli` call at all.
 : > "$CALLS"; env CI=true CHECK_PART=heavy CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch STUB_JUNIT=1 STUB_LIST='recto-cli::restore update::x' tools/check.sh --full > "$X/part-heavy-record.out" 2>&1
 check "a heavy run lists the lifecycle tests for its record, and makes no -p recto-cli call" "1 0" "$(grep -c '^nextest list ' "$CALLS") $(grep -c -- '-p recto-cli' "$CALLS")"
+# Failure (coordinator decision, 2026-11-26): heavy no longer runs the gate, so a cache saved by it had no check-mode artifacts and `light` built them every run after
+# the next Cargo.lock change. The saving run builds them with `--warm-gate` (the same `gate` function): clippy (workspace, headings), the Windows check, no test; and the workflow runs it under the save's own condition, so a normal run doesn't pay it.
+: > "$CALLS"; CI=true tools/check.sh --warm-gate > "$X/warm.out" 2>&1; warm_rc=$?
+check "the warm gate builds the gate's commands and nothing else" "0 1 1 1 0" "$warm_rc $(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c '^clippy --manifest-path crates/recto-headings' "$CALLS") $(grep -c '^clippy --workspace --locked --target' "$CALLS") $(grep -c 'nextest' "$CALLS")"
+save_if=$(grep -A3 "name: Rust's cache, saved on main" "$SOURCE/.github/workflows/ci.yml" | sed -n 's/^ *if: //p')
+warm_if=$(grep -A3 "name: The gate's builds, kept in the cache" "$SOURCE/.github/workflows/ci.yml" | sed -n 's/^ *if: //p')
+check "the workflow runs it on the runs that save the cache, and only those" "$save_if" "$warm_if"
 same_calls() { grep -vE -- '--test app --test restore|binary\(=app\) \| binary\(=restore\)' "$1" | sed -E 's/^nextest run --locked --no-fail-fast (-p recto-cli --test |--workspace -E package\(recto-cli\) \& \(binary\(=)(notices|registrations).*/\2 stage/' | sort; }
 check "light and heavy together run what a run of everything does, each call once" "$(same_calls "$X/calls-all")" "$( { same_calls "$X/calls-light"; same_calls "$X/calls-heavy"; } | sort)"
 check "no call is in both" "" "$(comm -12 <(sort -u "$X/calls-light") <(sort -u "$X/calls-heavy"))"

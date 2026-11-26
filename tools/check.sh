@@ -3,6 +3,8 @@
 #
 #   tools/check.sh --quick    The compile gate, then the tests of crates changed since the branch left main (and uncommitted) and the registration guards (while working)
 #   tools/check.sh --corpus   The index against the pages over every PDF in RECTO_BENCH100, about a quarter of an hour
+#   tools/check.sh --warm-gate  CI's heavy job on a cache-saving run only: the gate's builds (clippy, the Windows check), failures ignored, so the saved cache holds check artifacts
+#                             that light, which holds the gate's verdict, needs (2026-11-26). Nothing is tested, counted or recorded.
 #   tools/check.sh --failed   Only the tests that failed last time in this folder (while fixing them)
 #   tools/check.sh --full     The compile gate, then the tests of what the change can affect (changed crates and their dependents, the guards) and the app
 #                             tiers it can affect, as tools/check-scope.sh says; everything on CI, on `main` and with CHECK_ALL=1 (before handing back).
@@ -471,6 +473,7 @@ case "$mode" in
     evidence_report "$status"
     exit "$status"
     ;;
+  --warm-gate) ;; # after the gate's definition, below
   --failed)
     log=$(tools/sysguard/heavy.sh --last-failure) || exit 1
     names=$(sed -nE 's/^ *(FAIL|SIGKILL|SIGABRT|SIGSEGV|TIMEOUT|ABORT) +\[[^]]*\] +(\([^)]*\) +)?[^ ]+ +([^ ]+) *$/\3/p' "$log" | sort -u)
@@ -531,6 +534,16 @@ gate() {
     echo "check: $c's doc links took $(($(date +%s) - at)) s"
   done
 }
+# The gate's builds alone, for the run that saves CI's cache: heavy no longer runs the gate, so its check-mode artifacts (clippy's, the Windows target's) would be
+# missing from the cache and `light` would build them every run after the next Cargo.lock change. The same `gate` function, so one set of command lines;
+# its verdict is light's, so a failure here only says so.
+if [ "$mode" = --warm-gate ]; then
+  doc_crates=""
+  export doc_crates
+  export -f gate
+  HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh --warm-gate" || echo "check: the warm gate failed; the gate's verdict is light's, so this run goes on."
+  exit 0
+fi
 # The changed crates' tests compiled with their own features (see `run`): the light part's one stage that builds, and in a run of everything it is in
 # changed-tests. Only when a second stage follows them (other_mode), as `run` says.
 features_check() {
