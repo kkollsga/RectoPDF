@@ -57,7 +57,12 @@ fn ours(fd: OwnedFd) -> Opened {
 }
 
 fn name_of(name: &OsStr) -> io::Result<CString> {
-    CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput.into())
+    // One plain name of this folder: `openat` ignores the folder for an absolute name (`/dev/fd/N` reopens descriptor N) and leaves it for `..`.
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    CString::new(bytes).map_err(|_| io::ErrorKind::InvalidInput.into())
 }
 
 impl Folder {

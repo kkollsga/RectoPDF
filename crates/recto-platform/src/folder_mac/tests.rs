@@ -111,3 +111,28 @@ fn open_private_in_refuses_what_it_should_and_never_waits() {
     let ok = receiver.recv_timeout(Duration::from_secs(10)).expect("a pipe was waited on");
     assert_eq!(ok, [true, false, false, false, false]);
 }
+
+/// Failure: a name that is not one plain name of this folder reaches `openat`. An absolute name makes `openat` ignore the folder's descriptor
+/// (`/dev/fd/N` reopens descriptor N, such as a person's PDF), and `.`, `..`, an empty name or a `/` leave the folder.
+#[test]
+fn a_name_that_is_not_one_plain_name_is_refused() {
+    let dir = TempDir::new("recto-folder-");
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("inner"), b"x").unwrap();
+    std::fs::write(dir.join("plain"), b"x").unwrap();
+    let folder = opened(dir.path());
+    let held = std::fs::File::open(dir.join("plain")).unwrap();
+    let fd_path = format!("/dev/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&held));
+    for (case, bad) in [
+        ("empty", ""),
+        ("dot", "."),
+        ("dot dot", ".."),
+        ("a slash inside", "sub/inner"),
+        ("a leading slash", "/etc"),
+        ("another descriptor", fd_path.as_str()),
+    ] {
+        assert!(matches!(folder.open_in(OsStr::new(bad)), Opened::Other), "open_in: {case}");
+        assert!(folder.open_private_in(OsStr::new(bad)).is_err(), "open_private_in: {case}");
+    }
+    assert!(folder.open_private_in(OsStr::new("plain")).is_ok());
+}
