@@ -310,7 +310,9 @@ pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &
                 data["plan"] = json!(plan_word(id));
             }
             if checked.names.document.is_some() {
-                data["untrusted"] = json!({ "document": checked.names.document, "folder": checked.names.folder });
+                // The tab's own name is what `tabs` gives at every level; the folder it is in is where the person's files are, which is Control's.
+                let folder = actor.sees_users_words_and_paths().then_some(checked.names.folder);
+                data["untrusted"] = json!({ "document": checked.names.document, "folder": folder });
             }
             Ok(data)
         }

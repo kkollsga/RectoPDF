@@ -127,6 +127,8 @@ fn only_full_may_clear_and_a_lower_agent_is_given_no_plan_and_no_names() {
             checked["untrusted"]["document"], "report.pdf",
             "names are the agent's only as the document's words"
         );
+        // Where the person keeps their files is Control's: the folder's name is not given below it.
+        assert_eq!(checked["untrusted"]["folder"].is_string(), level == Level::Control, "{level:?}: {checked}");
         for how in ["through recto", "straight to the host"] {
             let line = clear_line("0123456789abcdef");
             let refused = if how == "through recto" {
