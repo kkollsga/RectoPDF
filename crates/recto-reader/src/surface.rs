@@ -664,6 +664,7 @@ HostQueue (pub(crate) struct, derives Debug)
 HostQueue: Drop (trait impl)
 HostQueue: Drop::fn drop(&mut self)
 HostQueue::pub(crate) fn has_ops(&self) -> bool
+ImagesAsked (pub(super) enum, derives Debug, Clone, PartialEq, Eq)
 Issue (pub(super) struct, derives Clone, Debug)
 Job (pub struct, derives Debug)
 Job.pub asked: u64
