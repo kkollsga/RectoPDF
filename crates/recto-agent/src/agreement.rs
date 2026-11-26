@@ -14,7 +14,7 @@ use crate::{AgentError, SessionAccess, select};
 use recto_core::OpenError;
 use recto_core::agreement::{Disagreement, View, compare, compared_pages, structure_view};
 use recto_platform::FileStamp;
-use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
+use recto_render_service::{DocRenderer, KillReason, MAX_BUSY, Policy, RenderFailure, ServiceConfig};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -77,24 +77,90 @@ fn compared(doc: &mut DocRenderer, stamp: FileStamp, deadline: Instant) -> Optio
     let structure = match read.flatten() {
         Some(Ok(view)) => view,
         // lopdf needs a password: a save refuses an encrypted file itself. They differ only if PDFium opened it without one.
-        Some(Err(OpenError::PasswordNeeded)) => return doc.page_count().is_ok().then_some(Disagreement::Encryption),
+        Some(Err(OpenError::PasswordNeeded)) => return password_half(doc, deadline),
         // lopdf can't read the very descriptor the renderer opened: that's the file's answer, kept (review round 2).
         Some(Err(OpenError::NotPdf | OpenError::TooComplex)) => return Some(Disagreement::StructureUnreadable),
         // Any other failed read may be the disk's, not the file's: never taken as agreement, and looked at again by the next save (review round 1).
         Some(Err(_)) | None => return Some(Disagreement::Unchecked),
     };
-    let page_count = match doc.page_count() {
+    renderer_half(doc, &structure, deadline)
+}
+
+/// lopdf needs a password; they differ only if the renderer opened the file without one.
+fn password_half(r: &mut impl RendererHalf, deadline: Instant) -> Option<Disagreement> {
+    match asked(deadline, || r.page_count()) {
+        Ok(_) => Some(Disagreement::Encryption),
+        // Still busy, or any other failure: the gate steps aside, and the writer's own refusal of a password-protected file is what the person sees.
+        Err(_) => None,
+    }
+}
+
+/// What the renderer can be asked for the renderer's half of a look, so a test can script its answers.
+trait RendererHalf {
+    fn repaired(&mut self) -> Result<bool, RenderFailure>;
+    fn page_count(&mut self) -> Result<u32, RenderFailure>;
+    fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>;
+}
+
+impl RendererHalf for DocRenderer {
+    fn repaired(&mut self) -> Result<bool, RenderFailure> {
+        DocRenderer::repaired(self)
+    }
+    fn page_count(&mut self) -> Result<u32, RenderFailure> {
+        DocRenderer::page_count(self)
+    }
+    fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure> {
+        DocRenderer::page_size(self, page)
+    }
+}
+
+/// **The renderer's half, compared with the structure's:** `None` when they agree.
+fn renderer_half(r: &mut impl RendererHalf, structure: &View, deadline: Instant) -> Option<Disagreement> {
+    let page_count = match asked(deadline, || r.page_count()) {
         Ok(count) => count,
         Err(failure) => return Some(renderer_refused(failure)),
     };
     // The counts first: a document whose counts differ needs no page sized (review round 1).
     if page_count != structure.page_count {
-        return compare(&structure, &View { page_count, ..View::default() });
+        return compare(structure, &View { page_count, ..View::default() });
     }
-    match renderer_view(doc, page_count, deadline) {
-        Ok(renderer) => compare(&structure, &renderer),
+    match renderer_view(r, page_count, deadline) {
+        Ok(renderer) => compare(structure, &renderer),
         Err(failure) => Some(renderer_refused(failure)),
     }
+}
+
+/// **Asks again while the Mac is too busy.** A busy answer ([`RenderFailure::is_busy`]) says nothing of the file, the service remembers nothing of it and
+/// bounds a run of them itself ([`MAX_BUSY`]), so the look, which has its own `deadline`, asks again until then: a person on a busy Mac isn't told to save
+/// again. No sleep between asks: each costs the service's own start and page deadline, so one ask can overrun `deadline` by that much, and a save waits
+/// at most one [`LOOK_DEADLINE`] plus that. At most `2 * MAX_BUSY` asks (a start's run and an open's run each have one, as the indexer's), then the last
+/// busy answer is the answer, which is `Unchecked`.
+///
+/// The service ends its own run of busy answers by giving the file's failure: a starved kill after `MAX_BUSY - 1` busy ones is `OpenFailed` or
+/// `PageReadFailed` with a `Deadline` reason (`host/busy.rs`). Seen after a busy answer, that is still the Mac's doing, so it is the busy answer, which
+/// is about the moment and isn't kept; any other failure is the file's, as without busy answers.
+fn asked<T>(deadline: Instant, mut ask: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
+    let mut last = RenderFailure::TooBusyToStart;
+    let mut busy_seen = false;
+    for _ in 0..2 * u32::from(MAX_BUSY) {
+        match ask() {
+            Err(busy) if busy.is_busy() => {
+                last = busy;
+                busy_seen = true;
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
+            Err(
+                RenderFailure::OpenFailed { reason: KillReason::Deadline }
+                | RenderFailure::PageReadFailed {
+                    reason: KillReason::Deadline, ..
+                },
+            ) if busy_seen => break,
+            other => return other,
+        }
+    }
+    Err(last)
 }
 
 /// What the renderer failing says: it needs a password lopdf didn't (`Encryption`); it can't read the file at all, which is the file's
@@ -111,15 +177,15 @@ fn renderer_refused(failure: RenderFailure) -> Disagreement {
 
 /// The renderer's half, once its count is known to be the structure's: whether it rebuilt the file's index, and the sizes of the pages compared,
 /// by `deadline`. A page it can't size is `None`, up to [`PAGE_FAILURES`] of them; a failure of the whole file is the answer.
-fn renderer_view(doc: &mut DocRenderer, page_count: u32, deadline: Instant) -> Result<View, RenderFailure> {
-    let repaired = doc.repaired()?;
+fn renderer_view(doc: &mut impl RendererHalf, page_count: u32, deadline: Instant) -> Result<View, RenderFailure> {
+    let repaired = asked(deadline, || doc.repaired())?;
     let mut failures = 0;
     let mut sizes = Vec::new();
     for page in compared_pages(page_count) {
         if Instant::now() >= deadline {
             return Err(RenderFailure::Unavailable);
         }
-        sizes.push(match doc.page_size(page) {
+        sizes.push(match asked(deadline, || doc.page_size(page)) {
             Ok(size) => Some(size),
             Err(RenderFailure::PageReadFailed { .. } | RenderFailure::BadPage) if failures < PAGE_FAILURES => {
                 failures += 1;
@@ -260,12 +326,12 @@ fn change_time(path: &Path) -> Option<i64> {
 }
 
 /// Runs a look for `stamp` and keeps its answer, whatever it is, for that stamp: so the window, told it's done, finds it and doesn't ask again.
-fn run_look(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Option<Box<dyn FnOnce() + Send>>) -> Option<Disagreement> {
+fn run_look(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Option<Box<dyn FnOnce() + Send>>, deadline: Instant) -> Option<Disagreement> {
     #[cfg(test)]
     LOOKS_RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut ends = LookEnds { stamp, answer: None, done };
     let before = change_time(path);
-    let answer = looker(path, stamp, Instant::now() + LOOK_DEADLINE);
+    let answer = looker(path, stamp, deadline);
     // Written over in place while it was looked at, its two readers may have seen two versions, and it can come back to the same stamp (a version
     // restored, bytes and time): its change time, which nothing sets back, says so, and the look can't vouch for the stamp.
     let answer = if change_time(path) == before { answer } else { Some(Disagreement::Unchecked) };
@@ -281,7 +347,10 @@ pub fn check(path: &Path, stamp: FileStamp) -> Option<Disagreement> {
 }
 
 fn check_by(path: &Path, stamp: FileStamp, looker: Box<Looker>) -> Option<Disagreement> {
-    let deadline = Instant::now() + LOOK_DEADLINE;
+    check_until(path, stamp, Instant::now() + LOOK_DEADLINE, looker)
+}
+
+fn check_until(path: &Path, stamp: FileStamp, deadline: Instant, looker: Box<Looker>) -> Option<Disagreement> {
     let mut held = looks();
     loop {
         if !held.looking.contains(&stamp) {
@@ -296,9 +365,13 @@ fn check_by(path: &Path, stamp: FileStamp, looker: Box<Looker>) -> Option<Disagr
         }
         held = LOOKED.wait_timeout(held, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
     }
+    // Waited out its deadline: no worker is started for an answer nobody can wait for.
+    if Instant::now() >= deadline {
+        return Some(Disagreement::Unchecked);
+    }
     held.looking.push(stamp);
     drop(held);
-    run_look(path, stamp, looker, None)
+    run_look(path, stamp, looker, None, deadline)
 }
 
 /// **What the window asks:** the answer for this version if it's known, whatever it is; if not, `None`, and the look starts on a thread of its own,
@@ -336,7 +409,7 @@ fn known_or_start_by(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: B
         .name("recto-agreement".into())
         .stack_size(1024 * 1024)
         .spawn(move || {
-            run_look(&path, stamp, looker, Some(done));
+            run_look(&path, stamp, looker, Some(done), Instant::now() + LOOK_DEADLINE);
         });
     if spawned.is_err() {
         looks().looking.retain(|looking| *looking != stamp);
@@ -669,5 +742,207 @@ mod tests {
         let answer = look_with(&mut doc, stamp, Instant::now() + LOOK_DEADLINE);
         doc.kill_worker();
         assert_eq!(answer, Some(Disagreement::Unchecked), "about the moment, not the file");
+    }
+
+    /// A scripted renderer: each ask takes the next answer of its list (the last repeats), and every ask is counted.
+    struct Scripted {
+        counts: Vec<Result<u32, RenderFailure>>,
+        repaired: Vec<Result<bool, RenderFailure>>,
+        looked: usize,
+        sizes: Vec<Result<(f32, f32), RenderFailure>>,
+        asks: u32,
+        counted: usize,
+        sized: usize,
+    }
+
+    impl Scripted {
+        fn answer<T: Clone>(list: &[T], n: usize) -> T {
+            list[n.min(list.len() - 1)].clone()
+        }
+    }
+
+    impl RendererHalf for Scripted {
+        fn repaired(&mut self) -> Result<bool, RenderFailure> {
+            self.asks += 1;
+            self.looked += 1;
+            Self::answer(&self.repaired, self.looked - 1)
+        }
+        fn page_count(&mut self) -> Result<u32, RenderFailure> {
+            self.asks += 1;
+            self.counted += 1;
+            Self::answer(&self.counts, self.counted - 1)
+        }
+        fn page_size(&mut self, _page: u32) -> Result<(f32, f32), RenderFailure> {
+            self.asks += 1;
+            self.sized += 1;
+            Self::answer(&self.sizes, self.sized - 1)
+        }
+    }
+
+    fn one_page() -> View {
+        View {
+            page_count: 1,
+            repaired: false,
+            sizes: vec![Some((612., 792.))],
+        }
+    }
+
+    fn busy_then_ok() -> Scripted {
+        Scripted {
+            counts: vec![Err(RenderFailure::TooBusyToStart), Ok(1)],
+            repaired: vec![Err(RenderFailure::TooBusyToStart), Ok(false)],
+            looked: 0,
+            sizes: vec![Err(RenderFailure::TooBusy { page: 0 }), Ok((612., 792.))],
+            asks: 0,
+            counted: 0,
+            sized: 0,
+        }
+    }
+
+    /// Failure (a busy Mac, 2026-11-26): the check before a save ended on the renderer's first busy answer, which says nothing of the file and
+    /// "asking again tries again", so a person on a busy Mac was told RectoPDF couldn't check the file and to save again. A busy ask is asked again.
+    #[test]
+    fn a_busy_answer_is_asked_again_within_the_deadline() {
+        let mut renderer = busy_then_ok();
+        assert_eq!(renderer_half(&mut renderer, &one_page(), Instant::now() + LOOK_DEADLINE), None);
+    }
+
+    fn always_busy() -> Scripted {
+        Scripted {
+            counts: vec![Err(RenderFailure::TooBusyToStart)],
+            repaired: vec![Ok(false)],
+            looked: 0,
+            sizes: vec![Ok((612., 792.))],
+            asks: 0,
+            counted: 0,
+            sized: 0,
+        }
+    }
+
+    /// Failure: a worker that never gets the processor would keep the check asking for ever. It stops at `2 * MAX_BUSY` asks, as the indexer does,
+    /// and fails closed.
+    #[test]
+    fn a_renderer_always_busy_is_asked_a_bounded_number_of_times() {
+        let mut renderer = always_busy();
+        assert_eq!(
+            renderer_half(&mut renderer, &one_page(), Instant::now() + LOOK_DEADLINE),
+            Some(Disagreement::Unchecked)
+        );
+        assert_eq!(renderer.asks, 2 * u32::from(MAX_BUSY));
+        let mut sizing = Scripted {
+            counts: vec![Ok(1)],
+            sizes: vec![Err(RenderFailure::TooBusy { page: 0 })],
+            ..always_busy()
+        };
+        assert_eq!(
+            renderer_half(&mut sizing, &one_page(), Instant::now() + LOOK_DEADLINE),
+            Some(Disagreement::Unchecked)
+        );
+        assert_eq!(sizing.sized, 2 * usize::from(MAX_BUSY));
+    }
+
+    /// Failure: a check past its deadline that went on asking would hold a save beyond [`LOOK_DEADLINE`]. A busy answer after the deadline is the
+    /// answer, with no second ask.
+    #[test]
+    fn a_deadline_past_ends_the_asking_at_once() {
+        let mut renderer = always_busy();
+        assert_eq!(renderer_half(&mut renderer, &one_page(), Instant::now()), Some(Disagreement::Unchecked));
+        assert_eq!(renderer.asks, 1);
+    }
+
+    /// What the real service does when the Mac stays starved: after `MAX_BUSY - 1` busy answers in a row the next starved kill is the file's own
+    /// failure (`size_stopped`, `open_stopped`), a deadline kill. Seen after busy answers it is still the Mac's doing.
+    fn starved_out(failure: RenderFailure) -> Scripted {
+        let busy = RenderFailure::TooBusyToStart;
+        Scripted {
+            counts: vec![Err(busy), Err(busy), Err(failure)],
+            ..busy_then_ok()
+        }
+    }
+
+    /// Failure (review round 1, a blocker): on a busy Mac the service's last starved answer is `OpenFailed`/`PageReadFailed` with a `Deadline` kill,
+    /// which the check took for the file's own: `RendererFailed`, kept for the version, Save greyed with "repair it in another tool". It is `Unchecked`,
+    /// which is about the moment, and the next save looks again.
+    #[test]
+    fn a_deadline_kill_after_busy_answers_is_the_mac_not_the_file() {
+        let _lock = test_lock();
+        let deadline = Instant::now() + LOOK_DEADLINE;
+        let open = RenderFailure::OpenFailed { reason: KillReason::Deadline };
+        let read = RenderFailure::PageReadFailed {
+            page: 0,
+            reason: KillReason::Deadline,
+        };
+        assert_eq!(renderer_half(&mut starved_out(open), &one_page(), deadline), Some(Disagreement::Unchecked));
+        let busy = RenderFailure::TooBusy { page: 0 };
+        let mut sizing = Scripted {
+            counts: vec![Ok(1)],
+            sizes: vec![Err(busy), Err(busy), Err(read)],
+            ..busy_then_ok()
+        };
+        assert_eq!(renderer_half(&mut sizing, &one_page(), deadline), Some(Disagreement::Unchecked));
+        // Not kept: a second save reads again, as it does for any answer about the moment.
+        let file = recto_testpdf::TempPdf::new("starved.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let looker = || -> Box<Looker> {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::new(move |_, _, deadline| renderer_half(&mut starved_out(open), &one_page(), deadline))
+        };
+        assert_eq!(check_by(&file.0, stamp, looker()), Some(Disagreement::Unchecked));
+        assert_eq!(check_by(&file.0, stamp, looker()), Some(Disagreement::Unchecked));
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2, "read again, not kept");
+    }
+
+    /// A failure after busy answers that isn't a deadline kill is the file's own, as it is without them: a crash is damage, refused as such and kept.
+    #[test]
+    fn a_real_failure_after_busy_answers_still_refuses_as_damaged() {
+        let _lock = test_lock();
+        let crashed = RenderFailure::OpenFailed { reason: KillReason::Crashed };
+        assert_eq!(
+            renderer_half(&mut starved_out(crashed), &one_page(), Instant::now() + LOOK_DEADLINE),
+            Some(Disagreement::RendererFailed)
+        );
+    }
+
+    /// Failure (review round 1): a save waited up to its deadline for a look under way, and when that ended `Unchecked` started a fresh look with a
+    /// fresh 30 s, so it could wait twice that for one file. The look it starts is bounded by the save's own deadline.
+    #[test]
+    fn a_save_gives_its_own_look_the_deadline_it_waited_by() {
+        let _lock = test_lock();
+        let file = recto_testpdf::TempPdf::new("one-deadline.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let given = std::sync::Arc::new(Mutex::new(None));
+        let looker: Box<Looker> = Box::new({
+            let given = std::sync::Arc::clone(&given);
+            move |_, _, got| {
+                *given.lock().unwrap() = Some(got);
+                None
+            }
+        });
+        assert_eq!(check_until(&file.0, stamp, deadline, looker), None);
+        assert_eq!(*given.lock().unwrap(), Some(deadline));
+    }
+
+    /// Failure (review round 1): the encrypted-file branch asked the renderer once, so a busy answer was read as "it can't open it either" and the two
+    /// readers agreed. A busy answer is asked again. One that stays busy gives no answer of the gate's (`None`): the writer's own refusal of a
+    /// password-protected file is what the person sees, as before.
+    #[test]
+    fn the_password_branch_asks_again_while_busy() {
+        let mut renderer = busy_then_ok();
+        assert_eq!(password_half(&mut renderer, Instant::now() + LOOK_DEADLINE), Some(Disagreement::Encryption));
+        let mut busy = always_busy();
+        assert_eq!(password_half(&mut busy, Instant::now() + LOOK_DEADLINE), None);
+    }
+
+    /// Failure (review round 2): a save that had waited out its deadline for a look under way went on to start a look of its own, a worker's start for
+    /// an answer nobody could wait for. A deadline already past is `Unchecked`, and no look starts.
+    #[test]
+    fn a_save_past_its_deadline_starts_no_look() {
+        let _lock = test_lock();
+        let file = recto_testpdf::TempPdf::new("past.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let looker: Box<Looker> = Box::new(|_, _, _| unreachable!("no look past the deadline"));
+        assert_eq!(check_until(&file.0, stamp, Instant::now(), looker), Some(Disagreement::Unchecked));
     }
 }
