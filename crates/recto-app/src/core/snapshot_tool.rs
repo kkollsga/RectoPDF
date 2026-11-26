@@ -316,6 +316,9 @@ impl Paste {
     }
 }
 
+/// **The one lock order** (rule 3: a thread that holds one and waits for another that is held the other way round stops the window for good): `jobs`, then
+/// `ready`, then `notice` and `refused` (a notice is made and cleared under either). `links` is held alone, never with another. `take_offer` takes `ready`,
+/// then the page view's selection, then `offered`; none of them takes `jobs`. A ticket is taken from `jobs` before `ready` is held ([`Tool::text_asked`]).
 #[derive(Default)]
 pub struct Tool {
     state: Mutex<SnapshotTool>,
@@ -327,8 +330,10 @@ pub struct Tool {
     drawn: Mutex<Option<(usize, u32)>>,
     jobs: Mutex<Box<JobSlot>>,
     pub ready: Mutex<Option<Offered>>,
-    /// The newest ticket that has put something in `ready`, taken or not.
+    /// The newest ticket that has put something in `ready`, or been asked for as a plain Copy, taken or not.
     ready_ticket: AtomicU64,
+    /// The ticket of the person's last plain Copy of the selection's text, whose text the page view makes and hands over when it's made.
+    text_ticket: AtomicU64,
     /// The Copy Links asked and not yet landed, in order ([`Tool::offer_link`]).
     links: Mutex<super::copy_link::Links>,
     /// What the host has been offered, held until a paste takes it or another copy replaces it.
@@ -619,11 +624,15 @@ impl Tool {
     /// types in order, and which are made only when a paste asks. What was offered before is gone from the clipboard now, its promise with it. The
     /// bridge's `take_clipboard`.
     pub fn take_offer(&self, engines: &[Engine]) -> Option<ClipboardOffer> {
+        self.take_offer_with(|| engines.iter().find_map(|engine| engine.selection().take_copied()).map(|copied| copied.text))
+    }
+
+    /// [`Self::take_offer`], with `copied` giving the selection's text when `ready` has nothing (taken from the page view, so it's asked only then).
+    fn take_offer_with(&self, copied: impl FnOnce() -> Option<String>) -> Option<ClipboardOffer> {
         let mut offered = lock(&self.ready).take().or_else(|| {
-            engines
-                .iter()
-                .find_map(|engine| engine.selection().take_copied())
-                .map(|copied| self.offer_text(copied.text))
+            let text = copied()?;
+            // A Copy asked before something that has landed since, however late its text is made, is not what the person asked for last.
+            (self.text_ticket.load(Ordering::SeqCst) >= self.ready_ticket.load(Ordering::SeqCst)).then(|| self.offer_text(text))
         })?;
         offered.serial = self.serial.fetch_add(1, Ordering::SeqCst) + 1;
         let offer = ClipboardOffer {
@@ -693,8 +702,10 @@ impl Tool {
     /// **A plain ⌘C of the selection's text is asked now:** it takes its place among what's asked for, so a snapshot or a link asked before it that lands later
     /// doesn't take its place, and one waiting in `ready` from before it is gone, as the copy replaces it.
     pub(super) fn text_asked(&self) {
-        let mut ready = lock(&self.ready);
+        // The ticket first: `jobs` comes before `ready` ([`Tool`]'s lock order), as an answer holds `jobs` while it puts its own in `ready`.
         let ticket = lock(&self.jobs).ticket();
+        self.text_ticket.fetch_max(ticket, Ordering::SeqCst);
+        let mut ready = lock(&self.ready);
         self.ready_ticket.fetch_max(ticket, Ordering::SeqCst);
         ready.take();
     }
@@ -967,15 +978,21 @@ pub(super) fn look_answered(tool: &Tool, person: super::person::Person<'_>, aske
     Some(answered)
 }
 
-/// The newest job's answer: the notice, and what's for the clipboard. Whether there's something ready for the host.
+/// The newest job's answer: the notice, and what's for the clipboard. Whether there's something ready for the host. What a snapshot says of a copy is said
+/// once it's put: one that a later ask has taken the clipboard from says nothing, and clears the line of its own that's still showing.
 fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Option<Clip>, ticket: u64) -> bool {
     let Some((text, offers)) = words_for(result) else {
         lock(&tool.notice).take();
         return false;
     };
-    let serial = tool.say(text, offers);
-    *lock(&tool.refused) = offers.then_some((serial, job));
-    let (Ok(_), Some(clip)) = (result, made) else { return false };
+    let say = |tool: &Tool| {
+        let serial = tool.say(text.clone(), offers);
+        *lock(&tool.refused) = offers.then_some((serial, job));
+    };
+    let (Ok(_), Some(clip)) = (result, made) else {
+        say(tool);
+        return false;
+    };
     // A box's SVG is promised only with the page it saw, which the paste is held to: none that reads, no promise.
     let promise = match (job.wanted, result) {
         (Wanted::Box { rect }, Ok(answer)) if clip.items.iter().any(|item| matches!(item, ClipItem::Promised { .. })) => {
@@ -993,14 +1010,21 @@ fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Opti
         .into_iter()
         .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
         .collect();
-    tool.offer_ready(
+    let put = tool.offer_ready(
         ticket,
         Offered {
             serial: 0,
             items,
             promise: promise.map(Box::new),
         },
-    )
+    );
+    if put {
+        say(tool);
+    } else {
+        lock(&tool.notice).take();
+        lock(&tool.refused).take();
+    }
+    put
 }
 
 /// **A paste asks for a promised type of the offer with this number** ([`super::controls::UiAction::Pasted`]): the person's `snapshot --as svg
@@ -1488,6 +1512,67 @@ mod tests {
         let later = lock(&tool.jobs).running_ticket;
         assert!(snapshot_lands(&tool, later));
         assert_eq!(tool.take_offer(&[]).expect("offered").types, [extract::UTI_PNG]);
+    }
+
+    /// Failure (rule 3, found in review round 2): a plain Copy asked while a snapshot's answer lands takes `ready` and then `jobs`, as the answer holds `jobs`
+    /// and takes `ready`, so both threads wait on each other for good and the window stops answering.
+    #[test]
+    fn a_plain_copy_asked_while_a_snapshot_lands_never_deadlocks() {
+        let tool = std::sync::Arc::new(Tool::default());
+        let landing = std::sync::Arc::clone(&tool);
+        let lander = std::thread::spawn(move || {
+            for ticket in 1..=3000u64 {
+                // As `answer` does: the slot held while the answer is put.
+                let jobs = lock(&landing.jobs);
+                snapshot_lands(&landing, ticket * 1000);
+                drop(jobs);
+            }
+        });
+        let copying = std::sync::Arc::clone(&tool);
+        let copier = std::thread::spawn(move || {
+            for _ in 0..3000 {
+                copying.text_asked();
+            }
+        });
+        recto_testpdf::returns_in_time("a plain copy against a landing snapshot", move || {
+            lander.join().expect("the lander");
+            copier.join().expect("the copier");
+        });
+    }
+
+    /// Failure: a snapshot whose picture a newer ask has taken the clipboard from still says "Copied.", and the person is told of a copy that isn't there; or its
+    /// words clear a newer one's line.
+    #[test]
+    fn a_snapshot_that_lost_the_clipboard_says_nothing() {
+        let tool = Tool::default();
+        lock(&tool.jobs).offer(job(1.0)).expect("it starts");
+        let snapshot = lock(&tool.jobs).running_ticket;
+        tool.say("Copying…", false);
+        tool.text_asked();
+        assert!(!snapshot_lands(&tool, snapshot));
+        assert!(
+            lock(&tool.notice).is_none(),
+            "no \"Copied.\" for a picture that isn't on the clipboard, and no \"Copying…\" left"
+        );
+    }
+
+    /// Failure: a plain Copy whose text lands late (the copy can take up to MAX_COPY_TIME) takes the clipboard from a link or snapshot asked after it, as the
+    /// host takes the text when `ready` is empty.
+    #[test]
+    fn a_plain_copys_late_text_doesnt_replace_what_was_asked_after_it() {
+        let tool = Tool::default();
+        tool.text_asked();
+        tool.link_asked();
+        assert!(tool.offer_link("file:///a.pdf#page=1".into()));
+        assert_eq!(tool.take_offer_with(|| Some("older text".into())).expect("the link").types, [extract::UTI_TEXT]);
+        assert!(
+            tool.take_offer_with(|| Some("older text".into())).is_none(),
+            "the older text is thrown away, not offered after the link"
+        );
+        // With nothing asked since, the text is the copy.
+        let fresh = Tool::default();
+        fresh.text_asked();
+        assert!(fresh.take_offer_with(|| Some("the text".into())).is_some());
     }
 
     /// Failure: a snapshot that waited behind another is given the ticket of the one before it, so a Copy Link asked between them is wrongly overwritten.
