@@ -317,12 +317,12 @@ fn change_time(path: &Path) -> Option<i64> {
 }
 
 /// Runs a look for `stamp` and keeps its answer, whatever it is, for that stamp: so the window, told it's done, finds it and doesn't ask again.
-fn run_look(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Option<Box<dyn FnOnce() + Send>>) -> Option<Disagreement> {
+fn run_look(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: Option<Box<dyn FnOnce() + Send>>, deadline: Instant) -> Option<Disagreement> {
     #[cfg(test)]
     LOOKS_RUN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut ends = LookEnds { stamp, answer: None, done };
     let before = change_time(path);
-    let answer = looker(path, stamp, Instant::now() + LOOK_DEADLINE);
+    let answer = looker(path, stamp, deadline);
     // Written over in place while it was looked at, its two readers may have seen two versions, and it can come back to the same stamp (a version
     // restored, bytes and time): its change time, which nothing sets back, says so, and the look can't vouch for the stamp.
     let answer = if change_time(path) == before { answer } else { Some(Disagreement::Unchecked) };
@@ -338,7 +338,10 @@ pub fn check(path: &Path, stamp: FileStamp) -> Option<Disagreement> {
 }
 
 fn check_by(path: &Path, stamp: FileStamp, looker: Box<Looker>) -> Option<Disagreement> {
-    let deadline = Instant::now() + LOOK_DEADLINE;
+    check_until(path, stamp, Instant::now() + LOOK_DEADLINE, looker)
+}
+
+fn check_until(path: &Path, stamp: FileStamp, deadline: Instant, looker: Box<Looker>) -> Option<Disagreement> {
     let mut held = looks();
     loop {
         if !held.looking.contains(&stamp) {
@@ -355,7 +358,7 @@ fn check_by(path: &Path, stamp: FileStamp, looker: Box<Looker>) -> Option<Disagr
     }
     held.looking.push(stamp);
     drop(held);
-    run_look(path, stamp, looker, None)
+    run_look(path, stamp, looker, None, Instant::now() + LOOK_DEADLINE)
 }
 
 /// **What the window asks:** the answer for this version if it's known, whatever it is; if not, `None`, and the look starts on a thread of its own,
@@ -393,7 +396,7 @@ fn known_or_start_by(path: &Path, stamp: FileStamp, looker: Box<Looker>, done: B
         .name("recto-agreement".into())
         .stack_size(1024 * 1024)
         .spawn(move || {
-            run_look(&path, stamp, looker, Some(done));
+            run_look(&path, stamp, looker, Some(done), Instant::now() + LOOK_DEADLINE);
         });
     if spawned.is_err() {
         looks().looking.retain(|looking| *looking != stamp);
@@ -886,5 +889,25 @@ mod tests {
             renderer_half(&mut starved_out(crashed), &one_page(), Instant::now() + LOOK_DEADLINE),
             Some(Disagreement::RendererFailed)
         );
+    }
+
+    /// Failure (review round 1): a save waited up to its deadline for a look under way, and when that ended `Unchecked` started a fresh look with a
+    /// fresh 30 s, so it could wait twice that for one file. The look it starts is bounded by the save's own deadline.
+    #[test]
+    fn a_save_gives_its_own_look_the_deadline_it_waited_by() {
+        let _lock = test_lock();
+        let file = recto_testpdf::TempPdf::new("one-deadline.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let given = std::sync::Arc::new(Mutex::new(None));
+        let looker: Box<Looker> = Box::new({
+            let given = std::sync::Arc::clone(&given);
+            move |_, _, got| {
+                *given.lock().unwrap() = Some(got);
+                None
+            }
+        });
+        assert_eq!(check_until(&file.0, stamp, deadline, looker), None);
+        assert_eq!(*given.lock().unwrap(), Some(deadline));
     }
 }
