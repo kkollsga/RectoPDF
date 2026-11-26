@@ -53,7 +53,9 @@ const MAX_JOURNAL_BYTES_AT_LAUNCH: u64 = 1024 * 1024 * 1024;
 /// How many damaged states are kept.
 const DAMAGED_KEPT: usize = 3;
 /// What says a folder of an older version has work done in it after going back from a newer one, to bring forward.
-const WENT_BACK: &str = "went-back";
+pub const WENT_BACK: &str = "went-back";
+/// The word a damaged state's folder is named by: `<flavor>.damaged`, then `<flavor>.damaged.<k>`. Removal's survey of the copies reads the same word.
+pub const DAMAGED: &str = "damaged";
 
 /// How long a launch waits for the lock, in case what holds it is the app it's taking over from, on its way out.
 const LOCK_PATIENCE: Duration = Duration::from_millis(600);
@@ -489,9 +491,9 @@ impl RecordStore {
         let name = main.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
         let slot = |at: usize| {
             if at == 0 {
-                self.root.join(format!("{name}.damaged"))
+                self.root.join(format!("{name}.{DAMAGED}"))
             } else {
-                self.root.join(format!("{name}.damaged.{at}"))
+                self.root.join(format!("{name}.{DAMAGED}.{at}"))
             }
         };
         let _ = std::fs::remove_dir_all(slot(DAMAGED_KEPT - 1));

@@ -65,7 +65,11 @@ fn the_names_of_the_copies_are_exactly_the_ones_the_store_writes() {
         ("update".into(), Name::NotOurs),
         ("run".into(), Name::NotOurs),
         (".DS_Store".into(), Name::NotOurs),
-        ("Session.v1".into(), Name::NotOurs),
+        // A case-insensitive volume reaches a folder by any case of its name, so a name that is `session` in any case is Unknown, never skipped.
+        ("Session.v1".into(), Name::Other),
+        ("SESSION".into(), Name::Other),
+        ("Session-Windowless.damaged".into(), Name::Other),
+        ("sessio".into(), Name::NotOurs),
         (String::new(), Name::NotOurs),
     ];
     for (name, want) in table {
@@ -327,4 +331,27 @@ fn a_copy_swapped_for_a_link_after_the_listing_is_never_followed() {
     let s = survey_with(state.root(), &caps).unwrap();
     assert_eq!(names(&s), vec![(Owner::Unknown, Format::Current)]);
     assert!(complete(&s, Store::LegacySession));
+}
+
+/// Failure: a copy's `journals` that was listed and has vanished when it is opened reads as "none", so the survey says complete for a folder of
+/// histories that was there a moment ago. The store isn't marked. (A copy that never had one is complete: `a_journals_that_is_no_folder_…`.)
+#[test]
+fn a_journals_folder_gone_between_the_listing_and_its_opening_leaves_the_store_unmarked() {
+    let state = state();
+    let copy = state.root().join(format!("session.v{VERSION}"));
+    std::fs::create_dir_all(copy.join("journals")).unwrap();
+    let hook: crate::removal_store::testing::Hook = Arc::new(|path| {
+        if path.file_name().is_some_and(|name| name == "journals") {
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    });
+    let caps = LegacyCaps {
+        folder: Caps {
+            before_open: Some(hook),
+            ..Caps::default()
+        },
+        ..LegacyCaps::default()
+    };
+    let s = survey_with(state.root(), &caps).unwrap();
+    assert!(!complete(&s, Store::LegacySession));
 }

@@ -14,6 +14,7 @@ use super::journals::{self, Caps};
 use super::placing::Maps;
 #[cfg(test)]
 use super::testing::Hook;
+use crate::record_store::{DAMAGED, WENT_BACK};
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Store, Survey, TargetMode};
 use recto_platform::folder::{Entry, Folder, Opened};
 use recto_session::record::CURRENT_VERSION;
@@ -26,11 +27,6 @@ const MAX_ENTRIES: usize = 8_192;
 const MAX_COPIES: usize = 64;
 /// The two sessions' names.
 const FLAVORS: [&str; 2] = ["session", "session-windowless"];
-/// The word a damaged state's folder is named by (`<flavor>.damaged`, then `<flavor>.damaged.<k>`). A constant, so the line that reads it isn't mistaken
-/// for a decision by a refusal's code (`recto-agent/tests/codes.rs`): it is a folder name.
-const DAMAGED: &[u8] = b"damaged";
-/// The one-byte marker the record store writes beside a record after a copy went back, and reads only for whether it is there.
-const WENT_BACK: &[u8] = b"went-back";
 
 /// The caps, so a test can make them small.
 #[derive(Clone)]
@@ -90,7 +86,9 @@ pub(super) fn legacy_kind(name: &[u8]) -> Name {
     if FLAVORS.iter().any(|flavor| flavor.as_bytes() == name) {
         return Name::NotOurs;
     }
-    if !name.starts_with(b"session") {
+    // Any case: a case-insensitive volume reaches a folder named `Session.v1` as `session.v1`, so a name that is `session` in any case but no exact
+    // name above is Unknown, never skipped.
+    if !name.get(..7).is_some_and(|start| start.eq_ignore_ascii_case(b"session")) {
         return Name::NotOurs;
     }
     for flavor in FLAVORS {
@@ -100,8 +98,8 @@ pub(super) fn legacy_kind(name: &[u8]) -> Name {
         if let Some(version) = rest.strip_prefix(b"v").and_then(counted) {
             return if version <= CURRENT_VERSION { Name::Copy } else { Name::Newer };
         }
-        let numbered = rest.strip_prefix(DAMAGED).and_then(|rest| rest.strip_prefix(b".")).and_then(counted);
-        if rest == DAMAGED || numbered.is_some() {
+        let numbered = rest.strip_prefix(DAMAGED.as_bytes()).and_then(|rest| rest.strip_prefix(b".")).and_then(counted);
+        if rest == DAMAGED.as_bytes() || numbered.is_some() {
             return Name::Copy;
         }
     }
@@ -170,7 +168,7 @@ pub(crate) fn survey_legacy_sessions_with(root: &Path, lineage: &Lineage<'_>, mo
                         &copy,
                         &prefix,
                         Store::LegacySession,
-                        Some(WENT_BACK),
+                        Some(WENT_BACK.as_bytes()),
                         &root.join(&entry.name),
                         &maps,
                         mode,
@@ -228,9 +226,12 @@ pub(super) fn survey_copy(
         }
         listed.push(entry);
     }
+    // Whether the listing had a `journals`: if it did, one that is gone when opened means the folder changed under the survey.
+    let mut listed_journals = false;
     for entry in &listed {
         let name = entry.name.as_encoded_bytes();
         if name == b"journals" {
+            listed_journals = true;
             continue;
         }
         let owner = match backups::finder_file(name, entry.is_file, entry.links) {
@@ -248,8 +249,12 @@ pub(super) fn survey_copy(
             format: Format::Current,
         })?;
     }
+    #[cfg(test)]
+    if let Some(hook) = &caps.before_open {
+        hook(&at.join("journals"));
+    }
     let journals = match folder.open_in(OsStr::new("journals")) {
-        Opened::Missing => return Ok(true),
+        Opened::Missing => return Ok(!listed_journals),
         Opened::Other => return Ok(false),
         Opened::Folder(journals) => journals,
     };
