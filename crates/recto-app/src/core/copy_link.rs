@@ -12,7 +12,7 @@ use crate::core::person;
 use crate::core::row_parts::RowParts;
 use crate::menus::HostAction;
 use recto_agent::commands::Read;
-use recto_agent::commands::page_link::{ADDRESS_REFUSED, Link};
+use recto_agent::commands::page_link::Link;
 use recto_agent::{Code, Command, TabRef};
 use recto_session::TabId;
 
@@ -74,7 +74,7 @@ pub fn answered(parts: &AnswerParts<'_>, ran: &person::Ran<'_>) {
         return;
     }
     let Some(error) = ran.refused() else { return };
-    let words = if error.code == Code::NOT_REFERENCEABLE && error.message == ADDRESS_REFUSED {
+    let words = if error.code == Code::NO_ADDRESS {
         "This file's location can't be made into a link."
     } else if error.code == Code::NOT_REFERENCEABLE {
         "That page came from another PDF and has no place in this file until you save."

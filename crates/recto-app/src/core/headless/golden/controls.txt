@@ -95,7 +95,7 @@ palette view.zoom_out | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_i
 UiAction::Menu | sent [{"cmd":"view","paper":null,"sidebar":"toggle","agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
 UiAction::Row(tab) | sent [{"cmd":"tap","tab":"#2"}] | host None understood true | heard ops_ready model_changed
 UiAction::Row(contents) | sent [{"cmd":"goto","tab":"#2","page":2,"label":null,"within":null}] | host None understood true | heard nothing
-UiAction::CopyLink | sent [{"cmd":"link","page":2,"tab":"#2","to_clipboard":true}] | host None understood true | heard copy_ready
+UiAction::CopyLink | sent [{"cmd":"link","page":2,"tab":"#2","to_clipboard":true}] | host None understood true | heard copy_ready model_changed
 UiAction::Row(contents, adding) | sent [{"cmd":"goto","tab":"#2","page":3,"label":null,"within":null}] | host None understood true | heard nothing
 UiAction::Row(tab, adding) | sent [{"cmd":"compare","tabs":null,"sync":null,"off":false,"toggle":"#3","reading":null}] | host None understood true | heard nothing
 UiAction::Row(note) | sent [{"cmd":"contents_show","which":"generated","tab":"#3"}] | host None understood true | heard nothing

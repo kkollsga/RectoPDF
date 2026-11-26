@@ -128,6 +128,7 @@ Testing the app:
   qa hover             Shows a sidebar row as hovered, by what the pointer entering it does, with no pointer.
   qa pane-scroll       Scrolls one pane of a comparison by what a scroll calls: the reader's own scroll, so it's the pane read and synced scroll follows it.
   qa pane-context-menu Right-clicks a pane of a comparison, by what AppKit calls for a right-click, and chooses an item, as a person would: the pane is the one read, and the item acts on it.
+  qa contents-context-menu Right-clicks a row of the sidebar's contents, by what AppKit calls for a right-click, and chooses an item, as a person would: Copy Link puts the row's page address on the clipboard, which `qa copied` then reads.
   qa pane-focus        Makes a pane of a comparison the one read, by what AppKit calls for a right-click on it, with the menu made and not shown.
   qa compare-click     ⌘-clicks a sidebar row, by what that click calls, with no pointer or key: a tab goes side by side with what's showing, or leaves.
   qa click-row         Clicks a sidebar row, by what a click calls, with no pointer.

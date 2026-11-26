@@ -11,8 +11,7 @@ use serde_json::{Value, json};
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet, so no link can name it. Save first, or ask for a page of the file.";
 const NAME_REFUSED: &str = "This file's name can't be made into a link.";
 const NOT_FOR_AGENTS: &str = "The file's address is the person's alone, for their clipboard. Ask for the link, which names no folder.";
-/// What a refusal to make an address says, which the window tells from the added page's, as both are `not_referenceable`.
-pub const ADDRESS_REFUSED: &str = "This file's location can't be made into a link.";
+const ADDRESS_REFUSED: &str = "This file's location can't be made into a link.";
 const UNSAVED_NOTE: &str =
     "This tab has unsaved edits, so the link names the page's place in the file on disk, not in the tab. The link's page is `file_page`.";
 
@@ -76,7 +75,7 @@ impl Cmd for Link {
         if let Some(sink) = sink {
             let address = address_of(file.path(), file_page + 1).map_err(|why| match why {
                 LinkError::Page => crate::no_such_page(),
-                LinkError::Name => AgentError::new(Code::NOT_REFERENCEABLE, ADDRESS_REFUSED, exit::FAILED),
+                LinkError::Name => AgentError::new(Code::NO_ADDRESS, ADDRESS_REFUSED, exit::FAILED),
             })?;
             sink.text(address);
             return Ok(json!({

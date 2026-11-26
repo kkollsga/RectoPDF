@@ -297,6 +297,7 @@ mod tests {
             "the page Rotate turns: an agent's is refused first by the gate's rule (`place::refuses`, D-6)",
         ),
         ("core/highlight.rs", "pick_of", "the pages of the person's selection, not where the tab is"),
+        ("core/copy_link.rs", "row", "the page of the person's selection, not where the tab is"),
         (
             "core/image_select.rs",
             "command",
