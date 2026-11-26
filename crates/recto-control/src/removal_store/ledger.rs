@@ -147,12 +147,7 @@ pub fn read(root: &Path) -> Ledger {
 
 pub(crate) fn read_with(root: &Path, limits: &LedgerLimits) -> Ledger {
     let dir = dir_of(root);
-    // A folder that is a link, or not this user's alone, holds somebody else's ledger as far as can be told.
-    let folder = match std::fs::symlink_metadata(&dir) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        _ => local::check_private_dir(&dir).map(|()| Some(())).map_err(|_| ()),
-    };
-    let mut ledger = match folder.and_then(|found| found.map_or(Ok(None), |()| bytes_of(&dir.join(FILE)))) {
+    let mut ledger = match bytes_in(&dir) {
         Ok(None) => Ledger::missing(),
         Ok(Some(bytes)) => read_ledger(&bytes, limits),
         Err(()) => Ledger::damaged(),
@@ -163,15 +158,18 @@ pub(crate) fn read_with(root: &Path, limits: &LedgerLimits) -> Ledger {
     ledger
 }
 
-/// The file's bytes, at most one more than a ledger may hold. `Ok(None)` if there is none, and `Err` for anything but a plain file.
-fn bytes_of(path: &Path) -> Result<Option<Vec<u8>>, ()> {
-    match std::fs::symlink_metadata(path) {
+/// The ledger's bytes, at most one more than a ledger may hold. `Ok(None)` if there is no folder or no file, and `Err` for anything but a plain private file in a
+/// folder that is this user's alone: a folder that is a link holds somebody else's ledger as far as can be told.
+fn bytes_in(dir: &Path) -> Result<Option<Vec<u8>>, ()> {
+    match std::fs::symlink_metadata(dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Ok(meta) if meta.is_file() => {}
-        _ => return Err(()),
+        _ => local::check_private_dir(dir).map_err(|_| ())?,
     }
-    let file = File::open(path).map_err(|_| ())?;
-    read_capped(&file).map(Some)
+    match local::open_private_file(&dir.join(FILE)) {
+        Ok(file) => read_capped(&file).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
 }
 
 fn read_capped(file: &File) -> Result<Vec<u8>, ()> {
@@ -277,6 +275,15 @@ fn mark_gap(root: &Path) {
     }
 }
 
+/// What an open that failed means: a link, a pipe or a folder at the name is a ledger this code doesn't write to; anything else (no descriptors, no access, an
+/// interrupted call) is a write that should have happened and didn't.
+fn failure_of(path: &Path) -> Failed {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => Failed::Unwritable,
+        _ => Failed::Lost,
+    }
+}
+
 enum Failed {
     /// A ledger this code doesn't write to (damaged, newer, not a plain file): left as it is, and it reads as a gap by itself.
     Unwritable,
@@ -292,7 +299,7 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<(), F
         let _ = local::exclude_from_backups(&dir);
     }
     // Not followed, not blocking on a pipe: a link or a non-file at the name is refused below.
-    let file = local::append_private_file(&dir.join(FILE)).map_err(|_| Failed::Unwritable)?;
+    let file = local::append_private_file(&dir.join(FILE)).map_err(|_| failure_of(&dir.join(FILE)))?;
     let meta = file.metadata().map_err(|_| Failed::Lost)?;
     if !meta.is_file() {
         return Err(Failed::Unwritable);
@@ -301,7 +308,7 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<(), F
         return Err(Failed::Lost);
     }
     // Read through a second descriptor of the same file: the one that holds the lock only appends.
-    let reading = File::open(dir.join(FILE)).map_err(|_| Failed::Lost)?;
+    let reading = local::open_private_file(&dir.join(FILE)).map_err(|_| failure_of(&dir.join(FILE)))?;
     let (here, there) = (recto_platform::open_file_stamp(&file), recto_platform::open_file_stamp(&reading));
     let (Ok(here), Ok(there)) = (here, there) else { return Err(Failed::Lost) };
     if (here.device, here.inode) != (there.device, there.inode) {

@@ -336,6 +336,34 @@ fn a_linked_removal_folder_reads_as_damaged() {
     assert_eq!(read(&mine).gap, Some(Gap::Damaged));
 }
 
+/// Failure: the ledger is opened with a plain `File::open` after a check by name, so what is swapped in after the check is read, and a file others can write
+/// is trusted. A ledger that others can write is refused: it reads as damaged and is not appended to.
+#[test]
+fn a_ledger_others_can_write_is_neither_read_nor_appended_to() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = temp();
+    let root = dir.join("state");
+    append(&root, &Config::default(), vec![at(1)]);
+    let before = len(&root);
+    std::fs::set_permissions(ledger_path(&root), std::fs::Permissions::from_mode(0o666)).unwrap();
+    assert_eq!(read(&root).gap, Some(Gap::Damaged));
+    append(&root, &Config::default(), vec![at(2)]);
+    assert_eq!(len(&root), before, "nothing was appended");
+}
+
+/// Failure: any error opening an existing ledger is taken as "a ledger this code doesn't write to", which leaves no mark, so a transient one (no access, no
+/// descriptors left) loses entries and the ledger still reads as whole. Only a link, a pipe or a folder at the name is left unmarked.
+#[test]
+fn an_open_that_fails_for_another_reason_leaves_a_gap_mark() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = temp();
+    let root = dir.join("state");
+    append(&root, &Config::default(), vec![at(1)]);
+    std::fs::set_permissions(ledger_path(&root), std::fs::Permissions::from_mode(0o400)).unwrap();
+    append(&root, &Config::default(), vec![at(2)]);
+    assert_eq!(read(&root).gap, Some(Gap::WriteFailed));
+}
+
 /// Failure: two writers that read the same state both append the same link (a duplicate), or the second's header lands after the first's frames (damage). A
 /// writer held between its read and its append, and another started then, must leave one link and a clean read.
 #[test]

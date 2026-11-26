@@ -1,5 +1,5 @@
 //! **Adoption, once, when the ledger is first made:** what the journals already on disk say about which file was where. Each journal's first line (at most 8 KiB,
-//! the file read with no link followed) names the path a tab had and the version of the file it was about; a save that was about to land is named too.
+//! the file opened with no link followed, and not a pipe waited on) names the path a tab had and the version of the file it was about; a save that was about to land is named too.
 //! Nothing else is taken from a journal, and nothing of a document is opened.
 
 use super::{Config, canonical_version};
@@ -46,10 +46,7 @@ pub(super) fn adopt(root: &Path, config: &Config) -> (Vec<Entry>, bool) {
 
 /// What one journal says, if it is a plain file with a header that reads.
 fn from_header(path: &Path) -> Vec<Entry> {
-    let plain = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file());
-    let Some(bytes) = plain.then(|| head(path)).flatten() else {
-        return Vec::new();
-    };
+    let Some(bytes) = head(path) else { return Vec::new() };
     let Some(header) = journal_header(&bytes) else { return Vec::new() };
     // A path a hostile header names is checked as any other: absolute, and what it names is looked at only by stat.
     let Some(path) = header.path.to_path().filter(|p| p.is_absolute()) else {
@@ -73,6 +70,6 @@ fn from_header(path: &Path) -> Vec<Entry> {
 
 fn head(path: &Path) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(HEADER_BYTES).read_to_end(&mut bytes).ok()?;
+    recto_platform::local::open_private_file(path).ok()?.take(HEADER_BYTES).read_to_end(&mut bytes).ok()?;
     Some(bytes)
 }
