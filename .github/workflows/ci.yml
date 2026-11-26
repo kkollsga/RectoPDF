@@ -117,6 +117,8 @@ jobs:
       # lines start with "cache-report"). Read the two against each other and against the restore's "Cache Size" line.
       - name: What the restored cache holds
         run: tools/ci-cache-report.sh after-restore
+      - name: Mark the job's start
+        run: touch "$RUNNER_TEMP/job-start"
       - name: Full check, its heavy part
         run: tools/check.sh --full
         env:
@@ -133,6 +135,11 @@ jobs:
       - name: Dead debug-symbol bundles, left out of the cache
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true' && inputs.lines != true
         run: find target -name '*.dSYM' -prune -exec rm -rf {} +
+      # Dead test executables: each Cargo.lock change leaves a generation of them in target/debug/deps (993, 7.7 GB, for about 95 real ones, 2026-11-26). Kept: what
+      # `cargo nextest list` names, anything hard-linked, anything written since this job started. A wrong delete only costs a relink (tools/ci-prune-test-binaries.sh).
+      - name: Dead test executables, left out of the cache
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: tools/ci-prune-test-binaries.sh --newer-than "$RUNNER_TEMP/job-start"
       - name: What the cache holds, before it is saved
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: tools/ci-cache-report.sh before-save
