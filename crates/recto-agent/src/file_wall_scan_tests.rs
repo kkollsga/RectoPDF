@@ -38,6 +38,11 @@ const OPENS: &[&str] = &[
     // The platform's reads of a path it's handed: a new caller of either is counted where it calls.
     "open_untrusted(",
     "open_private_file(",
+    // A descriptor-relative open, and the folder helper's two: a folder by its path, and a file by a name in an open folder.
+    "openat(",
+    "libc::open(",
+    "Folder::open(",
+    "open_private_in(",
 ];
 
 /// **The reviewed list:** each file of those crates that opens a file by its path other than through the wall, how many times, and why none of those
@@ -70,6 +75,17 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-control/src/record_store/went_back.rs",
         1,
         "the state folder's own list kept beside a tab after a copy went back, its first line read (no link followed) to say whose it is",
+    ),
+    (
+        "recto-control/src/removal_store/backups.rs",
+        1,
+        "the original-backup folder of the state folder, opened through the folder helper (no link followed) and only listed: a backup's name is read, never its bytes",
+    ),
+    (
+        "recto-control/src/removal_store/journals.rs",
+        2,
+        "the state folder's `session` and `session-windowless` folders, opened through the folder helper (no link followed), and the first line of a journal in \
+         them read through that folder's descriptor (a plain private file only): never a document",
     ),
     (
         "recto-control/src/removal_store/ledger.rs",
@@ -127,14 +143,17 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     ),
     (
         "recto-platform/src/folder_mac.rs",
-        1,
-        "a folder of the state folder opened without following a link (O_DIRECTORY | O_NOFOLLOW), for a removal's survey, which then lists and opens through its descriptor: never a document",
+        5,
+        "a folder the caller names, opened without following its last link (`O_DIRECTORY | O_NOFOLLOW`), and files in it opened through its descriptor \
+         (`openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder): for removal's \
+         surveys of RectoPDF's own state folders, never a document",
     ),
+    ("recto-platform/src/folder_stub.rs", 1, "the folder helper's stand-in on another system: opens nothing"),
     (
         "recto-platform/src/local_mac.rs",
-        16,
+        17,
         "the platform's file primitives, each handed its path by a caller: private state files (links not followed), clones, the untrusted open of \
-         `recto`'s update zip in `recto`, a folder flushed. Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
+         `recto`'s update zip in `recto`, a folder flushed, a path opened only to watch it (`O_EVTONLY`, no read). Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
          are counted again where a caller in these crates makes them",
     ),
     ("recto-platform/src/local_stub.rs", 4, "the same primitives' stand-ins on another system"),
