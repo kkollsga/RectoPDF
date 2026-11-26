@@ -177,23 +177,36 @@ fn a_pipe_or_a_link_at_any_name_is_unknown_and_never_followed() {
 }
 
 /// Failure: a file that is a plain one at the listing and is swapped for a pipe or a link before it is opened (the listing's check is only a first
-/// look) is opened with a plain `File::open`: the pipe is waited on, or the link is followed to a journal that places as the target's.
+/// look) is opened with a plain `File::open`: the pipe is waited on, or the link is followed to a file of the same kind that places as the
+/// target's. Each case holds good content of its own kind and the link points at another good file of that kind, so without the swap it is the
+/// target's (asserted first) and only a followed link or a waited-on pipe could change what the plan says.
 #[test]
 fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
     let key = k(7);
     let name = format!("journal-{key}.log");
-    let cases = [
-        (name.clone(), Store::Journal),
-        (format!("journal-{key}.log.unreadable"), Store::JournalVariant),
-        (format!("pages-{key}.ids"), Store::PageIds),
+    let sidecar = sidecar_of(&name, 7);
+    // (the swapped file, its good bytes, the journal that must exist beside it, the store it is in)
+    let cases: [(String, Vec<u8>, bool, Store); 3] = [
+        (name.clone(), journal(MINE, 7), false, Store::Journal),
+        (format!("journal-{key}.log.unreadable"), journal(MINE, 7), false, Store::JournalVariant),
+        (format!("pages-{key}.ids"), sidecar, true, Store::PageIds),
     ];
-    for (file, store) in cases {
+    for (file, bytes, with_journal, store) in cases {
         for pipe in [true, false] {
             let dir = root();
             let outside = TempDir::new("recto-journals-out-");
-            let precious = put(&outside, "precious", &journal(MINE, 7));
-            put(&folder(&dir), &name, &journal(MINE, 7));
-            put(&folder(&dir), &file, &sidecar_of(&name, 7));
+            // A good file of the same kind: a followed link reads it and places as the target's.
+            let precious = put(&outside, "precious", &bytes);
+            if with_journal {
+                put(&folder(&dir), &name, &journal(MINE, 7));
+            }
+            put(&folder(&dir), &file, &bytes);
+            let root = dir.path().to_path_buf();
+            let swapped = if pipe { "pipe" } else { "link" };
+            // Without the swap this file is the target's, so a hook that never fires, or an Unknown that was there already, can't pass.
+            let plain = survey_with(&root, &ledger(), version(7), TargetMode::Save, 64, &Caps::default()).unwrap();
+            let planned = plan_of(&plain, TargetMode::Save).unwrap();
+            assert_eq!(purged(&planned, store), 1, "{file} is the target's before the swap");
             let hook: Arc<dyn Fn(&Path) + Send + Sync> = {
                 let (file, precious) = (file.clone(), precious.clone());
                 Arc::new(move |path| {
@@ -211,15 +224,9 @@ fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
                 before_open: Some(hook),
                 ..Caps::default()
             };
-            let root = dir.path().to_path_buf();
             let s = bounded(move || survey_with(&root, &ledger(), version(7), TargetMode::Save, 64, &caps));
             let refused = plan_of(&s.unwrap(), TargetMode::Save).unwrap_err();
-            assert_eq!(
-                refused,
-                Refusal::Incomplete(store),
-                "{file} swapped for a {}",
-                if pipe { "pipe" } else { "link" }
-            );
+            assert_eq!(refused, Refusal::Incomplete(store), "{file} swapped for a {swapped}");
         }
     }
 }
