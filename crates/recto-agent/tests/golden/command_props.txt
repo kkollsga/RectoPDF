@@ -320,6 +320,9 @@ ref level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=tru
 ref level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"active"}
 ref level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"active"}
 ref level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"active"}
+link level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=true route=session log={"page":3,"tab":"active"}
+link level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=false reads_pages=true route=session log={"page":3,"tab":"#2"}
+link level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=true route=session log={"page":0,"tab":"active"}
 ref level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"#2"}
 resolve level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":1,"tab":"active"}
 resolve level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":1,"tab":"#2"}

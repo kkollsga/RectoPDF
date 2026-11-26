@@ -11,7 +11,7 @@ use super::locating::{HIGHLIGHT_REF_EXAMPLE, REF_PICK};
 use super::{Cmd, Cx, row_access};
 use crate::highlighting::{self, Which};
 use crate::human::edit_state;
-use crate::selecting::Pick;
+use crate::selecting::{Pick, point};
 use crate::table::*;
 use crate::*;
 use recto_core::locator::Locator;
@@ -211,13 +211,6 @@ pub mod line {
 
 /// The refusal of `--id` with anything else.
 pub(crate) const ID_ALONE: &str = "`--id` goes alone: a highlight's number names it.";
-
-/// A point `X,Y`, both finite.
-fn point(at: &str) -> Option<(f32, f32)> {
-    let (x, y) = at.split_once(',')?;
-    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
-    (x.is_finite() && y.is_finite()).then_some((x, y))
-}
 
 impl TryFrom<line::HighlightRemove> for HighlightRemove {
     type Error = AgentError;
@@ -430,7 +423,10 @@ pub(crate) const ROWS_HIGHLIGHT_REMOVE: &[Spec] = &[Spec {
         PICK_PAGE,
         PICK_TO_PAGE,
         PICK_CHARS,
-        PICK_AT,
+        Arg {
+            kind: Kind::PointWord,
+            ..PICK_AT
+        },
         PICK_TO,
         TAB,
     ],
@@ -468,6 +464,24 @@ pub(crate) const ROWS_HIGHLIGHTS: &[Spec] = &[Spec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: `highlight remove --page 3 --at "150,2\u{FFFD}0"` is taken by the CLI, which builds a line the socket refuses (found by the fuzz smoke's
+    /// `commands_from_outside_do_no_harm`). The CLI refuses a place that isn't `X,Y` itself, as usage, before any line is built.
+    #[test]
+    fn the_cli_refuses_a_remove_at_that_is_not_a_place() {
+        let cli = |at: &str| {
+            let words: Vec<String> = ["highlight", "remove", "--page", "3", "--at", at]
+                .iter()
+                .map(|word| (*word).to_string())
+                .collect();
+            table::parse_cli(&words).map(|line| line.wire())
+        };
+        for bad in ["150,2\u{FFFD}0", "150", "a,b", "1,2,3", "inf,2", ""] {
+            let refused = cli(bad).expect_err(bad);
+            assert_eq!((refused.code, refused.exit), (Code::USAGE, exit::USAGE), "{bad:?}");
+        }
+        assert!(cli("150, 220").is_ok(), "a place the socket reads is read");
+    }
 
     /// Failure: `highlight remove` with two ways of naming what to take, or none, guesses one; `--at` that isn't a point is read as one; or page 0
     /// is read as page 1. Each refused as it's read, so before the level.

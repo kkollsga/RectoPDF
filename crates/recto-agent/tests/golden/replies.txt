@@ -1922,6 +1922,24 @@
   refused cmd=unknown code=bad_command
 {"cmd":"ref","page":null}
   refused cmd=unknown code=bad_command
+{"cmd":"link"}
+  refused cmd=unknown code=bad_command
+{"cmd":"link","page":3}
+  reply {"cmd":"link","data":{"file_page":3,"note":null,"page":3,"tab":4,"untrusted":{"link":"x.pdf#page=3"}},"ok":true,"v":1}
+  events 
+  words "A link to page 3: x.pdf#page=3"
+{"cmd":"link","page":3,"tab":"#2"}
+  reply {"cmd":"link","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"link","page":0}
+  reply {"cmd":"link","error":{"candidates":[],"code":"no_such_page","exit":3,"message":"Pages are numbered from 1.","next":"`recto where` gives the tab's length. Pages count from 1."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"link","page":3,"extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"link","page":null}
+  refused cmd=unknown code=bad_command
 {"cmd":"ref","page":3,"tab":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"ref","page":3,"tab":null}
