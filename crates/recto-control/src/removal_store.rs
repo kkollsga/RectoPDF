@@ -9,6 +9,7 @@ mod copy_fixtures;
 mod destinations_tests;
 mod journals;
 pub mod ledger;
+pub mod leftovers;
 mod legacy_session;
 mod placing;
 mod record;

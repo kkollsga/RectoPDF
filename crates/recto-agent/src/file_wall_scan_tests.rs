@@ -100,6 +100,16 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the first line (at most 8 KiB) of a journal in the state folder, a plain file only, read once when the ledger is first made: never a document",
     ),
     (
+        "recto-control/src/removal_store/leftovers/act.rs",
+        2,
+        "Clear leftovers' two `Folder::open` calls, each by a path the surveys pinned and never one from a command: the folder of an unfinished save (the \
+         parent of a path the lineage puts on the document's side, or of a Save As or Replace destination ever recorded, as `writer_temps.rs` lists them) and \
+         the app's own state root. No link is followed at its last part, and the folder's device and inode are compared with the pin before anything is done \
+         in it. Below the state root every folder is opened by descriptor (`open_in`); an unfinished save itself is handed to the Trash by its path \
+         (`NSFileManager`, which is not by descriptor), after `lstat` on that path says it is the pinned thing, and the item that arrives in the Trash is \
+         checked by `lstat` again",
+    ),
+    (
         "recto-control/src/removal_store/legacy_session.rs",
         1,
         "the state folder the caller of `survey_legacy_sessions` names (`pub`, with no production caller yet; the design names the state folder), opened through the \
@@ -186,10 +196,12 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-platform/src/folder_mac.rs",
         5,
-        "the five opens of `Folder`, which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
+        "the four opens of `Folder` (five are counted: the scan also counts `open_private_in`'s definition), which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
          a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
-         `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used today \
-         only by removal's six surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, `legacy_session.rs` and `update_copy.rs`); a new caller is counted where it calls",
+         `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used by removal's six \
+         surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, `legacy_session.rs` and `update_copy.rs`) and by Clear leftovers (`leftovers/pin.rs` \
+         opens the folders below a copy by `open_in`, `leftovers/act.rs` opens the pinned folders by `Folder::open` and `open_in`, and `folder_mac/remove.rs` opens \
+         each folder it takes away by `open_in`); a new caller is counted where it calls",
     ),
     (
         "recto-platform/src/folder_stub.rs",

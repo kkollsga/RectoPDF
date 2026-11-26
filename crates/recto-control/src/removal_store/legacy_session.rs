@@ -11,6 +11,7 @@
 
 use super::backups::{self, Finder};
 use super::journals::{self, Caps};
+use super::leftovers::pin::Pins;
 use super::placing::Maps;
 #[cfg(test)]
 use super::testing::Hook;
@@ -35,6 +36,8 @@ pub(crate) struct LegacyCaps {
     pub entries: usize,
     /// The copy folders opened.
     pub copies: usize,
+    /// The Leftovers mode: each copy folder is pinned whole and is one artifact (its entries aren't listed). `None` is the Removal survey: what a copy holds.
+    pub pins: Option<Pins>,
     /// For each copy folder and its `journals` (its entries, the header bytes read, and the journals' hooks).
     pub folder: Caps,
     /// Called with a copy's path just before it is opened: a test's way to change the root under the listing.
@@ -50,6 +53,7 @@ impl Default for LegacyCaps {
         Self {
             entries: MAX_ENTRIES,
             copies: MAX_COPIES,
+            pins: None,
             folder: Caps::default(),
             #[cfg(test)]
             before_open: None,
@@ -166,6 +170,20 @@ pub(crate) fn survey_legacy_sessions_with(root: &Path, lineage: &Lineage<'_>, mo
             match folder.open_in(&entry.name) {
                 Opened::Missing => return Ok(()),
                 Opened::Folder(copy) => {
+                    if let Some(pins) = &caps.pins {
+                        // The copy folder is one artifact, and one holding `went-back` is one a plan refuses.
+                        let key = ArtifactKey::of(Store::LegacySession, name);
+                        let Ok(root_id) = folder.identity() else { return Ok(()) };
+                        let owner = pins.copy(Store::LegacySession, key, root, root_id, Vec::new(), &entry.name, &copy, caps.folder.entries);
+                        survey.add(Found {
+                            store: Store::LegacySession,
+                            key,
+                            owner,
+                            format: Format::Current,
+                        })?;
+                        // The pin holds everything in the copy, and it goes whole: its entries are not listed one by one.
+                        continue;
+                    }
                     let mut prefix = name.to_vec();
                     prefix.push(b'/');
                     if !survey_copy(

@@ -1036,6 +1036,16 @@ mod tests {
         assert_eq!(process_group_signal_target(libc::pid_t::MAX as u32), Some(-libc::pid_t::MAX));
     }
 
+    /// Failure: a process of another user (launchd, pid 1: `kill` answers "not permitted", not "no such process") reads as gone, so a file its maker still
+    /// owns is taken for a dead process's and moved; or a pid no process has reads as alive.
+    #[test]
+    fn a_process_that_cant_be_signalled_still_exists() {
+        assert!(process_exists(std::process::id()));
+        assert!(process_exists(1), "launchd answers EPERM, which is alive");
+        assert!(process_exists(0), "a number that isn't a process number is taken as alive");
+        assert!(!process_exists(4_000_001), "no process has this number");
+    }
+
     fn temp(name: &str) -> recto_testpdf::TempDir {
         recto_testpdf::TempDir::new(&format!("recto-local-{name}-"))
     }

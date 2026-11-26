@@ -198,6 +198,14 @@ pub mod local;
 #[cfg_attr(not(target_os = "macos"), path = "folder_stub.rs")]
 pub mod folder;
 
+/// What a folder's entries were when looked at (identity, kind, a pinned tree): plain data the Mac's and the stand-in's `folder` share.
+pub mod folder_tree;
+
+/// Moving a file to the Trash of its own volume, never deleting it (`docs/design/removal.md` §10, D5).
+#[cfg_attr(target_os = "macos", path = "trash_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "trash_stub.rs")]
+pub mod trash;
+
 /// Which volume a file is on, by the volume's own UUID rather than the mount's device number (`docs/design/removal.md` §4, D2b).
 #[cfg_attr(target_os = "macos", path = "volume_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "volume_stub.rs")]

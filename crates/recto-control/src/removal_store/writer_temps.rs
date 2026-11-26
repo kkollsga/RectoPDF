@@ -13,6 +13,7 @@
 //! a Save As started by a build from before the destination was recorded isn't in the ledger, so its temp in a folder nothing else lists reads "none found".
 //! A folder that is missing when listed is complete and empty: a purge must list again before it deletes (a remounted volume).
 
+use super::leftovers::pin::Pins;
 #[cfg(test)]
 use super::testing::Hook;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Store, Survey};
@@ -31,6 +32,9 @@ const MAX_FOLDERS: usize = 64;
 pub(crate) struct TempCaps {
     pub entries: usize,
     pub folders: usize,
+    /// The Leftovers mode: each temp is pinned (its folder's and its own identity), and is an artifact only if its process has ended and its volume has a Trash.
+    /// `None` is the Removal survey: every exact-shape temp is `Unknown`.
+    pub pins: Option<Pins>,
     /// Called with a folder's path once it is opened and before it is listed: a test's way to change the path under the survey.
     #[cfg(test)]
     pub before_list: Option<Hook>,
@@ -41,6 +45,7 @@ impl Default for TempCaps {
         Self {
             entries: MAX_ENTRIES,
             folders: MAX_FOLDERS,
+            pins: None,
             #[cfg(test)]
             before_list: None,
         }
@@ -77,6 +82,13 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, survey: &mut Surve
         if let Some(hook) = &caps.before_list {
             hook(path);
         }
+        let folder_id = match &caps.pins {
+            Some(_) => match folder.identity() {
+                Ok(id) => Some(id),
+                Err(_) => return Ok(()),
+            },
+            None => None,
+        };
         let Ok(entries) = folder.entries() else { return Ok(()) };
         let mut seen = 0usize;
         for entry in entries {
@@ -92,10 +104,19 @@ pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, survey: &mut Surve
             let mut key = path.as_os_str().as_encoded_bytes().to_vec();
             key.push(b'/');
             key.extend_from_slice(entry.name.as_encoded_bytes());
+            let key = ArtifactKey::of(Store::WriterTemp, &key);
+            // In the Leftovers survey a temp whose process has ended and whose volume has a Trash is clearable; any other is left out, and the pins say why.
+            let owner = match (&caps.pins, folder_id) {
+                (Some(pins), Some(folder_id)) => match pins.temp(path, folder_id, &entry, key) {
+                    Some(owner) => owner,
+                    None => continue,
+                },
+                _ => Owner::Unknown,
+            };
             survey.add(Found {
                 store: Store::WriterTemp,
-                key: ArtifactKey::of(Store::WriterTemp, &key),
-                owner: Owner::Unknown,
+                key,
+                owner,
                 format: Format::Current,
             })?;
         }
