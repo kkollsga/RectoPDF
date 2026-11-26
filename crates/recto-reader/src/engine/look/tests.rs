@@ -340,7 +340,11 @@ fn a_look_decided_only_by_busy_checks_is_decided_again_when_the_images_are_told(
     for tenth in [0, 30] {
         assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again));
     }
-    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), PageLook::unknown(), "dimmed while busy");
+    assert_eq!(
+        *asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(),
+        PageLook::unknown(),
+        "dimmed while busy"
+    );
     // Still busy: still the guess, with no walk before its time.
     let asks = doc.image_asks;
     assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(61)).unwrap(), PageLook::unknown());
@@ -353,7 +357,11 @@ fn a_look_decided_only_by_busy_checks_is_decided_again_when_the_images_are_told(
     };
     let expected = asked(&mut quiet, &mut Looks::default()).unwrap();
     assert_ne!(*expected, PageLook::unknown(), "the page isn't one the guess happens to fit");
-    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(100)).unwrap(), expected, "decided from the images");
+    assert_eq!(
+        asked_at(&mut doc, &mut looks, start, seconds(100)).unwrap(),
+        expected,
+        "decided from the images"
+    );
     let asks = doc.image_asks;
     assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(400)).unwrap(), expected, "kept once decided");
     assert_eq!(doc.image_asks, asks, "and asked of no more");
