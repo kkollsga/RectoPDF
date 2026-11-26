@@ -149,6 +149,22 @@ pub(crate) fn test_files(src: &Path, files: &[PathBuf]) -> BTreeSet<PathBuf> {
             }
         }
     }
+    // A test module with its file named by `#[path = "..."]` (relative to the folder of the file that declares it) sits between the two lines.
+    for file in files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        for triple in lines.windows(3) {
+            let test_only = triple[0].starts_with("#[cfg(test)]") || triple[0].starts_with("#[cfg(any(test");
+            let named = triple[1].strip_prefix("#[path = \"").and_then(|rest| rest.strip_suffix("\"]"));
+            if let (true, Some(named), true) = (test_only, named, triple[2].contains("mod ") && triple[2].ends_with(';')) {
+                let path = file.parent().unwrap().join(named);
+                if let Some(dir) = path.parent() {
+                    test_dirs.push(dir.join(path.file_stem().unwrap()));
+                }
+                tests.insert(path);
+            }
+        }
+    }
     tests.extend(files.iter().filter(|file| test_dirs.iter().any(|dir| file.starts_with(dir))).cloned());
     tests
 }
