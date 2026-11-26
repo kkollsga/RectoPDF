@@ -1579,11 +1579,6 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     let (seconds, to) = (began.elapsed().as_secs_f64(), session_thread());
     eprintln!("wake-ups and CPU ms in each 2 s: settling {settling:?}, at rest {resting:?}; session thread {from} -> {to}");
     // The session thread's own part in them, counted where it waits: a wait that ran out with no call to take. SIGNOFF: an idle reader wakes at most once a second. A loaded Mac's wake-ups (11 to 14 a 2 s, 2026-11-26) were not this thread's: it read 0 here.
-    let timeouts = to["timeouts"].as_u64().unwrap() - from["timeouts"].as_u64().unwrap();
-    assert!(
-        timeouts as f64 <= seconds,
-        "the session thread's wait ran out {timeouts} times in {seconds:.1} s at rest: {from} -> {to}"
-    );
     awake::assert_rest(&settling, &resting, || {
         format!(
             "settling {settling:?}, at rest {resting:?}\nstate: {}\n{}",
@@ -1592,6 +1587,11 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
             awake::stack_summary(&common::evidence::sample(pid, 2, std::time::Duration::from_secs(2 + 60)))
         )
     });
+    let timeouts = to["timeouts"].as_u64().unwrap() - from["timeouts"].as_u64().unwrap();
+    assert!(
+        timeouts as f64 <= seconds,
+        "the session thread's wait ran out {timeouts} times in {seconds:.1} s at rest: {from} -> {to}"
+    );
     // Reduce Motion: it stays in view, with no frames at all.
     run.ok(&["qa", "reduce-motion", "on"]);
     run.ok(&["goto", "400"]);

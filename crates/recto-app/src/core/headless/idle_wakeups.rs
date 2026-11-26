@@ -10,6 +10,7 @@ fn a_resting_session_has_no_deadline_under_a_second() {
     let pdf = disk.pdf("a.pdf", 5);
     let app = disk.builder().open(pdf).start();
     app.settle();
+    let from = app.core().core.timeouts();
     let at_rest = |what: &str| {
         let left = {
             let inner = app.core();
@@ -25,5 +26,5 @@ fn a_resting_session_has_no_deadline_under_a_second() {
     app.settle();
     at_rest("after a place changed");
     // The thread parked on that deadline, never woken by it: the wait that ran out is counted only when the clock does it.
-    assert_eq!(app.core().core.timeouts(), 0, "no wait ran out while the clock stood still");
+    assert_eq!(app.core().core.timeouts() - from, 0, "no wait ran out while the clock stood still");
 }

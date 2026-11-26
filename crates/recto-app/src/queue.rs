@@ -219,7 +219,7 @@ struct Calls {
     turns: u64,
     /// Times the session thread has parked: a wait for what's off it to come back wakes as the thread next parks ([`CoreQueue::wait_next_park`]).
     parks: u64,
-    /// Times a wait for a deadline ran out with no call to take: the thread woken by the clock alone. At rest it's at most once a second, and one in a minute is the saver's.
+    /// Times a wait for a deadline ran out by the clock with no call to take: the thread woken by the clock alone. At rest it's at most once a second, and one in a minute is the saver's.
     timeouts: u64,
     doing: Doing,
 }
