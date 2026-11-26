@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
-use super::look::{Looks, tile_look};
+use super::look::{Looks, at_rest, next_heal, tile_look};
 use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
@@ -86,7 +86,7 @@ fn rest_or_wait_for_a_surface(
 ) {
     // With nothing planned, before the rest is said: one walk for a click's places on a page on show, then round again, where a new view or job comes first. The thread is at rest
     // when this has nothing left to do, so whoever waits for it to rest (a quiet run's settle, a test) finds the places kept.
-    if !planned && prefetch_at_rest(shared, renderers) {
+    if !planned && (prefetch_at_rest(shared, renderers) || at_rest(shared, renderers)) {
         return;
     }
     let retry = {
@@ -100,7 +100,11 @@ fn rest_or_wait_for_a_surface(
         } else {
             reader.work.surfaces.clear();
             // A page held for a look or a draw to be tried again has no event coming to ask it: the thread wakes when its wait is over, at once if it's over already (the plan was made before this rest).
-            reader.docs.next_hold_ends(Instant::now())
+            let now = Instant::now();
+            // And a look kept for want of an answer, asked again by the time its page's file is due ([`next_heal`]).
+            let heal = crate::tiles::relook::on_dark_paper(&mut reader)
+                .and_then(|(pages, _)| next_heal(&pages, |file| renderers.get(file).map(|open| &open.looks), now));
+            [reader.docs.next_hold_ends(now), heal].into_iter().flatten().min()
         }
     };
     rest(shared, renderers, policy, resting_since, retry);
@@ -255,6 +259,11 @@ pub(super) fn all_told(shared: &Shared, reader: &mut crate::tiles::Reader) {
 /// the note, the selection's notice, the page drawn, and the host's word that there are layers. Until this thread takes the view again, the view isn't
 /// settled (`Work::telling`), as what's told may queue the session's work.
 fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
+    job_ended_with(shared, job, outcome, file_changed, |_| {});
+}
+
+/// [`job_ended`], with `before` run under the same hold of the view just before the job is taken into it: what the page view is to do together with it (`engine/look/heal.rs`: the old tiles dropped as the new preview lands, so the host hears both in one batch).
+pub(super) fn job_ended_with(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool, before: impl FnOnce(&mut crate::tiles::Reader)) {
     let drawn = match (&job.kind, &outcome) {
         (
             JobKind::Draw {
@@ -277,6 +286,7 @@ fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
     } else {
         outcome
     };
+    before(&mut reader);
     reader.finish(job, outcome);
     take_pending_follow(shared, &mut reader);
     let has_ops = reader.host.has_ops();
@@ -449,14 +459,14 @@ fn let_go_of_unwanted(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>
 }
 
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
-struct OpenDoc {
+pub(super) struct OpenDoc {
     /// Whoever's asked has been told how long this file is.
     length_told: bool,
-    doc: DocRenderer,
+    pub(super) doc: DocRenderer,
     /// Of the file that's open now. A replacement clears them before anything goes by them: see [`seen_replaced`].
-    looks: Looks,
+    pub(super) looks: Looks,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
-    replaced: bool,
+    pub(super) replaced: bool,
     /// Its worker was given a password the person typed, and the tab whose job opened it then: for that tab's jobs on its own file, and no other's
     /// ([`OpenDoc::serves`], [`added_needs_password`]). **The key ends with that tab:** a renderer with it is kept only while that tab is held, hot or warm,
     /// with this as its own file ([`let_go_of_unwanted`]), not as long as any tab wants the path, as a document with a page added from the file does, nor
@@ -475,7 +485,7 @@ impl OpenDoc {
 }
 
 /// **The renderer has seen its file replaced: what was decided about the old one's pages goes, now, before anything goes by it.** The renderer opens the new file at the start of whichever job comes next, a draw included, so the tile that job draws is of the new file, and the look it's put on dark paper by has to be too. Says whether it had.
-fn seen_replaced(open: &mut OpenDoc) -> bool {
+pub(super) fn seen_replaced(open: &mut OpenDoc) -> bool {
     if !open.doc.take_file_changed() {
         return false;
     }
@@ -616,7 +626,7 @@ fn document_failed(failure: RenderFailure) -> Outcome {
     }
 }
 
-fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
+pub(super) fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     if let JobKind::Text { check } = job.kind {
         let read = open.doc.page_characters_for(job.source_page, true, check, job.generation);
         // Told to stop, a check that didn't finish says nothing about the page, so it's as though it was never tried. What was read on the way is good, and a read that went with its worker isn't a failure of the page's.
