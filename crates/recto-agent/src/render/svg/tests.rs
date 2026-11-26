@@ -901,6 +901,54 @@ fn huge_paths_and_deep_clips_end_in_a_sound_file() {
     );
 }
 
+/// Failure (the person saw "too busy to draw page 1. It will be tried again." and nothing tried again): an export whose worker got no processor in the page's deadline ended as `page_mac_busy`, though a second ask on a fresh worker draws the page. Made by stopping the worker (`kill -STOP`, so it has no processor at all), and the page's deadline is short for the export (the seam, 250 ms), which the stopped worker uses up and a fresh worker's size and contents asks, a tiny page's, fit in. The export succeeds, counts the Mac as busy once, and holds the second ask's SVG alone: the first ask's partial output was started over.
+#[test]
+fn an_export_the_mac_was_too_busy_for_asks_again() {
+    let file = TempPdf::new("busy-export.pdf", &pages(&[Page::new(text_lines(&["Words on a page"]))]));
+    let mut doc = DocRenderer::new(&file.0, None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap();
+    doc.page_size(0).unwrap();
+    let job = SvgJob {
+        path: &file.0,
+        page: 0,
+        rect: None,
+        text: TextMode::Both,
+        scale: 1.0,
+        strip_metadata: false,
+        quarter_turns: 0,
+    };
+    // The export's first ask of a fresh worker is the page's size, which is where the stopped worker is met; the contents' ask goes through the same helper (`ask_again.rs`'s tests).
+    {
+        let round = 1u32;
+        let pid = doc.worker_pid().expect("a worker with the file open");
+        let stop = |signal: &str| {
+            std::process::Command::new("/bin/kill")
+                .arg(signal)
+                .arg(pid.to_string())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        assert!(stop("-STOP"));
+        let out = RefCell::new(super::super::MemoryOut::new(1 << 24));
+        let written = recto_render_service::under_page_deadline_for_test(
+            &mut doc,
+            |doc| doc,
+            std::time::Duration::from_millis(250),
+            |doc| write_svg(doc, &job, &OutputCaps::default(), &out, Instant::now()),
+        );
+        stop("-CONT");
+        let written = written.unwrap_or_else(|error| panic!("round {round}: {}, {:?}", error.message, doc.stats()));
+        assert_eq!(
+            doc.stats().too_busy,
+            round,
+            "round {round}: the Mac was counted too busy once more: {:?}",
+            doc.stats()
+        );
+        let svg = String::from_utf8(out.into_inner().bytes).unwrap();
+        assert_eq!(svg.matches("<svg").count(), 1, "round {round}: the first ask's output was started over");
+        assert_eq!(u64::try_from(svg.len()).unwrap(), written.bytes);
+    }
+}
+
 /// Failure: `form_bomb` hangs an export, takes the whole Mac, or leaves half a file under the real name. It must stop at the limit, say so, and leave nothing, and the page after it must still export. A bomb whose worker got under half its deadline in processor time on a Mac loaded with other tests is told as `page_mac_busy`, which is the same: it stopped, said so and left nothing.
 #[test]
 fn a_form_bomb_fails_cleanly_with_nothing_left_behind() {

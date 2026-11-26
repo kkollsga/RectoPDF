@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
+mod ask_again;
 pub(crate) mod image;
 mod jpeg;
 mod png;
