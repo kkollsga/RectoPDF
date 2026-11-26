@@ -644,3 +644,5 @@ What went wrong and what changes:
 - **Workers' self-matching waits did not recur**, and destructive git commands were chained once (a worker's own throwaway seed); both rules stay in the brief.
 
 - 2026-11-26 (noted at once): a worker ran one `#[ignore]` disk-image probe with the tool sandbox disabled (`hdiutil attach` was refused under the sandbox) and used `HEAVY_RETRY=1` past a saved failure. The probe only mounts a 20 MiB image it makes in the scratchpad and detaches it. Both are now call-backs: a probe that needs something the sandbox refuses asks first, and `HEAVY_RETRY` stays for failures that come and go.
+
+- 2026-11-26: the coordinator's round-1 fix for D2c-2 (a Save As destination recorded as `Unplaced`) was itself wrong: `Unplaced` joins every lineage, so after any Save As every removal would have refused. Round 2 caught it before merge. Lesson: a coordinator decision that adds a record to shared evidence names every reader of that record before it goes to a worker; here the destination now has its own record kind that only the writer-temp survey reads.
