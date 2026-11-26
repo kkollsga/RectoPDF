@@ -9,6 +9,7 @@ use super::saver::Saver;
 use super::sleeper::OnDisk;
 use super::tools::Tools;
 use super::{AppHost, Serving};
+use crate::lifecycle::keeping::Keeping;
 use recto_agent::commands::removal::{RemovalCheck, RemovalClear, plan_word, read_plan, removal_needs_app};
 use recto_agent::commands::{Cmd, Removal as Family, row_access};
 use recto_agent::{Actor, AgentError, Code, Command, TabRef, exit};
@@ -235,19 +236,33 @@ fn clear_error(error: ClearError) -> AgentError {
     }
 }
 
+/// The parts of the app a clear reads, borrowed for one command: nothing of the whole core.
+pub(crate) struct Parts<'a> {
+    pub tools: &'a Tools,
+    pub serving: &'a Serving,
+    pub saver: &'a Saver,
+    pub on_disk: &'a OnDisk,
+    pub life: &'a super::Lifecycle,
+}
+
+/// Whether this app keeps its record for a clear's lease: the lock is held **and** the lifecycle says it keeps it. A late try's or a restore's read can still run
+/// `restore_record` from `update/before` while the lock is held and the state isn't `Keeps` yet, so the lock alone is not the lease.
+pub(crate) fn keeps_the_record(keeping: Keeping, holds_the_lock: bool) -> bool {
+    holds_the_lock && keeping == Keeping::Keeps
+}
+
 /// `removal check` and `removal clear`, for whoever asked: the level's been checked ([`AppHost::run_app`]). Everything else is the controller's.
-pub(crate) fn command(
-    host: &AppHost,
-    tools: &Tools,
-    serving: &Serving,
-    saver: &Saver,
-    on_disk: &OnDisk,
-    actor: Actor,
-    command: &Command,
-) -> Result<Value, AgentError> {
+pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &Command) -> Result<Value, AgentError> {
     let Command::Removal(family) = command else {
         return Err(removal_needs_app());
     };
+    let Parts {
+        tools,
+        serving,
+        saver,
+        on_disk,
+        life,
+    } = parts;
     let removal = tools.removal();
     let root = serving.paths.as_ref().map(|paths| paths.root.clone()).ok_or_else(removal_needs_app)?;
     let (tab, confirm) = match family {
@@ -305,7 +320,7 @@ pub(crate) fn command(
             }
             let _clearing = Clearing(&removal.clearing);
             let outside = Outside {
-                keeps_record: saver.store.holds_the_record(),
+                keeps_record: keeps_the_record(life.keeping(), saver.store.holds_the_record()),
                 beside_newer: saver.store.beside_newer(),
                 sleep_pass_done: on_disk.sleeper().older_pass_done(),
             };
@@ -330,5 +345,35 @@ pub(crate) fn command(
                 "planned": cleared.planned,
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (review round 1, 6): a clear goes while the lock is held but a late try's restore is still being taken in, when `restore_record` can still run
+    /// from `update/before` under it. Only the lock held and the state `Keeps` is the lease; every state that can still read or try, and every one that doesn't
+    /// keep, refuses.
+    #[test]
+    fn the_record_is_kept_only_when_the_lock_is_held_and_the_state_says_keeps() {
+        let not_keeping = [
+            Keeping::NotAsked,
+            Keeping::Trying {
+                since_ms: 0,
+                tries: 1,
+                as_read: 0,
+                asking: false,
+                by_update: false,
+            },
+            Keeping::Restoring { since_ms: 0, claimed: true },
+            Keeping::LettingGo,
+            Keeping::NotKept,
+        ];
+        for keeping in not_keeping {
+            assert!(!keeps_the_record(keeping, true), "{keeping:?} with the lock held");
+        }
+        assert!(!keeps_the_record(Keeping::Keeps, false), "kept by the state with no lock");
+        assert!(keeps_the_record(Keeping::Keeps, true));
     }
 }
