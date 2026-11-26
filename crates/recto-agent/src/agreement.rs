@@ -718,7 +718,8 @@ mod tests {
     /// A scripted renderer: each ask takes the next answer of its list (the last repeats), and every ask is counted.
     struct Scripted {
         counts: Vec<Result<u32, RenderFailure>>,
-        repaired: Result<bool, RenderFailure>,
+        repaired: Vec<Result<bool, RenderFailure>>,
+        looked: usize,
         sizes: Vec<Result<(f32, f32), RenderFailure>>,
         asks: u32,
         counted: usize,
@@ -734,7 +735,8 @@ mod tests {
     impl RendererHalf for Scripted {
         fn repaired(&mut self) -> Result<bool, RenderFailure> {
             self.asks += 1;
-            self.repaired
+            self.looked += 1;
+            Self::answer(&self.repaired, self.looked - 1)
         }
         fn page_count(&mut self) -> Result<u32, RenderFailure> {
             self.asks += 1;
@@ -759,7 +761,8 @@ mod tests {
     fn busy_then_ok() -> Scripted {
         Scripted {
             counts: vec![Err(RenderFailure::TooBusyToStart), Ok(1)],
-            repaired: Ok(false),
+            repaired: vec![Err(RenderFailure::TooBusyToStart), Ok(false)],
+            looked: 0,
             sizes: vec![Err(RenderFailure::TooBusy { page: 0 }), Ok((612., 792.))],
             asks: 0,
             counted: 0,
@@ -778,7 +781,8 @@ mod tests {
     fn always_busy() -> Scripted {
         Scripted {
             counts: vec![Err(RenderFailure::TooBusyToStart)],
-            repaired: Ok(false),
+            repaired: vec![Ok(false)],
+            looked: 0,
             sizes: vec![Ok((612., 792.))],
             asks: 0,
             counted: 0,
@@ -815,5 +819,63 @@ mod tests {
         let mut renderer = always_busy();
         assert_eq!(renderer_half(&mut renderer, &one_page(), Instant::now()), Some(Disagreement::Unchecked));
         assert_eq!(renderer.asks, 1);
+    }
+
+    /// What the real service does when the Mac stays starved: after `MAX_BUSY - 1` busy answers in a row the next starved kill is the file's own
+    /// failure (`size_stopped`, `open_stopped`), a deadline kill. Seen after busy answers it is still the Mac's doing.
+    fn starved_out(failure: RenderFailure) -> Scripted {
+        let busy = RenderFailure::TooBusyToStart;
+        Scripted {
+            counts: vec![Err(busy), Err(busy), Err(failure)],
+            ..busy_then_ok()
+        }
+    }
+
+    /// Failure (review round 1, a blocker): on a busy Mac the service's last starved answer is `OpenFailed`/`PageReadFailed` with a `Deadline` kill,
+    /// which the check took for the file's own: `RendererFailed`, kept for the version, Save greyed with "repair it in another tool". It is `Unchecked`,
+    /// which is about the moment, and the next save looks again.
+    #[test]
+    fn a_deadline_kill_after_busy_answers_is_the_mac_not_the_file() {
+        let _lock = test_lock();
+        let deadline = Instant::now() + LOOK_DEADLINE;
+        let open = RenderFailure::OpenFailed {
+            reason: recto_render_service::KillReason::Deadline,
+        };
+        let read = RenderFailure::PageReadFailed {
+            page: 0,
+            reason: recto_render_service::KillReason::Deadline,
+        };
+        assert_eq!(renderer_half(&mut starved_out(open), &one_page(), deadline), Some(Disagreement::Unchecked));
+        let busy = RenderFailure::TooBusy { page: 0 };
+        let mut sizing = Scripted {
+            counts: vec![Ok(1)],
+            sizes: vec![Err(busy), Err(busy), Err(read)],
+            ..busy_then_ok()
+        };
+        assert_eq!(renderer_half(&mut sizing, &one_page(), deadline), Some(Disagreement::Unchecked));
+        // Not kept: a second save reads again, as it does for any answer about the moment.
+        let file = recto_testpdf::TempPdf::new("starved.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let looker = || -> Box<Looker> {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::new(move |_, _, deadline| renderer_half(&mut starved_out(open), &one_page(), deadline))
+        };
+        assert_eq!(check_by(&file.0, stamp, looker()), Some(Disagreement::Unchecked));
+        assert_eq!(check_by(&file.0, stamp, looker()), Some(Disagreement::Unchecked));
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2, "read again, not kept");
+    }
+
+    /// A failure after busy answers that isn't a deadline kill is the file's own, as it is without them: a crash is damage, refused as such and kept.
+    #[test]
+    fn a_real_failure_after_busy_answers_still_refuses_as_damaged() {
+        let _lock = test_lock();
+        let crashed = RenderFailure::OpenFailed {
+            reason: recto_render_service::KillReason::Crashed,
+        };
+        assert_eq!(
+            renderer_half(&mut starved_out(crashed), &one_page(), Instant::now() + LOOK_DEADLINE),
+            Some(Disagreement::RendererFailed)
+        );
     }
 }
