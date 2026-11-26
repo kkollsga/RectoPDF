@@ -329,7 +329,14 @@ fn contents_fold_reveal_at_once_and_keep_a_thumb() {
     run.settled();
     let clipboard = run.ok(&["qa", "copied"]);
     let types: Vec<&str> = clipboard["types"].as_array().unwrap().iter().filter_map(|kind| kind["type"].as_str()).collect();
-    assert_eq!(types, ["public.utf8-plain-text"], "{clipboard}");
+    // Plain text only: AppKit adds the string's legacy name for the same bytes; no file URL and no URL, which would make another app attach the file.
+    assert_eq!(types.first(), Some(&"public.utf8-plain-text"), "{clipboard}");
+    assert!(
+        types.iter().all(|kind| matches!(*kind, "public.utf8-plain-text" | "NSStringPboardType")),
+        "{clipboard}"
+    );
+    let digests: Vec<_> = clipboard["types"].as_array().unwrap().iter().map(|kind| kind["sha256"].clone()).collect();
+    assert!(digests.windows(2).all(|pair| pair[0] == pair[1]), "the same bytes under each name: {clipboard}");
     assert_eq!(
         clipboard["untrusted"]["text"].as_str(),
         Some(recto_core::locator::address_of(&file.0, page).expect("an address").as_str()),
