@@ -171,7 +171,8 @@ fn the_persons_own_files_are_ignored() {
 }
 
 /// Failure: a temp from before the ledger began reads as "none found" (a hash no lineage path matches, and the file older than the ledger), or a temp
-/// of some other save from after it is `Unknown` and refuses every removal (every save since the ledger began recorded its path first).
+/// of some other save from after it is `Unknown` and refuses every removal. The second is sound because every save since the ledger began (Save, Save As and
+/// Replace alike) recorded the path its temp is named for at `Starting`; see `a_crashed_save_as_leaves_a_temp_the_survey_finds_in_the_destinations_folder`.
 #[test]
 fn a_temp_nobody_can_place_is_ignored_after_the_ledger_began_and_unknown_before() {
     let dir = TempDir::new("recto-wtemps-");

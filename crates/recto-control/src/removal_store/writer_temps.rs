@@ -7,8 +7,12 @@
 //!
 //! **What an entry is.** Not lopdf's exact shape: the person's own file, ignored (naming it `Unknown` would refuse every removal from a busy
 //! folder). Exact shape and a hash that is a lineage path's file name in this folder: placed by that path's sides, as a backup is. Exact shape and
-//! a hash that is no lineage path's: ignored if it changed after the ledger began (every save since then records its path first, or leaves a gap
-//! that refuses), `Unknown` if it changed before or has no time. A placed `.tmp` must be a plain file (`Shared` with other hard links); a `.d` must
+//! a hash that is no lineage path's: ignored if it changed after the ledger began, `Unknown` if it changed before or has no time. The
+//! time rule holds because Save, Save As and Replace all record the path the writer names its temp for at `Starting`, before the writer makes anything (a
+//! destination as `Unplaced`, by its canonical folder), or leave a gap that refuses; so a temp that appeared after the ledger began and matches no path is
+//! no save's of this app. **Known limits (the first a false "none found", the second a false refusal):** a Save As started by a build from before this
+//! recording isn't in the ledger, so its temp reads "none found" until it's swept; and a Save As that crashes just after its rename leaves its `.tmp` as a
+//! hard link to the target, which reads `Shared` (a false refusal) until lopdf's `clear_leftover_links` runs. A placed `.tmp` must be a plain file (`Shared` with other hard links); a `.d` must
 //! be a real folder and is not looked into. Any other kind, or one changed before the ledger began, is `Unknown`.
 
 #[cfg(test)]
