@@ -106,6 +106,13 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          state folder), opened through the folder helper (no link followed); the two record slots in each read whole, up to 32 MiB, through that folder's \
          descriptor (a plain private file only): never a document",
     ),
+    (
+        "recto-control/src/removal_store/writer_temps.rs",
+        1,
+        "the folder of each target-side lineage path the caller of `survey_writer_temps` names (`pub`, with no production caller yet): a person's folder, \
+         opened through the folder helper (this user's only, no link followed at its last part) and only listed; each entry is looked at by `fstatat` without \
+         following a link, and nothing in the folder is opened: never a document",
+    ),
     ("recto-control/src/server.rs", 1, "the socket's lock file in the state folder, named by the app"),
     (
         "recto-control/src/terminal.rs",
@@ -167,7 +174,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the five opens of `Folder`, which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
          a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
          `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used today \
-         only by removal's surveys (`journals.rs`, `backups.rs`, `record.rs`, and `writer_temps.rs` once it lands); a new caller is counted where it calls",
+         only by removal's four surveys (`journals.rs`, `backups.rs`, `record.rs` and `writer_temps.rs`); a new caller is counted where it calls",
     ),
     (
         "recto-platform/src/folder_stub.rs",
