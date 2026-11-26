@@ -10,6 +10,8 @@ struct StandIn {
     boxes: Option<Vec<[u16; 4]>>,
     /// Its next image checks the Mac was too busy for, as many as are left.
     busy_images: u8,
+    /// How many times its images were asked after.
+    image_asks: usize,
     draws: VecDeque<Result<(), RenderFailure>>,
     drawn: usize,
     now: Instant,
@@ -25,6 +27,7 @@ impl StandIn {
         Self {
             boxes,
             busy_images: 0,
+            image_asks: 0,
             draws: draws.into_iter().collect(),
             drawn: 0,
             now: Instant::now(),
@@ -50,6 +53,7 @@ impl LookSource for StandIn {
     }
 
     fn image_boxes(&mut self, _page: u32, _generation: u64) -> ImagesAsked {
+        self.image_asks += 1;
         if self.busy_images > 0 {
             self.busy_images -= 1;
             return ImagesAsked::Busy;
@@ -305,4 +309,19 @@ fn only_a_tile_that_is_the_whole_page_decides_it() {
         "a dark tile that's the whole page"
     );
     assert_eq!(doc.drawn, 0, "nothing drawn for it");
+}
+
+/// Failure (review round 1, item 3): the image check ran before the page's wait was looked at, so a second ask inside the wait (a second tab on the same file) ran a fresh walk each time, each costing a deadline in the product and filling the host's busy run early. A page waiting after a busy check asks nothing until its wait is over: two asks inside the wait make one walk. Seen failing with the wait looked at after the images were asked (3 walks).
+#[test]
+fn asks_inside_the_wait_after_a_busy_check_start_no_new_walk() {
+    let start = Instant::now();
+    let mut doc = StandIn::new(Some(vec![[0, 0, 65_535, 65_535]]), []);
+    doc.busy_images = u8::MAX;
+    let mut looks = Looks::default();
+    for tenth in [0, 5, 10] {
+        assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again), "at {tenth} tenths");
+    }
+    assert_eq!(doc.image_asks, 1, "one walk for the three asks inside the wait");
+    assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(30)), Err(NoLook::Again));
+    assert_eq!(doc.image_asks, 2, "asked again once the wait is over");
 }
