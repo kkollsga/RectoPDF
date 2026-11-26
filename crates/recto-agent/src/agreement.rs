@@ -930,4 +930,15 @@ mod tests {
         let mut busy = always_busy();
         assert_eq!(password_half(&mut busy, Instant::now() + LOOK_DEADLINE), None);
     }
+
+    /// Failure (review round 2): a save that had waited out its deadline for a look under way went on to start a look of its own, a worker's start for
+    /// an answer nobody could wait for. A deadline already past is `Unchecked`, and no look starts.
+    #[test]
+    fn a_save_past_its_deadline_starts_no_look() {
+        let _lock = test_lock();
+        let file = recto_testpdf::TempPdf::new("past.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new("")]));
+        let stamp = stamp_of(&file.0);
+        let looker: Box<Looker> = Box::new(|_, _, _| unreachable!("no look past the deadline"));
+        assert_eq!(check_until(&file.0, stamp, Instant::now(), looker), Some(Disagreement::Unchecked));
+    }
 }
