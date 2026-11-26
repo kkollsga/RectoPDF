@@ -15,7 +15,6 @@ use recto_core::save::backup_name;
 use recto_platform::{FileStamp, local};
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Arc;
@@ -291,8 +290,9 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<(), F
     }
     // Read through a second descriptor of the same file: the one that holds the lock only appends.
     let reading = File::open(dir.join(FILE)).map_err(|_| Failed::Lost)?;
-    let same = reading.metadata().map_err(|_| Failed::Lost)?;
-    if (same.dev(), same.ino()) != (meta.dev(), meta.ino()) {
+    let (here, there) = (recto_platform::open_file_stamp(&file), recto_platform::open_file_stamp(&reading));
+    let (Ok(here), Ok(there)) = (here, there) else { return Err(Failed::Lost) };
+    if (here.device, here.inode) != (there.device, there.inode) {
         return Err(Failed::Unwritable);
     }
     let bytes = read_capped(&reading).map_err(|()| Failed::Lost)?;
