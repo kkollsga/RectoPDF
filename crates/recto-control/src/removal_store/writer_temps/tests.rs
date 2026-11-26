@@ -17,6 +17,7 @@ fn ledger(dir: &Path) -> Ledger {
     Ledger {
         links: vec![at(7, "mine.pdf"), at(8, "theirs.pdf")],
         destinations: Vec::new(),
+        path_bytes: 0,
         began_ns: 0,
         gap: None,
         stopped: None,
@@ -237,7 +238,7 @@ fn caps_are_exact_and_errors_leave_the_store_unmarked() {
     put(&dir, "note-4", b"x");
     assert_eq!(survey_of(&ledger(&dir), &dir, TargetMode::Save, 64, &caps).unwrap_err(), Refusal::TooLarge);
 
-    // Two folders hold target paths; a cap of 2 is complete and a cap of 1 is too large. The second folder is missing.
+    // Three folders hold target paths and the third is missing: it holds no file, so it counts toward no cap. A cap of 2 is complete, a cap of 1 too large.
     let elsewhere = TempDir::new("recto-wtemps-else-");
     let mut two = ledger(&dir);
     two.links.push(Link::At {
@@ -258,9 +259,35 @@ fn caps_are_exact_and_errors_leave_the_store_unmarked() {
         plan_of(&survey_of(&two, &dir, TargetMode::Save, 64, &big).unwrap(), TargetMode::Save).is_ok(),
         "three folders, one of them missing"
     );
+    assert!(
+        plan_of(
+            &survey_of(&two, &dir, TargetMode::Save, 64, &TempCaps { entries: 99, ..at(2) }).unwrap(),
+            TargetMode::Save
+        )
+        .is_ok(),
+        "the missing folder is not counted"
+    );
     assert_eq!(
-        survey_of(&two, &dir, TargetMode::Save, 64, &TempCaps { entries: 99, ..at(2) }).unwrap_err(),
+        survey_of(&two, &dir, TargetMode::Save, 64, &TempCaps { entries: 99, ..at(1) }).unwrap_err(),
         Refusal::TooLarge
+    );
+    // Never-landed destinations in folders that are not there cost nothing however many, and the cap's limit plus one of those that are is too large.
+    let mut lost = ledger(&dir);
+    lost.destinations = (0..5).map(|n| dir.join(format!("gone-{n}")).join("copy.pdf")).collect();
+    assert!(
+        plan_of(
+            &survey_of(&lost, &dir, TargetMode::Save, 64, &TempCaps { entries: 99, ..at(1) }).unwrap(),
+            TargetMode::Save
+        )
+        .is_ok()
+    );
+    for n in 0..2 {
+        std::fs::create_dir(dir.join(format!("gone-{n}"))).unwrap();
+    }
+    assert_eq!(
+        survey_of(&lost, &dir, TargetMode::Save, 64, &TempCaps { entries: 99, ..at(2) }).unwrap_err(),
+        Refusal::TooLarge,
+        "the target's folder and two destination folders that are there: 3 over a cap of 2"
     );
     // A folder that can't be entered: unmarked.
     let _restore = Restore(elsewhere.path().to_path_buf());

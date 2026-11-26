@@ -52,9 +52,9 @@ impl Default for TempCaps {
 /// Lists the folder of each target-side path of `lineage` and adds every writer temporary in it to `survey`, marking `Store::WriterTemp` complete
 /// only after every folder was listed to the end.
 ///
-/// A folder that isn't there is complete and empty; one that isn't a real folder of this user's (a link, a file, another user's), one that can't be
+/// A folder that isn't there is complete and empty and counts toward no cap; one that isn't a real folder of this user's (a link, a file, another user's), one that can't be
 /// listed or an entry that can't be looked at leaves the store unmarked, so the plan says `Incomplete` rather than "none found". The adapter does
-/// not check the lineage's gap: the plan's `HistoryIncomplete` gate (`Survey::history`) does. More than 64 folders, or 65,536 entries in one, is
+/// not check the lineage's gap: the plan's `HistoryIncomplete` gate (`Survey::history`) does. More than 64 folders that open, or 65,536 entries in one, is
 /// `TooLarge`. `add`'s refusal passes through.
 pub fn survey_writer_temps(lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
     survey_writer_temps_with(lineage, mode, survey, &TempCaps::default())
@@ -62,16 +62,20 @@ pub fn survey_writer_temps(lineage: &Lineage<'_>, mode: TargetMode, survey: &mut
 
 pub(crate) fn survey_writer_temps_with(lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, caps: &TempCaps) -> Result<(), Refusal> {
     let folders = folders_of(lineage);
-    if folders.iter().filter(|(_, hashes)| hashes.listed).count() > caps.folders {
-        return Err(Refusal::TooLarge);
-    }
     let began = lineage.began_ns();
+    // Only a folder that opens counts toward the cap: one that isn't there holds no file, so no temp can be in it (a Save As to a folder made later, or
+    // removed since, costs nothing), and the cap is on what is listed, which is the work.
+    let mut opened = 0usize;
     for (path, hashes) in folders.iter().filter(|(_, hashes)| hashes.listed) {
         let folder = match Folder::open(path) {
             Opened::Missing => continue,
             Opened::Other => return Ok(()),
             Opened::Folder(folder) => folder,
         };
+        opened += 1;
+        if opened > caps.folders {
+            return Err(Refusal::TooLarge);
+        }
         #[cfg(test)]
         if let Some(hook) = &caps.before_list {
             hook(path);
