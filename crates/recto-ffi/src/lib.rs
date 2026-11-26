@@ -816,11 +816,6 @@ impl AppCore {
         }
     }
 
-    /// How many panes there are now, for the host to have a page area each. One with no comparison.
-    pub fn pane_count(&self) -> u32 {
-        u32::try_from(self.inner.panes.count()).unwrap_or(1)
-    }
-
     pub fn set_dark_appearance(&self, dark: bool) {
         self.inner.window.set_dark(dark, &self.inner.core);
     }
@@ -907,7 +902,6 @@ impl AppCore {
         self.inner.system_pressure(critical);
     }
 
-    /// What a right-click on a page offers.
     /// What a right-click on a pane offers: its own layout ticked, so a pane that isn't being read shows its own.
     pub fn context_menu(&self, pane: u32) -> Vec<MenuEntry> {
         let reader = lock(&self.inner.published).reader.clone();

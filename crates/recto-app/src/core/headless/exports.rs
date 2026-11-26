@@ -55,7 +55,6 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ("contents_is_following", View, &[]),
     ("contents_is_moving", View, &[]),
     ("reader", View, &[]),
-    ("pane_count", View, &[]),
     ("row_reveal", View, &[]),
     ("menu_bar", View, &[]),
     ("recent_files", View, &[]),
