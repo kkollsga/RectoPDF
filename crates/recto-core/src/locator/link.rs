@@ -42,7 +42,7 @@ pub fn page_link(name: &[u8], file_page: u32) -> Result<String, LinkError> {
     }
     link.push_str("#page=");
     write!(link, "{file_page}").expect("a String takes a write");
-    debug_assert!(link.len() <= MAX_LINK_BYTES, "the link outgrew its capacity");
+    debug_assert_eq!(link.capacity(), 3 * name.len() + 12, "the link outgrew its capacity");
     Ok(link)
 }
 
