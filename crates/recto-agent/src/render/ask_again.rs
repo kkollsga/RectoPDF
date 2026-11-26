@@ -97,4 +97,45 @@ mod tests {
         );
         assert_eq!((own, asks), (Err(RenderFailure::NotPdf), 1));
     }
+
+    /// Failure (the person saw "too busy to draw page 1. It will be tried again." and nothing tried again): an ask the Mac was too busy for (a worker with no processor at all, made by `kill -STOP`) ended an export as `page_mac_busy`, though a second ask on a fresh worker draws the page. Only the first ask is under the short page deadline (the seam wraps that ask alone, so a loaded runner can't starve the asks after it: the whole-export version of this test failed 6 of 20 under like-ci for that reason). The second ask is answered, the Mac is counted busy once, and the output was started over between them.
+    #[test]
+    fn a_real_worker_the_mac_was_too_busy_for_is_asked_again() {
+        use recto_render_service::{DocRenderer, Policy, ServiceConfig};
+        let file = recto_testpdf::TempPdf::new(
+            "busy-ask.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["one"]))]),
+        );
+        let mut doc = DocRenderer::new(&file.0, None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap();
+        doc.page_size(0).unwrap();
+        let pid = doc.worker_pid().expect("a worker with the file open");
+        let signal = |signal: &str| {
+            std::process::Command::new("/bin/kill")
+                .arg(signal)
+                .arg(pid.to_string())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        assert!(signal("-STOP"));
+        let (mut asks, mut overs) = (0u32, 0u32);
+        let got = asked_again(
+            far(),
+            &mut doc,
+            |doc| {
+                asks += 1;
+                if asks == 1 {
+                    recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_size(0))
+                } else {
+                    doc.page_size(0)
+                }
+            },
+            |_| {
+                overs += 1;
+                Ok(())
+            },
+        );
+        signal("-CONT");
+        assert!(got.is_ok(), "{got:?}, {:?}", doc.stats());
+        assert_eq!((asks, overs, doc.stats().too_busy), (2, 1, 1), "{:?}", doc.stats());
+    }
 }
