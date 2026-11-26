@@ -145,12 +145,24 @@ impl Looked {
             }
         }
         let count = |len: usize| u32::try_from(len).unwrap_or(u32::MAX);
+        let (mut waiting_here, mut waiting_elsewhere) = (0, 0);
+        let mut waiting_folders: HashSet<&Path> = HashSet::new();
+        for waiting in self.pins.waiting() {
+            if Some(waiting.folder()) == here {
+                waiting_here += 1;
+            } else {
+                waiting_elsewhere += 1;
+                waiting_folders.insert(waiting.folder());
+            }
+        }
         Found {
             saves_here,
             saves_elsewhere,
             other_folders: count(folders.len()),
             copies: count(self.pins.copies().len()),
-            waiting: count(self.pins.waiting().len()),
+            waiting_here,
+            waiting_elsewhere,
+            waiting_folders: count(waiting_folders.len()),
             no_trash: count(self.pins.no_trash().len()),
         }
     }

@@ -6,7 +6,9 @@ fn found() -> Found {
         saves_elsewhere: 2,
         other_folders: 2,
         copies: 3,
-        waiting: 1,
+        waiting_here: 1,
+        waiting_elsewhere: 0,
+        waiting_folders: 0,
         no_trash: 1,
     }
 }
@@ -87,7 +89,7 @@ fn a_copy_with_work_not_brought_in_says_to_reopen() {
 #[test]
 fn nothing_to_clear_says_what_it_left_alone() {
     let left = Found {
-        waiting: 2,
+        waiting_here: 2,
         no_trash: 1,
         ..Found::default()
     };
@@ -112,4 +114,30 @@ fn a_part_done_artifact_is_told_and_is_never_nothing() {
         assert!(!said.to_lowercase().contains("nothing was"), "{said}");
         assert!(said.contains("partly deleted") || said.contains("may be in the Trash"), "{said}");
     }
+}
+
+/// Failure (review round 1, 7): a save still being written in another folder is told as "in this folder", so the person looks for it where it isn't.
+#[test]
+fn a_waiting_save_is_said_to_be_in_this_folder_only_when_it_is() {
+    let words = |found: Found| nothing(&found);
+    let here = words(Found {
+        waiting_here: 1,
+        waiting_elsewhere: 0,
+        waiting_folders: 0,
+        ..Found::default()
+    });
+    assert!(here.contains("in this folder"), "{here}");
+    let elsewhere = words(Found {
+        waiting_elsewhere: 2,
+        waiting_folders: 2,
+        ..Found::default()
+    });
+    assert!(!elsewhere.contains("this folder") && elsewhere.contains("in 2 other folders"), "{elsewhere}");
+    let both = words(Found {
+        waiting_here: 1,
+        waiting_elsewhere: 1,
+        waiting_folders: 1,
+        ..Found::default()
+    });
+    assert!(both.contains("in this folder") && both.contains("in 1 other folder."), "{both}");
 }

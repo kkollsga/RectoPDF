@@ -32,8 +32,11 @@ pub struct Found {
     pub other_folders: u32,
     /// Copies of the session record kept for going back: the update's and the older versions'.
     pub copies: u32,
-    /// Unfinished saves whose process may still be running.
-    pub waiting: u32,
+    /// Unfinished saves whose process may still be running, in the document's own folder.
+    pub waiting_here: u32,
+    /// The same in other folders that were searched, and how many folders those are in.
+    pub waiting_elsewhere: u32,
+    pub waiting_folders: u32,
     /// Unfinished saves on a volume with no Trash.
     pub no_trash: u32,
 }
@@ -99,16 +102,20 @@ pub fn check(names: &Names, found: &Found) -> String {
 /// The lines for what a clear leaves where it is.
 fn left_alone(found: &Found) -> Vec<String> {
     let mut lines = Vec::new();
-    if found.waiting > 0 {
-        lines.push(format!(
-            "{} still being written in this folder. Try again when {} finished.",
-            if found.waiting == 1 {
-                "1 save is".to_owned()
-            } else {
-                format!("{} saves are", found.waiting)
-            },
-            if found.waiting == 1 { "it has" } else { "they have" },
-        ));
+    for (count, place) in [
+        (found.waiting_here, "in this folder".to_owned()),
+        (
+            found.waiting_elsewhere,
+            format!("in {}", n(found.waiting_folders.max(1), "other folder", "other folders")),
+        ),
+    ] {
+        if count > 0 {
+            lines.push(format!(
+                "{} still being written {place}. Try again when {} finished.",
+                if count == 1 { "1 save is".to_owned() } else { format!("{count} saves are") },
+                if count == 1 { "it has" } else { "they have" },
+            ));
+        }
     }
     if found.no_trash > 0 {
         lines.push(format!(

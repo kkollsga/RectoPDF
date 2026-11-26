@@ -298,7 +298,7 @@ pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &
                 "words": checked.words,
                 "found": {
                     "saves_here": found.saves_here, "saves_elsewhere": found.saves_elsewhere, "other_folders": found.other_folders,
-                    "copies": found.copies, "waiting": found.waiting, "no_trash": found.no_trash,
+                    "copies": found.copies, "waiting_here": found.waiting_here, "waiting_elsewhere": found.waiting_elsewhere, "waiting_folders": found.waiting_folders, "no_trash": found.no_trash,
                 },
                 "offered": checked.id.is_some(),
                 "refused": checked.refused.as_ref().is_some_and(|why| matches!(why, LookError::Refused { why: Refusal::Incomplete(_) | Refusal::TooLarge | Refusal::Inconsistent, .. })),
