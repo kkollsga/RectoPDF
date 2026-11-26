@@ -132,8 +132,9 @@ impl Steps for Crash {
     }
 }
 
-/// Failure: a temp made after the check (the same count with another file, or one more) is moved to the Trash under a confirmation that was about what
-/// the check showed. Seeded by taking the confirmation against the plan made at check time.
+/// Failure: a temp made after the check (one more than was shown) is moved to the Trash under a confirmation that was about what the check showed. **Two
+/// guards hold this, so one seeded alone passes:** the digest compare in `Confirmations::take` and the one in `Progress::start`. It fails with both removed
+/// (seen, review round 1), which is what it holds.
 #[test]
 fn a_temp_added_after_the_check_stops_the_clear() {
     let fx = fx();
@@ -225,15 +226,11 @@ fn ids_are_good_once_for_their_actor_their_document_and_their_time() {
     assert!(unknown(fx.clear(third, Who::Person, Instant::now(), &mut Unwatched).unwrap_err()));
 }
 
-/// Failure: a save between the check and the clear (a new file stamp) doesn't stop it; an edit in a tab (no new stamp) does.
+/// Failure: a save between the check and the clear (a new file stamp) doesn't stop it. (That an edit in a tab, which changes nothing on disk, doesn't is held
+/// in the app, where a tab can be edited: `an_edit_between_check_and_clear_still_clears`.)
 #[test]
-fn a_save_between_check_and_clear_is_stale_and_an_edit_is_not() {
+fn a_save_between_check_and_clear_is_stale() {
     let fx = fx();
-    let id = id_of(&fx.check(Who::Person));
-    // An edit in the tab changes nothing on disk: the clear goes on.
-    let cleared = fx.clear(id, Who::Person, Instant::now(), &mut Unwatched).expect("cleared");
-    assert_eq!(cleared.outcome, Outcome::Complete);
-    let fx = self::fx();
     let id = id_of(&fx.check(Who::Person));
     let document = fx.document();
     let bound = fx.asked(&document, Who::Person);

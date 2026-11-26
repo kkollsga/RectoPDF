@@ -298,3 +298,16 @@ fn a_check_makes_nothing() {
     bed.agent(Level::Full, &clear_line(&plan)).expect("cleared");
     assert!(bed.trash().exists(), "made by the first move");
 }
+
+/// Failure (review round 1, 12): an edit in the tab between the check and the clear (nothing on disk changes) makes the plan stale, so the person who rotated a
+/// page is told to look again for nothing. A real edit through the window's own action, then the clear goes.
+#[test]
+fn an_edit_between_check_and_clear_still_clears() {
+    let bed = bed();
+    let plan = plan(&bed.agent(Level::Full, CHECK).expect("a look"));
+    bed.app.core().perform("rotate.right".into());
+    bed.app.settle();
+    assert!(bed.app.reader().edited, "the person's edit is there");
+    let cleared = bed.agent(Level::Full, &clear_line(&plan)).expect("an edit changes nothing the plan was about");
+    assert_eq!(cleared["outcome"], "complete", "{cleared}");
+}
