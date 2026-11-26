@@ -582,7 +582,6 @@ fn renderer_for<'a>(
         );
     }
     let open = renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))?;
-    open.doc.hidden.draw_for(tab, super::selection::hidden_for(shared, tab, path));
     Ok(open)
 }
 

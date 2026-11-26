@@ -222,6 +222,9 @@ mod tests {
             job_loop.find("renderer_for(").expect("run finds a renderer") < job_loop.find("job_on(").expect("and does the job"),
             "with what renderer_for found"
         );
-        assert!(body("renderer_for<").contains("hidden.draw_for("), "and renderer_for gives the job's tab's set");
+        assert!(
+            !body("renderer_for<").contains("hidden.draw_for("),
+            "and the set is given in one place, job_on, not twice"
+        );
     }
 }
