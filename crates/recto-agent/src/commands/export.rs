@@ -463,6 +463,11 @@ impl Cmd for Images {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, page, at, as_seen } = self;
         let access = cx.access;
+        // A point belongs to the page as it was seen: the line is refused as it's read, and one built in Rust is refused here, before the page is found
+        // and before the window's look is begun for a page that isn't the one they saw.
+        if matches!(page, PageOrRef::Ref(_)) && (at.is_some() || as_seen.is_some()) {
+            return Err(AgentError::new(Code::USAGE, IMAGES_REF_NO_AT, exit::USAGE));
+        }
         let Where { page, found, id, source, .. } = page.locate(access, tab, locating::CharsChecked::First)?;
         // The person's own document is read with the password they typed, as the snapshot tool's click reads it; an agent's never is.
         let keys = access.persons_keys(cx.actor);

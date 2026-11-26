@@ -760,6 +760,19 @@ mod tests {
         });
         let error = crate::execute(&access, Actor::Person, &built, &mut Vec::new()).expect_err("refused");
         assert_eq!((error.code, error.message.as_str()), (Code::USAGE, IMAGE_REF_NOT_CLIPBOARD));
+        // `images` the same: a point built in Rust beside a reference is refused before the page is found, for the person with the clipboard too.
+        let built = Command::from(super::super::export::Images {
+            tab: TabRef::Active,
+            page: PageOrRef::Ref(made_up_locator(locator::Target::Page)),
+            at: Some([1.0, 2.0]),
+            as_seen: Some(crate::extract::AsSeen {
+                quarter_turns: 0,
+                file_page: 0,
+                own: true,
+            }),
+        });
+        let error = crate::execute(&access, Actor::Person, &built, &mut Vec::new()).expect_err("refused");
+        assert_eq!((error.code, error.message.as_str()), (Code::USAGE, IMAGES_REF_NO_AT));
     }
 
     /// Failure: `highlight --ref` takes a reference to a page or a spot (an `also_spelled` hit's, say) and highlights the whole page, an edit nobody asked for;
