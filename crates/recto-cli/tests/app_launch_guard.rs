@@ -718,9 +718,15 @@ fn started(body: &str) -> (std::time::Duration, recto_agent::AgentError) {
 fn a_start_that_does_nothing_is_stopped_at_the_stall_and_one_that_works_runs_to_the_cap() {
     let (idle, error) = started("exec sleep 30");
     assert!(error.message.contains("made no progress"), "{}", error.message);
-    assert!(idle < std::time::Duration::from_millis(800), "stopped at the stall (300 ms), not the cap (900 ms): {idle:?}");
+    assert!(
+        idle < std::time::Duration::from_millis(800),
+        "stopped at the stall (300 ms), not the cap (900 ms): {idle:?}"
+    );
     let (busy, error) = started("while :; do :; done");
     assert!(error.message.contains("still starting"), "{}", error.message);
-    assert!(busy >= std::time::Duration::from_millis(900), "a start that is working is waited for to the cap: {busy:?}");
+    assert!(
+        busy >= std::time::Duration::from_millis(900),
+        "a start that is working is waited for to the cap: {busy:?}"
+    );
     assert!(!error.next.contains("--timeout"), "{}", error.next);
 }

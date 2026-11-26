@@ -189,7 +189,10 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
         Err(verdict) => {
             let words = match verdict {
                 Verdict::Capped => format!("The app was still starting after {} s, so it was stopped.", options.patience.cap.as_secs()),
-                _ => format!("The app made no progress for {} s while starting, so it was stopped.", options.patience.stall.as_secs()),
+                _ => format!(
+                    "The app made no progress for {} s while starting, so it was stopped.",
+                    options.patience.stall.as_secs()
+                ),
             };
             let error = AgentError::new(Code::TIMED_OUT, words, exit::TIMED_OUT)
                 .then("Try again when the Mac is less busy; `recto qa start` has no time option for this.");
