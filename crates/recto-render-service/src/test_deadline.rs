@@ -37,6 +37,15 @@ pub fn under_start_timeout_for_test<T, R>(holder: &mut T, renderer: fn(&mut T) -
     short_for(holder, renderer, |policy| &mut policy.start_timeout, timeout, job)
 }
 
+/// **For tests: the same for how long a page's image checks that stayed starved are remembered as unknown** (60 s), so a test needn't wait that out. Only `job` has it short.
+#[doc(hidden)]
+pub fn under_busy_reask_for_test<T, R>(holder: &mut T, renderer: fn(&mut T) -> &mut DocRenderer, pause: Duration, job: impl FnOnce(&mut T) -> R) -> R {
+    let own = crate::host::images::set_busy_reask(renderer(holder), Some(pause));
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
+    crate::host::images::set_busy_reask(renderer(holder), own);
+    done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 /// Runs `job` with the policy's `which` set to `short`, and puts the policy's own back after, however `job` ends.
 fn short_for<T, R>(
     holder: &mut T,

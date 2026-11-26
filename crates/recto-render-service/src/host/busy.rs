@@ -42,6 +42,11 @@ pub(super) fn walk_stopped<T>(doc: &mut DocRenderer, page: u32, reply: &Result<T
     }
 }
 
+/// Whether a walk's failure was the Mac being too busy for it (a kill at the deadline with the processor not given), whatever the run's bound: for a walk that reached [`MAX_BUSY`], which is remembered, to say it was a busy one.
+pub(super) fn walk_was_starved<T>(reply: &Result<T, JobFailure>, before: Before, doc: &DocRenderer) -> bool {
+    matches!(reply, Err(JobFailure::Stopped(KillReason::Deadline))) && before.moved(doc)
+}
+
 /// A draw's, or what asks about a page the way a draw does (its traits, the reading of its contents), worker was stopped for `reason`. One that ran out of time with the Mac too busy to give its worker the processor isn't remembered ([`RenderFailure::TooBusy`]); past [`MAX_BUSY`] in a row it's remembered after all, at every scale.
 pub(super) fn draw_stopped(doc: &mut DocRenderer, page: u32, from_scale: f32, reason: KillReason, before: Before) -> RenderFailure {
     if starved(doc, page, reason, before) {

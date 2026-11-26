@@ -848,6 +848,41 @@ fn three_starved_image_checks_in_a_row_are_remembered_as_unknown() {
     assert_eq!(doc.stats().spawns, spawns, "and asked of no worker");
 }
 
+/// Failure (the engine's provisional look can only heal if the host lets it): a page whose image checks were starved `MAX_BUSY` times in a row was remembered as unknown for good, so a map sheet whose Mac was busy a long while stayed dimmed after the Mac was quiet. A run of busy checks that reaches the bound is remembered only until a re-ask time: before it, no worker is asked; after it, one fresh walk is made, which on a quiet Mac finds the picture. Seen failing with the unknown remembered for good (still `None` after the time).
+#[test]
+fn image_checks_that_stayed_starved_are_asked_once_more_after_a_pause() {
+    let file = picture_page_file("busy-images-reask.pdf");
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    let pause = Duration::from_millis(1500);
+    recto_render_service::under_busy_reask_for_test(
+        &mut doc,
+        |doc| doc,
+        pause,
+        |doc| {
+            for round in 0..recto_render_service::MAX_BUSY as u64 {
+                doc.page_size(round as u32 + 1).unwrap();
+                assert_eq!(starved_image_ask(doc, 0, round + 1), None, "round {round}");
+            }
+            let spawns = doc.stats().spawns;
+            assert_eq!(doc.image_boxes(0, 9), None, "unknown before the pause is over");
+            assert_eq!(doc.stats().spawns, spawns, "and asked of no worker");
+            let asked = std::time::Instant::now();
+            let mut found = None;
+            wait_until("the pause to be over", || {
+                found = doc.image_boxes(0, 10);
+                found.is_some()
+            });
+            assert!(asked.elapsed() >= pause, "not before the pause: {:?}", asked.elapsed());
+            assert!(
+                found.is_some_and(|boxes| !boxes.is_empty()),
+                "one fresh walk finds the picture: {:?}",
+                doc.stats()
+            );
+        },
+    );
+}
+
 /// Failure: a page whose worker hangs every time looks just like a busy Mac, so busy draws that aren't remembered cost a deadline for every ask for ever, or busy draws count towards stopping the document and a busy Mac stops it drawing. Three busy draws of a page in a row remember it as failed after all, as three busy reads do, and none of them counts towards the kills that stop a document.
 #[test]
 fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {
