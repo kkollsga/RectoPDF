@@ -100,6 +100,15 @@ fn one(bytes: &[u8]) {
     for limits in [&SMALL, &LEDGER_LIMITS] {
         let ledger = read_ledger(bytes, limits);
         held(&ledger, limits, bytes.len());
+        // The sound part of any file is a ledger of its own that reads whole: what a writer's cut back to `good_len` leaves.
+        if ledger.good_len >= HEADER_LEN {
+            let sound = read_ledger(&bytes[..ledger.good_len], limits);
+            assert_eq!(
+                (&sound.links, sound.stopped),
+                (&ledger.links, None),
+                "the sound part of a file reads whole and the same"
+            );
+        }
         // What was read encodes, and reads back the same, under the larger limits.
         let mut again = encode_header(ledger.began_ns).to_vec();
         for link in &ledger.links {
