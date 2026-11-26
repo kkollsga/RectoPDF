@@ -1497,6 +1497,19 @@ mod tests {
     use recto_session::sleep::encode_sleep;
     use std::fs::OpenOptions;
 
+    /// Removes a test's state folder once the detached `recto-ledger` thread a `write_record` started has ended: it writes `removal/ledger.v1` and adopts
+    /// journals under the root, so a removal while it runs fails with `ENOTEMPTY` or finds the folder made again.
+    fn remove_state(root: &Path) {
+        let root = root.canonicalize().unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::removal_store::ledger::running(&root) {
+            assert!(std::time::Instant::now() < until, "the ledger's thread didn't end");
+            std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(!root.exists());
+    }
+
     fn state() -> (recto_testpdf::TempDir, StatePaths) {
         let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "rs");
         let paths = StatePaths::overridden(&root).unwrap();
@@ -1583,7 +1596,7 @@ mod tests {
         drop(store);
         let again = RecordStore::open(&paths, Flavor::App);
         assert_eq!(loaded_record(&again), record);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (the third review, D-C, fail closed): a tab's place withheld from agents is said only by a line of places, which a log that's damaged or
@@ -1616,7 +1629,7 @@ mod tests {
         );
         drop(again);
         assert!(loaded_record(&RecordStore::open(&paths, Flavor::App)).withheld_places.is_empty());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a crash mid-write of the main record leaves nothing to read. Whatever happens to the newest slot, the one before it is whole, and it's what's read: the old or the new, never a broken one, at every byte of a torn write.
@@ -1640,7 +1653,7 @@ mod tests {
         std::fs::write(&newest, &whole).unwrap();
         let store = RecordStore::open(&paths, Flavor::App);
         assert_eq!(loaded_record(&store), record);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: damage to both slots is started over on top of, or panics. What's there is kept to one side, the app starts empty and says so.
@@ -1656,7 +1669,7 @@ mod tests {
         assert!(matches!(loaded, Loaded::Damaged), "{loaded:?}");
         assert_eq!(notice_for(&loaded), Some(record::notices::DAMAGED));
         assert_eq!(std::fs::read(root.join("session.damaged").join(SLOTS[0])).unwrap(), b"garbage");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: an older app overwrites a newer app's record, so going forward again finds it gone. Or it has nowhere to keep its own work, so what's done on the older app is lost. Left exactly as it was, byte for byte, and this one works beside it.
@@ -1681,7 +1694,7 @@ mod tests {
         let Loaded::Restored(restored) = store.load() else { panic!() };
         assert_eq!(restored.notice, Some(record::notices::NEWER_KEPT));
         assert_eq!(restored.record.tabs.len(), 1);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: going forward overwrites the older app's record with one it can't read, so an update that goes back has nothing. Pretending to be the next version: the record is read and carried forward, and a copy is left as it was, which is what the older one reads after going back.
@@ -1699,7 +1712,7 @@ mod tests {
             v1,
             "kept"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a second app on the same folder reads or writes the record that the first is keeping, so one overwrites what the other's user just did.
@@ -1718,7 +1731,7 @@ mod tests {
         assert!(second.write_journals(&JournalWork::default(), false).1.is_some());
         let windowless = RecordStore::open(&paths, Flavor::Windowless);
         assert!(windowless.holds_the_record(), "a session with no window has its own");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: the new app comes up while the old one's still on its way out, holding the lock for a moment more, and starts empty beside its own record, which is exactly what an update mustn't do. It waits for a moment. Someone else really holding it isn't waited on for long.
@@ -1736,7 +1749,7 @@ mod tests {
         assert_eq!(loaded_record(&second).tabs.len(), 2);
         assert!(second.holds_the_record());
         going.join().unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (2026-11-13, twice, from `exits::every_edit_survives_a_quit` and `..._sleep_and_a_kill_while_asleep` under load: "the headless app didn't get the
@@ -1757,7 +1770,7 @@ mod tests {
             "the next app on this record gets it while a copy of the ended one's descriptor is open"
         );
         drop(copy);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a thread of an ended app that's still going, asking for the record as a launch's read does, takes it back from the app that came after, which
@@ -1775,7 +1788,7 @@ mod tests {
             first.write_record(&sample(1), &PlaceDelta::default(), false).unwrap_err().code,
             "other_instance"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (owner, 2026-11-13: a launch refused the lock tries again for about ten seconds): a try waits out the load's patience as `wait_for_lock` does, so
@@ -1796,7 +1809,7 @@ mod tests {
         assert!(second.holds_the_record(), "and stays kept");
         second.let_go();
         assert!(!second.try_to_keep(), "an ended store doesn't take it back");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (a test's start that "didn't get the record's lock" twice, with nothing to say why): a store that isn't keeping the record can't say who is, so the
@@ -1839,7 +1852,7 @@ mod tests {
             refused.why_not_keeping()
         );
         std::fs::set_permissions(&paths.root, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a save moves its file into place though its note never reached the disk, so a crash just after finds a journal that doesn't say a save happened, and replays the edits over the saved file. The note is read back from the file itself, and only this target's counts.
@@ -1927,7 +1940,7 @@ mod tests {
         let (parsed, _) = read_journal(&path).unwrap().unwrap();
         assert_eq!(parsed.ops.len(), 101);
         assert!(!parsed.lost_lines);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a crash at any step of a save brings back the wrong thing. Before the file's in place: everything's as it was, and the journal stands. After it's in place, before it's confirmed: the journal is known to be stale, by the identity it noted ahead of it, and goes, so old history isn't laid on a file that already has it. A journal that's noted a save that didn't happen stands.
@@ -1994,7 +2007,7 @@ mod tests {
         let lists = HashMap::from([(carried.clone(), restored.journals[&carried].edits.to_record())]);
         store.write_record(&restored.record, &PlaceDelta::default(), false).unwrap();
         store.verify(&restored.record, &lists).unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a crash between the steps of a confirmed save, with the new journal written and the old one there or gone, and the record still naming the old, loses the history or says the edits can't be read. Each comes back to one journal, about the saved file.
@@ -2065,7 +2078,7 @@ mod tests {
             assert!(!restored.journals[&name].edits.is_edited());
             assert!(!root.join("session").join(JOURNALS).join(&old).exists(), "the old one's gone");
             assert!(!root.join("session").join(JOURNALS).join(closed_journal_name(&name).unwrap()).exists());
-            std::fs::remove_dir_all(&root).unwrap();
+            remove_state(&root);
         }
     }
 
@@ -2130,7 +2143,7 @@ mod tests {
         // What isn't a PDF it can read isn't kept, and the steps roll off.
         std::fs::write(root.join("junk.pdf"), b"not a pdf").unwrap();
         assert!(store.keep_pages_of(&root.join("junk.pdf"), target, &[0]).is_none());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a kept file's been removed or changed, by hand or by its 30 days, and undo draws the wrong thing or nothing. At a restore and when a closed PDF's opened again, the steps needing it roll off and the tab says so. And the journal's rewritten to match, or a hand-off's read-back would never pass again.
@@ -2216,10 +2229,11 @@ mod tests {
         std::fs::remove_file(&kept_again.path).unwrap();
         let taken = store.history_of(Some(now), &file).unwrap();
         assert!(taken.restored.rolled_off && !taken.restored.edits.can_undo());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review R7): an old journal a remove failed on is still there, with the record already naming the new one. Going over it again overwrites the live journal, and moves it to `closed-`, so the next `session save` says it doesn't read back and a kill loses what's kept.
+    /// Its cleanup waits for the ledger's thread (`remove_state`), which the record's write started and which is still writing under the root.
     #[test]
     fn a_leftover_old_journal_doesnt_touch_the_live_one() {
         let (root, paths) = state();
@@ -2284,7 +2298,7 @@ mod tests {
         let lists = HashMap::from([(name.clone(), list.to_record())]);
         store.write_record(&restored.record, &PlaceDelta::default(), false).unwrap();
         store.verify(&restored.record, &lists).expect("it reads back");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// **Failure: an agent's sleep file is written as other bytes than it was measured at, or an unchanged one is written again.** An agent's file is
@@ -2322,7 +2336,7 @@ mod tests {
         assert_eq!(store.write_sleep_bytes(&file, stamp, &measured), 0, "unchanged, so nothing's written");
         assert_eq!(store.write_sleep(&file, &sleep), 0, "nor by the person's route, which makes the same bytes");
         assert_eq!(store.wrote_bytes(), wrote, "and nothing reached the drive");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a sleep file for another version of the file is used, or a damaged one stays to be read at every wake, or a bad name reaches outside the folder, or a newer app's is thrown away. It's only ever a way to be quick, so all of these just cost that.
@@ -2374,7 +2388,7 @@ mod tests {
         std::fs::write(&on_disk, &newer).unwrap();
         assert_eq!(store.read_sleep(stamp, &file), None);
         assert!(on_disk.exists());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (the second review of the measured faults): a sleep file written before 2026-11-14, which can hold a picture of a page drawn with a password
@@ -2412,7 +2426,7 @@ mod tests {
         std::fs::write(&on_disk, record::seal(recto_session::sleep::SLEEP_KIND, 0, &older)).unwrap();
         assert_eq!(store.read_sleep(stamp, &file), None, "an earlier build's isn't read");
         assert!(!on_disk.exists(), "and it's removed");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (contents' current entry found by place): a sleep file of the format before entries had a place (2) is read, and a tab woken from it marks the
@@ -2459,7 +2473,7 @@ mod tests {
         std::fs::write(&on_disk, record::seal(recto_session::sleep::SLEEP_KIND, 0, &older)).unwrap();
         assert_eq!(store.read_sleep(stamp, &file), None, "the previous format isn't read");
         assert!(!on_disk.exists(), "and it's removed");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// A sleep file's bytes as a build of `format` wrote them, with `pictures` bytes after its facts as format 3's held, or with no format said (0.1.0's).
@@ -2533,7 +2547,7 @@ mod tests {
             done.bytes_read <= 5 * recto_session::sleep::FORMAT_PREFIX_BYTES as u64,
             "only the start of each is read: {done:?}"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review of the removal, S1): 0.1.0's installer cloned every sleep file into the copy of the record an update keeps, for a week, so its pictures
@@ -2591,7 +2605,7 @@ mod tests {
                 .collect();
             assert!(marked.is_empty(), "marked through a link at {}: {marked:?}", link.display());
         }
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: the pass after a launch, past its cap, goes on through the whole folder (a folder of a hostile number of files holds a launch's thread for
@@ -2621,7 +2635,7 @@ mod tests {
         let next = store.remove_older_sleep_files(cap);
         assert_eq!((next.looked_at, next.removed, next.stopped_at_cap), (1, 1, false), "{next:?}");
         assert!(older.iter().all(|path| !path.exists()));
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a sleep file of an older format past what a file of facts can be (one with pictures, up to 32 MiB before) isn't read, and isn't removed
@@ -2638,7 +2652,7 @@ mod tests {
         local::write_private_file(&on_disk, &sleep_file_of_format(Some(3), MAX_SLEEP_FILE_BYTES + 1)).unwrap();
         assert_eq!(store.read_sleep(stamp, &file), None);
         assert!(!on_disk.exists(), "it's gone");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: sleep files grow without end over thousands of tabs. They're held to their limit, oldest first, and that doesn't touch anything else.
@@ -2663,7 +2677,7 @@ mod tests {
         assert!(new.exists() && middle.exists());
         assert!(!oldest.exists() && !expired.exists());
         assert!(journal.exists());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a kept file in use by an open tab is pruned for being old, or a journal's naming one makes this remove something outside the folder, or an old unneeded one stays for good.
@@ -2689,7 +2703,7 @@ mod tests {
         assert!(in_use.exists());
         assert!(!not_used.exists());
         assert!(other.exists(), "not ours");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a crash after a tab's first edit, before the record next went out, loses the tab and with it the edits, though its journal is there. It comes back as a tab. And a closed PDF's history doesn't come back as one: it waits to be asked for.
@@ -2744,7 +2758,7 @@ mod tests {
             "kept for when it's opened, under a name no launch reads"
         );
         assert!(record::validate_record(&restored.record).is_ok());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a closed PDF's history is aged from its journal's last write, as a rename keeps the time, so history last written over 30 days ago is
@@ -2788,7 +2802,7 @@ mod tests {
             closed.exists(),
             "a prune after the close removed it, aged by its last write and not from the close"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// A person closes a tab whose close has nothing left to append, the journal's last write long ago: the closed journal is there after the prune that
@@ -2829,7 +2843,7 @@ mod tests {
         );
         let age = std::fs::metadata(&closed).unwrap().modified().unwrap().elapsed().unwrap();
         assert!(age < Duration::from_secs(3600), "its age counts from the close, not from {age:?} ago");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: reading back doesn't catch what was written differing from what's in memory, so an updater goes ahead on state that won't come back: a changed place, an edit that didn't reach its journal, a record that's gone.
@@ -2852,7 +2866,7 @@ mod tests {
         );
         std::fs::remove_dir_all(root.join("session")).unwrap();
         assert_eq!(store.verify(&record, &HashMap::new()).unwrap_err().code, "read_back_differs");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     fn write_ok(store: &RecordStore, work: &JournalWork) -> JournalOutcome {
@@ -2894,7 +2908,7 @@ mod tests {
         assert_eq!(outcome.written[0].0, TabId(1));
         let lines = std::fs::read(folder.join(&good)).unwrap();
         assert_eq!(record::parse_journal(&lines, CURRENT_VERSION).unwrap().ops.len(), 1);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review of R4.3, should-fix 3): a journal that an app from before highlights reads gets a highlight's operation and still says the old
@@ -2943,7 +2957,7 @@ mod tests {
             read("journal-0000000000000002.log", CURRENT_VERSION).err(),
             Some(RecordError::Newer(record::MARKED_JOURNAL_VERSION))
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review B2, B5, T15): an append to a name this process hasn't read truncates what's there: a journal the launch couldn't parse, or a newer app's, and whatever was in it is gone. It goes under another name beside it, and what was there is byte for byte as it was.
@@ -2967,7 +2981,7 @@ mod tests {
                 .len(),
             1
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T8): a record's tab applies a journal about another file. Proved with one for `/etc/hosts`: its list went on a 6-page tab. The tab says it couldn't, and what's in the journal is left alone.
@@ -2997,7 +3011,7 @@ mod tests {
         assert!(!restored.journals.contains_key(&name));
         assert_eq!(restored.record.tabs[0].journal, None);
         assert_eq!(restored.record.tabs[0].notice, Some(FileNotice::EditsUnreadable));
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T15): a line that can't be used in the middle of a journal: what's past it is cut by the next append though the notice says it was kept, or new edits go after it, where replay never reaches them, and every hand-off fails against it. A copy is kept, what's left is written clean, it reads back the same as what's in memory, and the next edit is reachable.
@@ -3039,7 +3053,7 @@ mod tests {
         let parsed = read_journal(&path).unwrap().unwrap().0;
         let replayed = restored_from(&parsed).unwrap();
         assert_eq!(replayed.edits.slots()[0].quarter_turns, 2, "and the next one is reachable");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T16): a torn tail on the log of places hides every line added after it until the next whole record, so page 17 came back as page 5. It's cut at the launch that finds it.
@@ -3065,7 +3079,7 @@ mod tests {
         drop(store);
         let store = RecordStore::open(&paths, Flavor::App);
         assert_eq!(loaded_record(&store).tabs[0].page, 3, "the line after the tear");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (final review): the newest slot can't be read and the older one can, and the older record comes back as though it were the latest. It's right to use it, and it says so. A slot older than what's good is no news, as a crash mid-write of it leaves just that.
@@ -3107,7 +3121,7 @@ mod tests {
         let Loaded::Restored(restored) = store.load() else { panic!() };
         assert_eq!(restored.record, newer);
         assert_eq!(restored.notice, None);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T14): a record that can't be read just now, as a wrong mode, counts as damage: it was moved aside, journals and all, and a new one started over it. It isn't touched, nothing's written, and it says so.
@@ -3129,7 +3143,7 @@ mod tests {
             store.write_record(&sample(2), &PlaceDelta::default(), false).unwrap_err().code,
             "record_unreadable"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T14): a damaged record takes unsaved edits with it, as the whole folder moved aside. And an earlier damaged state goes. The journals stay and come back, and a few damaged states are kept.
@@ -3153,7 +3167,7 @@ mod tests {
         }
         assert_eq!(std::fs::read(root.join("session.damaged").join(SLOTS[0])).unwrap(), b"garbage 1");
         assert_eq!(std::fs::read(root.join("session.damaged.1").join(SLOTS[0])).unwrap(), b"garbage 0");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T5): work done on the older app after going back never comes forward, as the next version reads its own folder, and an update loses it. Pretending to be the next version again: it's what's restored, with its journals.
@@ -3182,7 +3196,7 @@ mod tests {
             !root.join(format!("session.v{CURRENT_VERSION}")).join(WENT_BACK_NAME).exists(),
             "and that's done with"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T3): `F_FULLFSYNC` only covers what a pass wrote, so an edit written a moment earlier never gets it. There's no way to see a drive's cache from here, so this holds what can be seen: it opens each and says if any refuses.
@@ -3200,7 +3214,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(store.force_to_drive().unwrap_err().code, "write_failed");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure (review T21): a place line goes out on every launch with nothing changed, and temp files a crash left are there for ever. Coming back writes nothing, and they go.
@@ -3219,7 +3233,7 @@ mod tests {
         assert!(!temp.exists());
         assert!(not_ours.exists());
         assert_eq!(store.write_record(&back, &PlaceDelta::default(), false).unwrap(), 0, "nothing's changed");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: a closed PDF's history is kept for ever, or a launch reads it. 30 days and 1 GiB, by the owner, by a look at each one's size and time.
@@ -3240,7 +3254,7 @@ mod tests {
         File::options().write(true).open(folder.join(&closed)).unwrap().set_modified(old).unwrap();
         prune_history(&folder, Some(&[]));
         assert!(!folder.join(&closed).exists());
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 
     /// Failure: the record isn't private: anyone on this Mac can read which files a person has open and what they typed in Find. Every file and folder is theirs alone.
@@ -3257,6 +3271,6 @@ mod tests {
         assert_eq!(mode(root.join("session").join(JOURNALS)), 0o700);
         assert_eq!(mode(root.join("session").join(SLOTS[0])), 0o600);
         assert_eq!(mode(root.join("session").join(JOURNALS).join(&name)), 0o600);
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_state(&root);
     }
 }
