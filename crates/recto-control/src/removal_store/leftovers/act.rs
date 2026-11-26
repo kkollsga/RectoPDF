@@ -16,24 +16,31 @@ use super::pin::{CopyPin, PinSet, TempPin};
 use super::trash::Trash;
 use recto_core::removal::{ArtifactKey, Store};
 use recto_platform::folder::remove::{Failure, Walk, remove_tree_in};
-use recto_platform::folder::{Folder, Kind, Opened, identity_at};
+use recto_platform::folder::{Folder, Identity, Kind, Opened, identity_at};
 use recto_platform::trash::Failure as TrashFailure;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What the acts need from outside.
 pub struct Env<'a> {
     pub trash: &'a dyn Trash,
     /// Whether a process number may be a running process. `recto_platform::local::process_exists` on a real run.
     pub alive: &'a dyn Fn(u32) -> bool,
+    /// Whether a path is on a local volume: a process number in a name proves nothing anywhere else. `recto_platform::folder::is_local` on a real run.
+    pub local: &'a dyn Fn(&Path) -> bool,
+    /// What the live record's folder (`RecordStore::dir()`) is. A copy that is this is never deleted: beside a newer record the live store is
+    /// `session.v<CURRENT>`, which a survey also finds as a copy. `None` only where there is no live record to guard (a test).
+    pub live: Option<Identity>,
 }
 
 impl<'a> Env<'a> {
-    pub fn new(trash: &'a dyn Trash) -> Self {
+    pub fn new(trash: &'a dyn Trash, live: Option<Identity>) -> Self {
         Self {
             trash,
             alive: &recto_platform::local::process_exists,
+            local: &recto_platform::folder::is_local,
+            live,
         }
     }
 }
@@ -87,8 +94,10 @@ pub enum Why {
     TooDeep,
     /// The Trash refused it, or what it did left something else than what was pinned.
     Trash(TrashFailure),
-    /// The item moved, but isn't what was pinned or its name is still in the folder.
-    NotMoved,
+    /// The item moved, but isn't what was pinned or its name is still in the folder. This is where it went, for the words to name.
+    NotMoved(PathBuf),
+    /// It is the live record's folder, which is never deleted.
+    LiveRecord,
     /// It is done but the folder could not be made durable: the walk stops, and a power loss may bring it back (it is cleared again then).
     NotDurable,
     /// A system call failed.
@@ -102,7 +111,7 @@ impl Why {
     /// was pinned. A carrier calls the step failed only when this is `false` for a Trash step (the file is where it was), and otherwise says the step is
     /// done but not durable.
     pub fn in_doubt(&self) -> bool {
-        matches!(self, Self::NotMoved | Self::NotDurable)
+        matches!(self, Self::NotMoved(_) | Self::NotDurable | Self::Trash(TrashFailure::MovedUnknown))
     }
 }
 
@@ -123,7 +132,7 @@ pub enum TempState {
 }
 
 pub fn temp_state(pin: &TempPin, env: &Env<'_>) -> TempState {
-    if pin.pid.is_none_or(|pid| (env.alive)(pid)) {
+    if pin.pid.is_none_or(|pid| (env.alive)(pid)) || !(env.local)(&pin.folder) {
         return TempState::BeingWritten;
     }
     if !env.trash.has_trash_for(&pin.folder) {
@@ -161,6 +170,9 @@ pub fn clear(pins: &PinSet, keys: &[ArtifactKey], env: &Env<'_>, hooks: &mut dyn
                 TempState::NoTrash => return stopped(report, *key, Why::NoTrash),
             }
         } else if let Some(pin) = pins.copy(key) {
+            if env.live == Some(pin.tree.id) {
+                return stopped(report, *key, Why::LiveRecord);
+            }
             match copy_state(pin) {
                 CopyState::Offerable => copies.push(pin),
                 CopyState::WentBack => return stopped(report, *key, Why::WentBack),
@@ -187,7 +199,7 @@ pub fn clear(pins: &PinSet, keys: &[ArtifactKey], env: &Env<'_>, hooks: &mut dyn
         if !hooks.before(&pin.key) {
             return stopped(report, pin.key, Why::Asked);
         }
-        match delete_copy(pin, hooks) {
+        match delete_copy(pin, env, hooks) {
             Ok(done) => {
                 hooks.after(&pin.key, &done);
                 report.done.push((pin.key, done));
@@ -230,7 +242,7 @@ fn trash_temp(pin: &TempPin, env: &Env<'_>) -> Result<Done, Why> {
     }
     let to = env.trash.move_to_trash(&at).map_err(Why::Trash)?;
     if identity_at(&to) != Some(pin.id) || folder.look(&pin.name).is_ok() {
-        return Err(Why::NotMoved);
+        return Err(Why::NotMoved(to));
     }
     folder.sync().map_err(|_| Why::NotDurable)?;
     Ok(Done::Trashed(to))
@@ -250,9 +262,12 @@ fn rank(depth: usize, name: &OsStr, kind: Kind) -> u8 {
     }
 }
 
-fn delete_copy(pin: &CopyPin, hooks: &mut dyn Hooks) -> Result<Done, Why> {
+fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks) -> Result<Done, Why> {
     if copy_state(pin) != CopyState::Offerable {
         return Err(Why::WentBack);
+    }
+    if env.live == Some(pin.tree.id) {
+        return Err(Why::LiveRecord);
     }
     let changed = |name: &OsStr| Why::Changed(name.to_os_string());
     let mut parent = match Folder::open(&pin.root) {

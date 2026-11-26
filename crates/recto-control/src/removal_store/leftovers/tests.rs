@@ -2,7 +2,7 @@
 //! it names would, and the act must stop or finish as the doc comment says. The Trash is a folder on the same volume.
 
 use super::act::{CopyState, Done, Env, Hooks, Why, clear, copy_state};
-use super::pin::{PinSet, Pins, temp_pid};
+use super::pin::{Local, PinSet, Pins, temp_pid};
 use super::trash::{FolderTrash, Trash};
 use crate::removal_store::copy_fixtures::{State, copy_tree, found_of, state, surveyed, write_session};
 use crate::removal_store::legacy_session::{LegacyCaps, survey_legacy_sessions_with};
@@ -11,6 +11,8 @@ use crate::removal_store::update_copy::{UpdateCaps, survey_update_copy_with};
 use crate::removal_store::writer_temps::{TempCaps, survey_writer_temps_with};
 use recto_core::removal::{ArtifactKey, LEDGER_LIMITS, Ledger, Link, Owner, Store, Survey, TargetMode, lineage};
 use recto_core::save::writer_temp_prefix;
+use recto_platform::folder::Identity;
+use recto_platform::trash::Failure as TrashFailure;
 use recto_testpdf::TempDir;
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
@@ -84,7 +86,12 @@ impl World {
 
     /// What the surveys pin, with this Trash and this process table.
     fn pins_with(&self, trash: Arc<dyn Trash>, alive: Arc<dyn Fn(u32) -> bool + Send + Sync>) -> PinSet {
-        let sink = Pins::new(trash, alive);
+        self.pins_on(trash, alive, local_everywhere())
+    }
+
+    /// What the surveys pin, with this Trash, process table and volume fact.
+    fn pins_on(&self, trash: Arc<dyn Trash>, alive: Arc<dyn Fn(u32) -> bool + Send + Sync>, local: Local) -> PinSet {
+        let sink = Pins::new(trash, alive, local);
         let ledger = Ledger {
             links: vec![Link::At {
                 version: version(7),
@@ -152,8 +159,22 @@ fn key_of(pins: &PinSet, store: Store, name: &str) -> ArtifactKey {
         .key
 }
 
+fn local_everywhere() -> Local {
+    Arc::new(|_| true)
+}
+
 fn run(pins: &PinSet, keys: &[ArtifactKey], trash: &dyn Trash, alive: &dyn Fn(u32) -> bool, hooks: &mut dyn Hooks) -> super::act::Report {
-    clear(pins, keys, &Env { trash, alive }, hooks)
+    clear(
+        pins,
+        keys,
+        &Env {
+            trash,
+            alive,
+            local: &|_| true,
+            live: None,
+        },
+        hooks,
+    )
 }
 
 /// Stops the walk once it has been asked about this many entries.
@@ -178,7 +199,7 @@ fn the_surveys_pin_exactly_the_artifacts_they_list() {
     let pins = w.pins();
     assert_eq!(pins.temps.len(), 2);
     assert_eq!(pins.copies.len(), 3, "session.v1, session.damaged and update/before");
-    let sink = || Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false));
+    let sink = || Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false), local_everywhere());
     let s = surveyed(&[Store::LegacySession, Store::UpdateCopy, Store::WriterTemp], |lineage, survey| {
         survey_legacy_sessions_with(
             w.root(),
@@ -299,7 +320,7 @@ fn a_copy_with_went_back_is_never_offered() {
     // Through the survey, which is what a plan is made from: the copy holding it is an artifact core refuses, the other one may be cleared.
     let s = surveyed(&[Store::LegacySession], |lineage, survey| {
         let caps = LegacyCaps {
-            pins: Some(Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false))),
+            pins: Some(Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false), local_everywhere())),
             ..LegacyCaps::default()
         };
         survey_legacy_sessions_with(w.root(), lineage, TargetMode::Save, survey, &caps)
@@ -533,4 +554,221 @@ fn a_key_nobody_pinned_is_refused_before_anything_is_done() {
     std::fs::create_dir_all(&deep).unwrap();
     let pins = w.pins();
     assert!(pins.copies.iter().all(|c| c.name != OsStr::new("session.v2")));
+}
+
+/// A Trash that moves the item into its folder and then says something else than the truth, for the failures a real one can have after it moved.
+struct Lying {
+    inner: FolderTrash,
+    says: Says,
+}
+
+enum Says {
+    /// The move was made and the system gave no place.
+    NoPlace,
+    /// The move was made and the place given is another thing (a path that leads somewhere else).
+    Elsewhere(PathBuf),
+}
+
+impl Trash for Lying {
+    fn has_trash_for(&self, path: &Path) -> bool {
+        self.inner.has_trash_for(path)
+    }
+
+    fn move_to_trash(&self, path: &Path) -> Result<PathBuf, TrashFailure> {
+        self.inner.move_to_trash(path)?;
+        match &self.says {
+            Says::NoPlace => Err(TrashFailure::MovedUnknown),
+            Says::Elsewhere(place) => Ok(place.clone()),
+        }
+    }
+}
+
+/// Failure (review 2): the system says it moved an item and gives no place, and that is read as a refusal, so the step is reported failed with the file
+/// "still where it was" when it isn't. It is in doubt. And an item that is somewhere else than the Trash's answer says carries where it went.
+#[test]
+fn a_move_that_says_too_little_or_the_wrong_place_is_in_doubt() {
+    let w = world();
+    let pins = w.pins();
+    let (key, name) = (pins.temps[0].key, pins.temps[0].name.clone());
+    let lie = Lying {
+        inner: FolderTrash::at(&w.trash),
+        says: Says::NoPlace,
+    };
+    let report = run(&pins, &[key], &lie, &|_| false, &mut super::act::Unwatched);
+    let (_, why) = report.stopped.unwrap();
+    assert!(matches!(why, Why::Trash(TrashFailure::MovedUnknown)) && why.in_doubt(), "{why:?}");
+    assert!(!w.docs.join(&name).exists(), "it did move");
+    // The other temp: the Trash says it is at the person's document.
+    let (key, name) = (pins.temps[1].key, pins.temps[1].name.clone());
+    let wrong = w.docs.join("mine.pdf");
+    let lie = Lying {
+        inner: FolderTrash::at(&w.trash),
+        says: Says::Elsewhere(wrong.clone()),
+    };
+    let report = run(&pins, &[key], &lie, &|_| false, &mut super::act::Unwatched);
+    let (_, why) = report.stopped.unwrap();
+    assert!(matches!(&why, Why::NotMoved(to) if *to == wrong) && why.in_doubt(), "{why:?}");
+    assert!(w.trash.join(&name).exists());
+}
+
+/// Failure (review 3): a link named like an unfinished save is offered and moved (whether the Trash moves the link or what it leads to is not measured),
+/// or stops a clear. Only a file or folder is an artifact; the link is left alone and kept as waiting.
+#[test]
+fn a_link_named_like_an_unfinished_save_is_left_alone() {
+    let w = world();
+    let link = temp_name(DEAD, 9, ".tmp");
+    std::os::unix::fs::symlink(w.outside.join("sentinel"), w.docs.join(&link)).unwrap();
+    let pins = w.pins();
+    assert_eq!(pins.temps.len(), 2);
+    assert!(pins.waiting.iter().any(|t| t.name == OsStr::new(&link)), "kept as waiting: {pins:?}");
+    let report = run(&pins, &keys(&pins), &FolderTrash::at(&w.trash), &|_| false, &mut super::act::Unwatched);
+    assert!(report.stopped.is_none());
+    assert!(std::fs::symlink_metadata(w.docs.join(&link)).is_ok(), "the link is where it was");
+    assert_eq!(std::fs::read(w.outside.join("sentinel")).unwrap(), b"not ours");
+}
+
+/// Failure (review 4): a process number in a name on a volume that isn't local (a network share, where it may be another Mac's) counts as a dead process, so
+/// a save being written from another machine is moved. Not local: waiting, at the survey and again at the act.
+#[test]
+fn a_dead_pid_on_a_volume_that_isnt_local_proves_nothing() {
+    let w = world();
+    let pins = w.pins_on(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false), Arc::new(|_| false));
+    assert!(pins.temps.is_empty() && pins.waiting.len() == 2, "{pins:?}");
+    let pins = w.pins();
+    let key = pins.temps[0].key;
+    let trash = FolderTrash::at(&w.trash);
+    let env = Env {
+        trash: &trash,
+        alive: &|_| false,
+        local: &|_| false,
+        live: None,
+    };
+    let report = clear(&pins, &[key], &env, &mut super::act::Unwatched);
+    assert!(matches!(report.stopped, Some((k, Why::BeingWritten)) if k == key), "{report:?}");
+}
+
+/// Counts how many times the volume is asked about a Trash.
+struct Counting {
+    inner: FolderTrash,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl Trash for Counting {
+    fn has_trash_for(&self, path: &Path) -> bool {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.has_trash_for(path)
+    }
+
+    fn move_to_trash(&self, path: &Path) -> Result<PathBuf, TrashFailure> {
+        self.inner.move_to_trash(path)
+    }
+}
+
+/// Failure (review 7, rule 1): the volume is asked about its Trash once for every temp, so a folder of many crashed saves costs a system call each.
+/// Two temps in one folder ask once.
+#[test]
+fn the_volume_is_asked_once_for_a_folder_not_once_for_each_temp() {
+    let w = world();
+    let counting = Arc::new(Counting {
+        inner: FolderTrash::at(&w.trash),
+        asked: Default::default(),
+    });
+    let pins = w.pins_with(counting.clone(), Arc::new(|_| false));
+    assert_eq!(pins.temps.len(), 2);
+    assert_eq!(counting.asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+fn entries_of(tree: &recto_platform::folder::Tree) -> usize {
+    tree.entries.iter().map(|e| 1 + e.below.as_ref().map_or(0, entries_of)).sum()
+}
+
+/// Failure (review 7, rule 1): the entry cap is per folder, so a copy of many folders each under the cap is held whole in memory without bound. The cap
+/// is the copy's, across every level together, and at the cap plus one the copy is not pinned and is `Unknown`.
+#[test]
+fn a_copy_has_one_entry_budget_across_all_its_folders() {
+    let w = world();
+    let pins = w.pins();
+    let total = entries_of(&pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap().tree);
+    assert!(total >= 3, "the copy has a journals folder with something in it: {total}");
+    let owners = |n: usize| {
+        let s = surveyed(&[Store::LegacySession], |lineage, survey| {
+            let caps = LegacyCaps {
+                pins: Some(Pins::new(Arc::new(FolderTrash::at(&w.trash)), Arc::new(|_| false), local_everywhere())),
+                folder: crate::removal_store::journals::Caps {
+                    entries: n,
+                    ..Default::default()
+                },
+                ..LegacyCaps::default()
+            };
+            survey_legacy_sessions_with(w.root(), lineage, TargetMode::Save, survey, &caps)
+        })
+        .unwrap();
+        found_of(&s)
+            .into_iter()
+            .find(|f| f.3 == ArtifactKey::of(Store::LegacySession, b"session.damaged"))
+            .map(|f| f.1)
+    };
+    assert_eq!(owners(total), Some(Owner::Target), "at the cap");
+    assert_eq!(owners(total - 1), Some(Owner::Unknown), "at the cap plus one: not pinned, and refused");
+}
+
+/// Failure (review 8): `went-back` read as a plain file only: a link, a folder or a pipe of that name is `exists()` to the record store, which then brings the
+/// copy forward, but the survey calls the copy clearable. Any entry of that name makes it `Unknown`.
+#[test]
+fn any_entry_named_went_back_makes_the_copy_unknown() {
+    let w = world();
+    std::os::unix::fs::symlink(w.outside.path(), w.root().join("session.v1").join("went-back")).unwrap();
+    let pins = w.pins();
+    let wb = pins.copies.iter().find(|c| c.name == OsStr::new("session.v1")).unwrap();
+    assert!(wb.went_back);
+    assert_eq!(copy_state(wb), CopyState::WentBack);
+}
+
+/// Failure (review 9): beside a newer record the live store is `session.v<CURRENT>`, which a survey finds as a copy, and a clear deletes the live record and
+/// its unsaved journals. The act is told the live folder's identity and refuses a copy that is it, before anything is done.
+#[test]
+fn the_live_record_is_never_deleted_even_if_planned() {
+    let w = world();
+    let pins = w.pins();
+    let live = {
+        let copy = pins.copies.iter().find(|c| c.name == OsStr::new("session.damaged")).unwrap();
+        copy.tree.id
+    };
+    let trash = FolderTrash::at(&w.trash);
+    let before = w.listing();
+    let env = Env {
+        trash: &trash,
+        alive: &|_| false,
+        local: &|_| true,
+        live: Some(live),
+    };
+    let report = clear(&pins, &keys(&pins), &env, &mut super::act::Unwatched);
+    assert!(matches!(report.stopped, Some((_, Why::LiveRecord))), "{report:?}");
+    assert!(report.done.is_empty());
+    assert_eq!(w.listing(), before, "nothing was done, not even to the others");
+    let _: Identity = live;
+}
+
+/// Failure (review 10): between the last entry going and the folder being taken out by its name, another folder is put in its place (the copy moved
+/// aside), and the take-out by name removes that one. The folder's identity is looked at again right before.
+#[test]
+fn a_folder_put_in_the_copys_place_at_the_last_moment_is_not_taken() {
+    struct Swap(PathBuf);
+    impl Hooks for Swap {
+        fn entry(&mut self, name: &OsStr) -> bool {
+            if name == OsStr::new("session.damaged") {
+                // The root's own gate, asked after every entry is gone.
+                std::fs::rename(&self.0, self.0.with_extension("aside")).unwrap();
+                std::fs::create_dir(&self.0).unwrap();
+            }
+            true
+        }
+    }
+    let w = world();
+    let pins = w.pins();
+    let key = key_of(&pins, Store::LegacySession, "session.damaged");
+    let at = w.root().join("session.damaged");
+    let report = run(&pins, &[key], &FolderTrash::at(&w.trash), &|_| false, &mut Swap(at.clone()));
+    assert!(matches!(report.stopped, Some((_, Why::Changed(_)))), "{report:?}");
+    assert!(at.is_dir(), "the folder that was put there is still there");
 }

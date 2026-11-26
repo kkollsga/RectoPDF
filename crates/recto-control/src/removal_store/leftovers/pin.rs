@@ -78,20 +78,46 @@ pub struct Pins {
     set: Arc<Mutex<PinSet>>,
     trash: Arc<dyn Trash>,
     alive: Arc<dyn Fn(u32) -> bool + Send + Sync>,
+    local: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
+    /// The last folder asked about and what its volume said, so the volume is asked once for a folder and not once for each temp in it:
+    /// (folder, has a Trash, is local).
+    volume: Arc<Mutex<Option<(PathBuf, bool, bool)>>>,
 }
 
+/// Whether a path is on a local volume.
+pub type Local = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
 impl Pins {
-    pub fn new(trash: Arc<dyn Trash>, alive: Arc<dyn Fn(u32) -> bool + Send + Sync>) -> Self {
+    pub fn new(trash: Arc<dyn Trash>, alive: Arc<dyn Fn(u32) -> bool + Send + Sync>, local: Local) -> Self {
         Self {
             set: Arc::default(),
             trash,
             alive,
+            local,
+            volume: Arc::default(),
         }
     }
 
-    /// With the Mac's own Trash and process table.
+    /// With the Mac's own Trash, process table and volumes.
     pub fn real() -> Self {
-        Self::new(Arc::new(MacTrash), Arc::new(recto_platform::local::process_exists))
+        Self::new(
+            Arc::new(MacTrash),
+            Arc::new(recto_platform::local::process_exists),
+            Arc::new(recto_platform::folder::is_local),
+        )
+    }
+
+    /// What the volume of `folder` says: (has a Trash, is local). Asked once for a folder, however many temps it holds.
+    fn volume_of(&self, folder: &Path) -> (bool, bool) {
+        let mut last = self.volume.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, trash, local)) = &*last {
+            if at == folder {
+                return (*trash, *local);
+            }
+        }
+        let facts = (self.trash.has_trash_for(folder), (self.local)(folder));
+        *last = Some((folder.to_path_buf(), facts.0, facts.1));
+        facts
     }
 
     /// What has been pinned so far.
@@ -100,7 +126,9 @@ impl Pins {
     }
 
     /// Pins one temporary of `folder` (open as `at`, of identity `folder_id`) that the survey listed as `entry`. `Some(Target)` when it may go to the
-    /// Trash now and is an artifact; `None` when it is left out (its process may still run, or its volume has no Trash) and kept in the pins.
+    /// Trash now and is an artifact; `None` when it is left out and kept in the pins: a link or anything but a file or folder (whether the Trash would
+    /// move the link or what it leads to is not measured), a process that may still run (a pid in a name proves nothing on a volume that isn't local: it may
+    /// be another Mac's), or a volume with no Trash.
     pub(in crate::removal_store) fn temp(&self, at: &Path, folder_id: Identity, entry: &Entry, key: ArtifactKey) -> Option<Owner> {
         let pin = TempPin {
             key,
@@ -111,10 +139,14 @@ impl Pins {
             pid: temp_pid(entry.name.as_encoded_bytes()),
         };
         let mut set = self.set.lock().unwrap_or_else(PoisonError::into_inner);
-        if pin.pid.is_none_or(|pid| (self.alive)(pid)) {
+        let plain = matches!(pin.id.kind, Kind::File | Kind::Folder);
+        if !plain || pin.pid.is_none_or(|pid| (self.alive)(pid)) {
             set.waiting.push(pin);
             None
-        } else if !self.trash.has_trash_for(at) {
+        } else if !self.volume_of(at).1 {
+            set.waiting.push(pin);
+            None
+        } else if !self.volume_of(at).0 {
             set.no_trash.push(pin);
             None
         } else {
@@ -138,12 +170,10 @@ impl Pins {
         copy: &Folder,
         max_entries: usize,
     ) -> Owner {
-        let Some(tree) = tree_of(copy, 0, max_entries) else { return Owner::Unknown };
-        let went_back = store == Store::LegacySession
-            && tree
-                .entries
-                .iter()
-                .any(|pinned| pinned.id.kind == Kind::File && pinned.name.as_encoded_bytes() == WENT_BACK_NAME.as_bytes());
+        let mut budget = max_entries;
+        let Some(tree) = tree_of(copy, 0, &mut budget) else { return Owner::Unknown };
+        // Whatever it is: the record store reads the marker by `exists()`, which a link to anything counts as.
+        let went_back = store == Store::LegacySession && tree.entries.iter().any(|pinned| pinned.name.as_encoded_bytes() == WENT_BACK_NAME.as_bytes());
         let pin = CopyPin {
             key,
             store,
@@ -159,9 +189,10 @@ impl Pins {
     }
 }
 
-/// `folder` and everything in it, `depth` folders below the copy's own. `None` when it is deeper than [`MAX_DEPTH`], holds more than `max_entries` in
-/// one folder, can't be listed, or a folder was swapped between its listing and its opening.
-fn tree_of(folder: &Folder, depth: usize, max_entries: usize) -> Option<Tree> {
+/// `folder` and everything in it, `depth` folders below the copy's own. `None` when it is deeper than [`MAX_DEPTH`], holds more entries in all, at every
+/// level together, than `budget` (which counts down as it goes: the copy's, not each folder's), can't be listed, or a folder was swapped between its
+/// listing and its opening.
+fn tree_of(folder: &Folder, depth: usize, budget: &mut usize) -> Option<Tree> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -169,15 +200,13 @@ fn tree_of(folder: &Folder, depth: usize, max_entries: usize) -> Option<Tree> {
     let mut entries = Vec::new();
     for entry in folder.entries().ok()? {
         let entry = entry.ok()?;
-        if entries.len() >= max_entries {
-            return None;
-        }
+        *budget = budget.checked_sub(1)?;
         let below = if entry.kind == Kind::Folder {
             let Opened::Folder(inner) = folder.open_in(&entry.name) else { return None };
             if inner.identity().ok()? != entry.identity() {
                 return None;
             }
-            Some(tree_of(&inner, depth + 1, max_entries)?)
+            Some(tree_of(&inner, depth + 1, budget)?)
         } else {
             None
         };
