@@ -8,6 +8,7 @@ use recto_reader::paper::dim_rgb;
 use recto_reader::tiles::{Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, slow_page, text_lines};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -336,6 +337,11 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
     );
 }
 
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x0004;
+#[cfg(not(target_os = "macos"))]
+const O_NONBLOCK: i32 = 0o4000;
+
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
 #[test]
 fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
@@ -415,9 +421,197 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(engine.note().is_some_and(|note| note.contains("answering")), "{:?}", engine.note());
-    // Lets its thread go.
-    drop(std::fs::OpenOptions::new().write(true).open(&dead));
+    // Its open is still under way, and the engine says so.
+    assert_eq!(engine.report().0["opens_waiting"], 1, "{}", engine.report().0);
+    // Lets its thread go. Not a blocking open: with no reader that would wait for ever (CI run 45789292698); no reader is an error here.
+    use std::os::unix::fs::OpenOptionsExt;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&dead)
+        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    let deadline = Instant::now() + HANG;
+    while engine.report().0["opens_waiting"] != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    assert_eq!(engine.report().0["opens_waiting"], 0, "{}", engine.report().0);
+    drop(writer);
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// Failure: going back to a file that doesn't answer starts another open each time, since the page view forgot the one still stuck when it moved on: every revisit of a dead volume's tab left one more `recto-open` thread (and its file handle once it returned) behind, with nothing capping them. A revisit waits on the open already under way, so the count never passes one for the one file, and goes to 0 when it's let go.
+#[test]
+fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-revisit-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let dead = folder.join("dead.pdf");
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&dead).status().unwrap().success());
+    let healthy = document(1);
+    let events = Arc::new(Events::default());
+    let engine = Engine::new(EngineConfig::default(), events);
+    engine.qa().system_takes_only_when_told();
+    let show = |tab: u32, file: &std::path::Path, was: &[u32]| {
+        engine.activate(
+            tab,
+            1,
+            0,
+            PageMap {
+                files: vec![file.to_path_buf()],
+                slots: None,
+                own: None,
+                turns: None,
+                expected: Vec::new(),
+                follows: None,
+            },
+            was,
+            None,
+            recto_reader::layout::Spread::Single,
+        );
+        engine.set_viewport(view(0.0));
+    };
+    let waiting = || engine.report().0["opens_waiting"].as_u64().unwrap();
+    let mut most = 0;
+    // Looks at the page view for this long, as the host does, and notes the most opens it had at once. An open starts the moment the job reaches it, so a few hundred ms show a leak.
+    let mut watch = |limit: Duration| {
+        let until = Instant::now() + limit;
+        while Instant::now() < until {
+            engine.drain();
+            engine.applied();
+            most = most.max(waiting());
+            std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+        }
+    };
+    // More revisits than the page view's cap on opens (4), so a leak shows as the cap and a cap that holds shows as one.
+    for _ in 0..6 {
+        show(1, &dead, &[2]);
+        watch(Duration::from_millis(400));
+        show(2, &healthy.0, &[1]);
+        watch(Duration::from_millis(200));
+    }
+    assert!(most <= 1, "{most} opens of one file at once: {}", engine.report().0);
+    use std::os::unix::fs::OpenOptionsExt;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&dead)
+        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    let deadline = Instant::now() + HANG;
+    while waiting() != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    assert_eq!(waiting(), 0, "{}", engine.report().0);
+    drop(writer);
+}
+
+/// A page view's cap on opens that haven't returned (`MAX_OPENINGS` in `engine/run.rs`).
+const MAX_OPENS: u64 = 4;
+
+fn fifo_in(folder: &std::path::Path, name: &str) -> PathBuf {
+    let path = folder.join(name);
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&path).status().unwrap().success());
+    path
+}
+
+fn show_one(engine: &Engine, tab: u32, file: &std::path::Path, was: &[u32]) {
+    engine.activate(
+        tab,
+        1,
+        0,
+        PageMap {
+            files: vec![file.to_path_buf()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        was,
+        None,
+        recto_reader::layout::Spread::Single,
+    );
+    engine.set_viewport(view(0.0));
+}
+
+/// Looks at the page view for this long, as the host does, and returns the most opens that hadn't returned at once.
+fn watch_opens(engine: &Engine, limit: Duration) -> u64 {
+    let until = Instant::now() + limit;
+    let mut most = 0;
+    while Instant::now() < until {
+        engine.drain();
+        engine.applied();
+        most = most.max(engine.report().0["opens_waiting"].as_u64().unwrap());
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
+    most
+}
+
+/// Failure: a password given, or a new version of the file, reopens it, and the page view forgot the open still stuck on a dead volume and started another beside it, one more thread at every reopen, past the cap on opens (the cap counted what the page view still knew of, not the threads alive).
+#[test]
+fn reopening_a_file_that_doesnt_answer_never_passes_the_cap_on_opens() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-reopen-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let dead = fifo_in(&folder, "dead.pdf");
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.qa().system_takes_only_when_told();
+    let healthy = document(1);
+    show_one(&engine, 1, &dead, &[]);
+    let mut most = watch_opens(&engine, Duration::from_millis(300));
+    // The reader moves off the dead file (its open stays stuck), it's reopened while it's off, and the reader comes back: more times than the cap, so a leak shows as past it.
+    for _ in 0..(MAX_OPENS + 3) {
+        show_one(&engine, 2, &healthy.0, &[1]);
+        watch_opens(&engine, Duration::from_millis(100));
+        engine.key_given(&dead);
+        watch_opens(&engine, Duration::from_millis(100));
+        show_one(&engine, 1, &dead, &[2]);
+        most = most.max(watch_opens(&engine, Duration::from_millis(300)));
+    }
+    assert!(
+        (1..=MAX_OPENS).contains(&most),
+        "{most} opens at once, the cap is {MAX_OPENS}: {}",
+        engine.report().0
+    );
+    use std::os::unix::fs::OpenOptionsExt;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&dead)
+        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    drop(writer);
+}
+
+/// Failure: four files that aren't answering take every slot for opens, and the page of a healthy file that has to wait for one said "This file isn't answering", blaming the healthy file for the others'.
+#[test]
+fn a_healthy_file_held_up_by_others_that_dont_answer_isnt_blamed() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-busy-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.qa().system_takes_only_when_told();
+    let mut was: Vec<u32> = Vec::new();
+    let mut dead_ones = Vec::new();
+    for tab in 1..=MAX_OPENS as u32 {
+        let dead = fifo_in(&folder, &format!("dead{tab}.pdf"));
+        dead_ones.push(dead.clone());
+        show_one(&engine, tab, &dead, &was);
+        was = vec![tab];
+        watch_opens(&engine, Duration::from_millis(300));
+    }
+    assert_eq!(engine.report().0["opens_waiting"], MAX_OPENS, "{}", engine.report().0);
+    let healthy = document(1);
+    show_one(&engine, 5, &healthy.0, &was);
+    let deadline = Instant::now() + HANG;
+    while engine.note().is_none() && Instant::now() < deadline {
+        engine.drain();
+        engine.applied();
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    let note = engine.note().unwrap_or_default();
+    assert!(note.contains("Too many files"), "{note:?}");
+    assert!(!note.contains("This file isn't answering"), "{note:?}");
+    // Lets their threads go.
+    use std::os::unix::fs::OpenOptionsExt;
+    for dead in &dead_ones {
+        drop(std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(dead));
+    }
 }
 
 /// Failure: closing the window leaves "there are ops" raised with no host to take them, so when the window's back nobody is ever told again, and tiles stop arriving. The host must hear of new ones, even if no ops were taken in between.

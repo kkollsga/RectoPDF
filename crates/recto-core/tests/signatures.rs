@@ -111,8 +111,17 @@ fn files_that_cant_be_read_say_why() {
     let folder = recto_testpdf::TempDir::new("recto-core-fifo-");
     let fifo = folder.join("pipe");
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
-    assert_eq!(inspect(&fifo).unwrap_err(), OpenError::NotPdf, "a pipe must be refused, not waited on");
-    assert_eq!(signatures(&fifo).unwrap_err(), OpenError::NotPdf);
+    let at = fifo.to_path_buf();
+    assert_eq!(
+        recto_testpdf::returns_in_time("inspect of a pipe", move || inspect(&at).unwrap_err()),
+        OpenError::NotPdf,
+        "a pipe must be refused, not waited on"
+    );
+    let at = fifo.to_path_buf();
+    assert_eq!(
+        recto_testpdf::returns_in_time("signatures of a pipe", move || signatures(&at).unwrap_err()),
+        OpenError::NotPdf
+    );
     std::fs::remove_file(&fifo).unwrap();
 }
 

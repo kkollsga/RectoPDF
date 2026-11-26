@@ -61,6 +61,7 @@ mod tests {
         let name = std::ffi::CString::new(lock.as_os_str().as_encoded_bytes()).unwrap();
         // SAFETY: live NUL-terminated path inside this test's private directory.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        assert!(try_update_record_lock(root.path()).is_err());
+        let at = root.path().to_path_buf();
+        assert!(recto_testpdf::returns_in_time("the record lock on a pipe", move || try_update_record_lock(&at).is_err()));
     }
 }

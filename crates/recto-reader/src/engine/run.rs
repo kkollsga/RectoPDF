@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use super::look::{Looks, at_rest, next_heal, tile_look};
 use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
-/// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
+/// Opens that can be under way at once, counted in threads still in `File::open`, not in what the page view still knows of. Past this, more wait for one to return.
 const MAX_OPENINGS: usize = 4;
 /// How long a job waits for its file to open before the page says so. It stays being tried.
 const OPEN_PATIENCE: Duration = Duration::from_secs(3);
@@ -29,6 +29,8 @@ const ADDED_FILE_CHANGED: &str = "This page comes from a PDF that has changed or
 const ADDED_FILE_NEEDS_PASSWORD: &str = "This page comes from a PDF that needs a password, so it isn't shown here. Open that PDF to see it.";
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
+/// What a page says while other files that aren't answering hold every slot for opening, so this one waits its turn.
+const TOO_MANY_NOT_ANSWERING: &str = "Too many files aren't answering just now, so this one is waiting its turn.";
 
 /// Panics of the thread that draws that it comes back from, close together. Past this it would only panic again.
 const MAX_PANICS_IN_A_ROW: u32 = 4;
@@ -176,7 +178,7 @@ fn run(shared: &Shared) {
         let planned = plan.is_some();
         let job = plan.and_then(JobPlan::ready);
         let_go_of_unwanted(shared, &mut renderers, &wanted);
-        openings.retain(|path, _| wanted.contains(path));
+        forget_finished_openings(&mut openings, &wanted);
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
             rest_or_wait_for_a_surface(planned, seen, shared, &mut renderers, &policy, &mut resting_since);
@@ -235,6 +237,10 @@ fn run(shared: &Shared) {
                 Err(Unopened::NotWanted) => Outcome::Cancelled,
                 Err(Unopened::NotAnswering) => Outcome::PageFailed {
                     message: NOT_ANSWERING.to_string(),
+                    may_pass: true,
+                },
+                Err(Unopened::Busy) => Outcome::PageFailed {
+                    message: TOO_MANY_NOT_ANSWERING.to_string(),
                     may_pass: true,
                 },
             }
@@ -510,6 +516,13 @@ pub(super) fn seen_replaced(open: &mut OpenDoc) -> bool {
     true
 }
 
+/// What's no longer wanted is forgotten, except an open whose thread is still stuck in `File::open`: forgetting that one would let the next visit to the same
+/// dead file start another thread beside it, one more at every visit and none of them counted against [`MAX_OPENINGS`]. A revisit waits on the open that's under
+/// way instead, and the entry goes when its thread has returned. At most [`MAX_OPENINGS`] are ever kept.
+fn forget_finished_openings(openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>, wanted: &[PathBuf]) {
+    openings.retain(|path, receiver| wanted.contains(path) || matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+}
+
 /// Why there's no renderer for a job, for now or for good.
 enum Unopened {
     Failed(RenderFailure),
@@ -517,6 +530,8 @@ enum Unopened {
     NotWanted,
     /// It hasn't answered in [`OPEN_PATIENCE`], and it's still being tried.
     NotAnswering,
+    /// Other files' opens that haven't returned hold every slot ([`MAX_OPENINGS`]), so this one hasn't been tried yet. It's tried again.
+    Busy,
 }
 
 /// Opens a file's renderer on a thread of its own, the one part of this that a dead volume can hold up for ever, and waits for it only while the job's still wanted. One file not answering is no reason for a healthy tab to get no tiles. The wait is a look every [`OPEN_LOOK`], and only while a file's being opened.
@@ -533,18 +548,27 @@ fn renderer_for<'a>(
     if !renderers.contains_key(path) {
         let config = service.as_ref().map_err(|failure| Unopened::Failed(*failure))?.clone();
         if !openings.contains_key(path) {
-            if openings.len() >= MAX_OPENINGS {
-                return Err(Unopened::NotAnswering);
+            if openings.len() >= MAX_OPENINGS || shared.opens_waiting.load(Ordering::SeqCst) >= MAX_OPENINGS {
+                return Err(Unopened::Busy);
             }
             let (sender, receiver) = sync_channel(1);
             let opening = path.to_path_buf();
-            std::thread::Builder::new()
-                .name("recto-open".into())
-                .stack_size(128 * 1024)
-                .spawn(move || {
-                    let _ = sender.send(DocRenderer::open_file(&opening));
-                })
-                .map_err(|_| Unopened::Failed(RenderFailure::Unavailable))?;
+            let waiting = shared.opens_waiting.clone();
+            waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            /// Counts an open down when its thread ends, a panic included.
+            struct Done(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let done = Done(waiting);
+            let spawned = std::thread::Builder::new().name("recto-open".into()).stack_size(128 * 1024).spawn(move || {
+                let _done = done;
+                let _ = sender.send(DocRenderer::open_file(&opening));
+            });
+            // A spawn that failed dropped the closure, and its guard with it.
+            spawned.map_err(|_| Unopened::Failed(RenderFailure::Unavailable))?;
             openings.insert(path.to_path_buf(), receiver);
         }
         let started = Instant::now();
