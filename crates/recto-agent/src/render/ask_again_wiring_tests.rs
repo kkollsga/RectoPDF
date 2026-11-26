@@ -112,6 +112,8 @@ fn big_picture_page() -> Vec<u8> {
 struct CountsStartsOver {
     bytes: Vec<u8>,
     overs: u32,
+    /// Whether starting over fails, as a file that can't be truncated.
+    fails_to_start_over: bool,
 }
 
 impl Write for CountsStartsOver {
@@ -128,6 +130,9 @@ impl Output for CountsStartsOver {
     fn start_over(&mut self) -> io::Result<()> {
         self.bytes.clear();
         self.overs += 1;
+        if self.fails_to_start_over {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
         Ok(())
     }
 }
@@ -136,7 +141,11 @@ impl Output for CountsStartsOver {
 #[test]
 fn a_busy_frame_after_records_were_written_starts_the_svg_over() {
     let (file, mut doc) = started("busy-frame-svg.pdf", &big_picture_page());
-    let out = RefCell::new(CountsStartsOver { bytes: Vec::new(), overs: 0 });
+    let out = RefCell::new(CountsStartsOver {
+        bytes: Vec::new(),
+        overs: 0,
+        fails_to_start_over: false,
+    });
     let job = SvgJob {
         path: &file.0,
         page: 0,
@@ -159,7 +168,11 @@ fn a_busy_frame_after_records_were_written_starts_the_svg_over() {
 #[test]
 fn a_busy_frame_after_png_bytes_were_written_starts_the_image_over() {
     let (file, mut doc) = started("busy-frame-image.pdf", &big_picture_page());
-    let out = RefCell::new(CountsStartsOver { bytes: Vec::new(), overs: 0 });
+    let out = RefCell::new(CountsStartsOver {
+        bytes: Vec::new(),
+        overs: 0,
+        fails_to_start_over: false,
+    });
     let copied = stopped_at_job(&mut doc, 1, |doc| {
         image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &OutputCaps::default(), &out)
     });
@@ -172,4 +185,19 @@ fn a_busy_frame_after_png_bytes_were_written_starts_the_image_over() {
         "one PNG: {} bytes",
         out.bytes.len()
     );
+}
+
+/// Failure: an output that can't be started over (a file that can't be truncated) after the Mac was too busy ended the image copy as the Mac being unavailable, which hides that a file could not be written. It is a write failure, as `export svg` says it.
+#[test]
+fn an_output_that_cant_start_over_is_a_write_failure_for_the_image_too() {
+    let (file, mut doc) = started("busy-start-over.pdf", &picture_page());
+    let out = RefCell::new(CountsStartsOver {
+        bytes: Vec::new(),
+        overs: 0,
+        fails_to_start_over: true,
+    });
+    let copied = with_the_worker_stopped(&mut doc, |doc| {
+        image::copy_into(doc, &file.0, 0, 1, Want::Png, 1.0, &OutputCaps::default(), &out)
+    });
+    assert_eq!(copied.unwrap_err().code, "write_failed");
 }

@@ -315,13 +315,16 @@ pub(crate) fn copy_into<O: Output>(
                 })
             })
         },
-        |(writing, copied, _)| {
+        |(writing, copied, sink_error)| {
             *writing = Writing::Nothing;
             *copied = None;
             out.try_borrow_mut()
                 .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))
                 .and_then(|mut out| out.start_over())
-                .map_err(|_| RenderFailure::Unavailable)
+                .map_err(|error| {
+                    *sink_error = Some(error);
+                    RenderFailure::Unavailable
+                })
         },
     );
     let (writing, copied, sink_error) = run;
