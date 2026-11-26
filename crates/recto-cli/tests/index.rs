@@ -614,6 +614,34 @@ fn a_damaged_corpus_answers_by_reading_the_pages() {
     );
 }
 
+/// Failure: an index built before identities were stored (neither `ids.bin` nor `ids.sealed`) is taken as damaged and thrown away, or answers its hits without
+/// references, or with other tokens than the page-by-page route makes. It answers from the index, with the references `--scan` makes, and keeps its files; and a
+/// new one's stored identities make the same tokens (`the_hard_cases_answer_the_same_every_way` and the rest hold that on a corpus that has them).
+#[test]
+fn an_index_built_before_identities_were_stored_answers_with_the_scans_references() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("old-index.pdf", 4);
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
+    let (bin, header) = (paths.app.join("ids.bin"), paths.app.join("ids.sealed"));
+    assert!(bin.exists() && header.exists(), "a new build stores them");
+    let with = index_matches_scan(&state, &["search", "common", "--limit", "20"]);
+    assert!(
+        with["data"]["hits"][0]["ref"].is_string() && with["data"]["references"]["made"].as_u64() > Some(0),
+        "{with}"
+    );
+    std::fs::remove_file(&bin).unwrap();
+    std::fs::remove_file(&header).unwrap();
+    let without = index_matches_scan(&state, &["search", "common", "--limit", "20"]);
+    assert_eq!(without["data"]["hits"], with["data"]["hits"], "the same tokens from the file");
+    assert_eq!(without["data"]["references"], with["data"]["references"]);
+    assert!(!bin.exists() && !header.exists(), "nothing was made of it");
+}
+
 /// Failure: `recto local`, used by QA, starts a build it can't finish, or doesn't use what's built. Its route reads what's there and starts nothing.
 #[test]
 fn the_local_route_reads_an_index_and_builds_none() {
