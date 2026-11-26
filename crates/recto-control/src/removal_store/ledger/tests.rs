@@ -75,6 +75,15 @@ fn wait_for(root: &Path, what: &str, ready: impl Fn(&Ledger) -> bool) -> Ledger 
 
 /// Waits, up to 10 s, for the `recto-ledger` thread of `root` to end: adoption is done by it, after the append that began the ledger has returned.
 fn wait_idle(root: &Path) {
+    wait_idle_by(root, running);
+}
+
+/// [`wait_idle`] for a test with a set of its own.
+fn wait_idle_in(set: &Roots, root: &Path) {
+    wait_idle_by(root, |root| set.running(root));
+}
+
+fn wait_idle_by(root: &Path, running: impl Fn(&Path) -> bool) {
     let until = Instant::now() + Duration::from_secs(10);
     while running(root) {
         assert!(Instant::now() < until, "the ledger's thread didn't end");
@@ -633,7 +642,10 @@ fn a_record_write_never_waits_for_the_ledger() {
     let (reached, at_seam) = mpsc::channel::<()>();
     let (release, released) = mpsc::channel::<()>();
     let (reached, released) = (Mutex::new(reached), Mutex::new(released));
+    // Its own set of roots: neighbours' roots in the process's set (eight at most, an idle one let go for a ninth) would otherwise forget what this noted.
+    let set = Arc::new(Roots::new());
     let config = Config {
+        roots: Some(set.clone()),
         in_thread: Some(Arc::new(move || {
             let _ = reached.lock().unwrap().send(());
             let _ = released.lock().unwrap().recv_timeout(Duration::from_secs(20));
@@ -659,16 +671,30 @@ fn a_record_write_never_waits_for_the_ledger() {
         .recv_timeout(Duration::from_secs(10))
         .expect("a call with the thread running returned too");
     caller.join().unwrap();
-    assert!(running(&root));
+    assert!(set.running(&root));
     assert!(std::fs::metadata(ledger_path(&root)).is_err(), "nothing was written while it was held");
     release.send(()).unwrap();
     wait_for(&root, "the first tab", |l| l.links.len() == 1);
-    wait_idle(&root);
+    wait_idle_in(&set, &root);
     // Nothing new: no thread, so nothing running at once after the call.
-    note_tabs_with(&root, &[tab(&dir.join("a.pdf"))], &Config::default());
-    assert!(!running(&root), "a tab already noted starts no thread");
+    note_tabs_with(
+        &root,
+        &[tab(&dir.join("a.pdf"))],
+        &Config {
+            roots: Some(set.clone()),
+            ..Config::default()
+        },
+    );
+    assert!(!set.running(&root), "a tab already noted starts no thread");
     // The tab the held thread skipped is noted by the next call.
-    note_tabs_with(&root, &[tab(&dir.join("a.pdf")), tab(&dir.join("b.pdf"))], &Config::default());
+    note_tabs_with(
+        &root,
+        &[tab(&dir.join("a.pdf")), tab(&dir.join("b.pdf"))],
+        &Config {
+            roots: Some(set.clone()),
+            ..Config::default()
+        },
+    );
     wait_for(&root, "the second tab", |l| l.links.len() == 2);
 }
 

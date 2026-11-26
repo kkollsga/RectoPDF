@@ -158,8 +158,19 @@ pub fn note_tabs(root: &Path, tabs: &[TabEntry]) {
     note_tabs_with(root, tabs, &Config::default());
 }
 
+impl Config {
+    /// The set this ledger's roots are in: the process's, or a test's own.
+    fn roots(&self) -> &Roots {
+        #[cfg(any(test, feature = "test-seams"))]
+        if let Some(own) = &self.roots {
+            return own;
+        }
+        &ROOTS
+    }
+}
+
 pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
-    let new = ROOTS.take_new(root, tabs);
+    let new = config.roots().take_new(root, tabs);
     if !new.is_empty() {
         launch(root, config, new);
     }
@@ -169,7 +180,7 @@ pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
 /// that has just begun the ledger, with nothing held. If the root can't be registered (eight others have threads out) it isn't adopted: a backup with no record
 /// reads `Unknown`, a false refusal and never a wrong answer.
 pub(super) fn request_adoption(root: &Path, config: &Config) {
-    let Some(start) = ROOTS.request_adoption(root) else { return };
+    let Some(start) = config.roots().request_adoption(root) else { return };
     if start {
         launch(root, config, Vec::new());
     }
@@ -180,20 +191,20 @@ fn launch(root: &Path, config: &Config, new: Vec<(u64, PathBuf, FileStamp)>) {
     let spawned = std::thread::Builder::new().name("recto-ledger".into()).spawn({
         let (root, config) = (root.to_path_buf(), config.clone());
         move || {
-            let mut done = Done(Some(root.clone()));
+            let mut done = Done(Some((root.clone(), config.clone())));
             work(&root, &config, new);
             // The thread ended by `next_job` saying so, under the lock that made it not running: nothing is left for the guard to say.
             done.0 = None;
         }
     });
     if spawned.is_err() {
-        ROOTS.finish(root);
+        config.roots().finish(root);
     }
 }
 
 fn work(root: &Path, config: &Config, new: Vec<(u64, PathBuf, FileStamp)>) {
     note_all(root, config, new);
-    while ROOTS.next_job(root) {
+    while config.roots().next_job(root) {
         super::adopt_now(root, config);
     }
 }
@@ -219,12 +230,12 @@ fn fresh(known: &HashSet<u64>, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStam
 }
 
 /// Says the thread is over however it ended, a panic included, unless it already said so.
-struct Done(Option<PathBuf>);
+struct Done(Option<(PathBuf, Config)>);
 
 impl Drop for Done {
     fn drop(&mut self) {
-        if let Some(root) = &self.0 {
-            ROOTS.finish(root);
+        if let Some((root, config)) = &self.0 {
+            config.roots().finish(root);
         }
     }
 }
