@@ -476,7 +476,9 @@ fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
     let (reached, at_seam) = mpsc::channel::<()>();
     let (release, released) = mpsc::channel::<()>();
     let (reached, released) = (Mutex::new(reached), Mutex::new(released));
+    let set = Arc::new(Roots::new());
     let config = Config {
+        roots: Some(set.clone()),
         before_adoption: Some(Arc::new(move || {
             let _ = reached.lock().unwrap().send(());
             let _ = released.lock().unwrap().recv_timeout(Duration::from_secs(20));
@@ -501,7 +503,7 @@ fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
     let held = read(&root);
     assert_eq!((held.links.len(), held.gap), (1, None), "the save's own entry only: {:?}", held.links);
     release.send(()).unwrap();
-    wait_idle(&root);
+    wait_idle_in(&set, &root);
     assert_eq!(read(&root).links.len(), 2, "then the journal's file");
 }
 
@@ -514,15 +516,17 @@ fn adoption_out_of_time_says_so() {
     let file = dir.join("a.pdf");
     std::fs::write(&file, pdf("a")).unwrap();
     journal(&root, "session", 1, &file, Some(stamp(&file)), None);
+    let set = Arc::new(Roots::new());
     append(
         &root,
         &Config {
             adoption_time: Duration::ZERO,
+            roots: Some(set.clone()),
             ..Config::default()
         },
         Vec::new(),
     );
-    wait_idle(&root);
+    wait_idle_in(&set, &root);
     let ledger = read(&root);
     assert_eq!((ledger.links.len(), ledger.gap), (0, Some(Gap::AdoptionCut)));
 }
@@ -565,8 +569,16 @@ fn adoption_takes_what_the_journals_prove_and_nothing_else() {
     journal(&root, "session", 4, Path::new("relative/x.pdf"), Some(was), None);
     // A journal that is a link to a file elsewhere is not read.
     std::os::unix::fs::symlink(&still, root.join("session/journals/journal-0000000000000005.log")).unwrap();
-    append(&root, &patient(), Vec::new());
-    wait_idle(&root);
+    let set = Arc::new(Roots::new());
+    append(
+        &root,
+        &Config {
+            roots: Some(set.clone()),
+            ..patient()
+        },
+        Vec::new(),
+    );
+    wait_idle_in(&set, &root);
     note_save(
         &root.join("backups.noindex"),
         &SaveNote::Starting {
@@ -606,16 +618,18 @@ fn adoption_stops_at_its_cap_and_says_so() {
             std::fs::write(&file, pdf(&format!("{n}"))).unwrap();
             journal(&root, "session", n + 1, &file, Some(stamp(&file)), None);
         }
+        let set = Arc::new(Roots::new());
         append(
             &root,
             &Config {
+                roots: Some(set.clone()),
                 adoption_headers: 3,
                 // The count is what is tested: under a starved machine the default time cap ended adoption before the third header (--like-ci, 1 of 20).
                 ..patient()
             },
             Vec::new(),
         );
-        wait_idle(&root);
+        wait_idle_in(&set, &root);
         let ledger = read(&root);
         assert_eq!(ledger.gap, cut.then_some(Gap::AdoptionCut), "{journals} journals");
         assert_eq!(ledger.links.len(), 3, "the three it read are in");
@@ -739,6 +753,8 @@ fn roots_are_held_only_with_something_to_note_and_never_while_running() {
     let dir = temp();
     let neighbour = dir.join("neighbour");
     assert_eq!(take_new(&neighbour, &[tab_n(99)]).len(), 1, "a neighbour's root on the process's set");
+    // Ended however the test ends, so a failed assert leaves no running root on the static for the tests after it.
+    let _end = EndRoot(neighbour.clone());
     let set = Roots::new();
     let roots: Vec<PathBuf> = (0..9).map(|n| dir.join(format!("state-{n}"))).collect();
     let nothing = dir.join("nothing");
@@ -758,7 +774,15 @@ fn roots_are_held_only_with_something_to_note_and_never_while_running() {
     assert_eq!(set.take_new(&roots[8], &[tab_n(8)]).len(), 1, "the one that ended makes room");
     assert!(set.running(&roots[0]) && !set.running(&roots[3]));
     assert_eq!(set.held(&roots[8]).0, 8);
-    finish(&neighbour);
+}
+
+/// Ends a root's thread on the process's set when dropped.
+struct EndRoot(PathBuf);
+
+impl Drop for EndRoot {
+    fn drop(&mut self) {
+        finish(&self.0);
+    }
 }
 
 fn limits(max: u32) -> Limits {
