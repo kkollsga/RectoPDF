@@ -172,7 +172,7 @@ fn run(shared: &Shared) {
         let planned = plan.is_some();
         let job = plan.and_then(JobPlan::ready);
         let_go_of_unwanted(shared, &mut renderers, &wanted);
-        openings.retain(|path, _| wanted.contains(path));
+        forget_finished_openings(&mut openings, &wanted);
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
             rest_or_wait_for_a_surface(planned, seen, shared, &mut renderers, &policy, &mut resting_since);
@@ -482,6 +482,13 @@ fn seen_replaced(open: &mut OpenDoc) -> bool {
     open.looks.clear();
     open.replaced = true;
     true
+}
+
+/// What's no longer wanted is forgotten, except an open whose thread is still stuck in `File::open`: forgetting that one would let the next visit to the same
+/// dead file start another thread beside it, one more at every visit and none of them counted against [`MAX_OPENINGS`]. A revisit waits on the open that's under
+/// way instead, and the entry goes when its thread has returned. At most [`MAX_OPENINGS`] are ever kept.
+fn forget_finished_openings(openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>, wanted: &[PathBuf]) {
+    openings.retain(|path, receiver| wanted.contains(path) || matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
 }
 
 /// Why there's no renderer for a job, for now or for good.
