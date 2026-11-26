@@ -31,6 +31,11 @@ fn stem<'a>(name: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     is_journal_name(&format!("journal-{stem}.log")).then_some(stem)
 }
 
+/// A name as the folder lists it. One that isn't text is `Other`, never skipped: this is the only place that decides it.
+pub(super) fn kind_of(name: &std::ffi::OsStr) -> Kind {
+    name.to_str().map_or(Kind::Other, kind)
+}
+
 pub(super) fn kind(name: &str) -> Kind {
     if is_journal_name(name) || is_closed_journal_name(name) {
         Kind::Journal
@@ -93,7 +98,18 @@ mod tests {
         ] {
             assert_eq!(kind(&name), want, "{name}");
         }
+        assert_eq!(kind_of(std::ffi::OsStr::new("journal-0123456789abcdef.log")), Kind::Journal);
         assert_eq!(version_key("kept-0123456789abcdef-1.pdf"), Some("0123456789abcdef"));
         assert_eq!(sidecar_stem("pages-0123456789abcdef-4.ids"), Some("0123456789abcdef-4"));
+    }
+
+    /// Failure: a name that isn't text (APFS can't make one, so this holds the pure decision; other file systems can) is read as a lossy text and
+    /// takes the journal rule, or is skipped, so a file the survey can't name reads "none found". It is `Other`, which is Unknown.
+    #[test]
+    fn a_name_that_is_not_text_is_other() {
+        use std::os::unix::ffi::OsStrExt as _;
+        for bytes in [&b"journal-\xff.log"[..], b"pages-\xff.ids", b"kept-\xfe.pdf", b"\xff"] {
+            assert_eq!(kind_of(std::ffi::OsStr::from_bytes(bytes)), Kind::Other, "{bytes:?}");
+        }
     }
 }

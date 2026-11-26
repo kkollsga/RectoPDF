@@ -204,7 +204,7 @@ impl Run<'_> {
         for pass in [Pass::Journals, Pass::Rest] {
             for entry in &listed {
                 let name = entry.name.to_str();
-                let kind = name.map_or(Kind::Other, names::kind);
+                let kind = names::kind_of(&entry.name);
                 if (matches!(kind, Kind::Journal | Kind::Variant)) != (pass == Pass::Journals) {
                     continue;
                 }
@@ -264,7 +264,7 @@ impl Run<'_> {
     fn key(&self, entry: &Listed) -> ArtifactKey {
         let mut name = format!("{}/journals/", self.flavor).into_bytes();
         name.extend_from_slice(entry.name.as_encoded_bytes());
-        ArtifactKey::of(store_of(entry.name.to_str().map_or(Kind::Other, names::kind)), &name)
+        ArtifactKey::of(store_of(names::kind_of(&entry.name)), &name)
     }
 
     fn place(&self, name: Option<&str>, kind: Kind, journals: &HashMap<String, Option<Sides>>, buffer: &mut Vec<u8>) -> Result<Placed, Gone> {
