@@ -45,12 +45,12 @@ const _: () = {
 /// Decide the transaction for one request, or refuse. Pure and bounded: the artifact count is
 /// checked before anything is allocated, and every refusal is decided before any step exists.
 pub fn plan(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Result<Plan, Refusal> {
+    if request.scope() == Scope::Leftovers {
+        return leftovers::build_plan(request, inventory, limits);
+    }
     let artifacts = inventory.artifacts();
     if artifacts.len() > limits.max_artifacts as usize {
         return Err(Refusal::TooLarge);
-    }
-    if request.scope() == Scope::Leftovers {
-        return leftovers::build_plan(request, inventory, limits);
     }
     if request.mode() == TargetMode::Save && request.signed_source() {
         return Err(Refusal::SignedOriginal);

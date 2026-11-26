@@ -7,7 +7,7 @@
 
 use recto_core::removal::{
     Ack, ArtifactKey, Binding, CONFIRM_LIMITS, Confirmations, DESIGN_LIMITS, Disposition, Effect, Format, Found, Kinds, Outcome, Owner, PlanId, Progress,
-    Request, Scope, Store, Survey, Surveyed, TargetKey, TargetMode, Version, plan,
+    Refusal, Request, Scope, Store, Survey, Surveyed, TargetKey, TargetMode, Version, plan,
 };
 use recto_core::save::Target;
 use recto_platform::FileStamp;
@@ -80,7 +80,7 @@ fn confirmed(p: &recto_core::removal::Plan) -> recto_core::removal::Confirmed {
     };
     let now = Instant::now();
     let id = store
-        .offer(binding, p, now, PlanId::from_raw(9))
+        .offer(binding, p, now, PlanId::from_raw(9).expect("not zero"))
         .expect("a leftovers plan is offered for the document itself");
     store.take(id, &binding, p, now).expect("and taken back as it was")
 }
@@ -111,6 +111,15 @@ pub fn seeds() -> Vec<Vec<u8>> {
             &[0, 0, 2, 0, 0],
         ),
         with(3, &[record(Store::WriterTemp, 0, 1)], &[]),
+        with(
+            7,
+            &[
+                record(Store::WriterTemp, 0, 1),
+                record(Store::WriterTemp, 0, 2),
+                record(Store::WriterTemp, 0, 3),
+            ],
+            &[0, 0, 2, 0],
+        ),
         with(7, &[record(Store::UpdateCopy, 4, 1)], &[]),
         with(
             7,
@@ -128,13 +137,20 @@ pub fn seeds() -> Vec<Vec<u8>> {
 pub fn check(data: &[u8]) {
     let (mask, found, acks) = decode(data);
     let Some(surveyed) = survey(mask, found.iter().copied()) else { return };
+    let outside = found.iter().any(|f| !SCOPE.contains(&f.store));
     // The removal's own plan over the same survey never panics, whatever it says.
     let _ = plan(
         &Request::new(Kinds::from_bits(Kinds::METADATA).expect("a kind"), TargetMode::Save, false),
         &surveyed.inventory(),
         &DESIGN_LIMITS,
     );
-    let Ok(p) = plan(&Request::leftovers(), &surveyed.inventory(), &DESIGN_LIMITS) else {
+    let made = plan(&Request::leftovers(), &surveyed.inventory(), &DESIGN_LIMITS);
+    // A store outside the three is refused first, whatever else is true of the survey.
+    if outside {
+        assert_eq!(made.err(), Some(Refusal::Inconsistent), "a store outside the scope was not refused first");
+        return;
+    }
+    let Ok(p) = made else {
         return;
     };
     assert_eq!(p.request().scope(), Scope::Leftovers);
@@ -145,6 +161,9 @@ pub fn check(data: &[u8]) {
             Effect::TakeLeases | Effect::VerifyRetired | Effect::ReleaseLeases => assert!(p.artifacts(step).is_empty()),
             Effect::Trash(s) | Effect::Purge(s) => {
                 assert!(SCOPE.contains(&s), "a store outside the scope was planned");
+                if matches!(step.effect(), Effect::Trash(_)) {
+                    assert_eq!(p.artifacts(step).len(), 1, "a move step holds more than one move");
+                }
                 assert!(p.artifacts(step).len() <= usize::from(DESIGN_LIMITS.max_batch.get()));
             }
             other => panic!("a step of a removal in a leftovers plan: {other:?}"),

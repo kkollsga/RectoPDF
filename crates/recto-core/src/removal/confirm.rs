@@ -6,7 +6,7 @@
 use super::*;
 use recto_platform::FileStamp;
 use sha2::{Digest, Sha256};
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroU64};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -35,15 +35,16 @@ pub const CONFIRM_LIMITS: ConfirmLimits = ConfirmLimits {
 /// Names one pending plan. The caller makes it, from a random 64-bit number: a counter would repeat after a restart, and every agent at one level
 /// is one actor, so an old agent's id 1 would match a new offer made for another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlanId(u64);
+pub struct PlanId(NonZeroU64);
 
 impl PlanId {
     pub fn get(self) -> u64 {
-        self.0
+        self.0.get()
     }
 
-    pub fn from_raw(raw: u64) -> Self {
-        Self(raw)
+    /// `None` for 0: a zeroed or unset id is never a plan's name.
+    pub fn from_raw(raw: u64) -> Option<Self> {
+        NonZeroU64::new(raw).map(Self)
     }
 }
 
@@ -160,7 +161,7 @@ impl<A: Copy + Eq> Confirmations<A> {
         }
         let ttl = self.limits.ttl;
         self.pending.retain(|p| now.saturating_duration_since(p.created) < ttl);
-        if self.pending.iter().any(|p| p.id == id.0) {
+        if self.pending.iter().any(|p| p.id == id.get()) {
             return Err(ConfirmRefusal::Collision);
         }
         self.pending
@@ -172,7 +173,7 @@ impl<A: Copy + Eq> Confirmations<A> {
             self.pending.remove(own.ok_or(ConfirmRefusal::Full)?);
         }
         self.pending.push(Pending {
-            id: id.0,
+            id: id.get(),
             binding,
             digest: plan.digest(),
             created: now,
@@ -187,7 +188,7 @@ impl<A: Copy + Eq> Confirmations<A> {
         let at = self
             .pending
             .iter()
-            .position(|p| p.id == id.0 && p.binding.actor == binding.actor)
+            .position(|p| p.id == id.get() && p.binding.actor == binding.actor)
             .ok_or(ConfirmRefusal::Unknown)?;
         let p = &self.pending[at];
         let verdict = if self.expired(p, now) {

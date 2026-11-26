@@ -300,15 +300,22 @@ fn an_id_already_pending_is_refused_and_changes_nothing() {
     let b = bind(Who::Person, same());
     let other = bind(Who::Agent(1), same());
     let mut s = store();
-    let first = s.offer(b, &plan, t0, PlanId::from_raw(7)).unwrap();
+    let first = s.offer(b, &plan, t0, PlanId::from_raw(7).unwrap()).unwrap();
     assert_eq!(first.get(), 7);
-    assert_eq!(s.offer(other, &plan, t0, PlanId::from_raw(7)), Err(ConfirmRefusal::Collision));
+    assert_eq!(s.offer(other, &plan, t0, PlanId::from_raw(7).unwrap()), Err(ConfirmRefusal::Collision));
     assert_eq!(s.len(), 1);
     // The one it collided with is untouched and still the person's.
     assert_eq!(s.take(first, &other, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
     s.take(first, &b, &plan, t0).unwrap();
-    assert_eq!(s.offer(other, &plan, t0, PlanId::from_raw(7)).unwrap().get(), 7);
+    assert_eq!(s.offer(other, &plan, t0, PlanId::from_raw(7).unwrap()).unwrap().get(), 7);
     assert_eq!(s.take(first, &b, &plan, t0).unwrap_err(), ConfirmRefusal::Unknown);
+}
+
+/// Catches a zero id (an unset or zeroed value from the caller) naming a plan, which a stray 0 on the wire could then confirm.
+#[test]
+fn zero_is_not_an_id() {
+    assert_eq!(PlanId::from_raw(0), None);
+    assert_eq!(PlanId::from_raw(1).map(PlanId::get), Some(1));
 }
 
 /// Catches a store that holds memory for a feature nobody has used (rule 1: a cold tab costs nothing).

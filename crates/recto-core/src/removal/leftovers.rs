@@ -6,6 +6,10 @@
 //! (`UpdateCopy`, then `LegacySession`, deleted whole). Pure: it names no path and opens nothing. The adapters that survey and act hold the proof
 //! that an artifact is what it says; this decides only what is planned, in what order, and what is reported.
 //!
+//! **No history gate.** `Refusal::HistoryIncomplete` is not asked here: a temp is the document's by its exact shape beside it and a copy is the
+//! app's own, so neither needs the lineage. The cost is that a gap in the history only leaves folders out of the search. The words must therefore
+//! never say everything was cleared or that nothing is left, only what was found and done (B3's words read this).
+//!
 //! Step order: leases, the Trash first (a move can be put back), then the update copy (`update/before`, whose restore must never find half a
 //! copy), then the legacy session copies, then `VerifyRetired` and `ReleaseLeases`. There is no barrier and no candidate: no step can be
 //! resumed, because the next run looks again and the person confirms what remains (`Progress::resume` is `NotResumable` here).
@@ -31,17 +35,18 @@ fn acted_on(store: Store, owner: Owner) -> bool {
 
 pub(super) fn build_plan(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Result<Plan, Refusal> {
     let artifacts = inventory.artifacts();
+    // A survey for this scope holds only the three stores. Anything else is a caller's bug, refused before it can reach the digest (a journal
+    // written between the check and the clear must not make a confirmed plan stale) or the count against the cap.
+    if artifacts.iter().any(|a| !in_scope(a.store)) {
+        return Err(Refusal::Inconsistent);
+    }
+    if artifacts.len() > limits.max_artifacts as usize {
+        return Err(Refusal::TooLarge);
+    }
     if let Some(store) = STORES.into_iter().find(|s| !inventory.complete().contains(*s)) {
         return Err(Refusal::Incomplete(store));
     }
     for a in artifacts {
-        if a.store.class() == Class::Fixed {
-            return Err(Refusal::Inconsistent);
-        }
-        // Everything outside the three stores is not this scope's business: an unknown owner of a journal does not stop a clear of leftovers.
-        if !in_scope(a.store) {
-            continue;
-        }
         match a.owner {
             Owner::Unknown => return Err(Refusal::Incomplete(a.store)),
             Owner::Shared => return Err(Refusal::Shared(a.store)),
@@ -56,13 +61,15 @@ pub(super) fn build_plan(request: &Request, inventory: &Inventory<'_>, limits: &
     };
     b.push(Effect::TakeLeases);
     for store in STORES {
-        let effect = if store.class() == Class::Trash {
-            Effect::Trash(store)
+        let (effect, per_step) = if store.class() == Class::Trash {
+            // One move a step: a step that fails has then moved nothing, which `Progress` relies on to say "nothing changed" (a batch whose
+            // second move failed would have its first already in the Trash).
+            (Effect::Trash(store), 1)
         } else {
-            Effect::Purge(store)
+            (Effect::Purge(store), batch)
         };
         let ids = artifacts.iter().filter(|a| a.store == store && acted_on(store, a.owner)).map(|a| a.id);
-        b.push_ids(effect, ids, batch);
+        b.push_ids(effect, ids, per_step);
     }
     b.push(Effect::VerifyRetired);
     b.push(Effect::ReleaseLeases);

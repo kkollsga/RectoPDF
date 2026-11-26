@@ -3,7 +3,7 @@ use super::*;
 /// An id no other call of a test has made. Core takes the caller's ids; a test draws them from a counter.
 pub(super) fn fresh_id() -> PlanId {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
-    PlanId::from_raw(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    PlanId::from_raw(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)).unwrap()
 }
 
 const PROGRESS_SIZE: usize = 40;

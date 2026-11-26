@@ -31,12 +31,11 @@ fn effects(p: &Plan) -> Vec<Effect> {
     p.steps().iter().map(Step::effect).collect()
 }
 
-/// A temp, one copy of each kind, and something that is not this scope's at all.
-const SOME: [(Store, &str, Owner); 4] = [
+/// A temp, and a copy of each kind.
+const SOME: [(Store, &str, Owner); 3] = [
     (Store::WriterTemp, ".report.pdf.tmp1", Owner::Target),
     (Store::UpdateCopy, "update/before", Owner::Target),
     (Store::LegacySession, "session.v3", Owner::Unrelated),
-    (Store::Journal, "journal-a", Owner::Target),
 ];
 
 /// Catches the confirmed digest not covering which file an artifact is: the person is shown "1 unfinished save", the file is replaced by another one
@@ -63,8 +62,8 @@ fn a_changed_owner_changes_the_digest() {
     assert_ne!(mine.digest(), other.digest());
 }
 
-/// Catches a leftovers plan reaching any store outside its three, or a step of the full removal: a journal, a backup, the record and the source
-/// are never named, and there is no candidate, no barrier and no install.
+/// Catches a leftovers plan with a step of the full removal: there is no candidate, no barrier and no install, and the order is the Trash first,
+/// then the update copy, then the legacy session.
 #[test]
 fn only_the_three_stores_are_planned_and_in_the_trash_first_order() {
     let p = plan_of(&SOME);
@@ -110,9 +109,9 @@ fn a_temp_of_another_document_is_left_alone_but_every_copy_is_cleared() {
 }
 
 /// Catches guessing: a copy or a temp nobody could place is not cleared, and not skipped either, but refuses; and a store that was not searched
-/// is not "nothing to clear". An unplaceable journal is not this scope's business.
+/// is not "nothing to clear".
 #[test]
-fn what_cannot_be_placed_or_was_not_searched_refuses_only_in_the_three_stores() {
+fn what_cannot_be_placed_or_was_not_searched_refuses() {
     let unknown = surveyed(&[(Store::UpdateCopy, "update/before", Owner::Unknown)]);
     assert_eq!(
         plan(&Request::leftovers(), &unknown.inventory(), &DESIGN_LIMITS).unwrap_err(),
@@ -123,14 +122,6 @@ fn what_cannot_be_placed_or_was_not_searched_refuses_only_in_the_three_stores() 
         plan(&Request::leftovers(), &shared.inventory(), &DESIGN_LIMITS).unwrap_err(),
         Refusal::Shared(Store::WriterTemp)
     );
-    assert!(
-        plan(
-            &Request::leftovers(),
-            &surveyed(&[(Store::Journal, "j", Owner::Unknown)]).inventory(),
-            &DESIGN_LIMITS
-        )
-        .is_ok()
-    );
     for skipped in STORES {
         let mut survey = Survey::new(&DESIGN_LIMITS);
         for store in STORES.into_iter().filter(|s| *s != skipped) {
@@ -139,6 +130,44 @@ fn what_cannot_be_placed_or_was_not_searched_refuses_only_in_the_three_stores() 
         let got = plan(&Request::leftovers(), &survey.finish().unwrap().inventory(), &DESIGN_LIMITS);
         assert_eq!(got.unwrap_err(), Refusal::Incomplete(skipped));
     }
+}
+
+/// Catches a store outside the three being hashed into the digest or counted against the cap: a journal written between the check and the clear
+/// would make a confirmed plan stale. A survey for this scope that holds one is a bug in the caller and refuses, whatever its owner, and before
+/// the cap or the coverage is looked at.
+#[test]
+fn an_artifact_of_another_store_refuses_before_anything_else() {
+    for store in Store::ALL.into_iter().filter(|s| !STORES.contains(s)) {
+        for owner in [Owner::Target, Owner::Unrelated, Owner::Unknown, Owner::Shared] {
+            let mut survey = Survey::new(&DESIGN_LIMITS);
+            survey
+                .add(Found {
+                    store,
+                    key: ArtifactKey::of(store, b"x"),
+                    owner,
+                    format: Format::Current,
+                })
+                .unwrap();
+            // Not even marked complete: the refusal is the first thing said.
+            let got = plan(&Request::leftovers(), &survey.finish().unwrap().inventory(), &DESIGN_LIMITS);
+            assert_eq!(got.unwrap_err(), Refusal::Inconsistent, "{store:?} {owner:?}");
+        }
+    }
+}
+
+/// Catches a move batch: every temp has a step of its own, however many there are, so a failed move has moved nothing.
+#[test]
+fn every_temp_is_a_step_of_its_own() {
+    let temps: Vec<(Store, String, Owner)> = (0..5).map(|n| (Store::WriterTemp, format!(".r.pdf.tmp{n}"), Owner::Target)).collect();
+    let items: Vec<(Store, &str, Owner)> = temps.iter().map(|(s, n, o)| (*s, n.as_str(), *o)).collect();
+    let p = plan_of(&items);
+    let moves: Vec<usize> = p
+        .steps()
+        .iter()
+        .filter(|s| matches!(s.effect(), Effect::Trash(_)))
+        .map(|s| p.artifacts(s).len())
+        .collect();
+    assert_eq!(moves, [1; 5]);
 }
 
 /// Catches the cap on what outside input may make the plan hold: at the limit it plans, one more refuses.
@@ -213,17 +242,26 @@ fn after_the_first_act_it_never_says_nothing_changed() {
     assert!(progress.succeeded(&p));
 }
 
-/// Catches a copy that failed half way being reported as untouched. A deletion can stop with some of the copy gone, so a failed `Purge` counts as
-/// done something; a move to the Trash is whole or nothing, so a failed one leaves "nothing changed" true. Both stop the walk.
+/// Catches a failed step being told as "nothing changed" when something was done before it in the same step or in an earlier one. A copy that
+/// failed half way is changed (a deletion can stop with some of it gone). A move to the Trash is whole or nothing, and with one temp a step a
+/// failed one has moved nothing: with three temps, the first moved and the second failing is "partly cleared", and the first failing is not.
 #[test]
 fn a_failed_purge_counts_as_an_act_and_a_failed_move_does_not() {
-    let p = plan_of(&SOME);
-    let at = |effect| p.steps().iter().position(|s| s.effect() == effect).unwrap() as u32;
+    let three = [
+        (Store::WriterTemp, ".r.pdf.tmp1", Owner::Target),
+        (Store::WriterTemp, ".r.pdf.tmp2", Owner::Target),
+        (Store::WriterTemp, ".r.pdf.tmp3", Owner::Target),
+    ];
+    let p = plan_of(&three);
+    let mut first_fails = start(&p);
+    first_fails.acknowledge(&p, 0, Ack::Done).unwrap();
+    assert_eq!(first_fails.acknowledge(&p, 1, Ack::Failed), Ok(Outcome::Unchanged));
+    assert_eq!(first_fails.acknowledge(&p, 2, Ack::Done), Err(OrderError::Stopped));
 
-    let mut moved = start(&p);
-    moved.acknowledge(&p, 0, Ack::Done).unwrap();
-    assert_eq!(moved.acknowledge(&p, at(Effect::Trash(Store::WriterTemp)), Ack::Failed), Ok(Outcome::Unchanged));
-    assert_eq!(moved.acknowledge(&p, 2, Ack::Done), Err(OrderError::Stopped));
+    let mut second_fails = start(&p);
+    second_fails.acknowledge(&p, 0, Ack::Done).unwrap();
+    second_fails.acknowledge(&p, 1, Ack::Done).unwrap();
+    assert_eq!(second_fails.acknowledge(&p, 2, Ack::Failed), Ok(Outcome::PartlyCleared));
 
     // Only a copy, so nothing before it has acted.
     let q = plan_of(&[(Store::UpdateCopy, "update/before", Owner::Target)]);
@@ -246,7 +284,7 @@ fn it_is_never_resumable() {
     }
 }
 
-const GOLDEN_LEFTOVERS_DIGEST: &str = "af9c3ee4b8f0aa6befa5709c3f1005813e5c8f64f7803e131783b1189ac6967e";
+const GOLDEN_LEFTOVERS_DIGEST: &str = "7b1269718f37fd2fcc6de9fe3992e27a5f41558711df04af930cc81c51100e40";
 
 /// Pins the bytes of a plan that carries keys, which the removal's golden (made without keys, as core's pure tests are) cannot: the tag, the scope,
 /// and each artifact's store, owner, format and key. A change here is deliberate, and a digest saved before it no longer matches.
