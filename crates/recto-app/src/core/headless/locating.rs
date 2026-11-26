@@ -708,7 +708,7 @@ fn a_search_hits_ref_resolves_found_with_the_same_words_text_reads() {
 
 /// Failure: a hit's reference is made for a page position instead of the file's page, so under the person's unsaved edits it names the wrong page; or a
 /// hit on a page the agent added from another PDF is given a reference to a page of the tab's own file. The person deletes page 2 and a Full agent adds
-/// another PDF's page at 2: each own hit's reference resolves to the hit's own `page` and `source_page`, and the added page's hit has none, counted.
+/// another PDF's page at 4, so positions and file pages differ: each own hit's reference resolves to the hit's own `page` and `source_page`, and the added page's hit has none, counted.
 #[test]
 fn hit_refs_name_the_files_page_under_unsaved_edits_and_none_for_an_added_page() {
     let app = HeadlessApp::start();
@@ -717,7 +717,7 @@ fn hit_refs_name_the_files_page_under_unsaved_edits_and_none_for_an_added_page()
     app.open(&file);
     app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"2"}"##);
     app.settle();
-    app.recto(Level::Full, &["page", "insert", other.to_str().expect("a path"), "--at", "2"])
+    app.recto(Level::Full, &["page", "insert", other.to_str().expect("a path"), "--at", "4"])
         .expect("an added page");
     app.settle();
     for extra in [&[][..], &["--rank"]] {
