@@ -20,6 +20,7 @@ mod lifetime;
 #[path = "../../src/qa_launch.rs"]
 mod qa_launch;
 use lifetime::Lifetime;
+pub use lifetime::TEST_LIMIT;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -57,9 +58,6 @@ impl Deref for Held<'_> {
         }
     }
 }
-
-/// How long a quiet run lasts unless a test asks for longer: the harness's own limit on a test (`.config/nextest.toml`: 60 s a period, ended after 5), so the run is never the first to end mid-test (2026-11-26: a run's own 120 s ended a test the harness still allowed). `--owner` ends the run when the test ends, so a long limit costs nothing.
-pub const TEST_LIMIT: Duration = Duration::from_secs(300);
 
 /// A quiet run. An owned launch is stopped, then killed/reaped if needed. An attached run is only asked through its original connection; its existing owner/state lifetime remains the final bound.
 pub struct Run<'a> {

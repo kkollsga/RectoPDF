@@ -4,6 +4,9 @@ use serde_json::Value;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
+/// How long a quiet run lasts unless a test asks for longer: the harness's own limit on a test (`.config/nextest.toml`: 60 s a period, ended after 5), so the run is never the first to end mid-test (2026-11-26: a run's own 120 s ended a test the harness still allowed). `--owner` ends the run when the test ends, so a long limit costs nothing.
+pub const TEST_LIMIT: Duration = Duration::from_secs(300);
+
 const WAIT: Duration = Duration::from_secs(5);
 
 pub enum Lifetime {

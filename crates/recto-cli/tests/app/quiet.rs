@@ -153,7 +153,7 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     let Some(copy) = OwnCopy::new() else { return };
     let app = copy.executable();
     let watch = ScreenWatch::start(app.canonicalize().unwrap());
-    let run = Run::start_of(&app, Duration::from_secs(120), &[]);
+    let run = Run::start_of(&app, super::common::app::TEST_LIMIT, &[]);
     let open_again = || copy.open_quietly(&run.state.root);
     open_again();
     let began = std::time::Instant::now();

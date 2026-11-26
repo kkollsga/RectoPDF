@@ -667,17 +667,36 @@ fn a_start_is_waited_for_while_it_makes_progress_and_stopped_when_it_does_not() 
     assert!(qa_launch::READY_CAP > std::time::Duration::from_secs(30) && qa_launch::READY_STALL < qa_launch::READY_CAP);
 }
 
-/// Failure: a quiet run's own limit is shorter than the harness's, so the app ends mid-test while the test is still allowed to run (2026-11-26, a closed-window test).
+/// Failure: a quiet run's own limit is shorter than the harness's, so the app ends mid-test while the test is still allowed to run (2026-11-26, a closed-window test),
+/// or a test still names a limit of its own.
 #[test]
-fn a_quiet_runs_limit_is_the_harness_limit_on_a_test() {
+fn a_quiet_runs_limit_covers_what_the_harness_allows_a_test() {
     let nextest = include_str!("../../../.config/nextest.toml");
+    let line = nextest
+        .lines()
+        .find(|line| line.trim_start().starts_with("slow-timeout"))
+        .expect("nextest's slow-timeout");
+    let number_after = |key: &str| -> u64 {
+        let rest = line.split(key).nth(1).unwrap_or_else(|| panic!("{key} in {line}"));
+        rest.trim_start_matches(|c: char| !c.is_ascii_digit())
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    };
+    let allowed = number_after("period") * number_after("terminate-after");
     assert!(
-        nextest.contains("slow-timeout = { period = \"60s\", terminate-after = 5 }"),
-        "nextest's limit changed: TEST_LIMIT (tests/common/app.rs) follows it"
+        lifetime::TEST_LIMIT.as_secs() >= allowed,
+        "TEST_LIMIT {:?} is under nextest's {allowed} s",
+        lifetime::TEST_LIMIT
     );
-    let app = include_str!("common/app.rs");
-    assert!(app.contains("pub const TEST_LIMIT: Duration = Duration::from_secs(300);"));
-    assert!(!app.contains("Duration::from_secs(120), extra") && !app.contains("Duration::from_secs(3 * 60), env"));
+    for (name, source) in [("common/app.rs", include_str!("common/app.rs")), ("app/quiet.rs", include_str!("app/quiet.rs"))] {
+        assert!(
+            !source.contains("Duration::from_secs(120), &[]") && !source.contains("Duration::from_secs(120), extra"),
+            "{name} names a run limit of its own"
+        );
+    }
 }
 
 /// A shell script standing in for the app: it takes the app's arguments and ignores them.
