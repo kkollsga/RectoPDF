@@ -184,9 +184,16 @@ impl Drop for OwnCopy {
     }
 }
 
+/// When this test's first run was started: the process is the test's, so cleanup can tell how much of the harness's limit is left.
+static TEST_BEGAN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn test_began() -> Instant {
+    *TEST_BEGAN.get_or_init(Instant::now)
+}
+
 /// Cancels private fixture program leases; scanned PIDs are observations only.
 fn end_runs(root: &Path, executables: &[PathBuf]) -> bool {
-    match copy_cleanup::end(root, executables, copy_cleanup::EXIT_CAP) {
+    match copy_cleanup::end(root, executables, copy_cleanup::exit_wait(test_began().elapsed())) {
         Ok(()) => true,
         Err(error) => {
             eprintln!("fixture cleanup retained {}: {error}", root.display());
@@ -354,6 +361,7 @@ impl<'a> Run<'a> {
 }
 
 fn launch(state: &State, args: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> (Child, u32) {
+    test_began();
     let launching = evidence::launching(state);
     let words = args.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
     let invocation = recto_agent::table::parse_cli(&words).expect("the public CLI parses launch options");

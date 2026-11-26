@@ -517,8 +517,8 @@ fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
     let source = include_str!("common/app.rs");
     let end_runs = source.split("fn end_runs(").nth(1).expect("end_runs").split("\n}").next().unwrap();
     assert!(
-        end_runs.contains("copy_cleanup::EXIT_CAP"),
-        "end_runs gives cleanup a wait of its own, not EXIT_CAP"
+        end_runs.contains("copy_cleanup::exit_wait("),
+        "end_runs gives cleanup a wait of its own, not exit_wait (EXIT_CAP, cut to what the harness leaves)"
     );
     // The watch is armed by the end of the app's start, and the ready line is written by `ready`, which the host calls after `start` returned.
     let start = include_str!("../../recto-app/src/core/start.rs");
@@ -800,4 +800,24 @@ fn cpu_is_progress_only_at_a_hundredth_of_the_stall_and_a_page_in_always() {
         ),
         "a page-in is progress"
     );
+}
+
+/// Failure (review, 2026-11-26): cleanup waits its whole 190 s for a copy's exit though the test is already 200 s into nextest's 300, so nextest kills the process mid-wait and the copy folder is left behind.
+#[test]
+fn cleanup_never_waits_past_the_harness_limit_on_a_test() {
+    use std::time::Duration;
+    let limit = lifetime::TEST_LIMIT;
+    assert_eq!(
+        copy_cleanup::exit_wait(Duration::ZERO),
+        copy_cleanup::EXIT_CAP,
+        "a test that has just begun gets the whole wait"
+    );
+    for since in [100, 150, 200, 250, 280] {
+        let since = Duration::from_secs(since);
+        assert!(
+            since + copy_cleanup::exit_wait(since) < limit,
+            "{since:?} into the test, cleanup would run past nextest's {limit:?}"
+        );
+    }
+    assert_eq!(copy_cleanup::exit_wait(limit * 2), copy_cleanup::MIN_EXIT_WAIT, "late or not, it still looks");
 }
