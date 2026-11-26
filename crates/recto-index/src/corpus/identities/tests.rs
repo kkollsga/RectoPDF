@@ -457,6 +457,24 @@ fn a_resume_under_other_rules_reads_every_record_again() {
     assert_eq!(every_read(&stored(&temp.0)).len(), 8);
 }
 
+/// Failure: a kill between a page's record and its text leaves one record more than the text has, and the resume reads every identity again (the file's
+/// length is wrong, though the records it should keep are all there). The extra record goes and the others are kept.
+#[test]
+fn a_record_past_the_text_is_cut_and_the_rest_kept() {
+    let whole = Temp::new();
+    built(&whole.0, &mut Feed::made_up(8), &BuildLimits::default());
+    let fourth = fs::read(paths(&whole.0).ids_file()).unwrap()[3 * RECORD_BYTES..4 * RECORD_BYTES].to_vec();
+    let temp = Temp::new();
+    let mut feed = Feed::made_up(8);
+    feed.stop_at = Some(3);
+    built(&temp.0, &mut feed, &BuildLimits::default());
+    rewrite_records(&temp.0, |bytes| bytes.extend_from_slice(&fourth));
+    let mut again = Feed::made_up(8);
+    assert!(matches!(built(&temp.0, &mut again, &BuildLimits::default()), BuildOutcome::Ready { .. }));
+    assert_eq!(again.asked, (3..8).collect::<Vec<_>>(), "the three before the kill were kept");
+    assert_eq!(all_reads(&temp.0), all_reads(&whole.0));
+}
+
 /// Failure: a map far longer than the renderer's count (a hostile file) makes the identity reads outlast the build's time with nothing to stop them. Past
 /// `max_time` the identities are given up (no header, no records, references read live) and the text build still finishes.
 #[test]

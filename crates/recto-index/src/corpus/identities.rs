@@ -151,7 +151,7 @@ pub(super) struct IdentityRun {
 }
 
 impl IdentityRun {
-    /// Starts, or goes on with what an earlier build left: the first `resumed` pages' records stay if the file holds exactly those and each opens as its page's, and
+    /// Starts, or goes on with what an earlier build left: the first `resumed` pages' records stay if the file holds those and each opens as its page's, and
     /// are read again if not. `None` when the identities can't be had: the map is too long, or the reads cost more than `limit`. Either way no file is left.
     pub(super) fn begin(
         paths: &CorpusPaths,
@@ -176,6 +176,10 @@ impl IdentityRun {
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a plain file"));
         }
+        if kept.is_some() {
+            // A kill between a page's record and its text leaves a record, or a piece of one, more than the text has.
+            file.set_len(u64::from(keep) * RECORD_BYTES as u64)?;
+        }
         let mut run = Self {
             file,
             info,
@@ -198,10 +202,10 @@ impl IdentityRun {
         Ok(Some(run))
     }
 
-    /// What the first `keep` records were charged, if `ids.bin` holds exactly them and each opens as its page's.
+    /// What the first `keep` records were charged, if `ids.bin` holds them (and at most what a kill left after them) and each opens as its page's.
     fn kept(paths: &CorpusPaths, seal: &CorpusSeal, keep: u32) -> Option<u64> {
         let file = local::open_private_file(&paths.ids_file()).ok()?;
-        if file.metadata().ok()?.len() != u64::from(keep) * RECORD_BYTES as u64 {
+        if file.metadata().ok()?.len() < u64::from(keep) * RECORD_BYTES as u64 {
             return None;
         }
         (0..keep).try_fold(0u64, |work, page| Some(work.saturating_add(open_record(&file, seal, page)?.bytes)))
