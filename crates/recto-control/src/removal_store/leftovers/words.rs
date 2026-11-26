@@ -10,6 +10,7 @@
 //! - **A name is the person's.** File names come from outside, so an agent's words carry none: the caller gives [`Names`] only to the person, and an agent
 //!   reads the same sentences with "this document" and "this folder".
 
+use super::act::Partly;
 use super::leases::Busy;
 use recto_core::removal::{ConfirmRefusal, Refusal, Store};
 
@@ -169,11 +170,13 @@ pub const CLEARING: &str = "RectoPDF is clearing leftovers right now. Try again 
 pub struct Did {
     pub trashed: u32,
     pub copies: u32,
+    /// What a stopped artifact had done to it before it stopped: whole acts aren't counted in the two above, and it isn't nothing.
+    pub partly: Option<Partly>,
 }
 
 impl Did {
     pub fn is_none(&self) -> bool {
-        self.trashed == 0 && self.copies == 0
+        self.trashed == 0 && self.copies == 0 && self.partly.is_none()
     }
 
     fn list(&self) -> String {
@@ -183,6 +186,11 @@ impl Did {
         }
         if self.copies > 0 {
             parts.push(format!("{} deleted", n(self.copies, "session copy", "session copies")));
+        }
+        match self.partly {
+            Some(Partly::Copy) => parts.push("1 session copy partly deleted".to_owned()),
+            Some(Partly::Save) => parts.push("1 unfinished save that may be in the Trash".to_owned()),
+            None => {}
         }
         parts.join(", ")
     }

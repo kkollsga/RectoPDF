@@ -6,6 +6,7 @@ use super::super::leases::Outside;
 use super::super::tests::{DEAD, World as Fixture, temp_name, world};
 use super::super::trash::FolderTrash;
 use super::*;
+use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
@@ -383,4 +384,58 @@ fn a_stop_at_any_step_leaves_what_the_next_check_lists_and_a_clear_finishes() {
             );
         }
     }
+}
+
+/// Stops a walk once it has been asked about this many entries of a copy, as a failing disk or a crash would.
+struct Mid(usize);
+
+impl Hooks for Mid {
+    fn entry(&mut self, _: &OsStr) -> bool {
+        if self.0 == 0 {
+            return false;
+        }
+        self.0 -= 1;
+        true
+    }
+}
+
+impl Steps for Mid {}
+
+/// Failure (review round 1, 1): a copy stopped part way, with some entries unlinked, is told as "nothing was cleared" because only whole acts were counted, so the
+/// person is told their session copy is as it was when half of it is gone. With only copies to clear, stop after each number of entries: the words never say
+/// nothing was cleared (a stop before the first unlink is the one case that does), say a copy was partly deleted, and a check and a clear after it finish.
+#[test]
+fn a_stop_in_the_middle_of_a_copy_never_says_nothing_was_cleared_and_a_clear_after_it_finishes() {
+    let mut stopped_part_way = 0;
+    for entries in 1..=14 {
+        let fx = fx();
+        // Only the copies are left to clear, so the first act is a copy's.
+        for entry in std::fs::read_dir(&*fx.fixture.docs).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap().as_encoded_bytes().starts_with(b".append-") {
+                if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                }
+                .unwrap();
+            }
+        }
+        let id = id_of(&fx.check(Who::Person));
+        let cleared = fx.clear(id, Who::Person, Instant::now(), &mut Mid(entries)).expect("started");
+        if cleared.stopped.is_none() {
+            continue;
+        }
+        stopped_part_way += 1;
+        let said = cleared.words.to_lowercase();
+        assert!(!said.contains("nothing was"), "{entries} entries: {}", cleared.words);
+        assert_eq!(cleared.outcome, Outcome::PartlyCleared, "{entries} entries: {}", cleared.words);
+        fx.restart();
+        let left = fx.check(Who::Person);
+        let id = id_of(&left);
+        let done = fx.clear(id, Who::Person, Instant::now(), &mut Unwatched).expect("finishes");
+        assert_eq!(done.outcome, Outcome::Complete, "{entries} entries: {}", done.words);
+        assert!(fx.check(Who::Person).found.is_empty());
+    }
+    assert!(stopped_part_way >= 8, "the walk was stopped part way {stopped_part_way} times");
 }

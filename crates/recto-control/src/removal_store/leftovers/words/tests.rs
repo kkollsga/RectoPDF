@@ -35,8 +35,12 @@ fn the_words_never_claim_whose_a_save_is_or_that_everything_is_gone() {
     let all = [
         check(&Names::default(), &found()),
         nothing(&Found::default()),
-        done(&Did { trashed: 1, copies: 1 }),
-        stopped(&Did { trashed: 1, copies: 0 }, 1, 2, "why"),
+        done(&Did {
+            trashed: 1,
+            copies: 1,
+            ..Did::default()
+        }),
+        stopped(&Did { trashed: 1, ..Did::default() }, 1, 2, "why"),
     ]
     .join("\n")
     .to_lowercase();
@@ -65,7 +69,7 @@ fn a_refusal_says_nothing_was_cleared_and_a_stop_after_an_act_never_does() {
         assert!(busy(why).ends_with("Nothing was cleared."), "{why:?}");
     }
     assert!(refusal(Refusal::TooLarge, false).ends_with("nothing was cleared."));
-    let partly = stopped(&Did { trashed: 1, copies: 0 }, 1, 3, "its folder changed");
+    let partly = stopped(&Did { trashed: 1, ..Did::default() }, 1, 3, "its folder changed");
     assert!(!partly.to_lowercase().contains("nothing was"), "{partly}");
     assert!(partly.contains("1 of 3"), "{partly}");
     assert!(stopped(&Did::default(), 0, 3, "its folder changed").contains("Nothing was cleared."));
@@ -92,4 +96,20 @@ fn nothing_to_clear_says_what_it_left_alone() {
     assert!(words.starts_with("Nothing found to clear."), "{words}");
     assert!(words.contains("still being written") && words.contains("no Trash"), "{words}");
     assert!(!words.contains(BUTTON));
+}
+
+/// Failure (review round 1, 1): a stop that left a copy part deleted, or a save in doubt in the Trash, is told as nothing cleared.
+#[test]
+fn a_part_done_artifact_is_told_and_is_never_nothing() {
+    use crate::removal_store::leftovers::act::Partly;
+    for partly in [Partly::Copy, Partly::Save] {
+        let did = Did {
+            partly: Some(partly),
+            ..Did::default()
+        };
+        assert!(!did.is_none());
+        let said = stopped(&did, 0, 3, "the disk refused");
+        assert!(!said.to_lowercase().contains("nothing was"), "{said}");
+        assert!(said.contains("partly deleted") || said.contains("may be in the Trash"), "{said}");
+    }
 }
