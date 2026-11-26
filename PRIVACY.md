@@ -26,6 +26,7 @@ All of it is in your user folder, readable only by you.
 | Which page is which, for the edit history to follow a file that changes: a digest of each page, nothing of its text | `session/journals/` | As long as the edit history it belongs to, and removed with it |
 | For a tab that's gone idle, its contents and the sizes of its pages, so it comes back at its place at once. No picture of any page | `session/journals/` | 30 days, within 256 MiB in all |
 | One backup of a PDF as it was before you first saved it | `~/Library/Application Support/RectoPDF/agent/backups.noindex/` | 30 days, within 1 GiB in all |
+| Which PDFs RectoPDF opened and saved, so a backup can be matched to the file it was made from: each file's path and its file numbers (its size, when it last changed, and where it sits on the disk). Never a file's contents, title or text | `~/Library/Application Support/RectoPDF/agent/removal/` | Nothing is pruned yet; it holds at most 4,096 entries and 1.5 MiB in all |
 | Page text of PDFs you searched with Find, so the next search is fast. **Stored encrypted** (below) | `~/Library/Caches/RectoPDF/corpus.noindex/` | 90 days after it was last used, within 2 GiB in all. A changed file's old text goes |
 | Generated contents you asked for | `~/Library/Caches/RectoPDF/contents.noindex/` | 90 days, within 32 MiB in all |
 | Update settings, when it last checked, and what's on offer | `~/Library/Application Support/RectoPDF/agent/updates.json`, `update.log` and `update/` | Until they change |
