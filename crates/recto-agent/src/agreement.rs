@@ -694,4 +694,64 @@ mod tests {
         doc.kill_worker();
         assert_eq!(answer, Some(Disagreement::Unchecked), "about the moment, not the file");
     }
+
+    /// A scripted renderer: each ask takes the next answer of its list (the last repeats), and every ask is counted.
+    struct Scripted {
+        counts: Vec<Result<u32, RenderFailure>>,
+        repaired: Result<bool, RenderFailure>,
+        sizes: Vec<Result<(f32, f32), RenderFailure>>,
+        asks: u32,
+        counted: usize,
+        sized: usize,
+    }
+
+    impl Scripted {
+        fn answer<T: Clone>(list: &[T], n: usize) -> T {
+            list[n.min(list.len() - 1)].clone()
+        }
+    }
+
+    impl RendererHalf for Scripted {
+        fn repaired(&mut self) -> Result<bool, RenderFailure> {
+            self.asks += 1;
+            self.repaired.clone()
+        }
+        fn page_count(&mut self) -> Result<u32, RenderFailure> {
+            self.asks += 1;
+            self.counted += 1;
+            Self::answer(&self.counts, self.counted - 1)
+        }
+        fn page_size(&mut self, _page: u32) -> Result<(f32, f32), RenderFailure> {
+            self.asks += 1;
+            self.sized += 1;
+            Self::answer(&self.sizes, self.sized - 1)
+        }
+    }
+
+    fn one_page() -> View {
+        View {
+            page_count: 1,
+            repaired: false,
+            sizes: vec![Some((612., 792.))],
+        }
+    }
+
+    fn busy_then_ok() -> Scripted {
+        Scripted {
+            counts: vec![Err(RenderFailure::TooBusyToStart), Ok(1)],
+            repaired: Ok(false),
+            sizes: vec![Err(RenderFailure::TooBusy { page: 0 }), Ok((612., 792.))],
+            asks: 0,
+            counted: 0,
+            sized: 0,
+        }
+    }
+
+    /// Failure (a busy Mac, 2026-11-26): the check before a save ended on the renderer's first busy answer, which says nothing of the file and
+    /// "asking again tries again", so a person on a busy Mac was told RectoPDF couldn't check the file and to save again. A busy ask is asked again.
+    #[test]
+    fn a_busy_answer_is_asked_again_within_the_deadline() {
+        let mut renderer = busy_then_ok();
+        assert_eq!(renderer_half(&mut renderer, &one_page(), Instant::now() + LOOK_DEADLINE), None);
+    }
 }
