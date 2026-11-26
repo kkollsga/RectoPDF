@@ -17,7 +17,7 @@ use recto_platform::{FileStamp, local};
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "test-seams"))]
+#[cfg(test)]
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -57,7 +57,7 @@ pub struct Config {
     #[cfg(test)]
     pub(crate) in_thread: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Test seam: the set of roots a test's ledger threads use, so neighbours' roots in the process's set can't evict or crowd it.
-    #[cfg(any(test, feature = "test-seams"))]
+    #[cfg(test)]
     pub(crate) roots: Option<Arc<tabs::Roots>>,
     /// Test seam: called by the `recto-ledger` thread when it has been handed the adoption, before it reads a journal.
     #[cfg(test)]
@@ -77,7 +77,7 @@ impl Default for Config {
             at_lock: None,
             #[cfg(test)]
             in_thread: None,
-            #[cfg(any(test, feature = "test-seams"))]
+            #[cfg(test)]
             roots: None,
             #[cfg(test)]
             before_adoption: None,

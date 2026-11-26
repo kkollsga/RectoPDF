@@ -161,7 +161,7 @@ pub fn note_tabs(root: &Path, tabs: &[TabEntry]) {
 impl Config {
     /// The set this ledger's roots are in: the process's, or a test's own.
     fn roots(&self) -> &Roots {
-        #[cfg(any(test, feature = "test-seams"))]
+        #[cfg(test)]
         if let Some(own) = &self.roots {
             return own;
         }
