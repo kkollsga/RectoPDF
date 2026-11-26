@@ -2,7 +2,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+
+/// How long the archiver (`app/archive.sh`, a `ditto` of the dev app) may take before it counts as hung. Failure this holds: a fixed 30 s,
+/// which a zip of the dev app at background priority under load passes (`a_closed_window_stays_closed_across_an_update`, load 15,
+/// 2026-11-26, killed at 30 s) — the test then blamed the update. The archiver's work is bounded by the app's size, so three minutes is far
+/// past any real run and still ends a hung one.
+const ARCHIVE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
 
 fn tool() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/dev-build.sh")
@@ -141,14 +146,17 @@ fn the_first_install_replaces_a_release_only_when_told_and_keeps_it() {
         .spawn()
         .unwrap();
     let timed_out = matches!(
-        recto_platform::local::wait_until_gone(&[child.id()], &[], Duration::from_secs(30)),
+        recto_platform::local::wait_until_gone(&[child.id()], &[], ARCHIVE_PATIENCE),
         recto_platform::local::Gone::TimeUp
     );
     if timed_out {
         let _ = child.kill();
     }
     let status = child.wait().unwrap();
-    assert!(!timed_out && status.success(), "archive producer: {status}, timed_out={timed_out}");
+    assert!(
+        !timed_out && status.success(),
+        "archive producer: {status}, timed_out={timed_out} after {ARCHIVE_PATIENCE:?}"
+    );
     let applications = dir.join("Applications");
     std::fs::create_dir_all(&applications).unwrap();
     let target = applications.join("RectoPDF.app");
