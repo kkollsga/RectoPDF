@@ -99,13 +99,18 @@ fn verified(real: &Path, expect: FileStamp) -> Option<FileVersion> {
 /// **Where a Save As or a Replace is going, before it is there.** The writer makes its temporary, named for the destination's file name, in the
 /// destination's folder before anything lands, so a crash leaves it there with the whole document in it, and the survey can only list that folder if the
 /// ledger names a path in it. The file may not exist yet, so the folder (the destination's parent, `.` for a bare name) is canonicalized and the file name
-/// appended, and the path is `Unplaced`: seen, and not proven to be any version, so its temp reads `Unknown`. A parent that can't be canonicalized
-/// (missing, unreadable) records nothing and leaves a gap, the safe direction: the lineage is then not the whole story and every removal refuses.
-fn destination_entry(destination: &Path) -> Entry {
+/// appended, and the path is `Unplaced`: seen, and not proven to be any version, so its temp reads `Unknown`. A parent that isn't there records nothing and
+/// is no gap (the save fails, and no temp can exist in a folder that doesn't). Any other failure to resolve it (no permission, an I/O error) records
+/// nothing and leaves a gap, the safe direction: a temp may be there that nobody can list, so every removal refuses.
+fn destination_entry(destination: &Path) -> Option<Entry> {
     let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    match (parent.canonicalize(), destination.file_name()) {
-        (Ok(parent), Some(name)) => Entry::Link(Link::Unplaced { path: parent.join(name) }),
-        _ => Entry::Gap(Gap::WriteFailed),
+    let Some(name) = destination.file_name() else {
+        return Some(Entry::Gap(Gap::WriteFailed));
+    };
+    match parent.canonicalize() {
+        Ok(parent) => Some(Entry::Link(Link::Unplaced { path: parent.join(name) })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(Entry::Gap(Gap::WriteFailed)),
     }
 }
 
@@ -122,9 +127,7 @@ fn entries_for(note: &SaveNote<'_>) -> Vec<Entry> {
                     None => Link::Unplaced { path: real },
                 }));
             }
-            if let Some(destination) = destination {
-                out.push(destination_entry(destination));
-            }
+            out.extend(destination.and_then(destination_entry));
             out
         }
         // A Save As starts a history of its own: the new file is recorded when it lands, and nothing joins it to the one it was made from.
