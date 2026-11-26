@@ -775,7 +775,7 @@ mod tests {
             "recto-reader/src/engine/run.rs",
             1,
             1,
-            "the page view's tiles: `renderer_for` hands over the tab's set",
+            "the page view's tiles: `job_on` hands over the tab's set",
         ),
     ];
 

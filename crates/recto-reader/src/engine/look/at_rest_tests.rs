@@ -127,7 +127,6 @@ fn a_heal_draws_nothing_of_a_withheld_tab_s_page() {
     assert!(at_rest(&rig.engine.shared, &mut rig.renderers), "a refusal is a step");
     let ops = told(&rig.engine);
     assert_eq!(tiles_of(&ops, 0), (0, 0), "nothing of the withheld page is drawn or dropped: {ops:?}");
-    assert_eq!(tiles_of(&ops, 0).0, 0, "nothing of the withheld page is drawn: {ops:?}");
     assert!(
         rig.renderers[&rig.file.0].looks.decided.contains_key(&0),
         "and the kept look is still kept, asked again later"

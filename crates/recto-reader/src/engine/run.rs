@@ -205,6 +205,9 @@ fn run(shared: &Shared) {
             }
         } else {
             match renderer_for(shared, &mut renderers, &mut openings, job.tab, &job.file, &service, &policy) {
+                // Refused before anything's said of the file: a job a renderer keyed to another tab won't serve tells this tab nothing of the file's version,
+                // length or replacement, as before `job_on` (which refuses it too, for the heal).
+                Ok(open) if !open.serves(job.tab, own) => document_failed(RenderFailure::NeedsPassword),
                 Ok(open) => {
                     let outcome = job_on(shared, open, &job, own);
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
