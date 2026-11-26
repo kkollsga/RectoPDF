@@ -22,6 +22,8 @@ recto-session.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Its own test seams, for the integration tests (`tests/ledger_cost.rs`): in a test build only, never the app's.
+recto-control = { path = ".", features = ["test-seams"] }
 # Test-only: `FindKey::for_tests`.
 recto-platform = { workspace = true, features = ["test-seams"] }
 # Tests read a refusal's code as the wire does.

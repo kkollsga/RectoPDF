@@ -1,8 +1,9 @@
 //! The adapter lists a temp folder and decides by name and metadata only; the plan made from it is what a person would be shown.
 
 use super::*;
-use recto_core::removal::{DESIGN_LIMITS, Disposition, Effect, Kinds, LEDGER_LIMITS, Limits, Link, Plan, Request, Surveyed, lineage, plan};
-use recto_platform::FileStamp;
+use recto_core::removal::{
+    DESIGN_LIMITS, Disposition, Effect, FileVersion, Gap, Kinds, LEDGER_LIMITS, Ledger, Limits, Link, Plan, Request, Surveyed, lineage, plan,
+};
 use recto_testpdf::TempDir;
 use std::num::NonZeroU16;
 use std::os::unix::fs::PermissionsExt;
@@ -11,27 +12,35 @@ use std::path::PathBuf;
 const MINE: &str = "/docs/mine.pdf";
 const THEIRS: &str = "/docs/theirs.pdf";
 
-fn stamp(inode: u64) -> FileStamp {
-    FileStamp {
+fn stamp(inode: u64) -> FileVersion {
+    FileVersion {
+        volume: Some([3; 16]),
+        inode,
         size: 10,
         mtime_ns: 1,
-        device: 1,
-        inode,
     }
 }
 
-/// This document at `MINE` (inode 7), and another one at `THEIRS` (inode 8).
-fn ledger() -> Vec<Link> {
-    vec![
-        Link::At {
-            stamp: stamp(7),
-            path: PathBuf::from(MINE),
-        },
-        Link::At {
-            stamp: stamp(8),
-            path: PathBuf::from(THEIRS),
-        },
-    ]
+/// This document at `MINE` (inode 7), and another one at `THEIRS` (inode 8), from the beginning of time.
+fn ledger() -> Ledger {
+    Ledger {
+        links: vec![
+            Link::At {
+                version: stamp(7),
+                path: PathBuf::from(MINE),
+            },
+            Link::At {
+                version: stamp(8),
+                path: PathBuf::from(THEIRS),
+            },
+        ],
+        began_ns: 0,
+        gap: None,
+        stopped: None,
+        good_len: 0,
+        frames: 0,
+        overflowed: false,
+    }
 }
 
 fn limits(max: u32) -> Limits {
@@ -43,9 +52,12 @@ fn limits(max: u32) -> Limits {
 
 /// The survey of `folder` with every other store marked complete, so the plan decides on the backups alone.
 fn survey(folder: &Path, mode: TargetMode, max: u32) -> Result<Surveyed, Refusal> {
-    let links = ledger();
+    survey_of(&ledger(), folder, mode, max)
+}
+
+fn survey_of(links: &Ledger, folder: &Path, mode: TargetMode, max: u32) -> Result<Surveyed, Refusal> {
     let current = Path::new(MINE);
-    let lineage = lineage(&links, stamp(7), current, &LEDGER_LIMITS).unwrap();
+    let lineage = lineage(links, stamp(7), current, &LEDGER_LIMITS).unwrap();
     let mut survey = Survey::new(&limits(max));
     for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
         survey.mark_complete(store);
@@ -261,4 +273,78 @@ fn the_adapter_only_lists_and_never_touches_a_file() {
     ] {
         assert!(!production.contains(word), "backups.rs must not use `{word}`");
     }
+}
+
+/// Failure: the ledger lost something (a gap, a fork) and the backup folder is still marked fully listed, so the plan says "none found" or
+/// purges on a history it only partly knows.
+#[test]
+fn an_incomplete_ledger_leaves_the_folder_unmarked() {
+    let dir = TempDir::new("recto-backups-");
+    std::fs::write(backup(&dir, MINE), b"%PDF-1.4").unwrap();
+    let mut gapped = ledger();
+    gapped.gap = Some(Gap::Torn);
+    let s = survey_of(&gapped, &dir, TargetMode::Save, 16).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+    // The same folder with a whole ledger plans.
+    assert!(plan_of(&survey(&dir, TargetMode::Save, 16).unwrap(), TargetMode::Save).is_ok());
+    // A fork in the target's own history is a gap too.
+    let mut forked = ledger();
+    forked
+        .links
+        .extend([Link::Saved { from: stamp(7), to: stamp(70) }, Link::Saved { from: stamp(7), to: stamp(71) }]);
+    let s = survey_of(&forked, &dir, TargetMode::Save, 16).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+}
+
+/// Failure: a backup made before the ledger existed is placed by a path the ledger only saw later, and the original of another document is
+/// purged with this one's.
+#[test]
+fn a_backup_older_than_the_ledger_is_unknown() {
+    let dir = TempDir::new("recto-backups-");
+    std::fs::write(backup(&dir, MINE), b"%PDF-1.4").unwrap();
+    let mut late = ledger();
+    late.began_ns = i64::MAX;
+    let s = survey_of(&late, &dir, TargetMode::Save, 16).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+}
+
+/// Failure: a missing backup folder is marked complete although the ledger lost something (a gap), so the plan says "no backups" about a
+/// history that may have had one, in a folder that only seems empty.
+#[test]
+fn a_missing_folder_is_not_complete_while_the_ledger_has_a_gap() {
+    let dir = TempDir::new("recto-backups-");
+    let missing = dir.join("none");
+    assert!(plan_of(&survey(&missing, TargetMode::Save, 16).unwrap(), TargetMode::Save).is_ok());
+    let mut gapped = ledger();
+    gapped.gap = Some(Gap::Overflowed);
+    let s = survey_of(&gapped, &missing, TargetMode::Save, 16).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+}
+
+/// Failure: the ledger's beginning is compared in the wrong unit (seconds against nanoseconds) or off by one, so a backup made just before the
+/// ledger is placed by it, or one made at its first moment is not. A backup at `began_ns` is the ledger's; one nanosecond older is not.
+#[test]
+fn a_backup_is_older_than_the_ledger_only_by_a_nanosecond() {
+    use std::io::Write;
+    let began: i64 = 1_800_000_000_123_456_789;
+    let at = |ns: i64| std::time::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(ns).unwrap());
+    let made = |ns: i64| {
+        let dir = TempDir::new("recto-backups-");
+        let mut file = std::fs::File::create(backup(&dir, MINE)).unwrap();
+        file.write_all(b"%PDF-1.4").unwrap();
+        file.set_modified(at(ns)).unwrap();
+        drop(file);
+        let mut from = ledger();
+        from.began_ns = began;
+        let s = survey_of(&from, &dir, TargetMode::Save, 16).unwrap();
+        plan_of(&s, TargetMode::Save)
+    };
+    assert_eq!(purges(&made(began).unwrap()), 1, "made at the first moment: the ledger's");
+    assert_eq!(made(began - 1).unwrap_err(), Refusal::Incomplete(Store::Backup), "a nanosecond before: unknown");
+    assert_eq!(
+        made(began - 2_000_000_000).unwrap_err(),
+        Refusal::Incomplete(Store::Backup),
+        "seconds before: unknown"
+    );
+    assert_eq!(purges(&made(began + 1).unwrap()), 1);
 }

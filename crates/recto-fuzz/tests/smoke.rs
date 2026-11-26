@@ -107,6 +107,13 @@ fn hostile_state_records_do_no_harm() {
     smoke("record", seed(), rounds(400), 8 * 1024);
 }
 
+/// Failure: a damaged or hostile removal ledger panics its reader, breaks a cap, reads back differently from how it was written, or lets a
+/// lineage over it call a ledger with a gap complete.
+#[test]
+fn hostile_removal_ledgers_do_no_harm() {
+    smoke("removal_ledger", seed(), rounds(1500), 4 * 1024);
+}
+
 /// Failure: a forged kept file or a hostile helper's answer panics, bombs, or gets believed with a page past the end, a title on two lines or with invisible characters, or a depth or count past its cap.
 #[test]
 fn generated_contents_are_read_as_hostile() {

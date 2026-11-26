@@ -817,6 +817,7 @@ dependencies = [
 name = "recto-core"
 version = "0.1.3"
 dependencies = [
+ "crc32fast",
  "flate2",
  "lopdf",
  "recto-platform",

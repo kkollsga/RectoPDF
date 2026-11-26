@@ -149,3 +149,10 @@ path = "fuzz_targets/locator.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "removal_ledger"
+path = "fuzz_targets/removal_ledger.rs"
+test = false
+doc = false
+bench = false

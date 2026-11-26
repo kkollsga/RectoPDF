@@ -8,14 +8,17 @@ use std::path::Path;
 /// Lists `folder` and adds every file in it to `survey`, marking `Store::Backup` complete only after the whole listing.
 ///
 /// A name made from a path in `lineage` (or its partial copy) is owned by the sides that path was seen on. Any other name, a directory or a
-/// link is `Unknown` and refuses the plan; a file with other hard links is `Shared`. A missing folder is complete (nothing was kept); a
-/// folder that is a link, or one that can't be read, is not marked, so the plan refuses rather than reads "none found". `add`'s refusal
-/// passes through.
+/// link is `Unknown` and refuses the plan; a file with other hard links is `Shared`; a file last changed before the ledger began is `Unknown`
+/// (it was made before anything was recorded and can't be placed). A missing folder is complete (nothing was kept); a folder that is a
+/// link, or one that can't be read, is not marked, nor is any folder while the lineage is incomplete (a gap or a fork), so the plan
+/// refuses rather than reads "none found". `add`'s refusal passes through.
 pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
     match std::fs::symlink_metadata(folder) {
         Ok(meta) if meta.is_dir() => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            survey.mark_complete(Store::Backup);
+            if lineage.complete() {
+                survey.mark_complete(Store::Backup);
+            }
             return Ok(());
         }
         _ => return Ok(()),
@@ -28,6 +31,7 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
             *sides = sides.with(side);
         }
     }
+    let began = lineage.began_ns();
     let Ok(entries) = std::fs::read_dir(folder) else { return Ok(()) };
     for entry in entries {
         let Ok(entry) = entry else { return Ok(()) };
@@ -41,6 +45,7 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
             _ if !meta.is_file() => Owner::Unknown,
             // Only a hard-linked one gets here: a plain `.DS_Store` was skipped above.
             _ if name == b".DS_Store" => Owner::Shared,
+            _ if modified_ns(&meta).is_none_or(|t| t < began) => Owner::Unknown,
             None => Owner::Unknown,
             Some(_) if links(&meta) != 1 => Owner::Shared,
             Some(sides) => sides.owner(mode),
@@ -52,8 +57,16 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
             format: Format::Current,
         })?;
     }
-    survey.mark_complete(Store::Backup);
+    if lineage.complete() {
+        survey.mark_complete(Store::Backup);
+    }
     Ok(())
+}
+
+/// When the file was last changed, in nanoseconds since 1970; `None` if the system doesn't say.
+fn modified_ns(meta: &std::fs::Metadata) -> Option<i64> {
+    let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(since.as_nanos()).ok()
 }
 
 /// Hard links to the file. Off Unix it is not known, so a file reads as shared.

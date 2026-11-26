@@ -23,6 +23,26 @@ use recto_session::TabId;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// A save's steps a host may keep the lineage by: where the file was, what it became, and where its one backup went.
+pub enum SaveNote<'a> {
+    /// The save is about to write: the file at `path` is `from`, if its stamp is known.
+    Starting { path: &'a Path, from: Option<FileStamp> },
+    /// The new file is written and is about to be moved into place: `from` (the file at `path`) turns into `to`. `over_itself` is a Save, not a Save As.
+    Prepared {
+        path: &'a Path,
+        from: Option<FileStamp>,
+        to: FileStamp,
+        over_itself: bool,
+    },
+    /// The file is in place at `path` as `to`. `original` is the file the save began with, and `backup` where its one backup went, if this save made it.
+    Landed {
+        path: &'a Path,
+        to: Option<FileStamp>,
+        original: &'a Path,
+        backup: Option<&'a Path>,
+    },
+}
+
 /// What a host gives a save beyond the session: where backups go, and how to get the session's note of a save onto the disk.
 pub trait SaveSupport: Sync {
     /// The folder for the one backup of each original. `None` keeps none.
@@ -37,6 +57,8 @@ pub trait SaveSupport: Sync {
     }
     /// The save's done and confirmed. The record can follow it now, so a Save As isn't left with the record naming the old file.
     fn after_save(&self, _tab: TabId) {}
+    /// **What a save tells of the file's lineage,** for the removal ledger (`docs/design/removal.md` §10). Paths and stamps only, never a byte of a document. It never fails or holds the save up for more than a short bound: a host that can't write it says so itself.
+    fn provenance(&self, _note: &SaveNote<'_>) {}
     /// **Keeps these pages of `original`, ascending, for undoing past a save that replaces it with `target`**: only the pages the history can put back (owner, 2026-11-07). `None` keeps nothing, and those steps roll off. A host with no history folder keeps none.
     fn keep_pages(&self, _tab: TabId, _original: &Path, _target: FileStamp, _pages: &[u32]) -> Option<recto_session::edit::AddedSource> {
         None
@@ -307,6 +329,10 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     let ending = Ending::new(access, id);
     if let Some(support) = access.saving() {
         support.before_writing(id);
+        support.provenance(&SaveNote::Starting {
+            path: &snapshot.path,
+            from: snapshot.stamp,
+        });
     }
     // The agreement gate again, now the tab's held: anything added since is looked at, the rest is what was kept.
     if let Some(refusal) = crate::agreement::save_refusal(&snapshot) {
@@ -345,6 +371,8 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         id,
         support,
         original: &snapshot.path,
+        from: snapshot.stamp,
+        over_itself: matches!(to, SaveTo::Same),
         needed,
         kept: None,
         actor,
@@ -370,10 +398,11 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         SaveTo::Same => None,
         SaveTo::As { out, .. } => Some(out.clone()),
     };
+    // Read before the session is held: a stat of the file is no work for under its lock.
+    let stamp = outcome
+        .stamp
+        .or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
     let data = access.with(|s| {
-        let stamp = outcome
-            .stamp
-            .or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
         let rolled_off = match stamp {
             Some(now) => {
                 let marks = recto_session::edit::marks::SavedMarks::of(&snapshot.marks, &outcome.marks);
@@ -389,8 +418,19 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     });
     if let Some(support) = support {
         support.after_save(id);
+        note_landed(support, &snapshot.path, saved_as.as_deref(), stamp, outcome.backup.as_deref());
     }
     Ok(data)
+}
+
+/// Tells the host the file is in place (`SaveNote::Landed`), kept out of `save` for its length.
+fn note_landed(support: &dyn SaveSupport, original: &Path, saved_as: Option<&Path>, to: Option<FileStamp>, backup: Option<&Path>) {
+    support.provenance(&SaveNote::Landed {
+        path: saved_as.unwrap_or(original),
+        to,
+        original,
+        backup,
+    });
 }
 
 /// **What this actor may not save,** once what the save would write is known: the owner's steps about the file's highlights on a page it leaves out,
@@ -413,6 +453,9 @@ struct Hooks<'a, A: SessionAccess> {
     support: Option<&'a dyn SaveSupport>,
     /// The file as it is, before the save replaces it.
     original: &'a Path,
+    /// The file at `original` as the save began, and whether the save is over it (a Save), for the lineage.
+    from: Option<FileStamp>,
+    over_itself: bool,
     /// The file's pages the history can put back, which a copy keeps.
     needed: Vec<u32>,
     /// That copy, once it's made.
@@ -439,6 +482,14 @@ impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
         } else {
             self.support.and_then(|support| support.keep_pages(self.id, self.original, stamp, &self.needed))
         };
+        if let Some(support) = self.support {
+            support.provenance(&SaveNote::Prepared {
+                path: self.original,
+                from: self.from,
+                to: stamp,
+                over_itself: self.over_itself,
+            });
+        }
         self.access.with(|s| s.save_prepared(self.id, stamp, self.kept.as_ref()));
         match self.support {
             Some(support) => support.note_on_disk(self.id, stamp).map_err(std::io::Error::other),

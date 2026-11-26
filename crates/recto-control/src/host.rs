@@ -98,6 +98,10 @@ impl SaveSupport for BackupsOnly {
     fn backups(&self) -> Option<PathBuf> {
         Some(self.0.clone())
     }
+
+    fn provenance(&self, note: &recto_agent::saving::SaveNote<'_>) {
+        crate::removal_store::ledger::note_save(&self.0, note);
+    }
 }
 
 /// Where the one backup of each original goes: `.noindex`, so Spotlight leaves the copies alone, and out of Time Machine.

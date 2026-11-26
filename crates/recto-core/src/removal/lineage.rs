@@ -1,12 +1,18 @@
 //! Which files are one document's history: a pure decision over a ledger of what the app has seen of the document
 //! (`docs/design/removal.md` §3, the original backup row).
 //!
-//! A version is (device, inode, size, mtime_ns): a block-level clone or a restored image keeps the last three, so without the device two independent copies would join (`docs/design/removal.md` §4). The device separates only volumes mounted under different numbers: `st_dev` belongs to a mount, an ejected image and an attached clone can reuse one number and then join, and that reuse must be settled before any purge is wired (D2b/D3). A volume that comes back under another number splits the document: its old path lands on both sides (Unknown, the plan refuses) or only on Other (kept), both safe. Inode 0 joins nothing by version. Joined into one document: `At` links
-//! with the same version (a rename or a hard link), the two ends of a `Saved`, and the current (stamp, path), which counts as an `At`. A path
-//! alone never joins. The target is everything joined to the current file; the rest is `Other`. Nothing here opens a file.
+//! A version is (volume UUID, inode, size, mtime_ns), a [`FileVersion`]. A block-level clone keeps the last three, so the volume's own UUID
+//! (never `st_dev`, which belongs to the mount and is reused by the next disk: measured in `recto-platform`'s `volume_mac.rs`) keeps two
+//! different disks apart, and a remounted disk is still the same one. Versions join only when both have the same real volume and a real
+//! inode; one without joins nothing. Joined into one document: `At` links with the same version (a rename or a hard link), the two ends of
+//! a `Saved`, and the current (version, path), which counts as an `At`. A path alone never joins; an `Unplaced` path is read on both
+//! sides, so it is Unknown. The target is everything joined to the current file; the rest is `Other`.
+//!
+//! **Fork rule.** A block copy of a disk has the original's volume UUID and so can't be told from it. If one version was saved into two
+//! different versions the history has split in two, and the lineage says so (`Gap::Forked`): it is not complete. Nothing here opens a file.
 
+use super::ledger::{FileVersion, Gap, Ledger};
 use super::*;
-use recto_platform::FileStamp;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -14,9 +20,11 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Link {
     /// The document, as this version, was at this path.
-    At { stamp: FileStamp, path: PathBuf },
+    At { version: FileVersion, path: PathBuf },
     /// A save of this app turned one version into the next.
-    Saved { from: FileStamp, to: FileStamp },
+    Saved { from: FileVersion, to: FileVersion },
+    /// A file was here but its version couldn't be proven. The path is read on both sides, so whatever is named by it is Unknown.
+    Unplaced { path: PathBuf },
 }
 
 /// Caps on a ledger, checked before anything is allocated for it.
@@ -73,21 +81,24 @@ pub struct Lineage<'a> {
     links: &'a [Link],
     path: &'a Path,
     target: Vec<bool>,
+    gap: Option<Gap>,
+    began_ns: i64,
 }
 
 fn path_bytes(path: &Path) -> usize {
     path.as_os_str().as_encoded_bytes().len()
 }
 
-/// Splits `links` by whether each joins the document that is now `stamp` at `path`, or refuses with `TooLarge` over a cap.
-pub fn lineage<'a>(links: &'a [Link], stamp: FileStamp, path: &'a Path, limits: &LedgerLimits) -> Result<Lineage<'a>, Refusal> {
+/// Splits `ledger`'s links by whether each joins the document that is now `current` at `path`, or refuses with `TooLarge` over a cap.
+pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, limits: &LedgerLimits) -> Result<Lineage<'a>, Refusal> {
+    let links = ledger.links.as_slice();
     if links.len() > limits.max_links as usize {
         return Err(Refusal::TooLarge);
     }
     let mut total = path_bytes(path);
     let mut longest = total;
     for link in links {
-        if let Link::At { path, .. } = link {
+        if let Link::At { path, .. } | Link::Unplaced { path } = link {
             let len = path_bytes(path);
             longest = longest.max(len);
             total = total.saturating_add(len);
@@ -97,43 +108,61 @@ pub fn lineage<'a>(links: &'a [Link], stamp: FileStamp, path: &'a Path, limits: 
         return Err(Refusal::TooLarge);
     }
     let mut joined = Joined::default();
-    let current = joined.node(stamp);
+    let current = joined.node(current);
     // One node per link, from the first end: a `Saved` has joined its two ends by the time it is read back.
     let mut nodes = Vec::with_capacity(links.len());
+    // Where each version was saved to, to see one saved into two.
+    let mut saved_to: HashMap<usize, usize> = HashMap::new();
+    let mut forks = Vec::new();
     for link in links {
         nodes.push(match link {
-            Link::At { stamp, .. } => joined.node(*stamp),
+            Link::At { version, .. } => joined.node(*version),
+            Link::Unplaced { .. } => joined.fresh(),
             Link::Saved { from, to } => {
                 let (a, b) = (joined.node(*from), joined.node(*to));
+                let first = *saved_to.entry(a).or_insert(b);
+                if first != b {
+                    forks.push(a);
+                }
                 joined.union(a, b);
                 a
             }
         });
     }
     let root = joined.find(current);
+    let forked = forks.into_iter().any(|n| joined.find(n) == root);
     let target = nodes.into_iter().map(|n| joined.find(n) == root).collect();
-    Ok(Lineage { links, path, target })
+    Ok(Lineage {
+        links,
+        path,
+        target,
+        gap: ledger.gap.or(forked.then_some(Gap::Forked)),
+        began_ns: ledger.began_ns,
+    })
 }
 
-/// Union-find over versions. A version with inode 0 gets a node of its own each time, so it joins nothing.
+/// Union-find over versions. A version that joins nothing gets a node of its own each time.
 #[derive(Default)]
 struct Joined {
     parent: Vec<usize>,
-    by_version: HashMap<(u64, u64, u64, i64), usize>,
+    by_version: HashMap<([u8; 16], u64, u64, i64), usize>,
 }
 
 impl Joined {
-    fn node(&mut self, stamp: FileStamp) -> usize {
-        let fresh = self.parent.len();
-        if stamp.inode == 0 {
-            self.parent.push(fresh);
-            return fresh;
+    fn fresh(&mut self) -> usize {
+        let n = self.parent.len();
+        self.parent.push(n);
+        n
+    }
+
+    fn node(&mut self, version: FileVersion) -> usize {
+        let Some(key) = version.join_key() else { return self.fresh() };
+        if let Some(&n) = self.by_version.get(&key) {
+            return n;
         }
-        let node = *self.by_version.entry((stamp.device, stamp.inode, stamp.size, stamp.mtime_ns)).or_insert(fresh);
-        if node == fresh {
-            self.parent.push(fresh);
-        }
-        node
+        let n = self.fresh();
+        self.by_version.insert(key, n);
+        n
     }
 
     fn find(&mut self, mut n: usize) -> usize {
@@ -155,23 +184,43 @@ fn side(target: bool) -> Side {
 }
 
 impl Lineage<'_> {
-    /// The current path (Target), then each `At` path, in input order.
+    /// The current path (Target), then each `At` path, in input order; an `Unplaced` path on both sides.
     pub fn paths(&self) -> impl Iterator<Item = (&Path, Side)> {
-        std::iter::once((self.path, Side::Target)).chain(self.links.iter().zip(&self.target).filter_map(|(link, &t)| match link {
-            Link::At { path, .. } => Some((path.as_path(), side(t))),
-            Link::Saved { .. } => None,
+        std::iter::once((self.path, Side::Target)).chain(self.links.iter().zip(&self.target).flat_map(|(link, &t)| {
+            let (path, sides) = match link {
+                Link::At { path, .. } => (Some(path.as_path()), [Some(side(t)), None]),
+                Link::Unplaced { path } => (Some(path.as_path()), [Some(Side::Target), Some(Side::Other)]),
+                Link::Saved { .. } => (None, [None, None]),
+            };
+            sides.into_iter().flatten().filter_map(move |s| path.map(|p| (p, s)))
         }))
     }
 
-    /// Each `At` stamp and both ends of each `Saved`, in input order.
-    pub fn stamps(&self) -> impl Iterator<Item = (FileStamp, Side)> {
+    /// Each `At` version and both ends of each `Saved`, in input order.
+    pub fn versions(&self) -> impl Iterator<Item = (FileVersion, Side)> {
         self.links.iter().zip(&self.target).flat_map(|(link, &t)| {
             let ends = match link {
-                Link::At { stamp, .. } => [Some(*stamp), None],
+                Link::At { version, .. } => [Some(*version), None],
                 Link::Saved { from, to } => [Some(*from), Some(*to)],
+                Link::Unplaced { .. } => [None, None],
             };
-            ends.into_iter().flatten().map(move |s| (s, side(t)))
+            ends.into_iter().flatten().map(move |v| (v, side(t)))
         })
+    }
+
+    /// Whether the ledger is the whole story of this document: nothing was lost, and the history did not fork.
+    pub fn complete(&self) -> bool {
+        self.gap.is_none()
+    }
+
+    /// The first reason `complete` is false.
+    pub fn gap(&self) -> Option<Gap> {
+        self.gap
+    }
+
+    /// When the ledger began: nothing older than this was recorded.
+    pub fn began_ns(&self) -> i64 {
+        self.began_ns
     }
 }
 
