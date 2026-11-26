@@ -6,6 +6,7 @@ use crate::removal_store::journals::survey_journals;
 use crate::removal_store::legacy_session::survey_legacy_sessions;
 use crate::removal_store::testing::put;
 use recto_core::removal::{Format, Owner, Surveyed};
+use recto_testpdf::returns_in_time;
 use std::sync::Arc;
 
 fn survey_with(root: &Path, caps: &UpdateCaps) -> Result<Surveyed, Refusal> {

@@ -9,6 +9,7 @@ use crate::removal_store::copy_fixtures::{
 use crate::removal_store::testing::{mkfifo, put};
 use recto_core::removal::Surveyed;
 use recto_session::record::CURRENT_VERSION as VERSION;
+use recto_testpdf::returns_in_time;
 use std::sync::Arc;
 
 fn survey_with(root: &Path, caps: &LegacyCaps) -> Result<Surveyed, Refusal> {
