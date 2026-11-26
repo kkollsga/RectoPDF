@@ -328,5 +328,8 @@ fn a_hits_link_is_page_links_of_the_name_and_file_page_and_stays_when_references
     let said = refs.finish(&mut hits);
     assert_eq!(said["missing"], json!({ "file_changed": 1 }));
     assert_eq!(hits[0]["ref"], Value::Null);
-    assert_eq!(hits[0]["untrusted"]["link"], "we%20ird%23a%3Ab.pdf#page=2", "a link names a page number, not a version");
+    assert_eq!(
+        hits[0]["untrusted"]["link"], "we%20ird%23a%3Ab.pdf#page=2",
+        "a link names a page number, not a version"
+    );
 }
