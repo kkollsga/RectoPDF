@@ -235,7 +235,7 @@ pub(super) fn page_look(
     decided_from(doc, looks, page, generation, asked, whole, tile, now)
 }
 
-/// A page's look from where its images are told to be (not busy: see [`page_look`]) and the picture at hand or drawn, kept if it's an answer. The part of [`page_look`] [`heal`] goes by too.
+/// A page's look from where its images are told to be (not busy: see [`page_look`]) and the picture at hand or drawn, kept if it's an answer. [`page_look`] is its only caller.
 #[allow(clippy::too_many_arguments)]
 fn decided_from(
     doc: &mut impl LookSource,

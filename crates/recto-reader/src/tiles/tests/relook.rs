@@ -1,5 +1,5 @@
 use super::*;
-use crate::tiles::relook::{bare, drop_look, stand_in_plan};
+use crate::tiles::relook::{drop_look, stand_in_plan};
 
 /// A dark-paper reader on three pages with every picture drawn and attached, and a warm second tab on the same file with its own: the second tab's page 0 has tiles and a preview of the old look, as the first has.
 fn two_tabs_on_one_file() -> Reader {
@@ -88,24 +88,4 @@ fn a_changed_look_leaves_no_old_tile_and_no_bare_frame() {
     reader.applied();
     let next = a_draw_job(&mut reader, DrawKind::Tile);
     assert_eq!(next.position, 0, "page 0's tiles are drawn next, by the new look");
-}
-
-/// Failure: where no preview is possible the page is left holding its old tiles (two looks at once), or the host isn't told they went. They're dropped and told, and the page is asked for again.
-#[test]
-fn with_no_preview_possible_the_old_tiles_are_just_dropped_and_told() {
-    let mut reader = two_tabs_on_one_file();
-    let file = PathBuf::from("/d/a.pdf");
-    let old_shown = reader.cache.attached.get(&0).cloned().expect("page 0 is on a layer");
-    reader.host.take_ops();
-    reader.applied();
-    bare(&mut reader, &file, 0);
-    assert!(reader.cache.attached.get(&0).is_none_or(Vec::is_empty), "nothing of the old look is on page 0");
-    assert!(drawn_of(&reader, 2, 0).is_empty() && drawn_of(&reader, 1, 0).is_empty());
-    let detached = reader
-        .host
-        .ops
-        .iter()
-        .filter(|op| matches!(op, Op::Detach { id } if old_shown.contains(id)))
-        .count();
-    assert!(detached >= 1, "the host is told: {:?}", reader.host.ops);
 }

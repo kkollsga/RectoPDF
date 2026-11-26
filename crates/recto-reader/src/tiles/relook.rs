@@ -5,7 +5,7 @@
 //! 2. the engine draws it, which goes by the new look and makes no walk;
 //! 3. under the one lock, every drawn thing of that file page on dark paper, in every held tab, is dropped ([`drop_look`], told to the host as any entry that goes is, and as the shown tab's `Detach`es), and the preview is taken in and attached to the bare page. The host hears "old tiles off, new preview on" as one batch.
 //!
-//! Where no preview is possible (zoomed out past one, so the page is a few tiles) the old ones are just dropped ([`bare`]) and the page is bare until they're drawn again.
+//! Where no preview is possible (zoomed out past one, so the page is a few tiles) nothing is asked and nothing dropped: the page keeps its look until it is zoomed in.
 
 use super::{DrawKind, JobPlan, MAX_ATTACH_PER_TURN, PageMap, PlanKind, Reader};
 use crate::paper::PaperKind;
@@ -72,12 +72,6 @@ pub(crate) fn drop_look(reader: &mut Reader, file: &Path, source_page: u32) {
         }
         reader.cache.forget(id, &mut reader.host);
     }
-}
-
-/// [`drop_look`] with no preview to put in its place: the page is bare until its tiles are drawn again, which the next plan asks for.
-pub(crate) fn bare(reader: &mut Reader, file: &Path, source_page: u32) {
-    drop_look(reader, file, source_page);
-    reader.refresh(MAX_ATTACH_PER_TURN);
 }
 
 /// The positions of a tab that show `page` of `file`.

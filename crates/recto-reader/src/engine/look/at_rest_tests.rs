@@ -126,6 +126,7 @@ fn a_heal_draws_nothing_of_a_withheld_tab_s_page() {
     told(&rig.engine);
     assert!(at_rest(&rig.engine.shared, &mut rig.renderers), "a refusal is a step");
     let ops = told(&rig.engine);
+    assert_eq!(tiles_of(&ops, 0), (0, 0), "nothing of the withheld page is drawn or dropped: {ops:?}");
     assert_eq!(tiles_of(&ops, 0).0, 0, "nothing of the withheld page is drawn: {ops:?}");
     assert!(
         rig.renderers[&rig.file.0].looks.decided.contains_key(&0),
@@ -156,7 +157,43 @@ fn a_heal_does_not_draw_by_a_renderer_keyed_to_another_tab() {
     let mut rig = rig(Some(1));
     assert!(at_rest(&rig.engine.shared, &mut rig.renderers));
     let ops = told(&rig.engine);
-    assert_eq!(tiles_of(&ops, 0).0, 0, "nothing drawn by a renderer that isn't the tab's: {ops:?}");
+    assert_eq!(
+        tiles_of(&ops, 0),
+        (0, 0),
+        "nothing drawn by a renderer that isn't the tab's, and nothing dropped: {ops:?}"
+    );
+}
+
+/// Failure: a draw that didn't come to a page (the look to try later, a cancelled job, the document or the page failed) lifted the look out and left it out, or dropped the old tiles, or asked again at once. For each, a heal that asked and drew, the draw ending so: nothing dropped or put, the look put back, the next ask `HEAL_AFTER` on.
+#[test]
+fn a_draw_that_does_not_land_puts_the_look_back_whatever_it_came_to() {
+    for outcome in [
+        Outcome::LookLater,
+        Outcome::Cancelled,
+        Outcome::DocumentFailed {
+            message: "no".to_string(),
+            needs_key: false,
+        },
+        Outcome::PageFailed {
+            message: "no".to_string(),
+            may_pass: false,
+        },
+    ] {
+        let mut rig = rig(None);
+        let now = Instant::now();
+        let planned = crate::tiles::relook::stand_in_plan(&mut crate::engine::lock(&rig.engine.shared.reader), &rig.file.0, 0);
+        let job = planned.and_then(crate::tiles::JobPlan::ready).expect("a preview is at hand");
+        let open = rig.renderers.get_mut(&rig.file.0).unwrap();
+        let Healed::Asked(kept) = heal(&mut open.doc, &mut open.looks, 0, 1, now) else {
+            panic!("asked")
+        };
+        landed(&rig.engine.shared, open, job, kept, outcome, now);
+        let ops = told(&rig.engine);
+        assert_eq!(tiles_of(&ops, 0), (0, 0), "nothing dropped or put: {ops:?}");
+        let open = &rig.renderers[&rig.file.0];
+        assert!(open.looks.decided.contains_key(&0), "the old look is back");
+        assert_eq!(open.looks.healing.get(&0), Some(&(now + HEAL_AFTER)), "asked again at +HEAL_AFTER");
+    }
 }
 
 /// Failure: the thread comes round at rest and a kept look is never asked again, or the heal is a draw that lands and leaves the old tiles beside the new preview. A page kept for want of an answer and due: the step asks, the preview is drawn by the new look and put on the page as the old tiles go (the host is told the detaches and the one attach), and the page is never asked again.

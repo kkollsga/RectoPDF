@@ -4,7 +4,7 @@
 
 use super::{HEAL_AFTER, ImagesAsked, LookSource, Looks};
 use crate::engine::run::{OpenDoc, as_an_added_files, drawable_by, job_ended_with, seen_replaced};
-use crate::engine::{Shared, lock, signal_ops};
+use crate::engine::{Shared, lock};
 use crate::paper::PageLook;
 use crate::tiles::Outcome;
 use std::collections::HashMap;
@@ -70,7 +70,7 @@ pub(in crate::engine) fn next_heal<'a>(pages: &[(PathBuf, u32)], looks_of: impl 
 
 /// **One step of healing, between the thread's turns:** for one due page in view of the tab showing on dark paper, by the renderer already open for its file with its worker running (neither is started for this), asked again, and if the images are told, its preview drawn again by the new look and swapped in. Says whether it did anything that makes the thread come round again; a step makes at most one walk.
 ///
-/// In order, before anything is asked: a preview must be at hand to draw (zoomed out past one, or no surface, and the page's next ask is pushed back by [`HEAL_AFTER`]), and the job must be one the ordinary path would draw (`drawable_by`: a withheld tab's pages, a changed added file, a renderer keyed to another tab). Refused, the old look's tiles are dropped and nothing is drawn.
+/// In order, before anything is asked: a preview must be at hand to draw (zoomed out past one, or no surface, and the page's next ask is pushed back by [`HEAL_AFTER`]), and the job must be one the ordinary path would draw (`drawable_by`: a withheld tab's pages, a changed added file, a renderer keyed to another tab). Refused, nothing is drawn, asked or dropped, and the page's next ask is pushed back by [`HEAL_AFTER`].
 ///
 /// The swap: the preview is drawn by `do_job`, which decides the look from that picture, and when it's drawn (and only then) every drawn thing of that file page on dark paper in every held tab is dropped under one hold of the page view's lock as it's put on the bare page, so the dimmed page turns into its real look in one step: no blank frame and never two looks at once (`tiles/relook.rs`). A draw that didn't land leaves the old tiles and the old look, asked again after [`HEAL_AFTER`].
 ///
@@ -90,13 +90,8 @@ pub(in crate::engine) fn at_rest(shared: &Shared, renderers: &mut HashMap<PathBu
             continue;
         };
         let Some(own) = drawable_by(shared, open, &job) else {
-            // What the ordinary path refuses isn't drawn from the open file, nor asked of it: what was drawn of the page goes, as it was a look the refused page can't be shown by.
+            // What the ordinary path refuses isn't drawn from the open file, nor asked of it, and nothing is dropped: no lock is taken for it, and what's on the page stays as it was.
             open.looks.push_back(page, now);
-            let mut reader = lock(&shared.reader);
-            crate::tiles::relook::bare(&mut reader, &file, page);
-            let has_ops = reader.host.has_ops();
-            drop(reader);
-            told(shared, has_ops);
             return true;
         };
         let healed = heal(&mut open.doc, &mut open.looks, page, generation, now);
@@ -146,12 +141,4 @@ pub(super) fn landed(shared: &Shared, open: &mut OpenDoc, job: crate::tiles::Job
         open.looks.put_back(source_page, kept, now);
         job_ended_with(shared, job, outcome, false, |_| {});
     }
-}
-
-/// What's been put on the host's queue is signalled, and whoever waits for the view is woken.
-fn told(shared: &Shared, has_ops: bool) {
-    if has_ops {
-        signal_ops(shared);
-    }
-    shared.settled.notify_all();
 }
