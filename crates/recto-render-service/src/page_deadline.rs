@@ -15,3 +15,13 @@ pub(crate) fn starting() -> Duration {
     }
     PAGE_DEADLINE
 }
+
+/// The deadline a job's wait is given: the policy's `own`, or with the `test-seams` feature the one-shot a test set for the next job on this thread
+/// (`under_first_job_deadline_for_test`), taken by that job alone. Without the feature this is `own`.
+pub(crate) fn for_this_job(own: Duration) -> Duration {
+    #[cfg(feature = "test-seams")]
+    if let Some(set) = crate::test_deadline::take_first_job() {
+        return set;
+    }
+    own
+}

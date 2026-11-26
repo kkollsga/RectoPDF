@@ -2,6 +2,7 @@
 //! crate's own tests turn on: a release build has no such function.
 
 use crate::{DocRenderer, Policy};
+use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -48,5 +49,24 @@ fn short_for<T, R>(
     let own = std::mem::replace(which(&mut renderer(holder).policy), short);
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
     *which(&mut renderer(holder).policy) = own;
+    done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+thread_local! {
+    /// The deadline the next job's wait on this thread is to have, once.
+    static FIRST_JOB: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+/// Takes the one-shot, for the job whose wait starts now.
+pub(crate) fn take_first_job() -> Option<Duration> {
+    FIRST_JOB.with(Cell::take)
+}
+
+/// **For tests: runs `job` with `deadline` as the page deadline of the FIRST job it asks of a worker on this thread, and the policy's own for every job after it.** [`under_page_deadline_for_test`] short-changes every ask `job` makes, so an export that asks again after a busy answer asked again under it too, and a loaded runner starved the asks after the one a test meant to starve. Here the stopped worker is the one that runs out of time, and the fresh worker the ask again starts has the ordinary deadline. Taken back after `job`, used or not.
+#[doc(hidden)]
+pub fn under_first_job_deadline_for_test<R>(deadline: Duration, job: impl FnOnce() -> R) -> R {
+    FIRST_JOB.with(|first| first.set(Some(deadline)));
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+    FIRST_JOB.with(Cell::take);
     done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
