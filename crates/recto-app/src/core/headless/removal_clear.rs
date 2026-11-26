@@ -281,3 +281,20 @@ fn a_hold_stops_at_the_clears_deadline() {
     );
     removal.release();
 }
+
+/// Failure (review round 1, 9): a check, which only looks, leaves a folder behind (the stand-in Trash made when the world was chosen) or anything else in the
+/// state or the documents' folder. After checks at every level that may look, nothing is new; the Trash folder is there only after the first move.
+#[test]
+fn a_check_makes_nothing() {
+    let bed = bed();
+    let before = bed.listing();
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        bed.agent(level, CHECK).expect("a look");
+    }
+    bed.person(CHECK).expect("a look");
+    assert!(!bed.trash().exists(), "no Trash folder is made by a look");
+    assert_eq!(bed.listing(), before);
+    let plan = plan(&bed.agent(Level::Full, CHECK).expect("a look"));
+    bed.agent(Level::Full, &clear_line(&plan)).expect("cleared");
+    assert!(bed.trash().exists(), "made by the first move");
+}

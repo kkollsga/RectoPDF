@@ -304,7 +304,8 @@ fn no_trash_never_means_delete() {
     let report = run(&pins, &[key], &*none, &|_| false, &mut super::act::Unwatched);
     assert!(matches!(report.stopped, Some((k, Why::NoTrash)) if k == key), "{report:?}");
     assert!(w.docs.join(&name).exists());
-    // A Trash that exists and refuses (its folder is gone): the item stays too.
+    // A Trash that exists and refuses (its folder can't be made: a file is in its place): the item stays too.
+    std::fs::write(w.trash.join("missing"), b"a file where the Trash's folder would be").unwrap();
     let refusing = FolderTrash::at(&w.trash.join("missing"));
     let report = run(&pins, &[key], &refusing, &|_| false, &mut super::act::Unwatched);
     assert!(matches!(report.stopped, Some((k, Why::Trash(_))) if k == key), "{report:?}");

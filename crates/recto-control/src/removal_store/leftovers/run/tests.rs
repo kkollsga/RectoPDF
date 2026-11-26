@@ -34,6 +34,7 @@ fn fx() -> Fx {
         trash: Arc::new(FolderTrash::at(&fixture.trash)),
         alive: Arc::new(|_| false),
         local: Arc::new(|_| true),
+        stand_in: false,
     };
     Fx {
         fixture,

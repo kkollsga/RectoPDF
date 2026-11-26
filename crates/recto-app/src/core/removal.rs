@@ -15,7 +15,6 @@ use recto_agent::commands::{Cmd, Removal as Family, row_access};
 use recto_agent::{Actor, AgentError, Code, Command, TabRef, exit};
 use recto_control::removal_store::leftovers::leases::{Busy, Outside};
 use recto_control::removal_store::leftovers::run::{self, Asked, CheckError, ClearError, LookError, Moment, Steps, World};
-use recto_control::removal_store::leftovers::trash::FolderTrash;
 use recto_control::removal_store::leftovers::{act::Hooks, words};
 use recto_core::removal::{CONFIRM_LIMITS, ConfirmRefusal, Confirmations, Refusal};
 use serde_json::{Value, json};
@@ -159,21 +158,30 @@ impl Removal {
         lock(&self.store).len()
     }
 
-    /// The Mac's own Trash for the person's own state folder, and a folder in a quiet run's or a test's own state otherwise, so only the person's
-    /// real app ever touches the person's Trash.
-    fn world(&self, root: &std::path::Path) -> World {
+    /// **The Mac's own Trash, unless the state folder is a test's or a quiet run's** (`overridden`, which the run's own start decides and checks is in the
+    /// system's temp folders): there a folder beside the state, which takes only a quiet run's files. Never decided by where the folder is, which a link can
+    /// change: the person's real app always has the Mac's Trash.
+    fn world(&self, root: &std::path::Path, overridden: bool) -> World {
         if let Some(world) = lock(&self.world).clone() {
             return world;
         }
-        if recto_control::state::is_in_real_home(root) {
-            return World::real();
+        if overridden {
+            World::stand_in(&root.join("trash-stand-in"))
+        } else {
+            World::real()
         }
-        let stand_in = root.join("trash-stand-in");
-        let _ = std::fs::create_dir_all(&stand_in);
-        World {
-            trash: Arc::new(FolderTrash::at(&stand_in)),
-            ..World::real()
-        }
+    }
+}
+
+/// **In a quiet run or a test, nothing outside its folders is moved or deleted:** the state folder and the document are a quiet run's files, or the clear is
+/// refused with nothing done. With the Mac's own Trash, whatever the person has.
+pub(crate) fn within_the_run(world: &World, paths: &[&std::path::Path]) -> Result<(), AgentError> {
+    if !world.stand_in {
+        return Ok(());
+    }
+    match paths.iter().find(|path| !recto_control::quiet::is_a_quiet_runs_file(path)) {
+        Some(outside) => Err(recto_agent::quiet_files::outside_the_run(outside)),
+        None => Ok(()),
     }
 }
 
@@ -279,7 +287,8 @@ pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &
         actor,
         names: !actor.is_agent(),
     };
-    let world = removal.world(&root);
+    let world = removal.world(&root, serving.paths.as_ref().is_some_and(|paths| paths.overridden));
+    within_the_run(&world, &[&root, &document])?;
     // One at a time: a check or a clear while another clear runs is told so, and nothing is done.
     let busy = || refuse(Code::REMOVAL_BUSY, words::CLEARING, exit::BUSY);
     match confirm {
@@ -353,6 +362,32 @@ pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (review round 1, 2): the real app has the stand-in Trash because its state folder, or a link in it, resolves outside the real home, so the
+    /// person's unfinished saves go to a hidden folder and are lost to them; or a quiet run is given the Mac's Trash. Only a state folder the run itself named
+    /// (overridden) gets the stand-in, wherever it is; the person's own always has the Mac's.
+    #[test]
+    fn only_a_named_state_folder_gets_the_stand_in_and_the_persons_own_never_does() {
+        let removal = Removal::default();
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        assert!(!removal.world(&temp, false).stand_in, "not overridden: the Mac's Trash, wherever the folder is");
+        assert!(removal.world(&temp, true).stand_in);
+    }
+
+    /// Failure (review round 1, 2): a quiet run opened on a person's real document moves its unfinished saves, or deletes beside it. In stand-in mode a path outside
+    /// the system's temp folders is refused before anything is looked at; the Mac's own Trash has no such wall.
+    #[test]
+    fn in_a_quiet_run_nothing_outside_the_temp_folders_is_acted_on() {
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        let outside = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").canonicalize().unwrap();
+        let stand_in = World::stand_in(&temp.join("trash-stand-in"));
+        assert!(within_the_run(&stand_in, &[&temp]).is_ok());
+        assert_eq!(within_the_run(&stand_in, &[&temp, &outside]).unwrap_err().code.as_str(), "outside_quiet_run");
+        assert!(
+            within_the_run(&World::real(), &[&outside]).is_ok(),
+            "the person's own app acts on the person's files"
+        );
+    }
 
     /// Failure (review round 1, 6): a clear goes while the lock is held but a late try's restore is still being taken in, when `restore_record` can still run
     /// from `update/before` under it. Only the lock held and the state `Keeps` is the lease; every state that can still read or try, and every one that doesn't

@@ -14,7 +14,7 @@
 use super::act::{self, Done, Env, Hooks, Partly, Unwatched, Why};
 use super::leases::{Busy, Leases, Outside};
 use super::pin::{Local, PinSet, Pins};
-use super::trash::{MacTrash, Trash};
+use super::trash::{FolderTrash, MacTrash, Trash};
 use super::words::{self, Did, Found, Names};
 use crate::removal_store::ledger;
 use crate::removal_store::legacy_session::{LegacyCaps, survey_legacy_sessions_with};
@@ -40,6 +40,8 @@ pub struct World {
     pub trash: Arc<dyn Trash>,
     pub alive: Arc<dyn Fn(u32) -> bool + Send + Sync>,
     pub local: Local,
+    /// The Trash is a folder standing in for the Mac's, for a quiet run or a test, which acts only on a quiet run's files.
+    pub stand_in: bool,
 }
 
 impl World {
@@ -49,6 +51,16 @@ impl World {
             trash: Arc::new(MacTrash),
             alive: Arc::new(recto_platform::local::process_exists),
             local: Arc::new(recto_platform::folder::is_local),
+            stand_in: false,
+        }
+    }
+
+    /// A quiet run's or a test's: the real process table and volumes, and `folder` for a Trash that takes only a quiet run's files.
+    pub fn stand_in(folder: &Path) -> Self {
+        Self {
+            trash: Arc::new(FolderTrash::in_quiet_run(folder)),
+            stand_in: true,
+            ..Self::real()
         }
     }
 
