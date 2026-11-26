@@ -80,7 +80,10 @@ impl<'a> RowParts<'a> {
         if super::image_select::copy(self.person, anyway) {
             return;
         }
-        self.tools.tool().text_asked();
+        // Asked only for a selection that has some text to copy: nothing selected takes no place, and so drops nothing in flight.
+        if self.selected().is_some_and(|(_, range)| range.is_some_and(|range| range.start != range.end)) {
+            self.tools.tool().text_asked();
+        }
         self.panes.reading_engine(self.engine).selection().copy(anyway);
     }
 
