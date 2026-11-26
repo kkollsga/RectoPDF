@@ -93,7 +93,7 @@ pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputC
             }
             ContentsEvent::Record(Record::ImagePlace { width, height, jpeg, matrix }) => {
                 list.total = list.total.saturating_add(1);
-                // An image wholly off the page keeps its number, and can't be clicked.
+                // One the walk drew (off the page and hidden layers never reach here) whose box the page can't show keeps its number, and can't be clicked.
                 if list.images.len() < MAX_LISTED
                     && let Some(rect) = shown_box(&matrix, &root, list.page_size)
                 {
@@ -335,8 +335,14 @@ pub(crate) fn list_command(doc: &mut DocRenderer, path: &Path, page: u32, at: Op
     Ok(answer)
 }
 
+/// Where image `number` of a page is, and its own size, as `images` lists it (the same read, the same box), for the answer of `image`. None if the page's
+/// box for it can't be shown, which `images` doesn't list either. `page` is from 0.
+pub(crate) fn placed(doc: &mut DocRenderer, path: &Path, page: u32, number: u32, caps: &OutputCaps) -> Result<Option<PlacedImage>, AgentError> {
+    Ok(list(doc, path, page, caps)?.images.into_iter().find(|image| image.number == number))
+}
+
 /// Points to a hundredth, so a list reads as numbers a person would write.
-fn round_points(value: f32) -> f64 {
+pub(crate) fn round_points(value: f32) -> f64 {
     (f64::from(value) * 100.0).round() / 100.0
 }
 

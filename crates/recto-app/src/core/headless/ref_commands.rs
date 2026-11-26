@@ -1,6 +1,6 @@
-//! `--ref` on `goto`, `select`, `copy`, `highlight`, `snapshot` and `export svg` through the app core, with no window: each reads the page a reference
+//! `--ref` on `goto`, `select`, `copy`, `highlight`, `snapshot`, `export svg`, `images` and `image` through the app core, with no window: each reads the page a reference
 //! points at now, as `text --ref` does, refuses what `text --ref` refuses in its words and does nothing then, and gives an agent no more than its level.
-//! One executor each (`recto_agent::commands`); the six share `recto_agent::locating`'s resolver.
+//! One executor each (`recto_agent::commands`); they share `recto_agent::locating`'s resolver.
 
 use super::changed_under_edits::{look, pdf_bytes, replace};
 use super::files::locked_saying;
@@ -69,6 +69,26 @@ fn asked(token: &str, dir: &Path, tag: &str) -> Vec<Asked> {
     ]
 }
 
+/// `images` and `image` with a reference, as `asked` gives the others: the listing at Read-only, and one image to a new `.png` of `tag` in `dir` at Full.
+/// They are their own list because the plain fixture has no image to take: what they refuse, and the level they need, don't depend on one.
+fn image_asked(token: &str, dir: &Path, tag: &str) -> Vec<Asked> {
+    let png = dir.join(format!("{tag}-image.png"));
+    vec![
+        Asked {
+            name: "images",
+            level: Level::ReadOnly,
+            line: json!({ "cmd": "images", "ref": token, "tab": "#1" }),
+            writes: None,
+        },
+        Asked {
+            name: "image",
+            level: Level::Full,
+            line: json!({ "cmd": "image", "ref": token, "tab": "#1", "number": 1, "out": png }),
+            writes: Some(png),
+        },
+    ]
+}
+
 /// What the answer says of how the page was found, and that the token isn't anywhere in it.
 fn found_as(name: &str, answer: &Value, token: &str, status: &str, was: u64) {
     assert_eq!(
@@ -130,6 +150,90 @@ fn every_ref_command_reads_the_page_found_then_moved_after_another_programs_cove
     }
 }
 
+/// Five pages saying "Mine page N", with `cover` in front when another program has put one there. Only the page saying "Mine page 3" draws an image, a 2 x 2
+/// RGB figure after its text: the others only share the resource, which the page's digest doesn't count, so the page is found by its own content.
+fn pages_with_one_figure(cover: bool) -> Vec<u8> {
+    let figure = recto_testpdf::Object::Stream {
+        dict: "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8".into(),
+        data: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0],
+    };
+    let mut pages = Vec::new();
+    if cover {
+        pages.push(recto_testpdf::Page::new(recto_testpdf::text_lines(&["Cover"])));
+    }
+    for number in 1..=5 {
+        let mut content = recto_testpdf::text_lines(&[&format!("Mine page {number}")]);
+        if number == 3 {
+            content.extend_from_slice(b"q 200 0 0 150 100 450 cm /Fig Do Q\n");
+        }
+        pages.push(recto_testpdf::Page::new(content));
+    }
+    let first = recto_testpdf::first_extra_object(pages.len());
+    recto_testpdf::pages_with(&pages, &format!("/XObject << /Fig {first} 0 R >>"), vec![figure])
+}
+
+/// Failure: `images --ref` or `image --ref` goes by the number in the reference (or its hint) and not by the page it finds, so after another program's cover
+/// it lists or takes the images of page 3, which has none, and the figure of the page the agent held is lost; or the answer doesn't say how the page was
+/// found. Page 3 (the only one with a figure) is referred to by its page and by its first four characters, a cover is put in front, and each says `found`
+/// with one image and writes a 2 x 2 PNG before it, and `moved` to page 4 with the same one image after. `images --page 3` then lists none, which is what the
+/// hint page would have given.
+#[test]
+fn images_and_image_by_ref_read_the_page_found_then_moved_after_another_programs_cover() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pages_with_one_figure(false));
+    app.open(&file);
+    let dir = file.parent().expect("a folder").to_path_buf();
+    let tokens = [
+        ("page", reference(&app, 3)),
+        ("chars", chars_reference(&app, 3, 0, 4).expect("characters of page 3")),
+    ];
+    let png_is_2_by_2 = |out: &Path, what: &str| {
+        let bytes = std::fs::read(out).unwrap_or_else(|error| panic!("{what}: no file {out:?}: {error}"));
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "{what}: a PNG");
+        assert_eq!(&bytes[16..24], [0, 0, 0, 2, 0, 0, 0, 2], "{what}: 2 x 2 pixels");
+    };
+    let run = |phase: &str, status: &str, page: u64| {
+        for (kind, token) in &tokens {
+            let tag = format!("{phase}-{kind}");
+            let wanted = image_asked(token, &dir, &tag);
+            let listed = app
+                .agent(Level::Full, &wanted[0].line.to_string())
+                .unwrap_or_else(|error| panic!("{tag} images: {error:?}"));
+            found_as(&format!("{tag} images"), &listed, token, status, 3);
+            assert_eq!(
+                (listed["page"].as_u64(), listed["count"].as_u64()),
+                (Some(page), Some(1)),
+                "{tag} images: {listed}"
+            );
+            let taken = app
+                .agent(Level::Full, &wanted[1].line.to_string())
+                .unwrap_or_else(|error| panic!("{tag} image: {error:?}"));
+            found_as(&format!("{tag} image"), &taken, token, status, 3);
+            assert_eq!(taken["page"].as_u64(), Some(page), "{tag} image: {taken}");
+            // The answer says which image it took, as the listing said it: a caller checks it got the one it listed.
+            let listed_one = &listed["images"][0];
+            assert_eq!(taken["rect"], listed_one["rect"], "{tag} image: {taken}");
+            assert_eq!(
+                (&taken["image_width"], &taken["image_height"]),
+                (&listed_one["width"], &listed_one["height"]),
+                "{tag} image: {taken}"
+            );
+            png_is_2_by_2(wanted[1].writes.as_ref().expect("a file"), &tag);
+        }
+    };
+    run("before", "found", 3);
+    replace(&file, &pages_with_one_figure(true));
+    look(&app);
+    run("after", "moved", 4);
+    let hint_page = app
+        .agent(Level::Full, &json!({ "cmd": "images", "page": 3, "tab": "#1" }).to_string())
+        .expect("images --page 3");
+    assert_eq!(
+        hint_page["count"], 0,
+        "the hint's page has no figure, so a reader by number would have found none: {hint_page}"
+    );
+}
+
 /// How each way of a reference not giving a page is made, on a fresh app with five pages whose page 3 is referred to by characters 0-4.
 enum Case {
     Gone,
@@ -141,7 +245,7 @@ enum Case {
 }
 
 /// Failure: a reference to a page that isn't there, is on two pages, was deleted by the owner, or whose characters changed is read as something else by one
-/// of the six commands (the nearest page, the first, the hint's page), goes there, highlights it, or draws it before refusing; or one command refuses in
+/// of the commands (the nearest page, the first, the hint's page), goes there, highlights it, or draws it before refusing; or one command refuses in
 /// words of its own so an agent can't tell which case it met; or the refusal carries the page's text. Each refuses `reference_unresolved`, exit not-found, in
 /// the very words `text --ref` has for that case, and then nothing happened: no event of a page drawn or failed, the tab and its edits and the file as they
 /// were, nothing written, and none of the page's words in what was said.
@@ -186,7 +290,7 @@ fn every_ref_command_refuses_gone_ambiguous_removed_and_text_changed_in_its_own_
             "{tag}: {as_text:?}"
         );
         let before = (app.recto(Level::ReadOnly, &["where"]).expect("where"), owners_tab(&app, &file));
-        for each in asked(&token, &dir, tag) {
+        for each in asked(&token, &dir, tag).into_iter().chain(image_asked(&token, &dir, tag)) {
             let (answer, events) = run_saying(&app, Level::Full, &each.line);
             let refused = answer.expect_err(&format!("{tag} {}", each.name));
             assert_eq!(
@@ -253,7 +357,7 @@ fn ref_commands_at_each_level_change_nothing_of_the_owners_edits() {
     assert_eq!(before.0["pages"], 9, "the owner's edits are on the tab: {}", before.0);
     assert!(highlights(&app).is_empty(), "and no highlight yet");
     for (level, tag) in [(Level::Off, "off"), (Level::ReadOnly, "readonly"), (Level::Control, "control")] {
-        for each in asked(&token, &dir, tag) {
+        for each in asked(&token, &dir, tag).into_iter().chain(image_asked(&token, &dir, tag)) {
             let answer = app.agent(level, &each.line.to_string());
             if rank(level) >= rank(each.level) {
                 let said = answer.unwrap_or_else(|error| panic!("{tag} {}: {error:?}", each.name));
@@ -316,6 +420,7 @@ fn a_protected_document_refuses_every_ref_command_as_text_does() {
     ] {
         for each in asked(&token, &dir, tag)
             .into_iter()
+            .chain(image_asked(&token, &dir, tag))
             .filter(|each| each.name != "highlight" || tag.ends_with("chars"))
         {
             let mut line = each.line.clone();

@@ -531,9 +531,9 @@
 {"cmd":"ExportSvg"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"images","page":3}
-    ok images Images { tab: "active", page: 3, at: None, as_seen: None }
+    ok images Images { tab: "active", page: Page(3), at: None, as_seen: None }
 {"cmd":"images","tab":"#2","page":3}
-    ok images Images { tab: "#2", page: 3, at: None, as_seen: None }
+    ok images Images { tab: "#2", page: Page(3), at: None, as_seen: None }
 {"cmd":"images","page":3,"extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"images","page":3,"tab":{}}
@@ -543,19 +543,33 @@
 {"cmd":"images","page":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"images","page":null}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`images` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"images"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`images` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["images"]
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`images` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["images","#2",3]
-    ok images Images { tab: "#2", page: 3, at: None, as_seen: None }
+    ok images Images { tab: "#2", page: Page(3), at: None, as_seen: None }
+{"cmd":"images","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+    ok images Images { tab: "active", page: Ref(Locator { .. }), at: None, as_seen: None }
+{"cmd":"images","tab":"#2","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+    ok images Images { tab: "#2", page: Ref(Locator { .. }), at: None, as_seen: None }
+{"cmd":"images","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`images` takes a page or `--ref`, not both.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"images","ref":null}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`images` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"images","ref":"nonsense"}
+    refused {"error":{"candidates":[],"code":"bad_reference","exit":2,"message":"That isn't a reference RectoPDF made.","next":"Use the `ref` that `recto ref` gave, whole and unchanged."},"ok":false,"v":1}
+{"cmd":"images","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","at":[1,2]}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`images --ref` lists the images of the page the reference points at, so it takes no `--at`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["images","#2",null,null,null,"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"]
+    ok images Images { tab: "#2", page: Ref(Locator { .. }), at: None, as_seen: None }
 {"cmd":"Images"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf"}
-    ok image Image { tab: "active", page: 3, number: Some(3), out: Some("/d/x.pdf"), anyway: false, at: None, to_clipboard: false, as_seen: None }
+    ok image Image { tab: "active", page: Page(3), number: Some(3), out: Some("/d/x.pdf"), anyway: false, at: None, to_clipboard: false, as_seen: None }
 {"cmd":"image","tab":"#2","page":3,"number":3,"out":"/d/x.pdf","anyway":true}
-    ok image Image { tab: "#2", page: 3, number: Some(3), out: Some("/d/x.pdf"), anyway: true, at: None, to_clipboard: false, as_seen: None }
+    ok image Image { tab: "#2", page: Page(3), number: Some(3), out: Some("/d/x.pdf"), anyway: true, at: None, to_clipboard: false, as_seen: None }
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","tab":{}}
@@ -565,29 +579,41 @@
 {"cmd":"image","page":{},"number":3,"out":"/d/x.pdf"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":null,"number":3,"out":"/d/x.pdf"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","number":3,"out":"/d/x.pdf"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":{},"out":"/d/x.pdf"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":null,"out":"/d/x.pdf"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`recto image` needs `--number` and `--out`, a new file.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"out":"/d/x.pdf"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`recto image` needs `--number` and `--out`, a new file.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":null}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`recto image` needs `--number` and `--out`, a new file.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`recto image` needs `--number` and `--out`, a new file.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","anyway":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","anyway":null}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["image"]
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["image","#2",3,3,"/d/x.pdf",true]
-    ok image Image { tab: "#2", page: 3, number: Some(3), out: Some("/d/x.pdf"), anyway: true, at: None, to_clipboard: false, as_seen: None }
+    ok image Image { tab: "#2", page: Page(3), number: Some(3), out: Some("/d/x.pdf"), anyway: true, at: None, to_clipboard: false, as_seen: None }
+{"cmd":"image","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf"}
+    ok image Image { tab: "active", page: Ref(Locator { .. }), number: Some(3), out: Some("/d/x.pdf"), anyway: false, at: None, to_clipboard: false, as_seen: None }
+{"cmd":"image","page":3,"ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image` takes a page or `--ref`, not both.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"image","ref":null,"number":3,"out":"/d/x.pdf"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image` needs a page or `--ref`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"image","ref":"nonsense","number":3,"out":"/d/x.pdf"}
+    refused {"error":{"candidates":[],"code":"bad_reference","exit":2,"message":"That isn't a reference RectoPDF made.","next":"Use the `ref` that `recto ref` gave, whole and unchanged."},"ok":false,"v":1}
+{"cmd":"image","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf","to_clipboard":true}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image --ref` can't go to the clipboard: that is the person's, of the page they saw.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"image","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","number":3,"out":"/d/x.pdf","at":[1,2]}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`image --ref` can't go to the clipboard: that is the person's, of the page they saw.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"Image"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png"}

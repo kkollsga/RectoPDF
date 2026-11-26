@@ -2,8 +2,9 @@
 
 #![allow(unused_imports)]
 use super::locating::{
-    EXPORT_SVG_BOTH, EXPORT_SVG_NEITHER, EXPORT_SVG_REF_EXAMPLE, PAGE_OR_REF, PageOrRef, REF, RENDER_BOTH, RENDER_NEITHER, RENDER_REF_EXAMPLE, SNAPSHOT_BOTH,
-    SNAPSHOT_NEITHER, SNAPSHOT_REF_EXAMPLE, SNAPSHOT_REF_NOT_CLIPBOARD,
+    EXPORT_SVG_BOTH, EXPORT_SVG_NEITHER, EXPORT_SVG_REF_EXAMPLE, IMAGE_BOTH, IMAGE_NEITHER, IMAGE_REF_EXAMPLE, IMAGE_REF_NOT_CLIPBOARD, IMAGES_BOTH,
+    IMAGES_NEITHER, IMAGES_REF_EXAMPLE, IMAGES_REF_NO_AT, PAGE_OR_REF, PageOrRef, REF, RENDER_BOTH, RENDER_NEITHER, RENDER_REF_EXAMPLE, SNAPSHOT_BOTH,
+    SNAPSHOT_NEITHER, SNAPSHOT_REF_EXAMPLE, SNAPSHOT_REF_NOT_CLIPBOARD, Where,
 };
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
@@ -28,7 +29,7 @@ pub struct Render {
     pub anyway: bool,
 }
 
-/// `render`, `export svg` and `snapshot` as they're written on the wire.
+/// `render`, `export svg`, `snapshot`, `images` and `image` as they're written on the wire.
 pub mod line {
     use crate::TabRef;
     use serde::{Deserialize, Serialize};
@@ -73,6 +74,46 @@ pub mod line {
         pub scale: f32,
         #[serde(default)]
         pub anyway: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pub to_clipboard: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub as_seen: Option<crate::extract::AsSeen>,
+        /// Last, so the positional array form keeps reading as it always has.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        pub reference: Option<String>,
+    }
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Images {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub page: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub at: Option<[f32; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub as_seen: Option<crate::extract::AsSeen>,
+        /// Last, so the positional array form keeps reading `[tab, page, at, as_seen]` as it always has.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        pub reference: Option<String>,
+    }
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Image {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub page: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub number: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub out: Option<PathBuf>,
+        #[serde(default)]
+        pub anyway: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub at: Option<[f32; 2]>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pub to_clipboard: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,14 +213,13 @@ impl Cmd for Render {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
-            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
-            let pinned = found.as_ref().map(locating::Located::tab_ref);
-            let tab = pinned.as_ref().unwrap_or(tab);
-            let (id, position, source) = locate(access, tab, page)?;
-            if let Some(found) = &found {
-                locating::agree(found, &source)?;
-            }
+            let Where {
+                page,
+                found,
+                id,
+                position,
+                source,
+            } = at.locate(access, tab, locating::CharsChecked::First)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let hidden = crate::highlighting::hidden_on(access, id, &source);
             let drawn = render::render(&source.path, source.page + 1, *scale, out, hidden);
@@ -304,14 +344,13 @@ impl Cmd for ExportSvg {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
-            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
-            let pinned = found.as_ref().map(locating::Located::tab_ref);
-            let tab = pinned.as_ref().unwrap_or(tab);
-            let (id, position, source) = locate(access, tab, page)?;
-            if let Some(found) = &found {
-                locating::agree(found, &source)?;
-            }
+            let Where {
+                page,
+                found,
+                id,
+                position,
+                source,
+            } = at.locate(access, tab, locating::CharsChecked::First)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let args = render::SvgArgs {
                 path: &source.path,
@@ -340,22 +379,53 @@ impl Cmd for ExportSvg {
     }
 }
 
-/// Where a page's images are, and what each is: all of them, or with `at` the one on top there, as the snapshot tool's click finds it.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// Where a page's images are, and what each is: all of them, or with `at` the one on top there, as the snapshot tool's click finds it. By page number, or
+/// by a reference to the page (which lists the page found, whole: `at` doesn't go with it), read from a `line` so a token that can't be one is refused as
+/// the line is read.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Images")]
 pub struct Images {
-    #[serde(default)]
     pub tab: TabRef,
-    pub page: u32,
+    pub page: PageOrRef,
     /// **Only the image on top at `x, y`,** in points from the page's top left as its file shows it (its own turn, before an unsaved one), as `image
     /// --at` takes it and the snapshot tool's click finds it: what a click in read mode picks (owner, 2026-11-16), which the window sends as the person's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<[f32; 2]>,
     /// **The page as it was seen** ([`extract::AsSeen`]): the command is refused as moved if another page, or another file's, is in its place by the time
     /// it runs. The window sends it with its click's `at`, as its page may move before the look runs; it's out of the CLI's flags, and an agent may send it
     /// on the wire to the same end. It doesn't make a command the window's: what an agent's finds is its answer alone, and picks nothing in the window.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_seen: Option<extract::AsSeen>,
+}
+
+impl TryFrom<line::Images> for Images {
+    type Error = AgentError;
+    fn try_from(line: line::Images) -> Result<Self, AgentError> {
+        let line::Images {
+            tab,
+            page,
+            at,
+            as_seen,
+            reference,
+        } = line;
+        let page = PageOrRef::of((IMAGES_BOTH, IMAGES_NEITHER), page, reference.as_deref())?;
+        // A point belongs to the page as it was seen; a page found by its content may have a new crop or turn.
+        if matches!(page, PageOrRef::Ref(_)) && (at.is_some() || as_seen.is_some()) {
+            return Err(AgentError::new(Code::USAGE, IMAGES_REF_NO_AT, exit::USAGE));
+        }
+        Ok(Self { tab, page, at, as_seen })
+    }
+}
+
+impl From<Images> for line::Images {
+    fn from(asked: Images) -> Self {
+        let (page, reference) = asked.page.wire();
+        Self {
+            tab: asked.tab,
+            page,
+            at: asked.at,
+            as_seen: asked.as_seen,
+            reference,
+        }
+    }
 }
 
 impl Cmd for Images {
@@ -380,7 +450,11 @@ impl Cmd for Images {
     }
     fn log_details(&self) -> Value {
         let Self { tab, page, at, .. } = self;
-        let mut details = json!({ "tab": super::log_tab(tab), "page": page });
+        let mut details = json!({ "tab": super::log_tab(tab) });
+        match page {
+            PageOrRef::Page(page) => details["page"] = json!(page),
+            PageOrRef::Ref(_) => details["ref_page"] = json!(page.hint()),
+        }
         if let Some(at) = at {
             details["at"] = json!(at);
         }
@@ -389,7 +463,12 @@ impl Cmd for Images {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, page, at, as_seen } = self;
         let access = cx.access;
-        let (id, _, source) = locate(access, tab, *page)?;
+        // A point belongs to the page as it was seen: the line is refused as it's read, and one built in Rust is refused here, before the page is found
+        // and before the window's look is begun for a page that isn't the one they saw.
+        if matches!(page, PageOrRef::Ref(_)) && (at.is_some() || as_seen.is_some()) {
+            return Err(AgentError::new(Code::USAGE, IMAGES_REF_NO_AT, exit::USAGE));
+        }
+        let Where { page, found, id, source, .. } = page.locate(access, tab, locating::CharsChecked::First)?;
         // The person's own document is read with the password they typed, as the snapshot tool's click reads it; an agent's never is.
         let keys = access.persons_keys(cx.actor);
         let whose = clip_page(access, id, &source, keys.as_ref());
@@ -399,11 +478,14 @@ impl Cmd for Images {
         // The window's look for a click's image (`at` with the page as seen) is stopped when the person moves on, through the window's clipboard's one
         // slot; a plain `images`, the person's or an agent's, and an agent's look have no stop.
         let stop = match (at, as_seen, access.clipboard(cx.actor)) {
-            (Some(at), Some(_), Some(sink)) => sink.begin_look(id.0, *page, *at),
+            (Some(at), Some(_), Some(sink)) => sink.begin_look(id.0, page, *at),
             _ => extract::ClipStop::default(),
         };
         let mut data = extract::images(&whose, *at, &stop)?;
-        describe_source(&mut data, *page, &source);
+        describe_source(&mut data, page, &source);
+        if let Some(found) = found {
+            locating::attach(access, &found, &mut data)?;
+        }
         Ok(data)
     }
     fn human(data: &Value) -> String {
@@ -411,61 +493,33 @@ impl Cmd for Images {
     }
 }
 
-/// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG. Read as [`ImageAsked`], so a request that names no image or no
-/// file is refused as it always was, unless it's the person's click to the clipboard.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(try_from = "ImageAsked")]
+/// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG. By page number, or by a reference to the page, which numbers its
+/// images as `images --ref` lists them. Read from a `line`, so a request that names no image or no file is refused as the line is read, unless it's the
+/// person's click to the clipboard, and a reference never goes to the clipboard.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Image")]
 pub struct Image {
-    #[serde(default)]
     pub tab: TabRef,
-    pub page: u32,
+    pub page: PageOrRef,
     /// From 1, as `images` lists them. None only for the person's click ([`Self::at`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
     /// A new file. None only for the person's click, to the window's clipboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<PathBuf>,
-    #[serde(default)]
     pub anyway: bool,
     /// **The person's click on an image,** `x, y` in points from the page's top left as its file shows it: the image there, to the window's clipboard
     /// ([`crate::clipboard`]). The window's alone, and out of the CLI's flags: anyone else's is refused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<[f32; 2]>,
     /// To the window's clipboard, the person's alone ([`crate::clipboard`]).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub to_clipboard: bool,
     /// The click's page as the person saw it, which it's refused by if another page is in its place by the time it runs ([`extract::AsSeen`]).
     /// Clipboard-only, as `to_clipboard`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_seen: Option<extract::AsSeen>,
 }
 
-/// **`image` as it's read off the wire:** every field as `Image` has it, with `number` and `out` required unless it's the person's click to the
-/// clipboard (`at` with `to_clipboard`), so what an agent sends reads as it did before the click had a command.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageAsked {
-    #[serde(default)]
-    tab: TabRef,
-    page: u32,
-    #[serde(default)]
-    number: Option<u32>,
-    #[serde(default)]
-    out: Option<PathBuf>,
-    #[serde(default)]
-    anyway: bool,
-    #[serde(default)]
-    at: Option<[f32; 2]>,
-    #[serde(default)]
-    to_clipboard: bool,
-    #[serde(default)]
-    as_seen: Option<extract::AsSeen>,
-}
-
-impl TryFrom<ImageAsked> for Image {
-    type Error = &'static str;
-    fn try_from(asked: ImageAsked) -> Result<Self, Self::Error> {
-        let ImageAsked {
+impl TryFrom<line::Image> for Image {
+    type Error = AgentError;
+    fn try_from(line: line::Image) -> Result<Self, AgentError> {
+        let line::Image {
             tab,
             page,
             number,
@@ -474,9 +528,14 @@ impl TryFrom<ImageAsked> for Image {
             at,
             to_clipboard,
             as_seen,
-        } = asked;
+            reference,
+        } = line;
+        let page = PageOrRef::of((IMAGE_BOTH, IMAGE_NEITHER), page, reference.as_deref())?;
+        if matches!(page, PageOrRef::Ref(_)) && (to_clipboard || at.is_some() || as_seen.is_some()) {
+            return Err(AgentError::new(Code::USAGE, IMAGE_REF_NOT_CLIPBOARD, exit::USAGE));
+        }
         if !(to_clipboard && at.is_some()) && (number.is_none() || out.is_none()) {
-            return Err("`image` names an image by its number and a new file to write it to");
+            return Err(AgentError::new(Code::USAGE, IMAGE_NEEDS_NUMBER_AND_FILE, exit::USAGE));
         }
         Ok(Self {
             tab,
@@ -490,6 +549,27 @@ impl TryFrom<ImageAsked> for Image {
         })
     }
 }
+
+impl From<Image> for line::Image {
+    fn from(asked: Image) -> Self {
+        let (page, reference) = asked.page.wire();
+        Self {
+            tab: asked.tab,
+            page,
+            number: asked.number,
+            out: asked.out,
+            anyway: asked.anyway,
+            at: asked.at,
+            to_clipboard: asked.to_clipboard,
+            as_seen: asked.as_seen,
+            reference,
+        }
+    }
+}
+
+/// `image` with no image number or no new file, unless it's the person's click to the clipboard: said as the line is read, and again by `run` for a
+/// command built in Rust.
+const IMAGE_NEEDS_NUMBER_AND_FILE: &str = "`recto image` needs `--number` and `--out`, a new file.";
 
 impl Cmd for Image {
     const TAG: &'static str = "image";
@@ -520,7 +600,12 @@ impl Cmd for Image {
             anyway,
             ..
         } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "number": number, "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) })
+        let mut details = json!({ "tab": super::log_tab(tab), "number": number, "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) });
+        match page {
+            PageOrRef::Page(page) => details["page"] = json!(page),
+            PageOrRef::Ref(_) => details["ref_page"] = json!(page.hint()),
+        }
+        details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {
@@ -535,6 +620,11 @@ impl Cmd for Image {
         } = self;
         let access = cx.access;
         if *to_clipboard || at.is_some() || as_seen.is_some() {
+            // A reference never goes to the clipboard, the person's own, of the page they saw. The line is refused as it's read; one built in Rust never
+            // passed through it, and is refused here, for any actor, before the sink is asked, rather than copying the page its hint names, unresolved.
+            let PageOrRef::Page(page) = page else {
+                return Err(AgentError::new(Code::USAGE, IMAGE_REF_NOT_CLIPBOARD, exit::USAGE));
+            };
             let (Some(sink), Some(at), None, None) = (access.clipboard(cx.actor), at, number, out) else {
                 return Err(crate::clipboard::not_for_agents());
             };
@@ -544,16 +634,15 @@ impl Cmd for Image {
             return extract::image_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *at, (*anyway, as_seen));
         }
         let (Some(number), Some(out)) = (number, out) else {
-            return Err(AgentError::new(
-                Code::USAGE,
-                "`recto image` needs `--number` and `--out`, a new file.",
-                exit::USAGE,
-            ));
+            return Err(AgentError::new(Code::USAGE, IMAGE_NEEDS_NUMBER_AND_FILE, exit::USAGE));
         };
         crate::quiet_files::check_new_file(access, out)?;
-        let (_, _, source) = locate(access, tab, *page)?;
+        let Where { page, found, source, .. } = page.locate(access, tab, locating::CharsChecked::First)?;
         let mut data = extract::image_to_file(&source.path, source.page + 1, *number, out, *anyway)?;
-        describe_source(&mut data, *page, &source);
+        describe_source(&mut data, page, &source);
+        if let Some(found) = found {
+            locating::attach_new_file(access, &found, &mut data, out)?;
+        }
         Ok(data)
     }
     fn human(data: &Value) -> String {
@@ -710,14 +799,7 @@ impl Cmd for Snapshot {
             if let Some(out) = out {
                 crate::quiet_files::check_new_file(access, out)?;
             }
-            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
-            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
-            let pinned = found.as_ref().map(locating::Located::tab_ref);
-            let tab = pinned.as_ref().unwrap_or(tab);
-            let (id, _, source) = locate(access, tab, page)?;
-            if let Some(found) = &found {
-                locating::agree(found, &source)?;
-            }
+            let Where { page, found, id, source, .. } = at.locate(access, tab, locating::CharsChecked::First)?;
             let mut data = extract::snapshot_command(&extract::SnapshotAsked {
                 path: &source.path,
                 page: source.page + 1,
@@ -962,9 +1044,10 @@ pub(crate) const ROWS_IMAGES: &[Spec] = &[Spec {
     name: "images",
     tag: "images",
     group: GROUP_READ,
-    summary: "Where a page's images are, numbered in the order the page draws them, with each one's own size and whether it's a JPEG. `recto image` takes one out by its number.",
+    summary: "Where a page's images are, numbered in the order the page draws them, with each one's own size and whether it's a JPEG. `recto image` takes one out by its number. With `--ref` it lists the images of the page a reference points at now, and `ref` in the answer says how it was found; a reference's spot or characters don't narrow it, and `--at` doesn't go with it.",
     args: &[
-        PAGE_OR_BARE,
+        PAGE_OR_REF,
+        REF,
         Arg {
             key: "at",
             flag: Some("--at"),
@@ -975,8 +1058,13 @@ pub(crate) const ROWS_IMAGES: &[Spec] = &[Spec {
         TAB,
     ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left as its file shows it (its own turn, before an unsaved one), held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
-    examples: &["recto images 3", "recto images --page 3 --json", "recto images 3 --at 120,88"],
+    data: "`{ page, source_page, from_added_file, ref, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left as its file shows it (its own turn, before an unsaved one), held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page, or on a hidden layer, isn't drawn, so it has no number and isn't counted or listed; one drawn whose box the page can't show is counted and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
+    examples: &[
+        "recto images 3",
+        "recto images --page 3 --json",
+        "recto images 3 --at 120,88",
+        IMAGES_REF_EXAMPLE,
+    ],
     client_wait_s: 600,
     ..BASE
 }];
@@ -986,9 +1074,10 @@ pub(crate) const ROWS_IMAGE: &[Spec] = &[Spec {
     tag: "image",
     group: GROUP_READ,
     access: Access::At(Level::Full),
-    summary: "One of a page's images to a new file, as itself, whole or not at all. `.jpg` takes a JPEG's own bytes, unchanged, and refuses an image that isn't one, as that would be re-encoded. `.png` takes any image, losslessly, at its own resolution, a mask as transparency. It never replaces a file.",
+    summary: "One of a page's images to a new file, as itself, whole or not at all. `.jpg` takes a JPEG's own bytes, unchanged, and refuses an image that isn't one, as that would be re-encoded. `.png` takes any image, losslessly, at its own resolution, a mask as transparency. It never replaces a file. With `--ref` it takes the image of the page a reference points at now, numbered as `recto images --ref` lists them: the same drawn objects in the same order, unless the crop, the layers, or images two forms deep changed, so the answer's `rect` and pixel size are the listing's for that number, to check against, and `ref` says how the page was found; the reference never goes to the clipboard.",
     args: &[
-        PAGE_OR_BARE,
+        PAGE_OR_REF,
+        REF,
         Arg {
             key: "number",
             flag: Some("--number"),
@@ -1013,10 +1102,11 @@ pub(crate) const ROWS_IMAGE: &[Spec] = &[Spec {
         TAB,
     ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, number, out, coded, lossless, says, width, height, bytes, took_ms, anyway, worker_peak_bytes, untrusted: { added_file } }`. `coded` is `original_jpeg` (its own bytes), `jpeg_header_fixed` (its own picture, with what's around it corrected so it shows as on the page), `png`, `png_with_mask`, or `png_drawn`: an image that can be drawn but not handed over, drawn alone at 2x, with `lossless: false`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
+    data: "`{ page, source_page, from_added_file, ref, number, rect, image_width, image_height, out, coded, lossless, says, width, height, bytes, took_ms, anyway, worker_peak_bytes, untrusted: { added_file } }`. `rect` (points from the page's top left, as `images` lists it) and `image_width` and `image_height` (the image's own pixels) are the listing's fields for this number, null if the page can't show its box; `width` and `height` are the file's. `coded` is `original_jpeg` (its own bytes), `jpeg_header_fixed` (its own picture, with what's around it corrected so it shows as on the page), `png`, `png_with_mask`, or `png_drawn`: an image that can be drawn but not handed over, drawn alone at 2x, with `lossless: false`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
     examples: &[
         "recto image 3 --number 1 --out /tmp/photo.jpg",
         "recto image --page 3 --number 2 --out /tmp/chart.png --json",
+        IMAGE_REF_EXAMPLE,
     ],
     client_wait_s: 600,
     ..BASE
