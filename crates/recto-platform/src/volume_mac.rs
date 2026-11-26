@@ -76,12 +76,14 @@ pub(crate) fn volume_of(path: &Path) -> Option<Volume> {
 /// `ATTR_VOL_FSTYPENAME`, which `libc` doesn't name yet (`sys/attr.h`).
 const ATTR_VOL_FSTYPENAME: libc::attrgroup_t = 0x0010_0000;
 
-/// What `statfs` says of the mount, for the probe only: its device and id numbers and where it is mounted.
+/// What `statfs` says of the mount, for the probe only: its device and id numbers, where it is mounted and its flags.
 #[cfg(test)]
 pub(crate) struct Mount {
     pub(crate) mount_point: Vec<u8>,
     pub(crate) fsid: [i32; 2],
     pub(crate) fs_type: Vec<u8>,
+    /// `f_flags`: the mount's flags (`MNT_IGNORE_OWNERSHIP` is set when it was mounted with ownership off).
+    pub(crate) flags: u32,
 }
 
 #[cfg(test)]
@@ -100,6 +102,7 @@ pub(crate) fn mount_of(path: &Path) -> Option<Mount> {
         mount_point: name(&fs.f_mntonname),
         fsid,
         fs_type: name(&fs.f_fstypename),
+        flags: fs.f_flags,
     })
 }
 

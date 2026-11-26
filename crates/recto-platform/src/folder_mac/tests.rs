@@ -208,7 +208,8 @@ impl Drop for Attached {
 /// ownership, because the answer is what the design needs. `--ignored`; makes one 20 MiB HFS+ image in `$RECTO_PROBE_DIR` (or the temp folder),
 /// attaches it with `-nobrowse -noautoopen` at a mount folder of its own, and detaches it in a drop guard; it touches no other disk.
 ///
-/// **Result, 2026-11-26, macOS 27.0.1 (26A434), 20 MiB HFS+ image, `-owners off`: the folder read as uid 501, ours, and `Folder::open` returned
+/// **Result, 2026-11-26, macOS 27.0.1 (26A434), 20 MiB HFS+ image, `-owners off`: `statfs` `f_flags` was `0x4309218`, `MNT_IGNORE_OWNERSHIP` set (asserted, so the
+/// probe proves ownership was off); the folder read as uid 501, ours, and `Folder::open` returned
 /// `Folder` for a folder in it and for the volume's root.** So a document on such a disk is surveyed; a volume that shows another owner (a network or
 /// a foreign disk) still reads `Other` and refuses, which is meant. Not measured: an external physical disk, a network share.
 #[test]
@@ -261,6 +262,13 @@ fn folder_open_on_a_volume_with_ownership_off() {
     attached.0.push(mount.clone());
     run("mkdir", &[mount.join("docs").as_os_str()]);
     run("touch", &[mount.join("docs").join("report.pdf").as_os_str()]);
+    // The mount itself says ownership is off, so the result below is about such a volume and not one that merely looks like it.
+    let flags = crate::volume::mount_of(&mount).expect("statfs of the mount").flags;
+    assert_ne!(
+        flags & libc::MNT_IGNORE_OWNERSHIP as u32,
+        0,
+        "the image is mounted with ownership off (f_flags {flags:#x})"
+    );
     let meta = std::fs::metadata(mount.join("docs")).unwrap();
     let docs = match Folder::open(&mount.join("docs")) {
         Opened::Folder(_) => "Folder",
@@ -273,7 +281,7 @@ fn folder_open_on_a_volume_with_ownership_off() {
         Opened::Missing => "Missing",
     };
     println!(
-        "owners-off probe: folder uid={} (ours {}) Folder::open(docs)={docs} Folder::open(volume root)={root}",
+        "owners-off probe: f_flags={flags:#x} (MNT_IGNORE_OWNERSHIP set) folder uid={} (ours {}) Folder::open(docs)={docs} Folder::open(volume root)={root}",
         std::os::unix::fs::MetadataExt::uid(&meta),
         crate::local::current_uid()
     );
