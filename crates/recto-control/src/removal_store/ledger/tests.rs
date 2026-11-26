@@ -73,10 +73,10 @@ fn wait_for(root: &Path, what: &str, ready: impl Fn(&Ledger) -> bool) -> Ledger 
     }
 }
 
-/// Waits, up to 10 s, for the `recto-ledger` thread of `root` to end: adoption is done by it, after the append that began the ledger has returned.
-fn wait_idle(root: &Path) {
+/// Waits, up to 10 s, for the `recto-ledger` thread of `root` in `set` to end: adoption is done by it, after the append that began the ledger has returned.
+fn wait_idle_in(set: &Roots, root: &Path) {
     let until = Instant::now() + Duration::from_secs(10);
-    while running(root) {
+    while set.running(root) {
         assert!(Instant::now() < until, "the ledger's thread didn't end");
         std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
@@ -467,7 +467,9 @@ fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
     let (reached, at_seam) = mpsc::channel::<()>();
     let (release, released) = mpsc::channel::<()>();
     let (reached, released) = (Mutex::new(reached), Mutex::new(released));
+    let set = Arc::new(Roots::new());
     let config = Config {
+        roots: Some(set.clone()),
         before_adoption: Some(Arc::new(move || {
             let _ = reached.lock().unwrap().send(());
             let _ = released.lock().unwrap().recv_timeout(Duration::from_secs(20));
@@ -492,7 +494,7 @@ fn a_save_that_begins_the_ledger_never_waits_for_adoption() {
     let held = read(&root);
     assert_eq!((held.links.len(), held.gap), (1, None), "the save's own entry only: {:?}", held.links);
     release.send(()).unwrap();
-    wait_idle(&root);
+    wait_idle_in(&set, &root);
     assert_eq!(read(&root).links.len(), 2, "then the journal's file");
 }
 
@@ -505,15 +507,17 @@ fn adoption_out_of_time_says_so() {
     let file = dir.join("a.pdf");
     std::fs::write(&file, pdf("a")).unwrap();
     journal(&root, "session", 1, &file, Some(stamp(&file)), None);
+    let set = Arc::new(Roots::new());
     append(
         &root,
         &Config {
             adoption_time: Duration::ZERO,
+            roots: Some(set.clone()),
             ..Config::default()
         },
         Vec::new(),
     );
-    wait_idle(&root);
+    wait_idle_in(&set, &root);
     let ledger = read(&root);
     assert_eq!((ledger.links.len(), ledger.gap), (0, Some(Gap::AdoptionCut)));
 }
@@ -556,8 +560,16 @@ fn adoption_takes_what_the_journals_prove_and_nothing_else() {
     journal(&root, "session", 4, Path::new("relative/x.pdf"), Some(was), None);
     // A journal that is a link to a file elsewhere is not read.
     std::os::unix::fs::symlink(&still, root.join("session/journals/journal-0000000000000005.log")).unwrap();
-    append(&root, &patient(), Vec::new());
-    wait_idle(&root);
+    let set = Arc::new(Roots::new());
+    append(
+        &root,
+        &Config {
+            roots: Some(set.clone()),
+            ..patient()
+        },
+        Vec::new(),
+    );
+    wait_idle_in(&set, &root);
     note_save(
         &root.join("backups.noindex"),
         &SaveNote::Starting {
@@ -597,16 +609,18 @@ fn adoption_stops_at_its_cap_and_says_so() {
             std::fs::write(&file, pdf(&format!("{n}"))).unwrap();
             journal(&root, "session", n + 1, &file, Some(stamp(&file)), None);
         }
+        let set = Arc::new(Roots::new());
         append(
             &root,
             &Config {
+                roots: Some(set.clone()),
                 adoption_headers: 3,
                 // The count is what is tested: under a starved machine the default time cap ended adoption before the third header (--like-ci, 1 of 20).
                 ..patient()
             },
             Vec::new(),
         );
-        wait_idle(&root);
+        wait_idle_in(&set, &root);
         let ledger = read(&root);
         assert_eq!(ledger.gap, cut.then_some(Gap::AdoptionCut), "{journals} journals");
         assert_eq!(ledger.links.len(), 3, "the three it read are in");
@@ -633,7 +647,10 @@ fn a_record_write_never_waits_for_the_ledger() {
     let (reached, at_seam) = mpsc::channel::<()>();
     let (release, released) = mpsc::channel::<()>();
     let (reached, released) = (Mutex::new(reached), Mutex::new(released));
+    // Its own set of roots: neighbours' roots in the process's set (eight at most, an idle one let go for a ninth) would otherwise forget what this noted.
+    let set = Arc::new(Roots::new());
     let config = Config {
+        roots: Some(set.clone()),
         in_thread: Some(Arc::new(move || {
             let _ = reached.lock().unwrap().send(());
             let _ = released.lock().unwrap().recv_timeout(Duration::from_secs(20));
@@ -659,16 +676,30 @@ fn a_record_write_never_waits_for_the_ledger() {
         .recv_timeout(Duration::from_secs(10))
         .expect("a call with the thread running returned too");
     caller.join().unwrap();
-    assert!(running(&root));
+    assert!(set.running(&root));
     assert!(std::fs::metadata(ledger_path(&root)).is_err(), "nothing was written while it was held");
     release.send(()).unwrap();
     wait_for(&root, "the first tab", |l| l.links.len() == 1);
-    wait_idle(&root);
+    wait_idle_in(&set, &root);
     // Nothing new: no thread, so nothing running at once after the call.
-    note_tabs_with(&root, &[tab(&dir.join("a.pdf"))], &Config::default());
-    assert!(!running(&root), "a tab already noted starts no thread");
+    note_tabs_with(
+        &root,
+        &[tab(&dir.join("a.pdf"))],
+        &Config {
+            roots: Some(set.clone()),
+            ..Config::default()
+        },
+    );
+    assert!(!set.running(&root), "a tab already noted starts no thread");
     // The tab the held thread skipped is noted by the next call.
-    note_tabs_with(&root, &[tab(&dir.join("a.pdf")), tab(&dir.join("b.pdf"))], &Config::default());
+    note_tabs_with(
+        &root,
+        &[tab(&dir.join("a.pdf")), tab(&dir.join("b.pdf"))],
+        &Config {
+            roots: Some(set.clone()),
+            ..Config::default()
+        },
+    );
     wait_for(&root, "the second tab", |l| l.links.len() == 2);
 }
 
@@ -679,6 +710,7 @@ fn the_seen_set_is_capped() {
     let root = dir.join("state");
     std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
     let base = tab(&dir.join("a.pdf"));
+    let set = Roots::new();
     for round in 0..70u64 {
         let tabs: Vec<_> = (0..64u64)
             .map(|n| {
@@ -687,11 +719,11 @@ fn the_seen_set_is_capped() {
                 t
             })
             .collect();
-        assert_eq!(take_new(&root, &tabs).len(), 64, "sixty-four new pairs, all at once");
-        finish(&root);
-        assert!(held(&root).1 <= 4_096, "round {round}: {}", held(&root).1);
+        assert_eq!(set.take_new(&root, &tabs).len(), 64, "sixty-four new pairs, all at once");
+        set.finish(&root);
+        assert!(set.held(&root).1 <= 4_096, "round {round}: {}", set.held(&root).1);
     }
-    assert!(held(&root).1 < 4_480, "cleared when full");
+    assert!(set.held(&root).1 < 4_480, "cleared when full");
 }
 
 /// A tab of `path` whose file is the `n`th version of it (no file is read).
@@ -705,25 +737,43 @@ fn tab_n(n: u64) -> recto_session::record::TabEntry {
 
 /// Failure: the set holds a root for a call that has nothing to note (every whole record write in a process adds one, so the eight fill with roots that never
 /// had a tab), or it lets go of a root whose thread is running, which then allows a second thread for it. Eight roots with threads out stay, a ninth gets no
-/// notes, and when one ends the ninth takes its place. (The set is the process's, so this holds under nextest, a process for each test.)
+/// notes, and when one ends the ninth takes its place. The set is the test's own, so a neighbour's root on the process's static (a save's thread leaves one
+/// running) changes nothing here, and this test leaves no root running on the static: one is put there to show that, and ended at the end.
 #[test]
 fn roots_are_held_only_with_something_to_note_and_never_while_running() {
     let dir = temp();
+    let neighbour = dir.join("neighbour");
+    assert_eq!(take_new(&neighbour, &[tab_n(99)]).len(), 1, "a neighbour's root on the process's set");
+    // Ended however the test ends, so a failed assert leaves no running root on the static for the tests after it.
+    let _end = EndRoot(neighbour.clone());
+    let set = Roots::new();
     let roots: Vec<PathBuf> = (0..9).map(|n| dir.join(format!("state-{n}"))).collect();
     let nothing = dir.join("nothing");
-    assert!(take_new(&nothing, &[]).is_empty());
-    assert!(take_new(&nothing, &[recto_session::record::TabEntry { file: None, ..tab_n(1) }]).is_empty());
-    assert_eq!(held(&nothing).0, 0, "a call with no tabs holds no root");
+    assert!(set.take_new(&nothing, &[]).is_empty());
+    assert!(set.take_new(&nothing, &[recto_session::record::TabEntry { file: None, ..tab_n(1) }]).is_empty());
+    assert_eq!(set.held(&nothing).0, 0, "a call with no tabs holds no root");
     for (n, root) in roots.iter().take(8).enumerate() {
-        assert_eq!(take_new(root, &[tab_n(n as u64)]).len(), 1);
+        assert_eq!(set.take_new(root, &[tab_n(n as u64)]).len(), 1);
     }
-    assert!(take_new(&roots[8], &[tab_n(8)]).is_empty(), "every held root has a thread: the ninth gets none");
-    assert!(roots.iter().take(8).all(|root| running(root)), "no running root was let go");
-    assert_eq!(held(&roots[8]), (8, 0));
-    finish(&roots[3]);
-    assert_eq!(take_new(&roots[8], &[tab_n(8)]).len(), 1, "the one that ended makes room");
-    assert!(running(&roots[0]) && !running(&roots[3]));
-    assert_eq!(held(&roots[8]).0, 8);
+    assert!(
+        set.take_new(&roots[8], &[tab_n(8)]).is_empty(),
+        "every held root has a thread: the ninth gets none"
+    );
+    assert!(roots.iter().take(8).all(|root| set.running(root)), "no running root was let go");
+    assert_eq!(set.held(&roots[8]), (8, 0));
+    set.finish(&roots[3]);
+    assert_eq!(set.take_new(&roots[8], &[tab_n(8)]).len(), 1, "the one that ended makes room");
+    assert!(set.running(&roots[0]) && !set.running(&roots[3]));
+    assert_eq!(set.held(&roots[8]).0, 8);
+}
+
+/// Ends a root's thread on the process's set when dropped.
+struct EndRoot(PathBuf);
+
+impl Drop for EndRoot {
+    fn drop(&mut self) {
+        finish(&self.0);
+    }
 }
 
 fn limits(max: u32) -> Limits {

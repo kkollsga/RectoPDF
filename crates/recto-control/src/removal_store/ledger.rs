@@ -28,10 +28,10 @@ mod tabs;
 pub use support::ProvenanceOnly;
 
 pub use tabs::note_tabs;
+#[cfg(test)]
+pub(crate) use tabs::{Roots, note_tabs_with};
 #[cfg(any(test, feature = "test-seams"))]
 pub use tabs::{finish, running, take_new};
-#[cfg(test)]
-pub(crate) use tabs::{held, note_tabs_with};
 
 const DIR: &str = "removal";
 const FILE: &str = "ledger.v1";
@@ -56,6 +56,9 @@ pub struct Config {
     pub(crate) at_lock: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     pub(crate) in_thread: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Test seam: the set of roots a test's ledger threads use, so neighbours' roots in the process's set can't evict or crowd it.
+    #[cfg(test)]
+    pub(crate) roots: Option<Arc<tabs::Roots>>,
     /// Test seam: called by the `recto-ledger` thread when it has been handed the adoption, before it reads a journal.
     #[cfg(test)]
     pub(crate) before_adoption: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -74,6 +77,8 @@ impl Default for Config {
             at_lock: None,
             #[cfg(test)]
             in_thread: None,
+            #[cfg(test)]
+            roots: None,
             #[cfg(test)]
             before_adoption: None,
         }

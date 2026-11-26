@@ -30,23 +30,120 @@ struct Seen {
     adopt: bool,
 }
 
-static ROOTS: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+/// The set of state roots held: one process-wide [`ROOTS`] in the app, and a value of their own in a test, so one test's roots never reach another's.
+pub(crate) struct Roots(Mutex<Vec<Seen>>);
 
-fn roots() -> std::sync::MutexGuard<'static, Vec<Seen>> {
-    ROOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+static ROOTS: Roots = Roots::new();
 
-/// The roots held now, and the hashes held for `root`: what this module keeps, for a test to count.
-#[cfg(test)]
-pub(crate) fn held(root: &Path) -> (usize, usize) {
-    let roots = roots();
-    (roots.len(), roots.iter().find(|r| r.root == root).map_or(0, |r| r.hashes.len()))
+impl Roots {
+    pub(crate) const fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Seen>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The roots held now, and the hashes held for `root`: what this set keeps, for a test to count.
+    #[cfg(test)]
+    pub(crate) fn held(&self, root: &Path) -> (usize, usize) {
+        let roots = self.lock();
+        (roots.len(), roots.iter().find(|r| r.root == root).map_or(0, |r| r.hashes.len()))
+    }
+
+    /// Whether a `recto-ledger` thread of `root` is running.
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(crate) fn running(&self, root: &Path) -> bool {
+        self.lock().iter().any(|r| r.root == root && r.running)
+    }
+
+    /// The index of `root`'s entry, made if there is none: when eight are held, the oldest that has no thread out goes. `None` if every one has a thread.
+    fn slot(held: &mut Vec<Seen>, root: &Path) -> Option<usize> {
+        if let Some(at) = held.iter().position(|seen| seen.root == root) {
+            return Some(at);
+        }
+        if held.len() >= MAX_ROOTS {
+            held.remove(held.iter().position(|seen| !seen.running)?);
+        }
+        held.push(Seen {
+            root: root.to_path_buf(),
+            ..Seen::default()
+        });
+        Some(held.len() - 1)
+    }
+
+    /// Marks `root` as wanting its adoption; `Some(true)` if no thread of it was running, so the caller starts one. `None` if the root can't be registered.
+    fn request_adoption(&self, root: &Path) -> Option<bool> {
+        let mut held = self.lock();
+        let at = Self::slot(&mut held, root)?;
+        let seen = &mut held[at];
+        seen.adopt = true;
+        Some(!std::mem::replace(&mut seen.running, true))
+    }
+
+    /// Whether an adoption is wanted: takes the wish if so. If not, marks the thread over in the same step, so a request made just after can't be lost.
+    fn next_job(&self, root: &Path) -> bool {
+        let mut held = self.lock();
+        let Some(seen) = held.iter_mut().find(|seen| seen.root == root) else {
+            return false;
+        };
+        if seen.adopt {
+            seen.adopt = false;
+            return true;
+        }
+        seen.running = false;
+        false
+    }
+
+    /// **The set's whole work, apart from the thread:** the pairs of `tabs` that `root`'s set hasn't seen (at most 64), put in the set, and the root marked as
+    /// having a thread out; nothing if one is already, or nothing is new. A root is held only when it has something new, and one that has a thread out is never
+    /// the one let go. The caller starts the thread and calls `finish` when it ends.
+    pub(crate) fn take_new(&self, root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)> {
+        let mut held = self.lock();
+        let known = held.iter().position(|seen| seen.root == root);
+        if known.is_some_and(|at| held[at].running) {
+            return Vec::new();
+        }
+        let empty = HashSet::new();
+        let new = fresh(known.map_or(&empty, |at| &held[at].hashes), tabs);
+        if new.is_empty() {
+            return new;
+        }
+        let Some(at) = Self::slot(&mut held, root) else { return Vec::new() };
+        let seen = &mut held[at];
+        if seen.hashes.len() + new.len() > MAX_SEEN {
+            seen.hashes.clear();
+        }
+        seen.hashes.extend(new.iter().map(|(hash, ..)| *hash));
+        seen.running = true;
+        new
+    }
+
+    /// Says the thread of `take_new` is over.
+    pub(crate) fn finish(&self, root: &Path) {
+        if let Some(seen) = self.lock().iter_mut().find(|seen| seen.root == root) {
+            seen.running = false;
+            seen.adopt = false;
+        }
+    }
 }
 
 /// Whether a `recto-ledger` thread of `root` is running: for a test, or a measurement, to wait for it to end.
 #[cfg(any(test, feature = "test-seams"))]
 pub fn running(root: &Path) -> bool {
-    roots().iter().any(|r| r.root == root && r.running)
+    ROOTS.running(root)
+}
+
+/// The process's set's work, public for a test that takes a set without starting a thread (see [`Roots::take_new`]).
+#[cfg(any(test, feature = "test-seams"))]
+pub fn take_new(root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)> {
+    ROOTS.take_new(root, tabs)
+}
+
+/// Says the thread of [`take_new`] is over. Public for a test that takes a set without starting a thread.
+#[cfg(any(test, feature = "test-seams"))]
+pub fn finish(root: &Path) {
+    ROOTS.finish(root);
 }
 
 fn hash_of(path: &Path, file: recto_session::record::FileRecord) -> u64 {
@@ -61,8 +158,19 @@ pub fn note_tabs(root: &Path, tabs: &[TabEntry]) {
     note_tabs_with(root, tabs, &Config::default());
 }
 
+impl Config {
+    /// The set this ledger's roots are in: the process's, or a test's own.
+    fn roots(&self) -> &Roots {
+        #[cfg(test)]
+        if let Some(own) = &self.roots {
+            return own;
+        }
+        &ROOTS
+    }
+}
+
 pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
-    let new = take_new(root, tabs);
+    let new = config.roots().take_new(root, tabs);
     if !new.is_empty() {
         launch(root, config, new);
     }
@@ -72,31 +180,10 @@ pub(crate) fn note_tabs_with(root: &Path, tabs: &[TabEntry], config: &Config) {
 /// that has just begun the ledger, with nothing held. If the root can't be registered (eight others have threads out) it isn't adopted: a backup with no record
 /// reads `Unknown`, a false refusal and never a wrong answer.
 pub(super) fn request_adoption(root: &Path, config: &Config) {
-    let start = {
-        let mut held = roots();
-        let Some(at) = slot(&mut held, root) else { return };
-        let seen = &mut held[at];
-        seen.adopt = true;
-        !std::mem::replace(&mut seen.running, true)
-    };
+    let Some(start) = config.roots().request_adoption(root) else { return };
     if start {
         launch(root, config, Vec::new());
     }
-}
-
-/// The index of `root`'s entry, made if there is none: when eight are held, the oldest that has no thread out goes. `None` if every one has a thread.
-fn slot(held: &mut Vec<Seen>, root: &Path) -> Option<usize> {
-    if let Some(at) = held.iter().position(|seen| seen.root == root) {
-        return Some(at);
-    }
-    if held.len() >= MAX_ROOTS {
-        held.remove(held.iter().position(|seen| !seen.running)?);
-    }
-    held.push(Seen {
-        root: root.to_path_buf(),
-        ..Seen::default()
-    });
-    Some(held.len() - 1)
 }
 
 /// Starts the `recto-ledger` thread for a root already marked running: it notes `new`, then adopts if that was asked for, then says it is over.
@@ -104,70 +191,22 @@ fn launch(root: &Path, config: &Config, new: Vec<(u64, PathBuf, FileStamp)>) {
     let spawned = std::thread::Builder::new().name("recto-ledger".into()).spawn({
         let (root, config) = (root.to_path_buf(), config.clone());
         move || {
-            let mut done = Done(Some(root.clone()));
+            let mut done = Done(Some((root.clone(), config.clone())));
             work(&root, &config, new);
             // The thread ended by `next_job` saying so, under the lock that made it not running: nothing is left for the guard to say.
             done.0 = None;
         }
     });
     if spawned.is_err() {
-        finish(root);
+        config.roots().finish(root);
     }
 }
 
 fn work(root: &Path, config: &Config, new: Vec<(u64, PathBuf, FileStamp)>) {
     note_all(root, config, new);
-    while next_job(root) {
+    while config.roots().next_job(root) {
         super::adopt_now(root, config);
     }
-}
-
-/// Whether an adoption is wanted: takes the wish if so. If not, marks the thread over in the same step, so a request made just after can't be lost.
-fn next_job(root: &Path) -> bool {
-    let mut held = roots();
-    let Some(seen) = held.iter_mut().find(|seen| seen.root == root) else {
-        return false;
-    };
-    if seen.adopt {
-        seen.adopt = false;
-        return true;
-    }
-    seen.running = false;
-    false
-}
-
-/// **The set's whole work, apart from the thread:** the pairs of `tabs` that `root`'s set hasn't seen (at most 64), put in the set, and the root marked as
-/// having a thread out; nothing if one is already, or nothing is new. A root is held only when it has something new, and one that has a thread out is never
-/// the one let go. The caller starts the thread and calls [`finish`] when it ends. Public for a test, to count the set's bounds without a thread to wait for.
-#[cfg(any(test, feature = "test-seams"))]
-pub fn take_new(root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)> {
-    take_new_inner(root, tabs)
-}
-
-#[cfg(not(any(test, feature = "test-seams")))]
-fn take_new(root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)> {
-    take_new_inner(root, tabs)
-}
-
-fn take_new_inner(root: &Path, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStamp)> {
-    let mut held = roots();
-    let known = held.iter().position(|seen| seen.root == root);
-    if known.is_some_and(|at| held[at].running) {
-        return Vec::new();
-    }
-    let empty = HashSet::new();
-    let new = fresh(known.map_or(&empty, |at| &held[at].hashes), tabs);
-    if new.is_empty() {
-        return new;
-    }
-    let Some(at) = slot(&mut held, root) else { return Vec::new() };
-    let seen = &mut held[at];
-    if seen.hashes.len() + new.len() > MAX_SEEN {
-        seen.hashes.clear();
-    }
-    seen.hashes.extend(new.iter().map(|(hash, ..)| *hash));
-    seen.running = true;
-    new
 }
 
 /// The pairs of `tabs` not in `known`, at most [`MAX_PER_CALL`].
@@ -191,31 +230,13 @@ fn fresh(known: &HashSet<u64>, tabs: &[TabEntry]) -> Vec<(u64, PathBuf, FileStam
 }
 
 /// Says the thread is over however it ended, a panic included, unless it already said so.
-struct Done(Option<PathBuf>);
+struct Done(Option<(PathBuf, Config)>);
 
 impl Drop for Done {
     fn drop(&mut self) {
-        if let Some(root) = &self.0 {
-            finish_inner(root);
+        if let Some((root, config)) = &self.0 {
+            config.roots().finish(root);
         }
-    }
-}
-
-/// Says the thread of [`take_new`] is over. Public for a test that takes a set without starting a thread.
-#[cfg(any(test, feature = "test-seams"))]
-pub fn finish(root: &Path) {
-    finish_inner(root);
-}
-
-#[cfg(not(any(test, feature = "test-seams")))]
-fn finish(root: &Path) {
-    finish_inner(root);
-}
-
-fn finish_inner(root: &Path) {
-    if let Some(seen) = roots().iter_mut().find(|seen| seen.root == root) {
-        seen.running = false;
-        seen.adopt = false;
     }
 }
 
