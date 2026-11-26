@@ -14,6 +14,7 @@
 
 mod names;
 
+use super::backups::{self, Finder};
 use names::Kind;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
 use recto_platform::{FileStamp, local};
@@ -209,7 +210,8 @@ impl Run<'_> {
                 if (matches!(kind, Kind::Journal | Kind::Variant)) != (pass == Pass::Journals) {
                     continue;
                 }
-                if entry.name.as_encoded_bytes() == b".DS_Store" && entry.is_file && entry.links == 1 {
+                let finder = backups::finder_file(entry.name.as_encoded_bytes(), entry.is_file, entry.links);
+                if finder == Some(Finder::Skip) {
                     continue;
                 }
                 let placed = if entry.is_file {
@@ -226,6 +228,7 @@ impl Run<'_> {
                     journals.insert(name.to_string(), placed.sides);
                 }
                 let owner = match placed.sides {
+                    _ if let Some(Finder::Owner(owner)) = finder => owner,
                     None => Owner::Unknown,
                     Some(_) if entry.links != 1 => Owner::Shared,
                     Some(sides) => sides.owner(self.mode),

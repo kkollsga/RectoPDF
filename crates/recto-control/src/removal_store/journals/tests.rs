@@ -591,3 +591,30 @@ fn a_hard_linked_kept_copy_is_shared() {
     assert_eq!(refusal(&dir, TargetMode::Save), Refusal::Shared(Store::KeptPages));
     assert_eq!(std::fs::read(&other).unwrap(), b"%PDF-1.4");
 }
+
+/// Failure: Finder's `.DS_Store` is skipped whatever it is (a link, a folder or a hard link to another file is taken for Finder's own and the plan
+/// says "none found"), or a plain one is placed as an unknown file and refuses every removal. The same rule as the backups folder's.
+#[test]
+fn only_a_plain_ds_store_file_is_skipped() {
+    let dir = root();
+    put(&folder(&dir), ".DS_Store", b"x");
+    let s = survey(&dir, TargetMode::Save).unwrap();
+    assert!(s.inventory().artifacts().is_empty(), "a plain one is not an artifact");
+    assert!(plan_of(&s, TargetMode::Save).is_ok());
+
+    let outside = TempDir::new("recto-journals-out-");
+    let other = put(&outside, "other", b"x");
+    let hard = root();
+    std::fs::hard_link(&other, folder(&hard).join(".DS_Store")).unwrap();
+    assert_eq!(
+        refusal(&hard, TargetMode::Save),
+        Refusal::Shared(Store::JournalVariant),
+        "a hard link is shared"
+    );
+    let linked = root();
+    std::os::unix::fs::symlink(&other, folder(&linked).join(".DS_Store")).unwrap();
+    assert_eq!(refusal(&linked, TargetMode::Save), Refusal::Incomplete(Store::JournalVariant), "a link");
+    let sub = root();
+    std::fs::create_dir(folder(&sub).join(".DS_Store")).unwrap();
+    assert_eq!(refusal(&sub, TargetMode::Save), Refusal::Incomplete(Store::JournalVariant), "a folder");
+}

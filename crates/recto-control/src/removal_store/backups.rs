@@ -38,13 +38,11 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
         let name = entry.file_name();
         let name = name.as_encoded_bytes();
         let Ok(meta) = entry.metadata() else { return Ok(()) };
-        if name == b".DS_Store" && meta.is_file() && links(&meta) == 1 {
-            continue;
-        }
+        let finder = finder_file(name, meta.is_file(), links(&meta));
         let owner = match names.get(name) {
+            _ if finder == Some(Finder::Skip) => continue,
+            _ if let Some(Finder::Owner(owner)) = finder => owner,
             _ if !meta.is_file() => Owner::Unknown,
-            // Only a hard-linked one gets here: a plain `.DS_Store` was skipped above.
-            _ if name == b".DS_Store" => Owner::Shared,
             _ if modified_ns(&meta).is_none_or(|t| t < began) => Owner::Unknown,
             None => Owner::Unknown,
             Some(_) if links(&meta) != 1 => Owner::Shared,
@@ -61,6 +59,26 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
         survey.mark_complete(Store::Backup);
     }
     Ok(())
+}
+
+/// What Finder's `.DS_Store` is in a folder a survey lists, for every folder it surveys: a plain file with one name is Finder's own and left out; a hard
+/// link is a second way to reach another file, so `Shared`; a link, a folder or a pipe so named is `Unknown`. `None` for any other name.
+pub(super) fn finder_file(name: &[u8], is_file: bool, links: u64) -> Option<Finder> {
+    if name != b".DS_Store" {
+        return None;
+    }
+    Some(match (is_file, links) {
+        (true, 1) => Finder::Skip,
+        (true, _) => Finder::Owner(Owner::Shared),
+        (false, _) => Finder::Owner(Owner::Unknown),
+    })
+}
+
+/// What a survey does with a `.DS_Store`.
+#[derive(PartialEq)]
+pub(super) enum Finder {
+    Skip,
+    Owner(Owner),
 }
 
 /// When the file was last changed, in nanoseconds since 1970; `None` if the system doesn't say.
