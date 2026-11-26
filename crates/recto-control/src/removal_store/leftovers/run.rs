@@ -11,7 +11,7 @@
 //! No barrier is needed. Every act is a move into the Trash or an unlink of the app's own copy, and the next check sees exactly what is left, so a crash at any
 //! point is cleared by checking again and confirming what remains. Nothing here touches a document, a journal, a backup, the ledger or the live record.
 
-use super::act::{self, Done, Env, Hooks, Partly, Unwatched, Why};
+use super::act::{self, Done, Env, Hooks, Unwatched, Why};
 use super::leases::{Busy, Leases, Outside};
 use super::pin::{Local, PinSet, Pins};
 use super::trash::{FolderTrash, MacTrash, Trash};
