@@ -193,6 +193,9 @@ impl Drop for Owned {
     }
 }
 
+/// How long a probe step (compile, check, the peer's cleanup) may take before it is called hung. The product has no bound here (the check is an in-process xattr read), so this only ends a hang, and a slow busy Mac is not a failure. `forced_hang`'s 20 ms is a different thing: it is the bound that proves cleanup.
+const HANG_GUARD: Duration = Duration::from_secs(60);
+
 #[derive(Debug)]
 struct Ran {
     status: ExitStatus,
@@ -290,12 +293,12 @@ impl Probe {
         let peer = self.start("peer", other, Some(leader.child.id()));
         let began = Instant::now();
         while !ready.iter().all(|path| path.metadata().is_ok_and(|meta| meta.len() > 0)) {
-            assert!(began.elapsed() < Duration::from_secs(10), "native probes did not reach their forced waits");
+            assert!(began.elapsed() < HANG_GUARD, "native probes did not reach their forced waits within the {HANG_GUARD:?} guard");
             std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
         }
         let stopped = self.finish("forced-hang", leader, Duration::from_millis(20));
         // A broken single-PID signal leaves this member alive. The bound cleans it up, then fails, instead of stranding it.
-        let peer_stopped = self.finish("peer", peer, Duration::from_secs(5));
+        let peer_stopped = self.finish("peer", peer, HANG_GUARD);
         assert!(stopped.timed_out && stopped.status.signal() == Some(9), "{stopped:?}");
         assert!(
             !peer_stopped.timed_out && peer_stopped.status.signal() == Some(9),
@@ -320,7 +323,7 @@ pub fn assert_excluded(folder: &Path) {
     fs::write(&source, PROBE).unwrap();
     let mut compile = Command::new("/usr/bin/clang");
     compile.args(["-O2", "-framework", "CoreFoundation"]).arg(&source).arg("-o").arg(&program);
-    let compiled = probe.run("compile", compile, Duration::from_secs(20));
+    let compiled = probe.run("compile", compile, HANG_GUARD);
     assert!(compiled.status.success() && !compiled.timed_out, "{compiled:?}");
     eprintln!("backup exclusion probe compiler: {:?}", compiled.elapsed);
 
@@ -340,7 +343,7 @@ pub fn assert_excluded(folder: &Path) {
     check
         .arg("--check")
         .args([folder, &parent, &reference, &unmarked, &malformed, &wrong, &oversized]);
-    let checked = probe.run("check", check, Duration::from_secs(5));
+    let checked = probe.run("check", check, HANG_GUARD);
     assert!(checked.status.success() && !checked.timed_out, "native marker validation: {checked:?}");
     assert!(checked.stdout.contains("reference=direct unmarked=absent"), "{checked:?}");
     assert!(checked.stdout.contains("direct=1 reference=1 excluded=1"), "{checked:?}");

@@ -24,6 +24,9 @@ const ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const RECEIPT_CAP: u64 = 4096;
 
+/// A script step (`--layout`, `--sign`, `--check`, `--key`) must end, and the tests assert that it succeeds. The product holds no time bound on these (`codesign`, python3 and PlistBuddy run untimed in the build), so a limit here is only a guard against a hang, below nextest's terminate: a busy Mac that takes 16 s fails nothing, and a step that never ends fails naming itself.
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
 fn helper_script() -> PathBuf {
     Path::new(REPO).join("app/render-helper.sh")
 }
@@ -36,10 +39,10 @@ fn pdfium() -> PathBuf {
 
 /// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn run(command: &mut Command) {
-    let (exceeded, output) = command::output(command.env_remove("RECTO_SIGN_IDENTITY"), Duration::from_secs(10)).unwrap();
+    let (exceeded, output) = command::output(command.env_remove("RECTO_SIGN_IDENTITY"), HANG_GUARD).unwrap();
     assert!(
         !exceeded && output.status.success(),
-        "{command:?}, bound_exceeded {exceeded}: {}{}",
+        "{command:?}, hung past the {HANG_GUARD:?} guard: {exceeded}: {}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -548,8 +551,8 @@ fn a_helper_signed_without_the_sandbox_puts_no_walls_up_and_fails_the_check() {
     run(Command::new("/usr/bin/codesign").args(["-f", "-s", "-"]).arg(fixture.helper()));
     let results = probe(&executable, &with_walls(Vec::new()));
     assert_eq!(results.get("walls"), Some(&false), "{results:?}");
-    let (exceeded, check) = command::output(Command::new(helper_script()).arg("--check").arg(fixture.helper()), Duration::from_secs(10)).unwrap();
-    assert!(!exceeded, "the helper check exceeded its bound");
+    let (exceeded, check) = command::output(Command::new(helper_script()).arg("--check").arg(fixture.helper()), HANG_GUARD).unwrap();
+    assert!(!exceeded, "step `render-helper.sh --check` hung past the {HANG_GUARD:?} guard");
     assert!(!check.status.success(), "the check passed a helper with no sandbox");
     assert!(
         String::from_utf8_lossy(&check.stderr).contains("entitlements"),
@@ -577,10 +580,10 @@ fn key_with_keychain(name: &str, valid: &str, all: &str) -> (bool, String) {
             .args(["--key", name])
             .env("PATH", path)
             .env_remove("RECTO_SIGN_IDENTITY"),
-        Duration::from_secs(10),
+        HANG_GUARD,
     )
     .unwrap();
-    assert!(!exceeded, "the signing identity lookup exceeded its bound");
+    assert!(!exceeded, "step `render-helper.sh --key` hung past the {HANG_GUARD:?} guard");
     (
         output.status.success(),
         format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
