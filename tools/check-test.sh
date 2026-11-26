@@ -1253,6 +1253,21 @@ RECTO_EVIDENCE="$X/given" STUB_JUNIT_FAIL="--test app" CI=true CHECK_RERUN=0 CHE
 check "a root given in RECTO_EVIDENCE (CI's) is never emptied, and gets the evidence" "keep yes" "$(cat "$X/given/mine") $([ -f "$X/given/app-tests/recto-cli--app--flaky_one/rerun.txt" ] && echo yes)"
 check "the reruns' junit helpers find the failed test" "recto-cli::app	flaky_one" "$(printf '<testcase name="a" classname="x"/>\n<testcase name="flaky_one" classname="recto-cli::app" time="1">\n<failure type="t">b</failure>\n</testcase>\n<testcase name="c" classname="x">\n</testcase>\n' > "$X/j.xml"; . tools/check-rerun.sh; junit_failed "$X/j.xml")"
 check "and take a stage's filter off its arguments, keeping the rest" "--locked -p recto-cli -j 4" "$(. tools/check-rerun.sh; args_without_filter --locked -p recto-cli -j 4 -E 'test(x)' --no-tests=pass | tr '\0' ' ' | sed 's/ $//')"
+# Failure (2026-11-26): the next run empties the evidence, so running a failed test again destroys the evidence of the failure it is meant to explain.
+EV=target/recto-evidence
+rm -rf "$EV" "$EV.previous"; mkdir -p "$EV/stage"; echo first > "$EV/stage/one"
+commit_code evidence-kept-1
+full --why "evidence 1" > /dev/null
+check "a run with old evidence keeps it under .previous" "first" "$(cat "$EV.previous/stage/one" 2>/dev/null)"
+check "and starts empty itself" "no" "$([ -e "$EV/stage/one" ] && echo yes || echo no)"
+mkdir -p "$EV/stage"; echo second > "$EV/stage/two"
+commit_code evidence-kept-2
+full --why "evidence 2" > /dev/null
+check "a second run replaces .previous: one generation only" "second no" "$(cat "$EV.previous/stage/two" 2>/dev/null) $([ -e "$EV.previous/stage/one" ] && echo yes || echo no)"
+rm -rf "$EV.previous"; rm -rf "$EV"; mkdir -p "$EV"
+commit_code evidence-kept-3
+full --why "evidence 3" > /dev/null
+check "an empty folder makes no .previous" "no" "$([ -e "$EV.previous" ] && echo yes || echo no)"
 
 }
 

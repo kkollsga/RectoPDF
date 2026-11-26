@@ -581,8 +581,17 @@ run() {
   set -e
   # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
   echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
-  # This run's evidence only: what the last run left in the tree's own folder goes (one given in RECTO_EVIDENCE, such as CI's, is never emptied).
-  [ -n "${RECTO_EVIDENCE:-}" ] || rm -rf "$CHECK_EVIDENCE_ROOT"
+  # This run's evidence only, but the last run's is kept one generation back: the tree's own folder, if it holds anything, is renamed to <folder>.previous
+  # (replacing the older one), so running a failed test again doesn't destroy the evidence of the failure it is meant to explain.
+  # One given in RECTO_EVIDENCE, such as CI's, is never touched.
+  if [ -z "${RECTO_EVIDENCE:-}" ]; then
+    if [ -n "$(ls -A "$CHECK_EVIDENCE_ROOT" 2>/dev/null)" ]; then
+      rm -rf "$CHECK_EVIDENCE_ROOT.previous"
+      mv "$CHECK_EVIDENCE_ROOT" "$CHECK_EVIDENCE_ROOT.previous"
+    else
+      rm -rf "$CHECK_EVIDENCE_ROOT"
+    fi
+  fi
   mkdir -p "$CHECK_EVIDENCE_ROOT"
   tracked_tree > "$check_mark.tree"
   # The light part's own work here is the one check below and nothing else: no worker, no headings, no workspace test, no app.
