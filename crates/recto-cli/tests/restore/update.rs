@@ -418,7 +418,7 @@ impl Bed {
     }
 
     /// Starts whatever's at the app's path as `recto qa start` does, and waits for it to be gone: for a version that ends by itself. Says what `qa start` answered, for a failure to show. A start refused as "already running" isn't a launch: what's answering is the last one still closing its socket, and it's waited for and tried again.
-    fn launch_until_it_ends(&self) -> String {
+    fn launch_until_it_ends(&self, look: Look) -> String {
         let executable = self.app.join("Contents/MacOS/RectoPDF");
         let began = Instant::now();
         loop {
@@ -440,38 +440,85 @@ impl Bed {
                     "the last run never let go: {answered}\n{}",
                     self.log()
                 );
+                // Plain on purpose: a wait that stopped for a go-back would leave what's answering still answering, and the `continue` would send `qa start` straight back to "already running", round and round until the limit.
                 self.wait_until_nothing_answers();
                 continue;
             }
             if let Some(pid) = reply["data"]["pid"].as_u64() {
-                self.wait_gone(pid as u32);
+                self.wait_gone(pid as u32, look, || self.going_back());
             }
             // Or it went back, and what's running at the app's path now is the version before.
             while !local::processes_running(&executable).is_empty() && self.version() != OLD {
                 assert!(began.elapsed() < Duration::from_secs(60), "it didn't end: {}", self.log());
                 std::thread::sleep(Duration::from_millis(20));
             }
-            if self.version() != OLD {
-                self.wait_until_nothing_answers();
+            let going_back = self.going_back();
+            if look == Look::Late {
+                let seen = if self.version() != OLD { "NEW" } else { "OLD" };
+                eprintln!("late look: the decision after the launch saw {seen}, going back: {going_back}");
+            }
+            if !going_back {
+                self.late_pause(look);
+                self.wait_until_nothing_answers_unless(|| self.going_back());
             }
             return answered;
         }
     }
 
-    /// Waits for a run to be gone: its process, and then its socket, which a process that can't be asked about any more can still be closing, and which still takes a connection meanwhile, so the next `qa start` would be told something's already running.
-    fn wait_gone(&self, pid: u32) {
+    /// Waits for a run to be gone: its process, and then its socket, which a process that can't be asked about any more can still be closing, and which still takes a connection meanwhile, so the next `qa start` would be told something's already running. Unless `done`: a launch that's going back stops waiting for quiet once its process is gone, as the version before binds the same socket within a few hundred ms and a slow runner can miss the quiet between (CI run 45857918813).
+    #[track_caller]
+    fn wait_gone(&self, pid: u32, look: Look, done: impl Fn() -> bool) {
         let began = Instant::now();
         while local::process_counters(pid).is_some() {
             assert!(began.elapsed() < Duration::from_secs(60), "process {pid} didn't end: {}", self.log());
             std::thread::sleep(Duration::from_millis(20));
         }
-        self.wait_until_nothing_answers();
+        if look == Look::Late {
+            eprintln!("late look: the process was gone, version {}", if self.version() != OLD { "NEW" } else { "OLD" });
+        }
+        if !done() {
+            self.late_pause(look);
+            self.wait_until_nothing_answers_unless(done);
+        }
     }
 
+    /// Whether the launch that just ended is going back, or has: the installer has its plan or its helper is running, or the version before is in place. The plan is written before the launch exits and stays until after the swap back.
+    fn going_back(&self) -> bool {
+        let files = recto_update::plan::Files::in_state(&self.state.root);
+        files.plan().exists() || recto_update::plan::helper_alive(&files) || self.version() == OLD
+    }
+
+    /// For `Look::Late`: holds the test here, between its last look and the wait for quiet, until the version before is in place and answering: the order a starved runner sees. A plain wait for quiet after this can't end; one that stops for a go-back does.
+    fn late_pause(&self, look: Look) {
+        if look != Look::Late {
+            return;
+        }
+        let seen = Instant::now();
+        while self.version() != OLD || std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_err() {
+            assert!(seen.elapsed() < Duration::from_secs(60), "the version before never came back: {}", self.log());
+            std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+        }
+    }
+
+    #[track_caller]
     fn wait_until_nothing_answers(&self) {
+        self.wait_until_nothing_answers_unless(|| false);
+    }
+
+    /// Waits for nothing to answer on the socket, or for `done`. A failure says what is answering: `status`'s pid and version, and what runs from the app's path.
+    #[track_caller]
+    fn wait_until_nothing_answers_unless(&self, done: impl Fn() -> bool) {
         let began = Instant::now();
-        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
-            assert!(began.elapsed() < Duration::from_secs(60), "the socket stayed: {}", self.log());
+        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() && !done() {
+            if began.elapsed() >= Duration::from_secs(60) {
+                let (status, _) = self.state.json(&["status"]);
+                let running = local::processes_running(&self.app.join("Contents/MacOS/RectoPDF"));
+                panic!(
+                    "the socket stayed: status {status}; running at the app's path: {running:?}; version {}\n{}",
+                    self.version(),
+                    self.log()
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -1056,6 +1103,8 @@ fn a_minimised_window_and_a_hidden_app_stay_so_across_an_update() {
 }
 
 /// Failure: a new version that comes up and then crashes, every time, stays, as nothing after the first frame was watched, and the user can't use the app. **The real app, with a release that ends a moment after its first frame:** it comes up, so the installer's done, and then each run ends early; the launch after three in a row goes back by itself, and the state comes back as it was, the record as the new version left it.
+///
+/// Failure of the test itself: it waited for the socket to go quiet after the launch that goes back, which is quiet only between the new version's exit and the old one's bind, a few hundred ms; a starved runner missed it and failed with "the socket stayed" though the product had gone back correctly (CI run 45857918813). So that launch is looked at late (`Look::Late`): the test is held after its last look and before each wait for quiet until the version before is back and answering, the order that runner saw. With the wait as it was, the decision saw the new version in 4 of 5 rounds here and each of those failed "the socket stayed" (the fifth saw the version before and had no wait to miss).
 #[test]
 fn a_new_version_that_keeps_ending_goes_back_by_itself() {
     let Some(bed) = Bed::new() else { return };
@@ -1065,6 +1114,13 @@ fn a_new_version_that_keeps_ending_goes_back_by_itself() {
     let log = bed.log();
     assert!(log.contains("ended early") && log.contains("went back to"), "{log}");
     run.quit();
+}
+
+/// When the test looks at a launch: as it happens, or late, once the version before is already back and answering. Only the launch that goes back is looked at late; the ones before it end by themselves.
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    AsItHappens,
+    Late,
 }
 
 /// An update to a release that ends after its first frame, then launches until it's gone back. Gives back the version before, answering, and the state as it was before the update.
@@ -1097,11 +1153,17 @@ fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
             bed.log(),
             answers.join("\n")
         );
-        answers.push(bed.launch_until_it_ends());
+        let goes_back = launches == recto_update::updater::EARLY_ENDS_LIMIT;
+        answers.push(bed.launch_until_it_ends(if goes_back { Look::Late } else { Look::AsItHappens }));
         // A launch that's going back has left the installer its plan, and the version before is in place a moment later.
         let began = Instant::now();
+        let limit = Duration::from_millis(recto_update::plan::QUIT_LIMIT_MS + recto_update::plan::START_LIMIT_MS);
         while (files.plan().exists() || recto_update::plan::helper_alive(&files)) && bed.version() != OLD {
-            assert!(began.elapsed() < Duration::from_secs(60), "{}", bed.log());
+            assert!(
+                began.elapsed() < limit,
+                "the go-back didn't finish within the installer's own limits: {}",
+                bed.log()
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
