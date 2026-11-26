@@ -3,6 +3,8 @@
 //! token is hostile input and is never echoed, logged or kept: an answer carries only numbers and constant words.
 
 mod hits;
+#[cfg(test)]
+mod at_tests;
 pub(crate) use hits::HitRefs;
 
 use crate::reading::{TabFile, tab_file};
