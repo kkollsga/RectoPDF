@@ -20,6 +20,9 @@ impl Inner {
             self.core.push(CoreCall::Reconcile);
             return Some(Ok(Some(serde_json::json!({ "emptied": emptied }))));
         }
+        if let Some(answer) = self.tools.removal().qa_verb(verb, value) {
+            return Some(answer);
+        }
         let usage = |words: String| AgentError::new(Code::USAGE, words, recto_agent::exit::USAGE);
         let session = &self.host.session;
         let result = match verb {

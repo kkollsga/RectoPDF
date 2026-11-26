@@ -1,0 +1,95 @@
+use super::*;
+
+fn found() -> Found {
+    Found {
+        saves_here: 1,
+        saves_elsewhere: 2,
+        other_folders: 2,
+        copies: 3,
+        waiting: 1,
+        no_trash: 1,
+    }
+}
+
+/// Failure: an agent's words carry a file's name (document text reaching an agent as a sentence), or the person's lose the name that tells them which
+/// document it is about. The same sentences otherwise.
+#[test]
+fn names_are_the_persons_and_an_agent_reads_the_same_words_without_them() {
+    let person = check(
+        &Names {
+            document: Some("report.pdf".into()),
+            folder: Some("Documents".into()),
+        },
+        &found(),
+    );
+    let agent = check(&Names::default(), &found());
+    assert!(person.contains("“report.pdf”") && person.contains("“Documents”"), "{person}");
+    assert!(!agent.contains('“'), "{agent}");
+    assert_eq!(person.lines().count(), agent.lines().count(), "one sentence a thing for both");
+}
+
+/// Failure: the words say a save is "this document's" (a crashed save is found by its shape beside a document, so whose it is can't be said), or
+/// that everything was cleared or nothing is left (the history gate is not asked for this scope).
+#[test]
+fn the_words_never_claim_whose_a_save_is_or_that_everything_is_gone() {
+    let all = [
+        check(&Names::default(), &found()),
+        nothing(&Found::default()),
+        done(&Did { trashed: 1, copies: 1 }),
+        stopped(&Did { trashed: 1, copies: 0 }, 1, 2, "why"),
+    ]
+    .join("\n")
+    .to_lowercase();
+    for claim in ["this document's", "everything", "nothing is left", "nothing left", "all clear"] {
+        assert!(!all.contains(claim), "{claim}: {all}");
+    }
+}
+
+/// Failure: a refusal that cleared nothing doesn't say so, or one that is a partial result says "nothing was cleared"; the person is told the wrong state of
+/// their Trash and their copies.
+#[test]
+fn a_refusal_says_nothing_was_cleared_and_a_stop_after_an_act_never_does() {
+    for why in [
+        ConfirmRefusal::Expired,
+        ConfirmRefusal::Unknown,
+        ConfirmRefusal::OtherTarget,
+        ConfirmRefusal::Stale,
+        ConfirmRefusal::PlanChanged,
+        ConfirmRefusal::Full,
+        ConfirmRefusal::Collision,
+        ConfirmRefusal::Mismatched,
+    ] {
+        assert!(confirm_refusal(why).ends_with("Nothing was cleared."), "{why:?}");
+    }
+    for why in [Busy::Installer, Busy::Windowless, Busy::Starting, Busy::BesideNewer] {
+        assert!(busy(why).ends_with("Nothing was cleared."), "{why:?}");
+    }
+    assert!(refusal(Refusal::TooLarge, false).ends_with("nothing was cleared."));
+    let partly = stopped(&Did { trashed: 1, copies: 0 }, 1, 3, "its folder changed");
+    assert!(!partly.to_lowercase().contains("nothing was"), "{partly}");
+    assert!(partly.contains("1 of 3"), "{partly}");
+    assert!(stopped(&Did::default(), 0, 3, "its folder changed").contains("Nothing was cleared."));
+}
+
+/// Failure: a copy holding work of an earlier version is refused with the generic words, so the person is not told to quit and reopen to bring it in.
+#[test]
+fn a_copy_with_work_not_brought_in_says_to_reopen() {
+    assert_eq!(refusal(Refusal::Incomplete(Store::LegacySession), true), WENT_BACK);
+    assert_ne!(refusal(Refusal::Incomplete(Store::LegacySession), false), WENT_BACK);
+    assert!(WENT_BACK.contains("Quit and reopen"));
+}
+
+/// Failure: with nothing to clear the check still offers a button, or hides what it left alone and why.
+#[test]
+fn nothing_to_clear_says_what_it_left_alone() {
+    let left = Found {
+        waiting: 2,
+        no_trash: 1,
+        ..Found::default()
+    };
+    assert!(left.is_empty());
+    let words = check(&Names::default(), &left);
+    assert!(words.starts_with("Nothing found to clear."), "{words}");
+    assert!(words.contains("still being written") && words.contains("no Trash"), "{words}");
+    assert!(!words.contains(BUTTON));
+}

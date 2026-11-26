@@ -30,6 +30,7 @@ pub mod page_link;
 pub mod qa;
 pub mod reading;
 pub mod record;
+pub mod removal;
 pub mod saving;
 pub mod session;
 pub mod sync;
@@ -467,6 +468,15 @@ family! {
 }
 
 family! {
+    /// Clearing leftovers, which only the app has.
+    pub enum Removal {
+        RemovalCheck(removal::RemovalCheck),
+        #[line(removal::line::RemovalClear)]
+        RemovalClear(removal::RemovalClear),
+    }
+}
+
+family! {
     /// Testing the app: what an app started in QA mode shows, and making it do what the UI does. Their rows are [`qa::ROWS_QA`].
     pub enum Qa {
         QaRead(qa::QaRead),
@@ -554,6 +564,7 @@ const FAMILIES: &[(&[&str], Reads, Words, Typed)] = &[
     (Qa::TAGS, Qa::parse, Qa::human, Qa::TYPED),
     (Record::TAGS, Record::parse, Record::human, Record::TYPED),
     (Updates::TAGS, Updates::parse, Updates::human, Updates::TYPED),
+    (Removal::TAGS, Removal::parse, Removal::human, Removal::TYPED),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
@@ -627,6 +638,7 @@ const PARTS: &[&[&[Spec]]] = &[
     &[table::CLI_LOCAL],
     Record::ROWS,
     Updates::ROWS,
+    Removal::ROWS,
     Measure::ROWS,
     &[table::CLI_BUDGET_TABS],
     qa::ROWS_QA,

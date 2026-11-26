@@ -372,6 +372,11 @@ impl Sleeper {
         let _ = self.step(Event::SetBudget(bytes));
     }
 
+    /// Whether the pass after the launch that removes older sleep files has ended: Clear leftovers waits for it, as it touches the update's copy.
+    pub fn older_pass_done(&self) -> bool {
+        self.older.get().is_some()
+    }
+
     pub fn report(&self) -> Value {
         let older = self.older.get().map(|(done, micros)| {
             json!({ "looked_at": done.looked_at, "removed": done.removed, "bytes_read": done.bytes_read, "stopped_at_cap": done.stopped_at_cap, "micros": micros })

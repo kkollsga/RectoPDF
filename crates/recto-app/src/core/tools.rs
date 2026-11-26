@@ -26,6 +26,8 @@ pub struct Tools {
     find_field: Mutex<crate::find::Field>,
     /// The page-identity thread's state, for the page matcher: no thread at rest.
     page_ids: Arc<super::page_ids::PageIds>,
+    /// Clear leftovers: the plans waiting for a yes, and whether a clear runs.
+    removal: super::removal::Removal,
 }
 
 impl Tools {
@@ -41,7 +43,13 @@ impl Tools {
             palette: crate::palette::Palette::default(),
             find_field: Mutex::new(crate::find::Field::default()),
             page_ids: Arc::default(),
+            removal: super::removal::Removal::default(),
         }
+    }
+
+    /// Clear leftovers.
+    pub fn removal(&self) -> &super::removal::Removal {
+        &self.removal
     }
 
     /// The sheets that ask: a password, or whether to open a link.

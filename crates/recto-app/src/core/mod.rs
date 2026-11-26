@@ -12,6 +12,7 @@ pub mod palette;
 pub mod printing;
 pub mod qa;
 pub mod reconcile;
+pub mod removal;
 pub mod saver;
 pub mod saving;
 pub mod session;

@@ -32,6 +32,7 @@ impl Command {
             Self::Qa(command) => command.route(),
             Self::Record(command) => command.route(),
             Self::Updates(command) => command.route(),
+            Self::Removal(command) => command.route(),
         }
     }
 
@@ -43,6 +44,7 @@ impl Command {
             Self::Move(Move::View(command)) => command.only_asks(),
             Self::Move(Move::Palette(command)) => command.only_asks(),
             Self::Updates(command) => command.only_asks(),
+            Self::Removal(command) => command.only_asks(),
             Self::Measure(_) | Self::Edit(_) | Self::Move(_) | Self::Read(_) | Self::Start(_) | Self::Waits(_) | Self::Rights(_) | Self::Session(_) => false,
         }
     }

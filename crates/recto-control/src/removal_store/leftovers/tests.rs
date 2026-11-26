@@ -19,26 +19,26 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const DEAD: u32 = 4_000_001;
+pub(super) const DEAD: u32 = 4_000_001;
 
-fn temp_name(pid: u32, attempt: u32, tail: &str) -> String {
+pub(super) fn temp_name(pid: u32, attempt: u32, tail: &str) -> String {
     format!("{}{pid}-{attempt}{tail}", writer_temp_prefix(Path::new("mine.pdf")))
 }
 
-fn tmp(prefix: &str) -> TempDir {
+pub(super) fn tmp(prefix: &str) -> TempDir {
     TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), prefix)
 }
 
 /// A state root with the real record store's session and its copies, a documents folder with two unfinished saves (a file and a clone folder), a
 /// folder standing in for the Trash and a folder outside everything.
-struct World {
-    state: State,
-    docs: TempDir,
-    trash: TempDir,
-    outside: TempDir,
+pub(super) struct World {
+    pub(super) state: State,
+    pub(super) docs: TempDir,
+    pub(super) trash: TempDir,
+    pub(super) outside: TempDir,
 }
 
-fn world() -> World {
+pub(super) fn world() -> World {
     let state = state();
     write_session(&state);
     copy_tree(&state.session(), &state.root().join("session.damaged.1"));
@@ -71,7 +71,7 @@ impl PinSet {
 }
 
 impl World {
-    fn root(&self) -> &Path {
+    pub(super) fn root(&self) -> &Path {
         self.state.root()
     }
 

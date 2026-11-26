@@ -792,6 +792,7 @@ dependencies = [
 name = "recto-control"
 version = "0.1.3"
 dependencies = [
+ "getrandom",
  "libc",
  "recto-agent",
  "recto-control",

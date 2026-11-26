@@ -246,6 +246,9 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if crate::lock(&inner.tools.prompts().passwords).trying() {
         busy.push("a password being tried".to_string());
     }
+    if inner.tools.removal().clearing() {
+        busy.push("a clear of leftovers".to_string());
+    }
     let reads = inner.life.reads_running();
     if reads > 0 {
         busy.push(format!("{reads} file(s) being read"));

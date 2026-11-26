@@ -94,7 +94,8 @@ impl<H: Host> Loop<H> {
             | Command::Read(_)
             | Command::Qa(_)
             | Command::Record(_)
-            | Command::Updates(_) => self.send_on(index, command),
+            | Command::Updates(_)
+            | Command::Removal(_) => self.send_on(index, command),
         }
     }
 }
