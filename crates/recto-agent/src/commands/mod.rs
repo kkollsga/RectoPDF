@@ -84,6 +84,18 @@ pub trait Cmd {
     fn route(&self) -> Runs;
     /// What goes in the activity log about its arguments. Numbers and cleaned file names, never anything that could hold document text.
     fn log_details(&self) -> Value;
+    /// [`Cmd::DRAWS`] for this line: a command whose cost depends on what was asked (a `--ref` that scans a hostile file) says so here. Defaults to the constant.
+    fn draws_as_asked(&self) -> bool {
+        Self::DRAWS
+    }
+    /// [`Cmd::WAITS`] for this line, as [`Cmd::draws_as_asked`].
+    fn waits_as_asked(&self) -> bool {
+        Self::WAITS
+    }
+    /// [`Cmd::READS_PAGES`] for this line, as [`Cmd::draws_as_asked`].
+    fn reads_pages_as_asked(&self) -> bool {
+        Self::READS_PAGES
+    }
     /// Runs it on the session. A command answered elsewhere says where.
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError>;
     /// Its answer in plain words, for a person at a terminal.
@@ -250,19 +262,19 @@ macro_rules! family {
 
             pub fn draws(&self) -> bool {
                 match self {
-                    $(Self::$variant(_) => <$payload as $crate::commands::Cmd>::DRAWS,)*
+                    $(Self::$variant(command) => $crate::commands::Cmd::draws_as_asked(command),)*
                 }
             }
 
             pub fn reads_pages(&self) -> bool {
                 match self {
-                    $(Self::$variant(_) => <$payload as $crate::commands::Cmd>::READS_PAGES,)*
+                    $(Self::$variant(command) => $crate::commands::Cmd::reads_pages_as_asked(command),)*
                 }
             }
 
             pub fn waits(&self) -> bool {
                 match self {
-                    $(Self::$variant(_) => <$payload as $crate::commands::Cmd>::WAITS,)*
+                    $(Self::$variant(command) => $crate::commands::Cmd::waits_as_asked(command),)*
                 }
             }
 
@@ -684,5 +696,13 @@ mod combination_tests {
             "another command's words"
         );
         assert!(!refused_for_its_combination("text", &usage("`text` takes a page that is a number.")));
+    }
+
+    /// Failure: the per-line `draws`, `waits` and `reads_pages` stop agreeing with the constants for a line that doesn't say otherwise, so a plain `goto 3`
+    /// takes a place under the draw cap or is run off the window's thread, which every tap of a person's goes through.
+    #[test]
+    fn a_goto_by_page_number_neither_draws_nor_waits_nor_reads_pages() {
+        let goto = crate::parse(r##"{"cmd":"goto","page":3,"tab":"#1"}"##).expect("goto 3");
+        assert_eq!((goto.draws(), goto.waits(), goto.reads_pages()), (false, false, false));
     }
 }
