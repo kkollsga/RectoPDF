@@ -580,7 +580,7 @@ Changed (private struct)
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
 DocRenderer: LookSource (trait impl)
-DocRenderer: LookSource::fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>>
+DocRenderer: LookSource::fn image_boxes(&mut self, page: u32, generation: u64) -> ImagesAsked
 DocRenderer: LookSource::fn is_stale(&self, generation: u64) -> bool
 DocRenderer: LookSource::fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>
 DocRenderer: LookSource::fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>
