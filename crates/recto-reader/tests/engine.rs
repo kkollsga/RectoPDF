@@ -566,7 +566,7 @@ fn reopening_a_file_that_doesnt_answer_never_passes_the_cap_on_opens() {
         most = most.max(watch_opens(&engine, Duration::from_millis(300)));
     }
     assert!(
-        most >= 1 && most <= MAX_OPENS,
+        (1..=MAX_OPENS).contains(&most),
         "{most} opens at once, the cap is {MAX_OPENS}: {}",
         engine.report().0
     );
