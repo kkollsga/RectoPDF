@@ -61,8 +61,9 @@ impl Default for Caps {
 /// Adds every file of both journals folders to `survey`, and marks the five stores complete only after both were listed to the end.
 ///
 /// Folders that aren't there are complete and empty. A `session` or `journals` that isn't a real folder (a link, a file), a folder that can't be
-/// listed, an entry that vanishes between the listing and its opening, and a lineage with a gap leave the stores unmarked, so the plan says
-/// `Incomplete` rather than "none found". A folder of more than 8,192 entries is `TooLarge`. `add`'s refusal passes through.
+/// listed, and an entry that vanishes between the listing and its opening leave the stores unmarked, so the plan says `Incomplete` rather than
+/// "none found". The adapter does not check the lineage's gap: the plan's `HistoryIncomplete` gate (`Survey::history`) refuses a lineage with a gap or
+/// a fork. A folder of more than 8,192 entries is `TooLarge`. `add`'s refusal passes through.
 pub fn survey_journals(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey) -> Result<(), Refusal> {
     survey_journals_with(root, lineage, mode, survey, &Caps::default())
 }
