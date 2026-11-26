@@ -343,12 +343,14 @@ fn places_log_takes_the_strictest_of_the_slots() {
     assert_eq!(std::fs::read(&other).unwrap(), b"x");
 }
 
+type Make = fn(&Path);
+
 /// Failure: a file nobody can place is skipped as "none found" (so a removal leaves what it names), or `journals/` is counted here as well as by
 /// the journals adapter, or Finder's own file and the record store's marker refuse every removal.
 #[test]
 fn the_rest_of_the_folder_is_unknown_except_what_is_known() {
     // (APFS refuses to create a name that isn't text, so that case is `names`' and the entry's own `is_file` rule, not made here.)
-    let unknown: [(&str, fn(&Path)); 3] = [
+    let unknown: [(&str, Make); 3] = [
         ("a text file", |p| {
             put(p, "notes.txt", b"hi");
         }),

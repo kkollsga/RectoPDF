@@ -90,13 +90,6 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          a sidecar's 110-byte header read in `session*/journals` through that folder's descriptor (a plain private file only): never a document",
     ),
     (
-        "recto-control/src/removal_store/record.rs",
-        2,
-        "the `session` and `session-windowless` folders of the root the caller of `survey_record` names (`pub`, with no production caller yet; the design names the \
-         state folder), opened through the folder helper (no link followed); the two record slots in each read whole, up to 32 MiB, through that folder's \
-         descriptor (a plain private file only): never a document",
-    ),
-    (
         "recto-control/src/removal_store/ledger.rs",
         2,
         "the provenance ledger's own file in the state folder, read with a cap (a plain file only; the writer opens it with no link followed): paths and numbers, never a document",
@@ -105,6 +98,13 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-control/src/removal_store/ledger/adopt.rs",
         1,
         "the first line (at most 8 KiB) of a journal in the state folder, a plain file only, read once when the ledger is first made: never a document",
+    ),
+    (
+        "recto-control/src/removal_store/record.rs",
+        2,
+        "the `session` and `session-windowless` folders of the root the caller of `survey_record` names (`pub`, with no production caller yet; the design names the \
+         state folder), opened through the folder helper (no link followed); the two record slots in each read whole, up to 32 MiB, through that folder's \
+         descriptor (a plain private file only): never a document",
     ),
     ("recto-control/src/server.rs", 1, "the socket's lock file in the state folder, named by the app"),
     (
