@@ -438,6 +438,65 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     let _ = std::fs::remove_dir_all(&folder);
 }
 
+/// Failure: going back to a file that doesn't answer starts another open each time, since the page view forgot the one still stuck when it moved on: every revisit of a dead volume's tab left one more `recto-open` thread (and its file handle once it returned) behind, with nothing capping them. A revisit waits on the open already under way, so the count never passes one for the one file, and goes to 0 when it's let go.
+#[test]
+fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
+    let folder = recto_testpdf::TempDir::new("recto-fifo-revisit-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let dead = folder.join("dead.pdf");
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&dead).status().unwrap().success());
+    let healthy = document(1);
+    let events = Arc::new(Events::default());
+    let engine = Engine::new(EngineConfig::default(), events);
+    engine.qa().system_takes_only_when_told();
+    let show = |tab: u32, file: &std::path::Path, was: &[u32]| {
+        engine.activate(
+            tab,
+            1,
+            0,
+            PageMap {
+                files: vec![file.to_path_buf()],
+                slots: None,
+                own: None,
+                turns: None,
+                expected: Vec::new(),
+                follows: None,
+            },
+            was,
+            None,
+            recto_reader::layout::Spread::Single,
+        );
+        engine.set_viewport(view(0.0));
+    };
+    let waiting = || engine.report().0["opens_waiting"].as_u64().unwrap();
+    let mut most = 0;
+    // More revisits than the page view's cap on opens (4), so a leak shows as the cap and a cap that holds shows as one.
+    for _ in 0..8 {
+        show(1, &dead, &[2]);
+        let deadline = Instant::now() + HANG;
+        while waiting() == 0 && Instant::now() < deadline {
+            engine.drain();
+            std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+        }
+        show(2, &healthy.0, &[1]);
+        pump(&engine, HANG);
+        most = most.max(waiting());
+    }
+    assert!(most <= 1, "{most} opens of one file at once: {}", engine.report().0);
+    use std::os::unix::fs::OpenOptionsExt;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&dead)
+        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    let deadline = Instant::now() + HANG;
+    while waiting() != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    assert_eq!(waiting(), 0, "{}", engine.report().0);
+    drop(writer);
+}
+
 /// Failure: closing the window leaves "there are ops" raised with no host to take them, so when the window's back nobody is ever told again, and tiles stop arriving. The host must hear of new ones, even if no ops were taken in between.
 #[test]
 fn tiles_keep_arriving_after_the_window_comes_back() {
