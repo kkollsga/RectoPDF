@@ -324,6 +324,18 @@ fn a_linked_removal_folder_gets_no_gap_mark_through_it() {
     assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing was made in the linked folder");
 }
 
+/// Failure: the reader checks only the last part of the path, so a `removal/` that is a link reads a ledger that is somewhere else (someone else's) as this one.
+#[test]
+fn a_linked_removal_folder_reads_as_damaged() {
+    let dir = temp();
+    let (theirs, mine) = (dir.join("theirs"), dir.join("mine"));
+    append(&theirs, &Config::default(), vec![at(1)]);
+    std::fs::create_dir_all(&mine).unwrap();
+    std::os::unix::fs::symlink(theirs.join("removal"), mine.join("removal")).unwrap();
+    assert_eq!(read(&theirs).links.len(), 1);
+    assert_eq!(read(&mine).gap, Some(Gap::Damaged));
+}
+
 /// Failure: two writers that read the same state both append the same link (a duplicate), or the second's header lands after the first's frames (damage). A
 /// writer held between its read and its append, and another started then, must leave one link and a clean read.
 #[test]

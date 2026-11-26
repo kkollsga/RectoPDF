@@ -147,7 +147,12 @@ pub fn read(root: &Path) -> Ledger {
 
 pub(crate) fn read_with(root: &Path, limits: &LedgerLimits) -> Ledger {
     let dir = dir_of(root);
-    let mut ledger = match bytes_of(&dir.join(FILE)) {
+    // A folder that is a link, or not this user's alone, holds somebody else's ledger as far as can be told.
+    let folder = match std::fs::symlink_metadata(&dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        _ => local::check_private_dir(&dir).map(|()| Some(())).map_err(|_| ()),
+    };
+    let mut ledger = match folder.and_then(|found| found.map_or(Ok(None), |()| bytes_of(&dir.join(FILE)))) {
         Ok(None) => Ledger::missing(),
         Ok(Some(bytes)) => read_ledger(&bytes, limits),
         Err(()) => Ledger::damaged(),
