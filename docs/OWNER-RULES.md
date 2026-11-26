@@ -17,6 +17,8 @@ The owner's product rules and one-off decisions, in their words, with the date. 
 
 - **A search index whose renderer can't start** (2026-11-25). After three failed starts of its page renderer in a row (about 30 s), the index says it couldn't be built just now and tries again a minute later, instead of waiting quietly for ever (which also hid a truly stuck renderer). Nothing is saved as failed; Find reads pages directly meanwhile; the same three-in-a-row rule as the reader's. Owner: "Accept (Recommended)".
 
+- **A guard-list entry for the removal survey's folder helper** (2026-11-26). The permission system refused a worker's edit to `crates/recto-agent/src/file_wall_scan_tests.rs` (the list of every reviewed open outside the sandbox wall); the coordinator did not route around it and asked. Owner: "Allow, with a review (Recommended)": the worker makes the edit (the journals entry out, `recto-platform/src/folder_mac.rs` in), and an independent review checks the helper and that the entry describes it truthfully before the branch merges.
+
 ## Starting the next four work items (2026-11-17)
 - Given the 2026-11-17 review's four recommendations (bounded CI diagnosis plus no-wait SVG paste; locator 8.1 then reference-bearing retrieval 8.2; redaction/Remove Hidden Data retention design then guarded implementation alongside it; focused copy/highlight/recovery fixes), owner: "I agree, can you get started on the 4 items?". This authorizes work on those tracks under the existing writer, privacy, access and review rules. The recommendation keeps the sidebar after the locator and safe-removal work; external releases and other-repository changes still follow their existing authorization rules.
 

@@ -38,6 +38,7 @@ mod page_ids;
 mod palette;
 mod password_not_kept;
 mod passwords;
+mod ref_commands;
 // The count it reads is a debug build's only.
 mod flick_cost;
 #[cfg(debug_assertions)]

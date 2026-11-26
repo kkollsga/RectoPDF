@@ -68,7 +68,7 @@ impl Job {
         match self.wanted {
             Wanted::Box { rect } => Command::from(Snapshot {
                 tab,
-                page,
+                at: recto_agent::commands::locating::PageOrRef::Page(page),
                 rect,
                 format: "png".into(),
                 out: None,
@@ -94,7 +94,11 @@ impl Job {
     fn of(command: &Command) -> Option<Self> {
         let (tab, page, seen, wanted, anyway) = match (kind_of(command)?, command) {
             (ClipboardKind::Box, Command::Read(Read::Snapshot(asked))) => {
-                (&asked.tab, asked.page, asked.as_seen?, Wanted::Box { rect: asked.rect }, asked.anyway)
+                // A reference never goes to the clipboard, so a box of the tool's is of a page by number.
+                let recto_agent::commands::locating::PageOrRef::Page(page) = asked.at else {
+                    return None;
+                };
+                (&asked.tab, page, asked.as_seen?, Wanted::Box { rect: asked.rect }, asked.anyway)
             }
             (ClipboardKind::Click, Command::Read(Read::Image(asked))) => {
                 let [x, y] = asked.at?;
@@ -926,7 +930,7 @@ pub(super) fn pasted(inner: &Arc<Inner>, serial: u64, uti: &str) -> bool {
     }
     let command = Command::from(Snapshot {
         tab: TabRef::Id(TabId(promise.tab)),
-        page: promise.position + 1,
+        at: recto_agent::commands::locating::PageOrRef::Page(promise.position + 1),
         rect: promise.rect,
         format: "svg".into(),
         out: None,

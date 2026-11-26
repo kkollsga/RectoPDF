@@ -26,6 +26,8 @@ use recto_core::page_id::DocumentIds;
 pub const MAGIC: &[u8; 12] = b"recto-pages\x02";
 /// Longest journal name a header holds: `journal-` and 16 hex digits, a tab's number, `.log`, with room.
 pub const MAX_NAME: usize = 64;
+/// The most a sidecar's header takes: the magic, a length byte, the longest name, the file version, the page count, the flags and the check (110).
+pub const HEADER_BYTES: usize = 12 + 1 + MAX_NAME + 29 + 4;
 /// A page's entry's length.
 pub const PAGE_ENTRY: usize = 35;
 /// The `/ID` pair's entry's length.
@@ -213,6 +215,12 @@ fn header(bytes: &[u8]) -> Option<(Header, usize)> {
     ))
 }
 
+/// A sidecar's header from the first bytes of the file, with nothing of its entries read: `None` if `prefix` doesn't hold a whole header that
+/// checks out. [`HEADER_BYTES`] of a file are always enough.
+pub fn header_of(prefix: &[u8]) -> Option<Header> {
+    header(prefix).map(|(header, _)| header)
+}
+
 /// **Reads a sidecar's bytes:** `None` if they're no sidecar of this format (or more than [`MAX_BYTES`]); otherwise its header and what of its entries
 /// read whole, as the module doc says.
 pub fn decode(bytes: &[u8]) -> Option<Sidecar> {
@@ -295,6 +303,22 @@ mod tests {
         let mut bytes = header().encode().unwrap();
         bytes.extend(entries(pages, document));
         bytes
+    }
+
+    /// Failure caught: the survey for a removal reads a header from `HEADER_BYTES` and a header with the longest name is cut short by the constant,
+    /// so a sidecar a journal really owns reads as no sidecar; or a header read from fewer bytes than it takes is believed.
+    #[test]
+    fn a_header_reads_from_exactly_header_bytes() {
+        let longest = Header {
+            journal: "j".repeat(MAX_NAME),
+            ..header()
+        };
+        let bytes = longest.encode().unwrap();
+        assert_eq!(bytes.len(), HEADER_BYTES);
+        let mut with_entries = bytes.clone();
+        with_entries.extend(entries(&[(1, known(1))], None));
+        assert_eq!(header_of(&with_entries[..HEADER_BYTES]), Some(longest));
+        assert_eq!(header_of(&bytes[..HEADER_BYTES - 1]), None);
     }
 
     /// Failure caught: what's written doesn't read back as it went in (a byte of a digest, an object number or a frame lost or moved), so after a

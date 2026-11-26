@@ -1,11 +1,12 @@
 //! A page's text, and finding words: `search`, `index`, `index status`, `index clear`, `text`, `select` and `copy`.
 
 #![allow(unused_imports)]
-use super::locating::{PAGE_OR_REF, PageOrRef, REF, TEXT_BOTH, TEXT_NEITHER, TEXT_REF_EXAMPLE};
+use super::locating::{COPY_REF_EXAMPLE, PAGE_OR_REF, PageOrRef, REF, REF_PICK, SELECT_REF_EXAMPLE, TEXT_BOTH, TEXT_NEITHER, TEXT_REF_EXAMPLE};
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
 use crate::table::*;
 use crate::*;
+use recto_core::locator;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
@@ -256,7 +257,7 @@ pub struct Text {
     pub at: PageOrRef,
 }
 
-/// `text` as it's written on the wire.
+/// `text`, and `select` and `copy`, as they're written on the wire.
 pub mod line {
     use crate::TabRef;
     use serde::{Deserialize, Serialize};
@@ -269,6 +270,32 @@ pub mod line {
         #[serde(default)]
         pub page: Option<u32>,
         #[serde(default, rename = "ref")]
+        pub reference: Option<String>,
+    }
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Pick {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default)]
+        pub page: Option<u32>,
+        #[serde(default)]
+        pub to_page: Option<u32>,
+        #[serde(default)]
+        pub chars: Option<String>,
+        #[serde(default)]
+        pub at: Option<String>,
+        #[serde(default)]
+        pub to: Option<String>,
+        #[serde(default)]
+        pub unit: Option<String>,
+        #[serde(default)]
+        pub all: bool,
+        #[serde(default)]
+        pub anyway: bool,
+        /// Last, so the positional array form keeps reading `[tab, page, ..., anyway]` as it always has.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
         pub reference: Option<String>,
     }
 }
@@ -367,28 +394,88 @@ fn unreadable_if_added_needs_password(error: AgentError, source: &recto_session:
     )
 }
 
-/// What a click, a drag or a range of characters takes: the text, and where it shows on each page.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// What a click, a drag or a range of characters takes: the text, and where it shows on each page. By a pick, or by a reference to the characters or the
+/// page, read from a `line` so a token that can't be one, or one beside a pick, is refused as the line is read.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Pick")]
 pub struct Select {
-    #[serde(default)]
     pub tab: TabRef,
-    #[serde(default)]
     pub page: Option<u32>,
-    #[serde(default)]
     pub to_page: Option<u32>,
-    #[serde(default)]
     pub chars: Option<String>,
-    #[serde(default)]
     pub at: Option<String>,
-    #[serde(default)]
     pub to: Option<String>,
-    #[serde(default)]
     pub unit: Option<String>,
-    #[serde(default)]
     pub all: bool,
-    #[serde(default)]
     pub anyway: bool,
+    /// The characters, or the page, a reference points at now, in place of `page` and the rest of the pick.
+    pub reference: Option<locator::Locator>,
+}
+
+impl line::Pick {
+    /// The reference this line holds, refused if it came with a pick of its own.
+    fn reference(&self) -> Result<Option<locator::Locator>, AgentError> {
+        let others =
+            self.page.is_some() || self.to_page.is_some() || self.chars.is_some() || self.at.is_some() || self.to.is_some() || self.unit.is_some() || self.all;
+        super::locating::reference_alone(self.reference.as_deref(), others, super::locating::PICK_REF_ALONE)
+    }
+}
+
+/// Runs a pick of `select` or `copy`: as it stands, or, with a reference, on the page the reference points at now and (if it points at characters) exactly
+/// those characters, which the read of the page checks.
+fn run_pick<A: SessionAccess>(access: &A, pick: selecting::Pick<'_>, reference: Option<&locator::Locator>, rects: bool) -> Result<Value, AgentError> {
+    match reference {
+        None => selecting::run(access, &pick, rects),
+        Some(reference) => super::locating::picking_by_reference(access, pick, reference, |pick| selecting::run(access, pick, rects)),
+    }
+}
+
+impl TryFrom<line::Pick> for Select {
+    type Error = AgentError;
+    fn try_from(line: line::Pick) -> Result<Self, AgentError> {
+        let reference = line.reference()?;
+        let line::Pick {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            all,
+            anyway,
+            ..
+        } = line;
+        Ok(Self {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            all,
+            anyway,
+            reference,
+        })
+    }
+}
+
+impl From<Select> for line::Pick {
+    fn from(asked: Select) -> Self {
+        Self {
+            tab: asked.tab,
+            page: asked.page,
+            to_page: asked.to_page,
+            chars: asked.chars,
+            at: asked.at,
+            to: asked.to,
+            unit: asked.unit,
+            all: asked.all,
+            anyway: asked.anyway,
+            reference: asked.reference.as_ref().map(locator::encode),
+        }
+    }
 }
 
 impl Cmd for Select {
@@ -412,18 +499,58 @@ impl Cmd for Select {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        let Self {
-            tab,
-            page,
-            to_page,
-            all,
-            anyway,
-            ..
-        } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway })
+        pick_log(&self.tab, self.page, self.to_page, self.all, self.anyway, self.reference.as_ref())
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let Self {
+        let pick = selecting::Pick {
+            tab: &self.tab,
+            page: self.page,
+            to_page: self.to_page,
+            chars: self.chars.as_deref(),
+            at: self.at.as_deref(),
+            to: self.to.as_deref(),
+            unit: self.unit.as_deref(),
+            all: self.all,
+            anyway: self.anyway,
+            found: None,
+        };
+        run_pick(cx.access, pick, self.reference.as_ref(), true)
+    }
+    fn human(data: &Value) -> String {
+        selected(data)
+    }
+}
+
+/// What `select`, `copy` and `highlight` put in the activity log of a pick: numbers and switches, and of a reference only the page it hints at.
+pub(crate) fn pick_log(tab: &TabRef, page: Option<u32>, to_page: Option<u32>, all: bool, anyway: bool, reference: Option<&locator::Locator>) -> Value {
+    let mut details = json!({ "tab": super::log_tab(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway });
+    if let Some(reference) = reference {
+        details["ref_page"] = json!(reference.page().number());
+    }
+    details
+}
+
+/// The text ⌘C would put on the clipboard for the same pick. It comes back here, and no clipboard is touched.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Pick")]
+pub struct Copy {
+    pub tab: TabRef,
+    pub page: Option<u32>,
+    pub to_page: Option<u32>,
+    pub chars: Option<String>,
+    pub at: Option<String>,
+    pub to: Option<String>,
+    pub unit: Option<String>,
+    pub all: bool,
+    pub anyway: bool,
+    /// The characters, or the page, a reference points at now, in place of `page` and the rest of the pick.
+    pub reference: Option<locator::Locator>,
+}
+
+impl TryFrom<line::Pick> for Copy {
+    type Error = AgentError;
+    fn try_from(line: line::Pick) -> Result<Self, AgentError> {
+        let Select {
             tab,
             page,
             to_page,
@@ -433,51 +560,50 @@ impl Cmd for Select {
             unit,
             all,
             anyway,
-        } = self;
-        let access = cx.access;
-        selecting::run(
-            access,
-            &selecting::Pick {
-                tab,
-                page: *page,
-                to_page: *to_page,
-                chars: chars.as_deref(),
-                at: at.as_deref(),
-                to: to.as_deref(),
-                unit: unit.as_deref(),
-                all: *all,
-                anyway: *anyway,
-            },
-            true,
-        )
-    }
-    fn human(data: &Value) -> String {
-        selected(data)
+            reference,
+        } = Select::try_from(line)?;
+        Ok(Self {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            all,
+            anyway,
+            reference,
+        })
     }
 }
 
-/// The text ⌘C would put on the clipboard for the same pick. It comes back here, and no clipboard is touched.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Copy {
-    #[serde(default)]
-    pub tab: TabRef,
-    #[serde(default)]
-    pub page: Option<u32>,
-    #[serde(default)]
-    pub to_page: Option<u32>,
-    #[serde(default)]
-    pub chars: Option<String>,
-    #[serde(default)]
-    pub at: Option<String>,
-    #[serde(default)]
-    pub to: Option<String>,
-    #[serde(default)]
-    pub unit: Option<String>,
-    #[serde(default)]
-    pub all: bool,
-    #[serde(default)]
-    pub anyway: bool,
+impl From<Copy> for line::Pick {
+    fn from(asked: Copy) -> Self {
+        let Copy {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            all,
+            anyway,
+            reference,
+        } = asked;
+        Self::from(Select {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            all,
+            anyway,
+            reference,
+        })
+    }
 }
 
 impl Cmd for Copy {
@@ -501,44 +627,22 @@ impl Cmd for Copy {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        let Self {
-            tab,
-            page,
-            to_page,
-            all,
-            anyway,
-            ..
-        } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway })
+        pick_log(&self.tab, self.page, self.to_page, self.all, self.anyway, self.reference.as_ref())
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let Self {
-            tab,
-            page,
-            to_page,
-            chars,
-            at,
-            to,
-            unit,
-            all,
-            anyway,
-        } = self;
-        let access = cx.access;
-        selecting::run(
-            access,
-            &selecting::Pick {
-                tab,
-                page: *page,
-                to_page: *to_page,
-                chars: chars.as_deref(),
-                at: at.as_deref(),
-                to: to.as_deref(),
-                unit: unit.as_deref(),
-                all: *all,
-                anyway: *anyway,
-            },
-            false,
-        )
+        let pick = selecting::Pick {
+            tab: &self.tab,
+            page: self.page,
+            to_page: self.to_page,
+            chars: self.chars.as_deref(),
+            at: self.at.as_deref(),
+            to: self.to.as_deref(),
+            unit: self.unit.as_deref(),
+            all: self.all,
+            anyway: self.anyway,
+            found: None,
+        };
+        run_pick(cx.access, pick, self.reference.as_ref(), false)
     }
     fn human(data: &Value) -> String {
         selected(data)
@@ -688,7 +792,18 @@ pub(crate) const ROWS_SELECT: &[Spec] = &[Spec {
     tag: "select",
     group: GROUP_READ,
     summary: "What a click, a drag or a stretch of characters takes on a page: the text, in reading order, and where it shows. It reads, and changes nothing the app shows. Text that looks hidden is left out and counted.",
-    args: &[PICK_PAGE, PICK_TO_PAGE, PICK_CHARS, PICK_AT, PICK_TO, PICK_UNIT, PICK_ALL, PICK_ANYWAY, TAB],
+    args: &[
+        PICK_PAGE,
+        PICK_TO_PAGE,
+        PICK_CHARS,
+        PICK_AT,
+        PICK_TO,
+        PICK_UNIT,
+        PICK_ALL,
+        PICK_ANYWAY,
+        REF_PICK,
+        TAB,
+    ],
     bare_page: true,
     data: "`{ tab, start: { page, at }, end: { page, at }, chars, pages: [ { page, start, end, width, height, rects: [ [x, y, width, height] ], failed } ], hidden_left_out, chrome_left_out, pages_read, pages_unchecked, pages_failed, pages_too_long, stopped_at_page, restricted, note, untrusted: { text } }`. `rects` and `--at` are in points on the page as it's shown, from its top left, y down. `at` counts characters of `recto text`, and is null for an end it didn't reach or a page that couldn't be read. Up to 32 pages: `stopped_at_page` says where it stopped. `restricted` with `text` null means the file's permissions ask that it isn't copied. A page with no text has no `rects`, and that's not an error.",
     examples: &[
@@ -698,6 +813,7 @@ pub(crate) const ROWS_SELECT: &[Spec] = &[Spec {
         "recto select --page 3 --at 150,220 --unit line",
         "recto select --page 3 --at 72,700 --to-page 4 --to 200,90",
         "recto select --all --json",
+        SELECT_REF_EXAMPLE,
     ],
     ..BASE
 }];
@@ -707,7 +823,18 @@ pub(crate) const ROWS_COPY: &[Spec] = &[Spec {
     tag: "copy",
     group: GROUP_READ,
     summary: "The text ⌘C would copy for the same pick, as far as one copy goes: 16 MiB, 100,000 pages or 2 minutes. It comes back here, and no clipboard is touched.",
-    args: &[PICK_PAGE, PICK_TO_PAGE, PICK_CHARS, PICK_AT, PICK_TO, PICK_UNIT, PICK_ALL, PICK_ANYWAY, TAB],
+    args: &[
+        PICK_PAGE,
+        PICK_TO_PAGE,
+        PICK_CHARS,
+        PICK_AT,
+        PICK_TO,
+        PICK_UNIT,
+        PICK_ALL,
+        PICK_ANYWAY,
+        REF_PICK,
+        TAB,
+    ],
     bare_page: true,
     data: "`{ tab, start: { page, at }, end: { page, at }, chars, hidden_left_out, chrome_left_out, pages_read, pages_unchecked, pages_failed, pages_too_long, stopped_at_page, restricted, note, untrusted: { text } }`. `chrome_left_out` counts the characters of running heads, footers and page numbers left out of body text: lines at a page's top or bottom edge that are a page number, or repeat on the pages around it, unless only they are picked. `stopped_at_page` says where it stopped if it did. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
     examples: &[
@@ -715,6 +842,7 @@ pub(crate) const ROWS_COPY: &[Spec] = &[Spec {
         "recto copy --page 3 --to-page 5",
         "recto copy --all",
         "recto copy --page 3 --at 72,700 --to-page 4 --to 200,90 --json",
+        COPY_REF_EXAMPLE,
     ],
     client_wait_s: 180,
     ..BASE

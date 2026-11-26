@@ -1,7 +1,10 @@
 //! Pages and pictures written out: `render`, `export svg`, `images`, `image`, `snapshot` and `print`.
 
 #![allow(unused_imports)]
-use super::locating::{PAGE_OR_REF, PageOrRef, REF, RENDER_BOTH, RENDER_NEITHER, RENDER_REF_EXAMPLE};
+use super::locating::{
+    EXPORT_SVG_BOTH, EXPORT_SVG_NEITHER, EXPORT_SVG_REF_EXAMPLE, PAGE_OR_REF, PageOrRef, REF, RENDER_BOTH, RENDER_NEITHER, RENDER_REF_EXAMPLE, SNAPSHOT_BOTH,
+    SNAPSHOT_NEITHER, SNAPSHOT_REF_EXAMPLE, SNAPSHOT_REF_NOT_CLIPBOARD,
+};
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
 use crate::table::*;
@@ -25,11 +28,59 @@ pub struct Render {
     pub anyway: bool,
 }
 
-/// `render` as it's written on the wire.
+/// `render`, `export svg` and `snapshot` as they're written on the wire.
 pub mod line {
     use crate::TabRef;
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ExportSvg {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub page: Option<u32>,
+        pub out: PathBuf,
+        #[serde(default)]
+        pub rect: Option<[f32; 4]>,
+        #[serde(default)]
+        pub text: Option<String>,
+        #[serde(default = "crate::render::default_scale")]
+        pub scale: f32,
+        #[serde(default)]
+        pub strip_metadata: bool,
+        #[serde(default)]
+        pub anyway: bool,
+        /// Last, so the positional array form keeps reading `[tab, page, out, ...]` as it always has.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        pub reference: Option<String>,
+    }
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Snapshot {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub page: Option<u32>,
+        pub rect: [f32; 4],
+        #[serde(rename = "as")]
+        pub format: String,
+        #[serde(default)]
+        pub out: Option<PathBuf>,
+        #[serde(default = "crate::render::default_scale")]
+        pub scale: f32,
+        #[serde(default)]
+        pub anyway: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pub to_clipboard: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub as_seen: Option<crate::extract::AsSeen>,
+        /// Last, so the positional array form keeps reading as it always has.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        pub reference: Option<String>,
+    }
 
     #[derive(Clone, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -148,29 +199,68 @@ impl Cmd for Render {
     }
 }
 
-/// Writes a page, or a box on it, to a new SVG file.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// Writes a page, or a box on it, to a new SVG file. By page number, or by a reference to the page (which gives only the page: `rect` still applies), read
+/// from a `line` so a token that can't be one is refused as the line is read.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::ExportSvg")]
 pub struct ExportSvg {
-    #[serde(default)]
     pub tab: TabRef,
-    pub page: u32,
+    pub at: PageOrRef,
     pub out: PathBuf,
     /// `x, y, width, height`, in points from the page's top left.
-    #[serde(default)]
     pub rect: Option<[f32; 4]>,
     /// `both`, `paths` or `selectable`.
-    #[serde(default)]
     pub text: Option<String>,
     /// The scale of anything that has to go as a picture.
-    #[serde(default = "crate::render::default_scale")]
     pub scale: f32,
     /// Takes out of JPEGs what isn't the picture, and the document's title.
-    #[serde(default)]
     pub strip_metadata: bool,
     /// Exports a page of a file that asks not to be copied. Only once the user has said to; logged.
-    #[serde(default)]
     pub anyway: bool,
+}
+
+impl TryFrom<line::ExportSvg> for ExportSvg {
+    type Error = AgentError;
+    fn try_from(line: line::ExportSvg) -> Result<Self, AgentError> {
+        let line::ExportSvg {
+            tab,
+            page,
+            out,
+            rect,
+            text,
+            scale,
+            strip_metadata,
+            anyway,
+            reference,
+        } = line;
+        Ok(Self {
+            tab,
+            at: PageOrRef::of((EXPORT_SVG_BOTH, EXPORT_SVG_NEITHER), page, reference.as_deref())?,
+            out,
+            rect,
+            text,
+            scale,
+            strip_metadata,
+            anyway,
+        })
+    }
+}
+
+impl From<ExportSvg> for line::ExportSvg {
+    fn from(asked: ExportSvg) -> Self {
+        let (page, reference) = asked.at.wire();
+        Self {
+            tab: asked.tab,
+            page,
+            out: asked.out,
+            rect: asked.rect,
+            text: asked.text,
+            scale: asked.scale,
+            strip_metadata: asked.strip_metadata,
+            anyway: asked.anyway,
+            reference,
+        }
+    }
 }
 
 impl Cmd for ExportSvg {
@@ -194,12 +284,16 @@ impl Cmd for ExportSvg {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        json!({ "tab": super::log_tab(&self.tab), "page": self.page, "anyway": self.anyway, "untrusted": super::log_file(&self.out) })
+        let Self { tab, at, out, anyway, .. } = self;
+        match at {
+            PageOrRef::Page(page) => json!({ "tab": super::log_tab(tab), "page": page, "anyway": anyway, "untrusted": super::log_file(out) }),
+            PageOrRef::Ref(_) => json!({ "tab": super::log_tab(tab), "ref_page": at.hint(), "anyway": anyway, "untrusted": super::log_file(out) }),
+        }
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {
             tab,
-            page,
+            at,
             out,
             rect,
             text,
@@ -210,7 +304,14 @@ impl Cmd for ExportSvg {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (id, position, source) = locate(access, tab, *page)?;
+            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
+            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
+            let pinned = found.as_ref().map(locating::Located::tab_ref);
+            let tab = pinned.as_ref().unwrap_or(tab);
+            let (id, position, source) = locate(access, tab, page)?;
+            if let Some(found) = &found {
+                locating::agree(found, &source)?;
+            }
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let args = render::SvgArgs {
                 path: &source.path,
@@ -227,7 +328,10 @@ impl Cmd for ExportSvg {
                 note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code.as_str()), events);
             }
             let mut data = drawn?;
-            describe_source(&mut data, *page, &source);
+            describe_source(&mut data, page, &source);
+            if let Some(found) = found {
+                locating::attach_new_file(access, &found, &mut data, out)?;
+            }
             Ok(data)
         }
     }
@@ -467,32 +571,77 @@ impl Cmd for Image {
     }
 }
 
-/// A box on a page as PNG, JPG, SVG or text.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// A box on a page as PNG, JPG, SVG or text. By page number, or by a reference to the page (which gives only the page: `rect` still applies), read from a
+/// `line` so a token that can't be one, or one with the clipboard, is refused as the line is read.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Snapshot")]
 pub struct Snapshot {
-    #[serde(default)]
     pub tab: TabRef,
-    pub page: u32,
+    pub at: PageOrRef,
     /// `x, y, width, height`, in points from the page's top left, as it's shown.
     pub rect: [f32; 4],
     /// `png`, `jpg`, `svg` or `text`.
-    #[serde(rename = "as")]
     pub format: String,
-    #[serde(default)]
     pub out: Option<PathBuf>,
-    #[serde(default = "crate::render::default_scale")]
     pub scale: f32,
-    #[serde(default)]
     pub anyway: bool,
     /// **To the window's clipboard,** the person's alone ([`crate::clipboard`]): `as png` is every type at once, as the snapshot tool takes a box, and
-    /// `as svg` the promised SVG made for a paste. Out of the CLI's flags: anyone else's is refused.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// `as svg` the promised SVG made for a paste. Out of the CLI's flags: anyone else's is refused. Never with a reference.
     pub to_clipboard: bool,
     /// The box's page as the person saw it, which it's refused by if another page is in its place by the time it runs, and which the paste of its SVG
     /// is drawn as ([`extract::AsSeen`]). Clipboard-only, as `to_clipboard`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_seen: Option<extract::AsSeen>,
+}
+
+impl TryFrom<line::Snapshot> for Snapshot {
+    type Error = AgentError;
+    fn try_from(line: line::Snapshot) -> Result<Self, AgentError> {
+        let line::Snapshot {
+            tab,
+            page,
+            rect,
+            format,
+            out,
+            scale,
+            anyway,
+            to_clipboard,
+            as_seen,
+            reference,
+        } = line;
+        let at = PageOrRef::of((SNAPSHOT_BOTH, SNAPSHOT_NEITHER), page, reference.as_deref())?;
+        if matches!(at, PageOrRef::Ref(_)) && (to_clipboard || as_seen.is_some()) {
+            return Err(AgentError::new(Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD, exit::USAGE));
+        }
+        Ok(Self {
+            tab,
+            at,
+            rect,
+            format,
+            out,
+            scale,
+            anyway,
+            to_clipboard,
+            as_seen,
+        })
+    }
+}
+
+impl From<Snapshot> for line::Snapshot {
+    fn from(asked: Snapshot) -> Self {
+        let (page, reference) = asked.at.wire();
+        Self {
+            tab: asked.tab,
+            page,
+            rect: asked.rect,
+            format: asked.format,
+            out: asked.out,
+            scale: asked.scale,
+            anyway: asked.anyway,
+            to_clipboard: asked.to_clipboard,
+            as_seen: asked.as_seen,
+            reference,
+        }
+    }
 }
 
 impl Cmd for Snapshot {
@@ -521,19 +670,19 @@ impl Cmd for Snapshot {
     }
     fn log_details(&self) -> Value {
         let Self {
-            tab,
-            page,
-            format,
-            out,
-            anyway,
-            ..
+            tab, at, format, out, anyway, ..
         } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "as": crate::render::snapshot::Format::from_name(format).map_or("?", crate::render::snapshot::Format::name), "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) })
+        let mut details = json!({ "tab": super::log_tab(tab), "as": crate::render::snapshot::Format::from_name(format).map_or("?", crate::render::snapshot::Format::name), "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) });
+        match at {
+            PageOrRef::Page(page) => details["page"] = json!(page),
+            PageOrRef::Ref(_) => details["ref_page"] = json!(at.hint()),
+        }
+        details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {
             tab,
-            page,
+            at,
             rect,
             format,
             out,
@@ -548,6 +697,11 @@ impl Cmd for Snapshot {
                 return Err(crate::clipboard::not_for_agents());
             };
             let as_seen = as_seen.ok_or_else(crate::clipboard::unseen)?;
+            // A reference never goes to the clipboard. The line is refused as it's read; one built in Rust never passed through it, and is refused here
+            // rather than copying the page its hint names, unresolved.
+            let PageOrRef::Page(page) = at else {
+                return Err(AgentError::new(Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD, exit::USAGE));
+            };
             let (id, _, source) = locate(access, tab, *page)?;
             let keys = access.persons_keys(cx.actor);
             return extract::box_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *rect, format, (*anyway, as_seen));
@@ -556,7 +710,14 @@ impl Cmd for Snapshot {
             if let Some(out) = out {
                 crate::quiet_files::check_new_file(access, out)?;
             }
-            let (id, _, source) = locate(access, tab, *page)?;
+            let (page, found) = at.find(access, tab, locating::CharsChecked::First)?;
+            // The tab is settled once: where the reference was found, whatever is active by the time the page is read.
+            let pinned = found.as_ref().map(locating::Located::tab_ref);
+            let tab = pinned.as_ref().unwrap_or(tab);
+            let (id, _, source) = locate(access, tab, page)?;
+            if let Some(found) = &found {
+                locating::agree(found, &source)?;
+            }
             let mut data = extract::snapshot_command(&extract::SnapshotAsked {
                 path: &source.path,
                 page: source.page + 1,
@@ -568,7 +729,12 @@ impl Cmd for Snapshot {
                 hidden: crate::highlighting::hidden_on(access, id, &source),
                 unsaved_quarter_turns: source.quarter_turns,
             })?;
-            describe_source(&mut data, *page, &source);
+            describe_source(&mut data, page, &source);
+            match (found, out) {
+                (Some(found), Some(out)) => locating::attach_new_file(access, &found, &mut data, out)?,
+                (Some(found), None) => locating::attach(access, &found, &mut data)?,
+                (None, _) => {}
+            }
             Ok(data)
         }
     }
@@ -737,7 +903,8 @@ pub(crate) const ROWS_EXPORT_SVG: &[Spec] = &[Spec {
     access: Access::At(Level::Full),
     summary: "Writes a page, or a box on it, to a new SVG file, whole or not at all. It never replaces a file, and doesn't show an unsaved rotation. Paths, clips, outlines and selectable text are vector, and images stay at their own resolution: original JPEG bytes where they can be, otherwise PNG. What can't be vector goes as a picture of just that element, and the answer lists each kind.",
     args: &[
-        PAGE_OR_BARE,
+        PAGE_OR_REF,
+        REF,
         Arg {
             key: "out",
             flag: Some("--out"),
@@ -755,7 +922,7 @@ pub(crate) const ROWS_EXPORT_SVG: &[Spec] = &[Spec {
         Arg {
             key: "text",
             flag: Some("--text"),
-            kind: Kind::Choice(&["both", "paths", "selectable"]),
+            kind: Kind::Choice(super::words::SvgText::WORDS),
             required: false,
             help: "`both`: exact outlines, with invisible real text over them. `paths`: exact outlines, smaller, can't be selected. `selectable`: real text only, smallest, in the named font if the reader has it, so it can look different. `both` if left out.",
         },
@@ -785,6 +952,7 @@ pub(crate) const ROWS_EXPORT_SVG: &[Spec] = &[Spec {
         "recto export svg --page 2 --rect 72,72,300,200 --out /tmp/box.svg --json",
         "recto export svg 3 --text paths --scale 3x --out /tmp/p3.svg",
         "recto export svg 1 --strip-metadata --out /tmp/share.svg",
+        EXPORT_SVG_REF_EXAMPLE,
     ],
     client_wait_s: 600,
     ..BASE
@@ -861,7 +1029,8 @@ pub(crate) const ROWS_SNAPSHOT: &[Spec] = &[Spec {
     access: Access::At(Level::Full),
     summary: "A box on a page, as the snapshot tool takes it: a PNG or JPG drawn sharp at the scale asked for, an SVG cut to the box as `export svg --rect` writes it, or its text, by a copy's rules. A file is new, whole or not at all. Text comes back in the answer, at Read-only, as `copy` gives it.",
     args: &[
-        PAGE_OR_BARE,
+        PAGE_OR_REF,
+        REF,
         Arg {
             key: "rect",
             flag: Some("--rect"),
@@ -872,7 +1041,7 @@ pub(crate) const ROWS_SNAPSHOT: &[Spec] = &[Spec {
         Arg {
             key: "as",
             flag: Some("--as"),
-            kind: Kind::Choice(&["png", "jpg", "svg", "text"]),
+            kind: Kind::Choice(crate::render::snapshot::Format::WORDS),
             required: true,
             help: "`png`, `jpg` (re-encoded, so never lossless), `svg`, or `text`.",
         },
@@ -900,6 +1069,7 @@ pub(crate) const ROWS_SNAPSHOT: &[Spec] = &[Spec {
         "recto snapshot 3 --rect 72,72,300,200 --as text --json",
         "recto snapshot --page 2 --rect 0,0,612,396 --as svg --out /tmp/top.svg",
         "recto snapshot 1 --rect 50,50,200,100 --as jpg --scale 3x --out /tmp/box.jpg",
+        SNAPSHOT_REF_EXAMPLE,
     ],
     client_wait_s: 600,
     ..BASE
@@ -1150,4 +1320,88 @@ It doesn't show the unsaved turn of {degrees} degrees."
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clipboard::ClipboardSink;
+    use crate::extract::{Clip, ClipStop};
+    use std::sync::Mutex;
+
+    /// A window's clipboard that counts what is offered to it.
+    #[derive(Default)]
+    struct Counting {
+        offered: Mutex<usize>,
+    }
+
+    impl ClipboardSink for Counting {
+        fn begin(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn begin_paste(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn offer(&self, _clip: Clip) {
+            *self.offered.lock().unwrap() += 1;
+        }
+        fn made(&self, _bytes: Vec<u8>) {}
+    }
+
+    /// The person's session, with a clipboard.
+    struct AtTheWindow {
+        session: Mutex<recto_session::Session<DrawableLoader>>,
+        clipboard: Counting,
+    }
+
+    impl SessionAccess for AtTheWindow {
+        type Loader = DrawableLoader;
+        fn with<R>(&self, step: impl FnOnce(&mut recto_session::Session<DrawableLoader>) -> R) -> R {
+            self.session.with(step)
+        }
+        fn clipboard(&self, actor: Actor) -> Option<&dyn ClipboardSink> {
+            (actor == Actor::Person).then_some(&self.clipboard as &dyn ClipboardSink)
+        }
+    }
+
+    /// Failure: a `Snapshot` to the clipboard built in Rust with a reference in place of a page never passes through the line's refusal, so it copies the
+    /// page its reference only hints at, unresolved, to the person's clipboard. It is refused when it runs, in the line's words, and nothing is offered.
+    #[test]
+    fn a_snapshot_by_reference_built_in_rust_is_never_copied_to_the_clipboard() {
+        let file = recto_testpdf::TempPdf::new(
+            "one.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))]),
+        );
+        let access = AtTheWindow {
+            session: Mutex::new(recto_session::Session::new(DrawableLoader)),
+            clipboard: Counting::default(),
+        };
+        access.session.lock().unwrap().open(&file.0).unwrap();
+        let snapshot = Snapshot {
+            tab: TabRef::Active,
+            at: PageOrRef::Ref(super::super::locating::made_up_locator(recto_core::locator::Target::Page)),
+            rect: [0.0, 0.0, 100.0, 100.0],
+            format: "png".into(),
+            out: None,
+            scale: 1.0,
+            anyway: false,
+            to_clipboard: true,
+            as_seen: Some(extract::AsSeen {
+                quarter_turns: 0,
+                file_page: 0,
+                own: true,
+            }),
+        };
+        let error = Cmd::run(
+            &snapshot,
+            &mut Cx {
+                access: &access,
+                actor: Actor::Person,
+                events: &mut Vec::new(),
+            },
+        )
+        .expect_err("refused");
+        assert_eq!((error.code, error.message.as_str()), (Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD));
+        assert_eq!(*access.clipboard.offered.lock().unwrap(), 0, "nothing reached the clipboard");
+    }
 }

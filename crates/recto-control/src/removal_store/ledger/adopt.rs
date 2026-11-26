@@ -10,8 +10,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Instant;
 
-/// The most of a journal's start read for its header line.
-const HEADER_BYTES: u64 = 8 * 1024;
+use crate::removal_store::journals::HEADER_BYTES;
 /// The most directory entries looked at in one folder, whatever is in it.
 const MAX_ENTRIES: usize = 65_536;
 
@@ -72,7 +71,7 @@ fn head(path: &Path) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     recto_platform::local::open_private_file(path)
         .ok()?
-        .take(HEADER_BYTES)
+        .take(HEADER_BYTES as u64)
         .read_to_end(&mut bytes)
         .ok()?;
     Some(bytes)
