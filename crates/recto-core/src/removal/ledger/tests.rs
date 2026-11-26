@@ -375,3 +375,28 @@ fn a_destination_reads_back_as_a_destination_and_no_link() {
     bad[at_frame] ^= 1;
     assert_eq!(read(&bad, &LEDGER_LIMITS).stopped, Some(Gap::Damaged));
 }
+
+/// Failure: a Save As to a name a file was once seen at is never a destination again (a crashed second save to `copy.pdf` leaves a temp nobody lists), or a
+/// destination written after the file landed is dropped by the earlier sighting. Order decides: only a file seen AFTER the destination lands it.
+#[test]
+fn a_destination_is_dropped_only_by_a_file_seen_after_it() {
+    let copy = || Entry::Destination("/docs/copy.pdf".into());
+    let landed = || Entry::Link(at(9, "/docs/copy.pdf"));
+    let dests = |entries: &[Entry]| read(&file_of(entries), &LEDGER_LIMITS).destinations;
+    let copy_path = PathBuf::from("/docs/copy.pdf");
+    assert!(dests(&[copy(), landed()]).is_empty(), "landed after it");
+    assert_eq!(
+        dests(&[landed(), copy()]),
+        [copy_path.clone()],
+        "a second save to the name, after the first landed"
+    );
+    assert_eq!(dests(&[copy(), landed(), copy()]), [copy_path.clone()]);
+    assert!(dests(&[copy(), landed(), copy(), landed()]).is_empty());
+    assert!(
+        dests(&[copy(), Entry::Link(Link::Unplaced { path: "/docs/copy.pdf".into() })]).is_empty(),
+        "a file that was there lands it too"
+    );
+    // The paths still count against the cap, landed or not.
+    let read_back = read(&file_of(&[copy(), landed()]), &LEDGER_LIMITS);
+    assert_eq!(read_back.path_bytes, 2 * "/docs/copy.pdf".len());
+}

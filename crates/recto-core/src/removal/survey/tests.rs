@@ -23,6 +23,7 @@ fn whole() -> Ledger {
     Ledger {
         links: Vec::new(),
         destinations: Vec::new(),
+        path_bytes: 0,
         began_ns: 0,
         gap: None,
         stopped: None,

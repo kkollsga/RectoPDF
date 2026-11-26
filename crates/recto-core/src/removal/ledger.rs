@@ -117,9 +117,13 @@ pub enum Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ledger {
     pub links: Vec<Link>,
-    /// The paths saves were going to when they started, in order, never joined to any lineage: `lineage` offers those no link names, to the survey of the
-    /// writer's temporaries alone.
+    /// The paths saves were going to when they started, in order, never joined to any lineage, to the survey of the writer's temporaries alone. **Order counts:**
+    /// a `Destination` is dropped when an `At` or `Unplaced` for the same path comes after it (the file landed, or was there), so a later save to that name is
+    /// a destination again, and one before it is not. Read once, in file order, so it holds at most the frames the cap on frames allows.
     pub destinations: Vec<PathBuf>,
+    /// The path bytes of every frame read, destinations that later landed included (they are dropped from `destinations` but stay in the file): what the cap on
+    /// paths counts, so the writer knows what room is left.
+    pub path_bytes: usize,
     /// When the file was made. `i64::MAX` where it can't be known, so everything reads as older than it.
     pub began_ns: i64,
     /// The first reason the whole story is not there: a `Gap` frame the file holds, or why the read stopped. Not complete if any.
@@ -151,6 +155,7 @@ impl Ledger {
         Self {
             links: Vec::new(),
             destinations: Vec::new(),
+            path_bytes: 0,
             began_ns: i64::MAX,
             gap: Some(gap),
             stopped: Some(gap),
@@ -362,6 +367,7 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
     let mut out = Ledger {
         links: Vec::new(),
         destinations: Vec::new(),
+        path_bytes: 0,
         began_ns,
         gap: None,
         stopped: None,
@@ -369,7 +375,8 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
         frames: 0,
         overflowed: false,
     };
-    let (mut frames, mut path_total) = (0usize, 0usize);
+    let mut frames = 0usize;
+    let mut path_total = 0usize;
     let mut pos = HEADER_LEN;
     while pos < bytes.len() {
         let rest = &bytes[pos..];
@@ -407,6 +414,8 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
                     if path_total > limits.max_total_path_bytes as usize {
                         return stop(out, Gap::Damaged);
                     }
+                    // A file seen here after a save was going here: that save landed (or the file was there), and a later one is a new destination.
+                    out.destinations.retain(|d| d != path);
                 }
                 out.links.push(link);
             }
@@ -419,6 +428,7 @@ pub fn read(bytes: &[u8], limits: &LedgerLimits) -> Ledger {
             }
         }
         pos += end;
+        out.path_bytes = path_total;
         out.good_len = pos;
         out.frames = frames;
     }

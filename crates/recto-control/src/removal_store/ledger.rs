@@ -291,18 +291,9 @@ struct Room {
 
 impl Room {
     fn of(ledger: &Ledger, limits: &LedgerLimits) -> Self {
-        let path_total = ledger
-            .links
-            .iter()
-            .map(|link| match link {
-                Link::At { path, .. } | Link::Unplaced { path } => path.as_os_str().as_encoded_bytes().len(),
-                Link::Saved { .. } => 0,
-            })
-            .chain(ledger.destinations.iter().map(|path| path.as_os_str().as_encoded_bytes().len()))
-            .sum();
         Self {
             frames: ledger.frames,
-            path_total,
+            path_total: ledger.path_bytes,
             overflowed: ledger.overflowed,
             max_links: limits.max_links as usize,
             max_paths: limits.max_total_path_bytes as usize,
@@ -428,12 +419,19 @@ fn try_append(root: &Path, config: &Config, entries: Vec<Entry>) -> Result<bool,
     for entry in &entries {
         match entry {
             Entry::Link(link) => {
-                if seen.contains(&link) {
+                // A file seen at a path lands a destination before it, as the reader reads it: a save to that name after this is noted again.
+                // One that is already there is still written when it lands a destination, so the file has it after.
+                let before = seen_destinations.len();
+                if let Link::At { path, .. } | Link::Unplaced { path } = link {
+                    seen_destinations.retain(|d| *d != path);
+                }
+                if seen.contains(&link) && seen_destinations.len() == before {
                     continue;
                 }
                 seen.push(link);
             }
             Entry::Destination(path) => {
+                // Not again while no file has been seen at it since the last note.
                 if seen_destinations.contains(&path) {
                     continue;
                 }

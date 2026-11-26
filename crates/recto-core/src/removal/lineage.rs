@@ -13,7 +13,7 @@
 
 use super::ledger::{FileVersion, Gap, Ledger};
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// One thing the ledger saw.
@@ -149,15 +149,8 @@ pub fn lineage<'a>(ledger: &'a Ledger, current: FileVersion, path: &'a Path, lim
     let root = joined.find(current);
     let forked = forks.into_iter().any(|n| joined.find(n) == root);
     let target = nodes.into_iter().map(|n| joined.find(n) == root).collect();
-    // A destination a file was later seen at (`At`, or `Unplaced` as a file that was there) has landed, or was there already: it is that link's path, as before.
-    let named: HashSet<&Path> = links
-        .iter()
-        .filter_map(|link| match link {
-            Link::At { path, .. } | Link::Unplaced { path } => Some(path.as_path()),
-            Link::Saved { .. } => None,
-        })
-        .collect();
-    let destinations = ledger.destinations.iter().map(PathBuf::as_path).filter(|path| !named.contains(path)).collect();
+    // The ledger's destinations are the ones no file was seen at AFTER (the reader dropped each at the `At` or `Unplaced` that came later), so order is its.
+    let destinations = ledger.destinations.iter().map(PathBuf::as_path).collect();
     Ok(Lineage {
         links,
         destinations,

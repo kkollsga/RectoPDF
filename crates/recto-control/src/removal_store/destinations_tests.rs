@@ -229,11 +229,11 @@ fn a_save_as_through_local_or_session_is_noted_in_a_ledger_that_has_begun_and_be
     let second = dir.join("second.pdf");
     save_as(&paths, &mine, &second);
     let ledger = read(&paths.root);
-    assert!(
-        ledger.destinations.contains(&second),
-        "the destination at `Starting`: {:?}",
-        ledger.destinations
-    );
+    // Noted at the writer's first step and landed since: the reader drops it (a file was seen at it after), and the file holds it as a frame and a link.
+    assert!(!ledger.destinations.contains(&second), "landed: {:?}", ledger.destinations);
+    let bytes = std::fs::read(paths.root.join("removal").join("ledger.v1")).unwrap();
+    let name = second.as_os_str().as_encoded_bytes();
+    assert_eq!(bytes.windows(name.len()).filter(|w| *w == name).count(), 2, "a destination frame and the link");
     assert!(
         ledger
             .links
@@ -243,4 +243,133 @@ fn a_save_as_through_local_or_session_is_noted_in_a_ledger_that_has_begun_and_be
         ledger.links
     );
     assert_eq!(ledger.gap, None);
+}
+
+/// Starts a Save As of `mine` to `destination` as the writer's first step does, lets the ledger settle, and leaves what a crash leaves: the writer's temp
+/// for that name in the destination's folder.
+fn crash_save_as(root: &Path, mine: &Path, destination: &Path) {
+    notes(
+        root,
+        &SaveNote::Starting {
+            path: mine,
+            from: Some(stamp(mine)),
+            destination: Some(destination),
+        },
+    );
+    settled(root);
+    let (folder, name) = (destination.parent().unwrap(), destination.file_name().unwrap().to_str().unwrap());
+    put(
+        folder,
+        &format!("{}9-1.tmp", writer_temp_prefix(Path::new(name))),
+        b"the whole document and its edits",
+    );
+}
+
+/// Failure (verification blocker): the filter read order-blind, so once a Save As to `copy.pdf` had landed, a second Save As to the same name was never a
+/// destination again, and its crashed temp (the source's whole document) read `Unrelated` in the same folder or its folder was never listed in another:
+/// removal of the source said none found. Order counts: the destination is recorded again after the file landed, and the removal refuses, for the copy in the
+/// source's folder and in another.
+#[test]
+fn a_second_save_as_to_a_name_that_landed_and_crashed_is_found_in_either_folder() {
+    for other_folder in [false, true] {
+        let dir = folder();
+        let root = dir.join("state");
+        let mine = put(&dir, "mine.pdf", b"%PDF-1.4 mine");
+        let home = if other_folder { dir.join("elsewhere") } else { dir.path().to_path_buf() };
+        std::fs::create_dir_all(&home).unwrap();
+        let copy = home.join("copy.pdf");
+        notes(
+            &root,
+            &SaveNote::Starting {
+                path: &mine,
+                from: Some(stamp(&mine)),
+                destination: Some(&copy),
+            },
+        );
+        settled(&root);
+        put(&home, "copy.pdf", b"%PDF-1.4 the copy, longer");
+        notes(
+            &root,
+            &SaveNote::Landed {
+                path: &copy,
+                to: Some(stamp(&copy)),
+                original: &mine,
+                backup: None,
+            },
+        );
+        assert!(planned(&root, &mine, TargetMode::Save).is_ok(), "nothing is left: {other_folder}");
+        // The second Save As to the same name (which replaces the first copy) crashes in the writer, its temp left.
+        std::fs::remove_file(&copy).unwrap();
+        crash_save_as(&root, &mine, &copy);
+        assert_eq!(
+            planned(&root, &mine, TargetMode::Save).unwrap_err(),
+            recto_core::removal::Refusal::Incomplete(Store::WriterTemp),
+            "the second save's temp, copy in another folder: {other_folder}"
+        );
+    }
+}
+
+/// Failure: a Save As to a fresh name in another folder that crashes is not found (the folder is never listed), so removal says none found with the whole
+/// document sitting there; through the real ledger of the save's own note.
+#[test]
+fn a_crashed_save_as_to_a_fresh_name_in_another_folder_refuses() {
+    let dir = folder();
+    let root = dir.join("state");
+    let mine = put(&dir, "mine.pdf", b"%PDF-1.4 mine");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    crash_save_as(&root, &mine, &elsewhere.join("fresh.pdf"));
+    assert_eq!(
+        planned(&root, &mine, TargetMode::Save).unwrap_err(),
+        recto_core::removal::Refusal::Incomplete(Store::WriterTemp)
+    );
+}
+
+/// Failure: a Save As the person's agreement or level refuses leaves a destination in the ledger, so every refused attempt costs a folder in every later
+/// survey (64 of them is `TooLarge` for every removal). A refused save records nothing.
+#[test]
+fn a_refused_save_as_records_no_destination() {
+    use recto_agent::{Command, TabRef, commands};
+    let dir = folder();
+    let paths = crate::state::StatePaths::overridden(&dir.join("state")).unwrap();
+    paths.prepare().unwrap();
+    crate::levels::store(&paths, recto_agent::Level::Full).unwrap();
+    let mine = put(
+        &dir,
+        "mine.pdf",
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["words"]))]),
+    );
+    // A ledger that has begun, so a note would be recorded.
+    notes(
+        &paths.root,
+        &SaveNote::Starting {
+            path: &mine,
+            from: Some(stamp(&mine)),
+            destination: None,
+        },
+    );
+    settled(&paths.root);
+    let mut session = recto_session::Session::new(recto_agent::DrawableLoader);
+    let mut log = crate::log::ActivityLog::new(&paths);
+    crate::local::run_here(
+        &mut session,
+        &paths,
+        &mut log,
+        &Command::from(commands::tabs::Open {
+            path: mine.clone(),
+            page: None,
+        }),
+    )
+    .unwrap();
+    // The file changed since it was opened: the writer refuses it at its first check, before it makes anything.
+    std::fs::write(&mine, b"%PDF-1.4 changed under the tab, and longer than before").unwrap();
+    let out = dir.join("never.pdf");
+    let save = Command::from(commands::saving::Save {
+        tab: TabRef::Active,
+        out: Some(out.clone()),
+        replace: false,
+    });
+    assert!(crate::local::run_here(&mut session, &paths, &mut log, &save).is_err());
+    assert!(!out.exists());
+    assert!(read(&paths.root).destinations.is_empty(), "{:?}", read(&paths.root).destinations);
 }

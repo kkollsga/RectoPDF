@@ -861,13 +861,12 @@ fn after_a_save_as_the_sources_backup_is_unrelated() {
     let now = FileVersion::new(stamp(&copy), recto_platform::volume::volume_identity(&copy));
     let outcome = plan_for(&s.paths.root, &s.backups(), now, &copy, TargetMode::Save).unwrap();
     assert_eq!(outcome.0, 0, "the source's backup is not the copy's to purge: {outcome:?}");
-    // The destination was noted when the save started (the writer's temp is made in its folder before anything lands), as a destination and no link; the
-    // file landed since, so a link names it and the survey needs the destination no more.
-    assert!(
-        ledger.destinations.contains(&copy),
-        "the Save As's destination at `Starting`: {:?}",
-        ledger.destinations
-    );
+    // The destination was noted when the writer was about to make its temp (a destination frame, no link); the file landed since, so a link after it names
+    // it and the survey needs the destination no more: the reader drops it, and its path is in the file twice (the frame and the link).
+    assert!(!ledger.destinations.contains(&copy), "landed after the note: {:?}", ledger.destinations);
+    let file_bytes = std::fs::read(ledger_path(&s.paths.root)).unwrap();
+    let path_bytes = copy.as_os_str().as_encoded_bytes();
+    assert_eq!(file_bytes.windows(path_bytes.len()).filter(|w| *w == path_bytes).count(), 2);
     assert!(
         !ledger.links.iter().any(|link| matches!(link, Link::Unplaced { path } if *path == copy)),
         "never a link: {:?}",
@@ -984,4 +983,30 @@ fn a_destination_the_writer_fails_on_is_nothing_and_one_in_a_folder_not_yet_made
     // A folder that isn't there at all is as one made later: kept under the nearest that is.
     start(&dir.join("no-such-folder").join("copy.pdf"));
     assert_eq!(read(&root).destinations.len(), 2, "a folder that isn't there is kept under the nearest that is");
+}
+
+/// Failure: a destination path over the ledger's 4,096 bytes leaves a gap for a save that made nothing, or is recorded where the ledger can't hold it. On this
+/// system a path over `PATH_MAX` (1,024) is one the writer fails on at once (`ENAMETOOLONG`), so it is nothing: no record and no gap. The `WriteFailed` branch
+/// for a canonical path over 4,096 bytes can't be reached here, and the test doesn't pretend to reach it.
+#[test]
+fn a_destination_over_the_path_limit_is_nothing_because_the_writer_fails_on_it() {
+    let dir = temp();
+    let root = dir.join("state");
+    std::fs::write(dir.join("a.pdf"), pdf("a")).unwrap();
+    let mut long = dir.path().to_path_buf();
+    for _ in 0..17 {
+        long.push("n".repeat(250)); // each part is under the name limit; the whole is over 4,096 bytes
+    }
+    long.push("copy.pdf");
+    assert!(long.as_os_str().len() > recto_core::removal::MAX_PATH_BYTES);
+    note_save(
+        &root.join("backups.noindex"),
+        &SaveNote::Starting {
+            path: &dir.join("a.pdf"),
+            from: Some(stamp(&dir.join("a.pdf"))),
+            destination: Some(&long),
+        },
+    );
+    let ledger = read(&root);
+    assert_eq!((ledger.destinations.len(), ledger.gap), (0, None));
 }

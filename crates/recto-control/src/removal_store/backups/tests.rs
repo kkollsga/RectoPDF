@@ -35,6 +35,7 @@ fn ledger() -> Ledger {
             },
         ],
         destinations: Vec::new(),
+        path_bytes: 0,
         began_ns: 0,
         gap: None,
         stopped: None,
