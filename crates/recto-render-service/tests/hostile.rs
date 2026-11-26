@@ -777,15 +777,28 @@ fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_and_text_alone(
     // which is not remembered and is read again: `a_read_the_mac_was_too_busy_for_is_tried_again`). That says nothing about the check, so the ask is repeated
     // under the ordinary deadline and each lost read is counted as the one more kill it is.
     let mut lost_reads = 0;
-    let mut read = recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_characters(0, false, true));
-    while matches!(read, Err(recto_render_service::RenderFailure::PageReadFailed { reason: KillReason::Deadline, .. })) && lost_reads < 5 {
+    let mut read =
+        recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_characters(0, false, true));
+    while matches!(
+        read,
+        Err(recto_render_service::RenderFailure::PageReadFailed {
+            reason: KillReason::Deadline,
+            ..
+        })
+    ) && lost_reads < 5
+    {
         lost_reads += 1;
         read = doc.page_characters(0, false, true);
     }
     let read = read.expect("the text still comes back");
     assert!(!read.hidden_checked, "not checked");
     assert_eq!(read.chars.len(), 1, "the page's text");
-    assert_eq!(doc.stats().deadline_kills, 1 + lost_reads, "the check was stopped at its deadline, once: {:?}", doc.stats());
+    assert_eq!(
+        doc.stats().deadline_kills,
+        1 + lost_reads,
+        "the check was stopped at its deadline, once: {:?}",
+        doc.stats()
+    );
     for scale in [0.25, 0.5, 1.0, 2.0, 4.0] {
         assert_eq!(doc.page_draw_state_at(0, scale), recto_render_service::PageDrawState::Sharp, "at {scale}x");
     }
