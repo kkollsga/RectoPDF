@@ -148,7 +148,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          (`openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder): for removal's \
          surveys of RectoPDF's own state folders, never a document",
     ),
-    ("recto-platform/src/folder_stub.rs", 1, "the folder helper's stand-in on another system: opens nothing"),
+    (
+        "recto-platform/src/folder_stub.rs",
+        1,
+        "the folder helper's stand-in on another system: opens nothing",
+    ),
     (
         "recto-platform/src/local_mac.rs",
         17,
