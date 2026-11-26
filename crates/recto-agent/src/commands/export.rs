@@ -1058,7 +1058,7 @@ pub(crate) const ROWS_IMAGES: &[Spec] = &[Spec {
         TAB,
     ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, ref, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left as its file shows it (its own turn, before an unsaved one), held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
+    data: "`{ page, source_page, from_added_file, ref, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left as its file shows it (its own turn, before an unsaved one), held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page, or on a hidden layer, isn't drawn, so it has no number and isn't counted or listed; one drawn whose box the page can't show is counted and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
     examples: &[
         "recto images 3",
         "recto images --page 3 --json",
@@ -1074,7 +1074,7 @@ pub(crate) const ROWS_IMAGE: &[Spec] = &[Spec {
     tag: "image",
     group: GROUP_READ,
     access: Access::At(Level::Full),
-    summary: "One of a page's images to a new file, as itself, whole or not at all. `.jpg` takes a JPEG's own bytes, unchanged, and refuses an image that isn't one, as that would be re-encoded. `.png` takes any image, losslessly, at its own resolution, a mask as transparency. It never replaces a file. With `--ref` it takes the image of the page a reference points at now, numbered as `recto images --ref` lists them, and `ref` in the answer says how it was found; the reference never goes to the clipboard.",
+    summary: "One of a page's images to a new file, as itself, whole or not at all. `.jpg` takes a JPEG's own bytes, unchanged, and refuses an image that isn't one, as that would be re-encoded. `.png` takes any image, losslessly, at its own resolution, a mask as transparency. It never replaces a file. With `--ref` it takes the image of the page a reference points at now, numbered as `recto images --ref` lists them: the same drawn objects in the same order, unless the crop, the layers, or images two forms deep changed, so the answer's `rect` and pixel size are the listing's for that number, to check against, and `ref` says how the page was found; the reference never goes to the clipboard.",
     args: &[
         PAGE_OR_REF,
         REF,
@@ -1102,7 +1102,7 @@ pub(crate) const ROWS_IMAGE: &[Spec] = &[Spec {
         TAB,
     ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, ref, number, out, coded, lossless, says, width, height, bytes, took_ms, anyway, worker_peak_bytes, untrusted: { added_file } }`. `coded` is `original_jpeg` (its own bytes), `jpeg_header_fixed` (its own picture, with what's around it corrected so it shows as on the page), `png`, `png_with_mask`, or `png_drawn`: an image that can be drawn but not handed over, drawn alone at 2x, with `lossless: false`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
+    data: "`{ page, source_page, from_added_file, ref, number, rect, image_width, image_height, out, coded, lossless, says, width, height, bytes, took_ms, anyway, worker_peak_bytes, untrusted: { added_file } }`. `rect` (points from the page's top left, as `images` lists it) and `image_width` and `image_height` (the image's own pixels) are the listing's fields for this number, null if the page can't show its box; `width` and `height` are the file's. `coded` is `original_jpeg` (its own bytes), `jpeg_header_fixed` (its own picture, with what's around it corrected so it shows as on the page), `png`, `png_with_mask`, or `png_drawn`: an image that can be drawn but not handed over, drawn alone at 2x, with `lossless: false`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
     examples: &[
         "recto image 3 --number 1 --out /tmp/photo.jpg",
         "recto image --page 3 --number 2 --out /tmp/chart.png --json",

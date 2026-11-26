@@ -210,6 +210,14 @@ fn images_and_image_by_ref_read_the_page_found_then_moved_after_another_programs
                 .unwrap_or_else(|error| panic!("{tag} image: {error:?}"));
             found_as(&format!("{tag} image"), &taken, token, status, 3);
             assert_eq!(taken["page"].as_u64(), Some(page), "{tag} image: {taken}");
+            // The answer says which image it took, as the listing said it: a caller checks it got the one it listed.
+            let listed_one = &listed["images"][0];
+            assert_eq!(taken["rect"], listed_one["rect"], "{tag} image: {taken}");
+            assert_eq!(
+                (&taken["image_width"], &taken["image_height"]),
+                (&listed_one["width"], &listed_one["height"]),
+                "{tag} image: {taken}"
+            );
             png_is_2_by_2(wanted[1].writes.as_ref().expect("a file"), &tag);
         }
     };

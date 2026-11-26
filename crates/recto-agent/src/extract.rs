@@ -101,11 +101,17 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
         return Err(image::not_a_jpeg(index, number));
     }
     drop(written);
+    // Which image it was, as `images` lists it, so a caller that listed the page can check it got the one it listed: another program may have changed the page's
+    // crop, its layers or the forms two deep since, and the numbers with them.
+    let placed = image::placed(&mut doc, path, index, number, &caps)?;
     publish_picture(&temp.path, out)?;
     drop(temp);
     Ok(json!({
         "page": page,
         "number": number,
+        "rect": placed.as_ref().map(|image| image.rect.map(image::round_points)),
+        "image_width": placed.as_ref().map(|image| image.width),
+        "image_height": placed.as_ref().map(|image| image.height),
         "out": out,
         "coded": copied.coded.name(),
         "lossless": copied.coded.lossless(),
