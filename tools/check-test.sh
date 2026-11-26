@@ -1032,6 +1032,10 @@ check "a part runs again on the same code: it is never remembered" "true" "$([ "
 # next hold them).
 ci_part all
 ci_part heavy
+# Failure (review, 2026-11-26): the run's time record listed the lifecycle tests with `-p recto-cli`, which resolves recto-cli's own features and rebuilt every workspace
+# crate at the end of the heavy job, outside every stage. A heavy run, with its record kept (STUB_JUNIT) and the list answered, makes no `-p recto-cli` call at all.
+: > "$CALLS"; env CI=true CHECK_PART=heavy CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch STUB_JUNIT=1 STUB_LIST='recto-cli::restore update::x' tools/check.sh --full > "$X/part-heavy-record.out" 2>&1
+check "a heavy run lists the lifecycle tests for its record, and makes no -p recto-cli call" "1 0" "$(grep -c '^nextest list ' "$CALLS") $(grep -c -- '-p recto-cli' "$CALLS")"
 same_calls() { grep -vE -- '--test app --test restore|binary\(=app\) \| binary\(=restore\)' "$1" | sed -E 's/^nextest run --locked --no-fail-fast (-p recto-cli --test |--workspace -E package\(recto-cli\) \& \(binary\(=)(notices|registrations).*/\2 stage/' | sort; }
 check "light and heavy together run what a run of everything does, each call once" "$(same_calls "$X/calls-all")" "$( { same_calls "$X/calls-light"; same_calls "$X/calls-heavy"; } | sort)"
 check "no call is in both" "" "$(comm -12 <(sort -u "$X/calls-light") <(sort -u "$X/calls-heavy"))"

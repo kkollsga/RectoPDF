@@ -550,7 +550,7 @@ cli_select() {
   local extra=$1 b bins=""
   shift
   CLI_ARGS=()
-  if [ "$other_mode" != none ]; then
+  if [ "${other_mode:-none}" != none ]; then
     for b in "$@"; do bins="$bins${bins:+ | }binary(=$b)"; done
     CLI_ARGS=(--workspace -E "package(recto-cli) & ($bins)${extra:+ & ($extra)}")
     [ -z "${CLI_JOBS:-}" ] || CLI_ARGS+=(-j "$CLI_JOBS")
@@ -738,7 +738,7 @@ if [ "$gate_status" -ne 0 ]; then
   exit "$gate_status"
 fi
 export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run features_check stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table cli_select
-export other_mode app_tier_dir CHECK_TOP_PID check_mark part runs_light runs_core mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
+export app_tier_dir CHECK_TOP_PID check_mark part runs_light runs_core mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
