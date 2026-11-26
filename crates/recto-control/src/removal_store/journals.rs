@@ -1,8 +1,9 @@
 //! The journals folders (`<root>/session/journals` and `<root>/session-windowless/journals`): which of their files are the target's, for
 //! `Store::{Journal, JournalVariant, PageIds, SleepFile, KeptPages}` (`docs/design/removal.md` §3, §4 and §10 "D2c-1 as built").
 //!
-//! **Read-only.** A journal or a sidecar is opened only through `local::open_private_file` (no link followed, no pipe waited on, only this user's,
-//! nobody else able to write it) and read for its first bytes alone: 8 KiB of a journal, 110 bytes of a sidecar. A sleep file and a kept copy are
+//! **Read-only.** Each folder is opened once by its descriptor (`recto_platform::folder`: no link followed at any step, this user's) and listed, looked
+//! at and opened from through that descriptor, so a path swapped for a link after the check changes nothing. A journal or a sidecar is opened only
+//! with no link followed, no pipe waited on, only this user's, nobody else able to write it, and read for its first bytes alone: 8 KiB of a journal, 110 bytes of a sidecar. A sleep file and a kept copy are
 //! placed by their names and never opened (they hold headings, page pictures and PDFs). A document's path in a header is compared as bytes with the
 //! ledger's and never looked at. Every entry becomes an artifact, so one nobody can place (a name this build doesn't write, a folder, a link, a
 //! pipe) is `Unknown` and refuses the plan instead of being skipped as "none found".
@@ -17,13 +18,16 @@ mod names;
 use super::backups::{self, Finder};
 use names::Kind;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
-use recto_platform::{FileStamp, local};
+use recto_platform::FileStamp;
+use recto_platform::folder::{Entry, Folder, Opened};
 use recto_session::edit::identity::sidecar;
 use recto_session::record::{MARKED_JOURNAL_VERSION, journal_file_name, journal_header};
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::io::Read as _;
 use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -46,6 +50,9 @@ pub(crate) struct Caps {
     /// Called with a path just before it is opened: a test's way to change the folder under the listing.
     #[cfg(test)]
     pub before_open: Option<Hook>,
+    /// Called with a folder's path once it is checked and before it is listed: a test's way to swap the folder for a link.
+    #[cfg(test)]
+    pub before_list: Option<Hook>,
 }
 
 impl Default for Caps {
@@ -55,6 +62,8 @@ impl Default for Caps {
             header_bytes: HEADER_BYTES,
             #[cfg(test)]
             before_open: None,
+            #[cfg(test)]
+            before_list: None,
         }
     }
 }
@@ -73,20 +82,21 @@ pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: Tar
     let maps = Maps::of(lineage);
     let mut buffer = Vec::new();
     for flavor in FLAVORS {
-        let session = root.join(flavor);
-        match real_folder(&session) {
-            Folder::Missing => continue,
-            Folder::Other => return Ok(()),
-            Folder::Real => {}
-        }
-        let folder = session.join("journals");
-        match real_folder(&folder) {
-            Folder::Missing => continue,
-            Folder::Other => return Ok(()),
-            Folder::Real => {}
-        }
+        let session_path = root.join(flavor);
+        let session = match Folder::open(&session_path) {
+            Opened::Missing => continue,
+            Opened::Other => return Ok(()),
+            Opened::Folder(folder) => folder,
+        };
+        let folder = match session.open_in(OsStr::new("journals")) {
+            Opened::Missing => continue,
+            Opened::Other => return Ok(()),
+            Opened::Folder(folder) => folder,
+        };
         let run = Run {
             flavor,
+            #[cfg(test)]
+            path: session_path.join("journals"),
             folder: &folder,
             maps: &maps,
             mode,
@@ -100,21 +110,6 @@ pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: Tar
         survey.mark_complete(store);
     }
     Ok(())
-}
-
-enum Folder {
-    Missing,
-    Real,
-    Other,
-}
-
-/// By `symlink_metadata`, so a link is `Other` whatever it leads to.
-fn real_folder(path: &Path) -> Folder {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => Folder::Real,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Folder::Missing,
-        _ => Folder::Other,
-    }
 }
 
 /// What the lineage says about versions and paths, as the journals name them.
@@ -166,17 +161,13 @@ fn key_of(inode: u64, size: u64, mtime_ns: i64) -> String {
 /// One folder's survey.
 struct Run<'a> {
     flavor: &'a str,
-    folder: &'a Path,
+    /// Where the folder was when opened, for a test's seams; never opened again.
+    #[cfg(test)]
+    path: PathBuf,
+    folder: &'a Folder,
     maps: &'a Maps,
     mode: TargetMode,
     caps: &'a Caps,
-}
-
-/// An entry, as listed: nothing is followed.
-struct Listed {
-    name: OsString,
-    is_file: bool,
-    links: u64,
 }
 
 /// What placing decided: the sides found, or `None` when it can't be told.
@@ -246,26 +237,25 @@ impl Run<'_> {
     }
 
     /// The folder's entries, at most the cap; one more is `TooLarge`. `None` if the folder can't be read.
-    fn list(&self) -> Result<Option<Vec<Listed>>, Refusal> {
-        let Ok(entries) = std::fs::read_dir(self.folder) else { return Ok(None) };
+    fn list(&self) -> Result<Option<Vec<Entry>>, Refusal> {
+        #[cfg(test)]
+        if let Some(hook) = &self.caps.before_list {
+            hook(&self.path);
+        }
+        let Ok(entries) = self.folder.entries() else { return Ok(None) };
         let mut listed = Vec::new();
         for entry in entries {
             let Ok(entry) = entry else { return Ok(None) };
             if listed.len() >= self.caps.entries {
                 return Err(Refusal::TooLarge);
             }
-            let Ok(meta) = entry.metadata() else { return Ok(None) };
-            listed.push(Listed {
-                name: entry.file_name(),
-                is_file: meta.is_file(),
-                links: super::backups::links(&meta),
-            });
+            listed.push(entry);
         }
         Ok(Some(listed))
     }
 
     /// Root-relative, with the flavor: the same name in both folders is two artifacts.
-    fn key(&self, entry: &Listed) -> ArtifactKey {
+    fn key(&self, entry: &Entry) -> ArtifactKey {
         let mut name = format!("{}/journals/", self.flavor).into_bytes();
         name.extend_from_slice(entry.name.as_encoded_bytes());
         ArtifactKey::of(store_of(names::kind_of(&entry.name)), &name)
@@ -303,12 +293,11 @@ impl Run<'_> {
     /// The first `cap` bytes of a private plain file. `None` if it can't be trusted (a link, a pipe, another user's, group-writable, unreadable);
     /// `Gone` if it isn't there any more.
     fn read<'b>(&self, name: &str, cap: usize, buffer: &'b mut Vec<u8>) -> Result<Option<&'b [u8]>, Gone> {
-        let path = self.folder.join(name);
         #[cfg(test)]
         if let Some(hook) = &self.caps.before_open {
-            hook(&path);
+            hook(&self.path.join(name));
         }
-        let file = match local::open_private_file(&path) {
+        let file = match self.folder.open_file(OsStr::new(name)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Gone),
             Err(_) => return Ok(None),

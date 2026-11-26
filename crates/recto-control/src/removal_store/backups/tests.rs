@@ -356,3 +356,28 @@ fn a_backup_is_older_than_the_ledger_only_by_a_nanosecond() {
     );
     assert_eq!(purges(&made(began + 1).unwrap()), 1);
 }
+
+/// Failure: the backups folder is checked as a real folder and then listed by its path, so one swapped for a link in between (the real one moved
+/// away) is followed: the other place's files are listed as the backups, and the real folder's unplaceable file is never seen.
+#[test]
+fn a_backups_folder_swapped_for_a_link_after_the_check_is_not_followed() {
+    let root = TempDir::new("recto-backups-");
+    let folder = root.join("backups");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("notes.txt"), b"hi").unwrap();
+    let outside = TempDir::new("recto-backups-out-");
+    let links = ledger();
+    let lineage = lineage(&links, stamp(7), Path::new(MINE), &LEDGER_LIMITS).unwrap();
+    let mut survey = Survey::new(&limits(16));
+    for store in Store::ALL.into_iter().filter(|s| s.enumerated() && *s != Store::Backup) {
+        survey.mark_complete(store);
+    }
+    survey.history(&lineage);
+    let swap = |path: &Path| {
+        std::fs::rename(path, root.join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), path).unwrap();
+    };
+    survey_backups_with(&folder, &lineage, TargetMode::Save, &mut survey, &swap).unwrap();
+    let s = survey.finish().unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::Backup));
+}

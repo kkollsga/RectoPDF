@@ -618,3 +618,33 @@ fn only_a_plain_ds_store_file_is_skipped() {
     std::fs::create_dir(folder(&sub).join(".DS_Store")).unwrap();
     assert_eq!(refusal(&sub, TargetMode::Save), Refusal::Incomplete(Store::JournalVariant), "a folder");
 }
+
+/// Failure: a folder is checked as a real folder and then listed by its path, so one swapped for a link in between (the real one moved away) is
+/// followed: another place's files are listed as the journals folder's, and the plan is made from them while what was really there is never seen.
+#[test]
+fn a_journals_folder_swapped_for_a_link_after_the_check_is_not_followed() {
+    let dir = root();
+    // What the real folder holds: a file nobody can place, so the plan must refuse.
+    put(&folder(&dir), "notes.txt", b"hi");
+    let outside = TempDir::new("recto-journals-out-");
+    // What a followed link would show: the target's own journal, which would be purged and the plan made.
+    put(&outside, &format!("journal-{}.log", k(7)), &journal(MINE, 7));
+    let (away, to) = (outside.path().to_path_buf(), dir.path().to_path_buf());
+    let hook: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(move |path| {
+        if path.file_name().is_some_and(|n| n == "journals") {
+            let moved = to.join(format!("moved-{}", path.parent().unwrap().file_name().unwrap().to_string_lossy()));
+            std::fs::rename(path, moved).unwrap();
+            std::os::unix::fs::symlink(&away, path).unwrap();
+        }
+    });
+    let caps = Caps {
+        before_list: Some(hook),
+        ..Caps::default()
+    };
+    let s = survey_with(dir.path(), &ledger(), version(7), TargetMode::Save, 64, &caps).unwrap();
+    assert_eq!(plan_of(&s, TargetMode::Save).unwrap_err(), Refusal::Incomplete(Store::JournalVariant));
+    assert!(
+        std::fs::read_dir(outside.path()).unwrap().count() == 1,
+        "nothing was written to the other place"
+    );
+}
