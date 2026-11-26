@@ -614,6 +614,58 @@ fn a_damaged_corpus_answers_by_reading_the_pages() {
     );
 }
 
+/// Failure: an index built before identities were stored (neither `ids.bin` nor `ids.sealed`) is taken as damaged and thrown away, or answers its hits without
+/// references, or with other tokens than the page-by-page route makes. It answers from the index, with the references `--scan` makes, and keeps its files; and a
+/// new one's stored identities make the same tokens (`the_hard_cases_answer_the_same_every_way` and the rest hold that on a corpus that has them).
+#[test]
+fn an_index_built_before_identities_were_stored_answers_with_the_scans_references() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("old-index.pdf", 4);
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
+    let (bin, header) = (paths.app.join("ids.bin"), paths.app.join("ids.sealed"));
+    assert!(bin.exists() && header.exists(), "a new build stores them");
+    let with = index_matches_scan(&state, &["search", "common", "--limit", "20"]);
+    assert!(
+        with["data"]["hits"][0]["ref"].is_string() && with["data"]["references"]["made"].as_u64() > Some(0),
+        "{with}"
+    );
+    std::fs::remove_file(&bin).unwrap();
+    std::fs::remove_file(&header).unwrap();
+    let without = index_matches_scan(&state, &["search", "common", "--limit", "20"]);
+    assert_eq!(without["data"]["hits"], with["data"]["hits"], "the same tokens from the file");
+    assert_eq!(without["data"]["references"], with["data"]["references"]);
+    assert!(!bin.exists() && !header.exists(), "nothing was made of it");
+}
+
+/// Failure: stored identities with a flipped byte are believed (the hits get tokens made from bad records), or the search's hits are given a reference from the
+/// live file as if nothing were wrong (the search wiring dropped the corpus key, so the stored identities were never read; every other test passes then, as the
+/// stored and the live tokens are equal). The hits are counted `file_unreadable`, and the identity files are removed.
+#[test]
+fn damaged_stored_identities_are_withdrawn_and_removed() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("damaged-ids.pdf", 4);
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
+    let bin = paths.app.join("ids.bin");
+    let mut bytes = std::fs::read(&bin).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&bin, bytes).unwrap();
+    let (found, code) = state.json(&["search", "common", "--limit", "20"]);
+    assert_eq!(code, 0, "{found}");
+    assert!(found["data"]["references"]["missing"]["file_unreadable"].as_u64() > Some(0), "{found}");
+    assert!(!bin.exists(), "the damaged identities are still there");
+}
+
 /// Failure: `recto local`, used by QA, starts a build it can't finish, or doesn't use what's built. Its route reads what's there and starts nothing.
 #[test]
 fn the_local_route_reads_an_index_and_builds_none() {
@@ -785,11 +837,19 @@ fn real_pages_answer_the_same_from_the_index() {
         .collect()
     };
     files.sort();
+    let tried = files.len();
     let state = State::at(Level::Full);
     let _serving = state.serve();
     let (mut documents, mut compared, mut compared_regex, mut compared_ranked) = (0, 0, 0, 0);
+    // A quiet run only opens files in the system's temp folders (`outside_quiet_run`), so each is cloned there first (cloned on the same APFS volume, else copied). Before this, every
+    // file was refused, "0 documents compared" was printed and the test passed.
+    let copies = recto_testpdf::TempDir::new("recto-real-pages-");
     for file in files {
-        let text = file.to_str().unwrap().to_string();
+        let copy = copies.join(file.file_name().unwrap());
+        if !Command::new("cp").arg("-c").arg(&file).arg(&copy).status().unwrap().success() {
+            std::fs::copy(&file, &copy).unwrap();
+        }
+        let text = copy.to_str().unwrap().to_string();
         let (opened, code) = state.json(&["open", &text]);
         if code != 0 {
             eprintln!("{text} didn't open: {opened}");
@@ -811,8 +871,19 @@ fn real_pages_answer_the_same_from_the_index() {
         compared_regex += patterns;
         compared_ranked += ranked;
         state.json(&["close", &tab]);
+        let _ = std::fs::remove_file(&copy);
     }
     eprintln!("{documents} documents, {compared} plain searches, {compared_regex} patterns and {compared_ranked} ranked searches compared");
+    assert!(
+        documents > 0 && compared > 0 && compared_regex > 0 && compared_ranked > 0,
+        "nothing was compared: a test that compares nothing passes for ever"
+    );
+    assert_eq!(
+        documents,
+        tried,
+        "{} of the {tried} files were skipped (didn't open or weren't indexed)",
+        tried - documents
+    );
 }
 
 /// Failure: a password-protected file's text ends up on disk, or it reads as "still building" for ever. It's refused, with its own exit code, and nothing's there but the reason.
@@ -955,7 +1026,7 @@ fn raw_text_under(folder: &Path) -> String {
 fn text_under(folder: &Path, leave_out_sealed: bool) -> String {
     let sealed = |path: &Path| {
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        matches!(name, "text.pack" | "pages.bin" | "seal.bin") || name.ends_with(".sealed")
+        matches!(name, "text.pack" | "pages.bin" | "seal.bin" | "ids.bin") || name.ends_with(".sealed")
     };
     let mut found = String::new();
     let mut stack = vec![folder.to_path_buf()];

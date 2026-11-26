@@ -2,6 +2,8 @@
 //! when there is none, and what a search may spend. Each test names the failure it catches.
 
 use super::*;
+
+mod stored;
 use recto_core::locator::{Target, TextMatch};
 use recto_testpdf::{Page, TempPdf};
 use serde_json::{Value, json};
@@ -45,11 +47,11 @@ fn missing(refs: HitRefs<'_>, hits: &mut Value) -> (u64, Value) {
 fn a_hits_chars_are_unicode_characters_of_the_page_text_and_its_ref_checks_same() {
     let file = numbered(3);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let text = "Straße ﬁnal café";
     let start = text.find('ﬁ').expect("the ligature");
     let mut hit = hit();
-    refs.mark(&mut hit, false, 2, text, Some(&(start..start + "ﬁnal".len())));
+    refs.mark(&mut hit, false, 2, text, Some(&(start..start + "ﬁnal".len())), None);
     let (range, chars) = characters_of(&hit);
     assert_eq!(chars, [7, 11], "characters, not bytes: {hit}");
     assert_eq!(range.offsets(), (7, 11));
@@ -63,10 +65,10 @@ fn a_hits_chars_are_unicode_characters_of_the_page_text_and_its_ref_checks_same(
 fn a_phrase_hits_range_that_runs_on_to_the_next_word_is_trimmed_to_its_words() {
     let file = numbered(1);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let text = "Mine page 3";
     let mut hit = hit();
-    refs.mark(&mut hit, false, 0, text, Some(&(0..10)));
+    refs.mark(&mut hit, false, 0, text, Some(&(0..10)), None);
     assert_eq!(hit["chars"], json!([0, 9]));
     assert_eq!(characters_of(&hit).0.text_check(), locator::text_check("Mine page"));
 }
@@ -77,11 +79,11 @@ fn a_phrase_hits_range_that_runs_on_to_the_next_word_is_trimmed_to_its_words() {
 fn a_range_off_characters_empty_or_past_the_cap_gets_no_ref_is_counted_and_opens_nothing() {
     let file = numbered(1);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let mut hits = json!([hit(), hit(), hit(), hit(), hit()]);
     let big = "x".repeat(locator::MAX_CHARACTER as usize + 1);
     for (text, range) in [("é", 1..2), ("abc", 3..3), ("a    ", 1..5), ("é", 0..9), (big.as_str(), 0..big.len())] {
-        refs.mark(&mut hits[0], false, 0, text, Some(&range));
+        refs.mark(&mut hits[0], false, 0, text, Some(&range), None);
     }
     // Every one marked the first hit, the last overwriting the others: only the counts and the file are looked at.
     assert_eq!(hits[0]["ref"], Value::Null);
@@ -97,11 +99,11 @@ fn a_range_off_characters_empty_or_past_the_cap_gets_no_ref_is_counted_and_opens
 fn a_hit_on_an_added_files_page_gets_no_ref_and_another_spelling_gets_its_pages() {
     let file = numbered(3);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let (mut added, mut added_other, mut other) = (hit(), hit(), hit());
-    refs.mark(&mut added, true, 1, "words", Some(&(0..5)));
-    refs.mark(&mut added_other, true, 1, "words", None);
-    refs.mark(&mut other, false, 1, "words", None);
+    refs.mark(&mut added, true, 1, "words", Some(&(0..5)), None);
+    refs.mark(&mut added_other, true, 1, "words", None, None);
+    refs.mark(&mut other, false, 1, "words", None, None);
     assert_eq!((added["ref"].clone(), added["chars"].clone()), (Value::Null, Value::Null));
     assert_eq!(added_other["ref"], Value::Null);
     assert_eq!(other["chars"], Value::Null, "a page reference has no characters");
@@ -114,27 +116,38 @@ fn a_hit_on_an_added_files_page_gets_no_ref_and_another_spelling_gets_its_pages(
 /// Failure: HIT_REF_CAPS is short of a full answer's 200 pages and the tags, so a search with 200 hits is left without references; or the small cap is off by one (one tag page and three pages are read, the next page is counted under `caps`).
 #[test]
 fn hit_ref_caps_at_their_limit_refer_and_one_more_page_is_counted_caps() {
-    assert_eq!(HIT_REF_CAPS.pages, locator::TAG_PAGES as u32 + crate::search::MAX_LIMIT);
     let file = numbered(230);
+    caps_hold(&file, None, None);
+}
+
+/// The caps test's body, over the file read live (`corpus` `None`) or over the identities stored for it: the same counts either way.
+fn caps_hold(file: &TempPdf, corpus: Option<CorpusKey>, indexing: Option<&dyn Indexing>) {
+    assert_eq!(HIT_REF_CAPS.pages, locator::TAG_PAGES as u32 + crate::search::MAX_LIMIT);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), indexing);
     let mut hits = Vec::new();
     for page in 16..16 + crate::search::MAX_LIMIT {
         let mut hit = hit();
-        refs.mark(&mut hit, false, page, "words", Some(&(0..5)));
+        refs.mark(&mut hit, false, page, "words", Some(&(0..5)), corpus);
         hits.push(hit);
     }
     // The tags took one read here (the first page has an identity); the limit is for a file whose first pages have none.
+    let lookups = refs.referrer.as_ref().map(|referrer| referrer.spent().0);
+    assert_eq!(
+        lookups,
+        Some(1 + crate::search::MAX_LIMIT),
+        "a page is looked up once for its hit, and the tags once: at most 200 and the tag page"
+    );
     assert_eq!(missing(refs, &mut Value::Array(hits)), (200, json!({})), "a full answer is referred to whole");
 
     let small = ScanCaps { pages: 4, ..HIT_REF_CAPS };
     let opened = OnceCell::new();
-    let mut refs = HitRefs::with_caps(Some(file.0.as_path()), &opened, &small, far());
+    let mut refs = HitRefs::with_caps(Some(file.0.as_path()), &opened, &small, far(), indexing);
     let mut three = Value::Array(
         (20..24)
             .map(|page| {
                 let mut hit = hit();
-                refs.mark(&mut hit, false, page, "words", Some(&(0..5)));
+                refs.mark(&mut hit, false, page, "words", Some(&(0..5)), corpus);
                 hit
             })
             .collect(),
@@ -155,10 +168,10 @@ fn replace_with_another_file(file: &TempPdf) {
 fn a_file_changed_during_the_search_withdraws_every_ref() {
     let file = numbered(4);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let mut hits = json!([hit(), hit(), hit()]);
     for (index, page) in [0, 1, 2].into_iter().enumerate() {
-        refs.mark(&mut hits[index], false, page, "words", Some(&(0..5)));
+        refs.mark(&mut hits[index], false, page, "words", Some(&(0..5)), None);
     }
     assert!(hits[2]["ref"].is_string(), "before the change they have references");
     replace_with_another_file(&file);
@@ -170,11 +183,11 @@ fn a_file_changed_during_the_search_withdraws_every_ref() {
 
     let file = numbered(4);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     replace_with_another_file(&file);
     let mut hits = json!([hit(), hit()]);
     for index in 0..2 {
-        refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)));
+        refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)), None);
     }
     assert_eq!(
         missing(refs, &mut hits),
@@ -189,13 +202,13 @@ fn a_file_changed_during_the_search_withdraws_every_ref() {
 fn two_hundred_hits_on_a_two_million_character_page_walk_it_once() {
     let file = numbered(2);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let text = format!("x{}", " ".repeat(9_999)).repeat(200);
     let mut hits = Vec::new();
     for index in 0..200 {
         let mut hit = hit();
         // A phrase hit's range runs on to the next word: the spaces after the `x` are in it.
-        refs.mark(&mut hit, false, 0, &text, Some(&(index * 10_000..(index + 1) * 10_000)));
+        refs.mark(&mut hit, false, 0, &text, Some(&(index * 10_000..(index + 1) * 10_000)), None);
         assert_eq!(hit["chars"], json!([index * 10_000, index * 10_000 + 1]));
         hits.push(hit);
     }
@@ -213,7 +226,7 @@ fn two_hundred_hits_on_a_two_million_character_page_walk_it_once() {
 fn a_search_that_finds_nothing_opens_nothing_for_references() {
     let file = numbered(2);
     let opened = OnceCell::new();
-    let refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let said = refs.finish(&mut json!([]));
     assert_eq!((said["made"].clone(), said["missing"].clone()), (json!(0), json!({})));
     assert!(opened.get().is_none());
@@ -227,10 +240,10 @@ fn an_unreadable_file_gives_every_hit_no_ref_counted_file_unreadable() {
     std::fs::write(&garbage, b"not a pdf").expect("write");
     for path in [Some(garbage.as_path()), Some(folder.join("missing.pdf").as_path()), None] {
         let opened = OnceCell::new();
-        let mut refs = HitRefs::new(path, &opened, far());
+        let mut refs = HitRefs::new(path, &opened, far(), None);
         let mut hits = json!([hit(), hit()]);
         for index in 0..2 {
-            refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)));
+            refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)), None);
         }
         assert_eq!(missing(refs, &mut hits), (0, json!({ "file_unreadable": 2 })), "{path:?}");
         assert_eq!(hits[0]["ref"], Value::Null);
@@ -242,9 +255,9 @@ fn an_unreadable_file_gives_every_hit_no_ref_counted_file_unreadable() {
 fn a_searchs_log_entry_never_carries_a_hits_reference() {
     let file = numbered(1);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, far(), None);
     let mut hits = json!([hit()]);
-    refs.mark(&mut hits[0], false, 0, "hunter2", Some(&(0..7)));
+    refs.mark(&mut hits[0], false, 0, "hunter2", Some(&(0..7)), None);
     assert!(hits[0]["ref"].as_str().is_some_and(|token| token.starts_with("r1.")));
     let references = refs.finish(&mut hits);
     let answer = json!({ "hits": hits, "references": references, "coverage": { "failed_page_reasons": { "needs_password": 1 }, "busy_pages": [4] } });
@@ -270,11 +283,19 @@ fn a_searchs_log_entry_never_carries_a_hits_reference() {
 fn references_stop_at_the_searchs_deadline_and_are_counted_caps() {
     let file = numbered(2);
     let opened = OnceCell::new();
-    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, std::time::Instant::now());
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened, std::time::Instant::now(), None);
     let mut hits = json!([hit(), hit(), hit()]);
     for index in 0..3 {
-        refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)));
+        refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)), None);
     }
     assert_eq!(missing(refs, &mut hits), (0, json!({ "caps": 3 })));
     assert!(opened.get().is_none(), "no file was opened after the deadline");
+}
+
+/// Failure: a stored read that doesn't hold up is counted under a code of its own, or under `no_identity` or `caps`, which are claims about the page or the
+/// search's room. It is counted as the existing `file_unreadable`, which says only that the pages couldn't be read just now.
+#[test]
+fn a_source_that_cannot_answer_is_counted_as_file_unreadable() {
+    assert_eq!(Why::Page(Unreferenceable::Unreadable).code(), "file_unreadable");
+    assert_eq!(Why::Page(Unreferenceable::Unreadable).code(), Why::File.code());
 }

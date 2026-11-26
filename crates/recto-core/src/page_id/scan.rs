@@ -24,7 +24,7 @@
 /// Most different names kept: the digest's cap on images and forms ([`super::Caps::xobjects`]).
 pub(super) const MAX_NAMES: usize = 8192;
 /// Longest name taken, as PDF's own limit on names is.
-const MAX_NAME: usize = 127;
+pub(super) const MAX_NAME: usize = 127;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;

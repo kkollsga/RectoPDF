@@ -883,6 +883,7 @@ dependencies = [
  "recto-index",
  "recto-platform",
  "recto-render-service",
+ "recto-testpdf",
  "serde_json",
 ]
 

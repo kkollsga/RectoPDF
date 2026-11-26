@@ -202,6 +202,15 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
     }
 }
 
+impl FileRoute {
+    fn corpus(self) -> Option<CorpusKey> {
+        match self {
+            Self::Index(key) => Some(key),
+            _ => None,
+        }
+    }
+}
+
 /// How one file's pages get read in this search. Worked out when its first page comes up, and never again: a corpus doesn't change.
 #[derive(Clone, Copy)]
 enum FileRoute {
@@ -502,14 +511,14 @@ impl Found {
             let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": view.has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
             add_context(&mut hit, view.text, &range, settings.context);
             say_where_from(&mut hit, page, source);
-            refs.mark(&mut hit, source.added, page, view.text, Some(&range));
+            refs.mark(&mut hit, source.added, page, view.text, Some(&range), view.corpus);
             self.hits.push(hit);
         }
         if let Some(spelled) = spelled {
             self.total += 1;
             let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": view.has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
             say_where_from(&mut hit, page, source);
-            refs.mark(&mut hit, source.added, page, view.text, None);
+            refs.mark(&mut hit, source.added, page, view.text, None, view.corpus);
             self.hits.push(hit);
         }
     }
@@ -561,6 +570,8 @@ pub(crate) struct PageView<'a> {
     has_tag_chars: bool,
     /// What a corpus has to say about it, if it came from one.
     stored: Option<StoredPage<'a>>,
+    /// The key of the index of the file's own corpus, whenever its route is the index (a page read again live as well): its references use the stored identities.
+    pub(crate) corpus: Option<CorpusKey>,
 }
 
 /// What came of reading a page.
@@ -720,6 +731,7 @@ impl<'a> Reader<'a> {
                         also_spelled: stored.also_spelled(),
                         has_tag_chars: stored.has_tag_chars,
                         stored: Some(stored),
+                        corpus: Some(key),
                     }));
                 }
                 Ok(stored) if stored.kind == PageKind::NoText => {
@@ -831,6 +843,7 @@ impl<'a> Reader<'a> {
             also_spelled: normalized.also_spelled.iter().map(String::as_str).collect(),
             has_tag_chars: normalized.tag_chars_removed > 0,
             stored: None,
+            corpus: self.routes[usize::from(file)].corpus(),
         }))
     }
 
@@ -1019,7 +1032,7 @@ fn why(failure: RenderFailure) -> &'static str {
 fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let opened = std::cell::OnceCell::new();
-    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.deadline);
+    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.deadline, settings.indexing);
     let mut found = Found::default();
     let mut slot = Slot::default();
     let mut folded = String::new();
@@ -1086,7 +1099,12 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
     // The second pass's own time, since it runs past `settings.deadline` by design: with `settings.deadline` every reference of a search whose first pass
     // used its time would be counted under `caps`. No test: `settings.deadline` gates the first pass before every page, so no deterministic test can stop it
     // part way and leave pages to be referred to.
-    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.second_pass_until);
+    let mut refs = crate::locating::HitRefs::new(
+        plan.files.first().map(|own| own.path.as_path()),
+        &opened,
+        settings.second_pass_until,
+        settings.indexing,
+    );
     let mut found = Found::default();
     let mut slot = Slot::default();
     let words = terms.terms.len();
@@ -1188,7 +1206,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             }
         }
         say_where_from(&mut hit, page, &plan.files[usize::from(file)]);
-        refs.mark(&mut hit, plan.files[usize::from(file)].added, page, view.text, place.as_ref());
+        refs.mark(&mut hit, plan.files[usize::from(file)].added, page, view.text, place.as_ref(), view.corpus);
         found.hits.push(hit);
     }
     found.total_cut_short = true;

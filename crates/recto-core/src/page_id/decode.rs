@@ -41,7 +41,7 @@ pub(super) const CHUNK: usize = 64 * 1024;
 /// Longest predictor row taken: a real image row is a few KiB (none of the 5,872 corpus pages changes digest with a limit of 16 KiB, measured
 /// 2026-11-15); past this the parameters are refused, so a row can't be made to cost memory: eight chained predictors hold about 6 MiB at most, where
 /// 1 MiB rows let them hold 24.
-const MAX_ROW: usize = 256 << 10;
+pub(super) const MAX_ROW: usize = 256 << 10;
 /// Most filters in one stream's chain.
 pub(super) const MAX_FILTERS: usize = 8;
 

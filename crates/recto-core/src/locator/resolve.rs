@@ -12,6 +12,7 @@
 //! Pages are read only through [`page_id::read_page`](crate::page_id::read_page) and a frame only through `nav::frame_of`; the one other hash here
 //! is the content tag of a document, taken over a page digest that was read already.
 
+use super::source::{LiveSource, PageSource, SourceRead, first_eight};
 use super::{DocumentTags, Locator, MAX_PAGE, PageRef, Target};
 use crate::page_id::{self, IndexedReader, PageIdentity, PageMap, PageRead};
 use sha2::{Digest, Sha256};
@@ -127,20 +128,38 @@ pub enum Unreferenceable {
     /// A cap on what the referrer may read was spent before the page (or the tags) could be read: no claim is made about the page. Asking again with
     /// more room may succeed, unlike `NoIdentity`.
     Capped,
+    /// The source of the page reads couldn't answer for this page (a stored read that doesn't hold up). Says nothing about the page.
+    Unreadable,
 }
 
 /// A page read under a [`ScanCaps`], and the spending so far. The first [`TAG_PAGES`] reads and the hint's are kept so that the document tags, the
 /// hint and the scan never read one twice. Not kept beyond one call.
 struct Reads<'a> {
-    reader: &'a IndexedReader,
-    map: &'a PageMap,
+    source: Source<'a>,
     caps: &'a ScanCaps,
     first: [Option<PageRead>; TAG_PAGES],
     /// One more kept read: the page the caller named with [`Reads::keep`], when it is past the first [`TAG_PAGES`].
     kept: Option<(u32, PageRead)>,
     keep: Option<u32>,
+    /// A read the source couldn't answer for was asked for.
+    unreadable: bool,
     pages: u32,
     bytes: u64,
+}
+
+/// The live file, which [`resolve`] needs the reader of, or any other source.
+enum Source<'a> {
+    Live(LiveSource<'a>),
+    Other(&'a dyn PageSource),
+}
+
+impl Source<'_> {
+    fn get(&self) -> &dyn PageSource {
+        match self {
+            Self::Live(live) => live,
+            Self::Other(other) => *other,
+        }
+    }
 }
 
 /// What asking for a page came to.
@@ -149,18 +168,24 @@ enum Got {
     Absent,
     /// A cap on the whole resolve was spent before this page could be read.
     Capped,
+    /// The source couldn't answer for this page.
+    Unreadable,
     Read(PageRead),
 }
 
 impl<'a> Reads<'a> {
     fn new(reader: &'a IndexedReader, map: &'a PageMap, caps: &'a ScanCaps) -> Self {
+        Self::over(Source::Live(LiveSource::new(reader, map)), caps)
+    }
+
+    fn over(source: Source<'a>, caps: &'a ScanCaps) -> Self {
         Self {
-            reader,
-            map,
+            source,
             caps,
             first: [None; TAG_PAGES],
             kept: None,
             keep: None,
+            unreadable: false,
             pages: 0,
             bytes: 0,
         }
@@ -173,7 +198,9 @@ impl<'a> Reads<'a> {
 
     /// Page `index` (zero-based): from what was read already, else read now while `bytes` and `pages` allow it.
     fn get(&mut self, index: u32) -> Got {
-        let Some(entry) = self.map.get(index as usize) else { return Got::Absent };
+        if index as usize >= self.source.get().len() {
+            return Got::Absent;
+        }
         if let Some(read) = self.first.get(index as usize).copied().flatten() {
             return Got::Read(read);
         }
@@ -183,7 +210,14 @@ impl<'a> Reads<'a> {
         if self.spent_cap() {
             return Got::Capped;
         }
-        let read = page_id::read_page(self.reader, entry, &self.caps.page);
+        let read = match self.source.get().read(index, &self.caps.page) {
+            SourceRead::Read(read) => read,
+            SourceRead::Absent => return Got::Absent,
+            SourceRead::Unreadable => {
+                self.unreadable = true;
+                return Got::Unreadable;
+            }
+        };
         self.pages += 1;
         self.bytes = self.bytes.saturating_add(read.bytes);
         if let Some(slot) = self.first.get_mut(index as usize) {
@@ -201,7 +235,7 @@ impl<'a> Reads<'a> {
 
     /// The tags this document has now: the `/ID` tag, and the content tag from the first of the first [`TAG_PAGES`] pages with an identity.
     fn tags(&mut self) -> (Option<[u8; 8]>, Option<[u8; 8]>) {
-        let id = page_id::document_ids(self.reader).map(|ids| first_eight(&ids.first));
+        let id = self.source.get().document_id();
         // The first of the tag pages with an identity, stopping at the first page refused for a cap: a later page read already would give another page's tag.
         let mut content = None;
         for index in 0..TAG_PAGES as u32 {
@@ -211,24 +245,21 @@ impl<'a> Reads<'a> {
                     break;
                 }
                 Got::Read(_) => {}
-                Got::Absent | Got::Capped => break,
+                Got::Absent | Got::Capped | Got::Unreadable => break,
             }
         }
         (id, content)
     }
 }
 
-fn first_eight(bytes: &[u8]) -> [u8; 8] {
-    let mut out = [0; 8];
-    out.copy_from_slice(&bytes[..8]);
-    out
-}
+/// The tag's name, as it is hashed.
+pub(super) const CONTENT_TAG_NAME: &[u8] = b"recto-doc-c/1\0";
 
 /// `SHA-256("recto-doc-c/1\0" ‖ the page's whole digest)`, first eight bytes. A document that opens on the same page as another shares its tag; the
 /// tag only suggests which document, and is never used to decide a page.
 fn content_tag(identity: &PageIdentity) -> [u8; 8] {
     let mut hasher = Sha256::new();
-    hasher.update(b"recto-doc-c/1\0");
+    hasher.update(CONTENT_TAG_NAME);
     hasher.update(identity.digest);
     first_eight(&hasher.finalize())
 }
@@ -261,6 +292,18 @@ impl<'a> Referrer<'a> {
         }
     }
 
+    /// References over another source of page reads (a stored one), under the same caps and rules. `None` where the source holds reads made under
+    /// other digest caps than `caps` asks for, since what it holds would answer for pages read under different rules.
+    pub fn over(source: &'a dyn PageSource, caps: &'a ScanCaps) -> Option<Self> {
+        if source.caps().is_some_and(|made| made != caps.page) {
+            return None;
+        }
+        Some(Self {
+            reads: Reads::over(Source::Other(source), caps),
+            last: None,
+        })
+    }
+
     /// A reference to the whole of zero-based file page `page`: the page is read first, then the tags. The same page again costs nothing.
     pub fn page(&mut self, page: u32) -> Result<Locator, Unreferenceable> {
         if let Some((last, made)) = &self.last
@@ -285,6 +328,7 @@ impl<'a> Referrer<'a> {
         let identity = match self.reads.get(page) {
             Got::Absent => return Err(Unreferenceable::NoSuchPage),
             Got::Capped => return Err(Unreferenceable::Capped),
+            Got::Unreadable => return Err(Unreferenceable::Unreadable),
             Got::Read(PageRead { identity: None, .. }) => return Err(Unreferenceable::NoIdentity),
             Got::Read(PageRead { identity: Some(identity), .. }) => identity,
         };
@@ -299,6 +343,7 @@ impl<'a> Referrer<'a> {
         match content {
             Some(content) => Ok(DocumentTags::new(content, id)),
             // Short of room, "no page had an identity" may only mean the pages were not read: no claim about the document.
+            None if self.reads.unreadable => Err(Unreferenceable::Unreadable),
             None if self.reads.spent_cap() => Err(Unreferenceable::Capped),
             None => Err(Unreferenceable::NoDocumentTag),
         }
@@ -360,10 +405,11 @@ fn scan(reads: &mut Reads, wanted: &[u8; 16]) -> (Status, Looked, Option<(u32, P
     let mut count = 0usize;
     let mut first_identity = None;
     let mut complete = true;
-    for index in 0..reads.map.len().min(MAX_PAGE as usize) as u32 {
+    for index in 0..reads.source.get().len().min(MAX_PAGE as usize) as u32 {
         match reads.get(index) {
             Got::Absent => break,
-            Got::Capped => {
+            // The live source always answers: a read it could not give is as good as a cap, and the answer is `Incomplete`.
+            Got::Capped | Got::Unreadable => {
                 complete = false;
                 break;
             }
@@ -384,7 +430,7 @@ fn scan(reads: &mut Reads, wanted: &[u8; 16]) -> (Status, Looked, Option<(u32, P
         }
     }
     // A map longer than a reference can name is never read to its end: the pages past it are unlooked at.
-    complete &= reads.map.len() <= MAX_PAGE as usize;
+    complete &= reads.source.get().len() <= MAX_PAGE as usize;
     if !complete {
         matches.truncate(1);
         return (Status::Incomplete { pages: matches }, Looked::Part, None);
