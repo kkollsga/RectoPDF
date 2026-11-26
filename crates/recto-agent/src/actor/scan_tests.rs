@@ -149,24 +149,68 @@ pub(crate) fn test_files(src: &Path, files: &[PathBuf]) -> BTreeSet<PathBuf> {
             }
         }
     }
-    // A test module with its file named by `#[path = "..."]` (relative to the folder of the file that declares it) sits between the two lines.
     for file in files {
         let text = std::fs::read_to_string(file).unwrap();
-        let lines: Vec<&str> = text.lines().map(str::trim).collect();
-        for triple in lines.windows(3) {
-            let test_only = triple[0].starts_with("#[cfg(test)]") || triple[0].starts_with("#[cfg(any(test");
-            let named = triple[1].strip_prefix("#[path = \"").and_then(|rest| rest.strip_suffix("\"]"));
-            if let (true, Some(named), true) = (test_only, named, triple[2].contains("mod ") && triple[2].ends_with(';')) {
-                let path = file.parent().unwrap().join(named);
-                if let Some(dir) = path.parent() {
-                    test_dirs.push(dir.join(path.file_stem().unwrap()));
-                }
-                tests.insert(path);
+        for path in path_named_test_modules(file, &text) {
+            if let Some(dir) = path.parent() {
+                test_dirs.push(dir.join(path.file_stem().unwrap()));
             }
+            tests.insert(path);
         }
     }
     tests.extend(files.iter().filter(|file| test_dirs.iter().any(|dir| file.starts_with(dir))).cloned());
     tests
+}
+
+/// The files a `#[cfg(test)]` module of `file` names by `#[path = "..."]`. Only a file under the declaring file's own `<stem>/` folder, by a name
+/// without `..`, is a test file: a second declaration of a production file as a test module (`#[path = "local_mac.rs"] mod again;`) must not hide
+/// that file from every scan.
+fn path_named_test_modules(file: &Path, text: &str) -> Vec<PathBuf> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let own_folder = file.parent().unwrap().join(file.file_stem().unwrap());
+    let mut found = Vec::new();
+    for triple in lines.windows(3) {
+        let test_only = triple[0].starts_with("#[cfg(test)]") || triple[0].starts_with("#[cfg(any(test");
+        let named = triple[1].strip_prefix("#[path = \"").and_then(|rest| rest.strip_suffix("\"]"));
+        let Some(named) = named.filter(|_| test_only && triple[2].contains("mod ") && triple[2].ends_with(';')) else {
+            continue;
+        };
+        let path = file.parent().unwrap().join(named);
+        if path.starts_with(&own_folder) && !named.contains("..") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// Failure: a `#[cfg(test)]` `#[path]` declaration of a production file, or of a file by a `..` name, is taken for a test module and the file is
+/// left out of the file-wall scan and every other scan that skips tests; or the real declarations are no longer all seen. Pinned: today they are
+/// `volume_mac/tests.rs` and `folder_mac/tests.rs`, so a new one is a decision made here.
+#[test]
+fn only_a_test_file_under_the_declaring_files_own_folder_is_named_by_path() {
+    let at = Path::new("/c/src/folder_mac.rs");
+    let declared = |path: &str| path_named_test_modules(at, &format!("#[cfg(test)]\n#[path = \"{path}\"]\nmod again;\n"));
+    assert_eq!(declared("folder_mac/tests.rs"), [PathBuf::from("/c/src/folder_mac/tests.rs")]);
+    assert!(declared("folder_mac.rs").is_empty(), "a production file declared again as a test module");
+    assert!(declared("local_mac.rs").is_empty());
+    assert!(declared("folder_mac/../local_mac.rs").is_empty(), "a name with ..");
+
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut recognised = Vec::new();
+    for krate in std::fs::read_dir(crates).unwrap().map(|entry| entry.unwrap().path()) {
+        let src = krate.join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        for file in sources(&src) {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for path in path_named_test_modules(&file, &text) {
+                recognised.push(path.strip_prefix(crates).unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    recognised.sort();
+    assert_eq!(recognised, ["recto-platform/src/folder_mac/tests.rs", "recto-platform/src/volume_mac/tests.rs"]);
 }
 
 /// Every `.rs` file under `folder`.
