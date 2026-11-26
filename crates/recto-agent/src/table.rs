@@ -210,7 +210,7 @@ pub(crate) const PICK_TO: Arg = Arg {
 pub(crate) const PICK_UNIT: Arg = Arg {
     key: "unit",
     flag: Some("--unit"),
-    kind: Kind::Choice(&["char", "word", "line"]),
+    kind: Kind::Choice(crate::commands::words::PickUnit::WORDS),
     required: false,
     help: "What `--at` takes: `word` as a double-click does and `line` as a triple-click does, going by those if there's a drag too. `word` for a click and `char` for a drag if left out.",
 };
@@ -1416,7 +1416,7 @@ mod tests {
             Kind::Degrees => "90",
             Kind::Level => "read_only",
             Kind::Text => "words",
-            Kind::Reference => crate::commands::locating::EXAMPLE_REF,
+            Kind::Reference => crate::commands::locating::EXAMPLE_REF_CHARS,
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",
@@ -1430,8 +1430,10 @@ mod tests {
         let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
         // A row that reads a page either by its number or by `--ref` is refused with neither, so a line without one gets a page.
         let by = |key: &str| given.iter().any(|(each, _)| each.key == key);
-        if spec.args.iter().any(|arg| arg.key == "ref") && spec.args.iter().any(|arg| arg.key == "page") && !by("page") && !by("ref") {
-            words.extend(["--page".to_string(), "1".to_string()]);
+        let page = spec.args.iter().find(|arg| arg.key == "page");
+        if spec.args.iter().any(|arg| arg.key == "ref") && page.is_some() && !by("page") && !by("ref") {
+            words.extend(page.and_then(|arg| arg.flag).map(str::to_string));
+            words.push("1".to_string());
         }
         let required = spec
             .args
@@ -1507,7 +1509,6 @@ mod tests {
             "text --page x",
             "text --page 1.5",
             "text --page +1",
-            "goto",
             "page rotate 1",
             "page rotate 1 --by 45",
             "page rotate 4- --by 90",
@@ -1532,11 +1533,11 @@ mod tests {
         }
     }
 
-    /// Failure: `text` or `render` with neither a page nor `--ref` isn't refused as the CLI builds it, or is refused with no way on: the typed refusal comes
+    /// Failure: `text`, `render` or `goto` with neither a page nor `--ref` isn't refused as the CLI builds it, or is refused with no way on: the typed refusal comes
     /// from the command's own words (`PageOrRef::of`), and says what to type next.
     #[test]
     fn text_and_render_with_neither_a_page_nor_a_ref_are_usage_errors_as_typed() {
-        for words in [vec!["text"], vec!["render", "--out", "x.png"]] {
+        for words in [vec!["text"], vec!["render", "--out", "x.png"], vec!["goto"]] {
             let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
             let typed = parse_cli(&words).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
             let error = typed.command().expect_err(&format!("{words:?} names no page"));

@@ -58,6 +58,7 @@ pub fn highlight_of(tab: u32, range: Range) -> Command {
         at: None,
         to: None,
         unit: None,
+        reference: None,
     }))
 }
 

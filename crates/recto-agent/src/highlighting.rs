@@ -118,6 +118,10 @@ pub(crate) fn add<A: SessionAccess>(access: &A, actor: Actor, events: &mut Vec<E
     };
     let moved = Cell::new(false);
     let positions: Vec<u32> = pages.iter().map(|(position, _)| *position).collect();
+    // A page found by a reference is of the file version it was found in: highlighting on it after the file changed would mark a page that isn't the one.
+    if let Some(found) = pick.found {
+        crate::locating::still_located(access, found)?;
+    }
     let result = crate::edit(access, actor, &TabRef::Id(id), events, did, |edits| {
         if edits.order_mark() != before {
             moved.set(true);
@@ -132,6 +136,9 @@ pub(crate) fn add<A: SessionAccess>(access: &A, actor: Actor, events: &mut Vec<E
     });
     let mut data = result.map_err(|error| if moved.get() { moved_meanwhile() } else { error })?;
     data["highlighted"] = json!({ "pages": positions.iter().map(|position| position + 1).collect::<Vec<_>>(), "lines": lines });
+    if let Some(found) = pick.found {
+        data["ref"] = found.told();
+    }
     Ok(data)
 }
 
@@ -390,6 +397,7 @@ mod tests {
                 at: None,
                 to: None,
                 unit: None,
+                reference: None,
             };
             run(&mut session, Command::from(highlight)).expect("highlighted");
             let listed = list(&Direct(RefCell::new(&mut session), None), &TabRef::default(), None).unwrap();
@@ -503,6 +511,7 @@ mod tests {
             at: None,
             to: None,
             unit: None,
+            reference: None,
         };
         run(&mut session, Command::from(highlight)).expect("highlighted");
         run(
@@ -564,7 +573,7 @@ mod tests {
             let shot = dir.join(format!("{name}-shot.png"));
             let snapshot = crate::commands::export::Snapshot {
                 tab: TabRef::default(),
-                page: 1,
+                at: crate::commands::locating::PageOrRef::Page(1),
                 rect: [0.0, 0.0, 300.0, 200.0],
                 format: "png".into(),
                 out: Some(shot.clone()),
@@ -700,6 +709,7 @@ mod tests {
             at: None,
             to: None,
             unit: None,
+            reference: None,
         };
         let delete = crate::commands::editing::PageDelete {
             tab: TabRef::default(),
@@ -884,6 +894,7 @@ mod tests {
             at: None,
             to: None,
             unit: None,
+            reference: None,
         };
         run(&mut session, Command::from(highlight)).expect("highlighted");
         let save = crate::commands::saving::Save {

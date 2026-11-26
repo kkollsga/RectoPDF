@@ -45,6 +45,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             within: None,
             entry: None,
             link: false,
+            reference: None,
         }),
         Command::from(crate::commands::linking::Goto {
             tab: tab(),
@@ -53,6 +54,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             within: Some(0.25),
             entry: Some(0),
             link: false,
+            reference: None,
         }),
         Command::from(crate::commands::linking::Links { tab: tab(), page: 1 }),
         Command::from(crate::commands::linking::Follow { tab: tab(), page: 1, link: 1 }),
@@ -73,7 +75,7 @@ pub(crate) fn every_command() -> Vec<Command> {
         }),
         Command::from(crate::commands::export::ExportSvg {
             tab: tab(),
-            page: 1,
+            at: crate::commands::locating::PageOrRef::Page(1),
             out: "/d/x.svg".into(),
             rect: None,
             text: None,
@@ -99,7 +101,7 @@ pub(crate) fn every_command() -> Vec<Command> {
         }),
         Command::from(crate::commands::export::Snapshot {
             tab: tab(),
-            page: 1,
+            at: crate::commands::locating::PageOrRef::Page(1),
             rect: [0.0, 0.0, 10.0, 10.0],
             format: "png".into(),
             out: Some("/d/x.png".into()),
@@ -127,6 +129,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             at: None,
             to: None,
             unit: None,
+            reference: None,
         }),
         Command::from(crate::commands::highlight::HighlightRemove {
             tab: tab(),
@@ -143,6 +146,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             unit: None,
             all: false,
             anyway: false,
+            reference: None,
         }),
         Command::from(crate::commands::text::Copy {
             tab: tab(),
@@ -154,6 +158,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             unit: None,
             all: false,
             anyway: false,
+            reference: None,
         }),
         Command::from(crate::commands::measure::BudgetRender {
             tab: tab(),
@@ -224,6 +229,125 @@ pub(crate) fn every_command() -> Vec<Command> {
             at: crate::commands::locating::PageOrRef::Ref(locator_page()),
             scale: 2.0,
             out: "/d/y.png".into(),
+            anyway: false,
+        }),
+        // The `--ref` forms of the commands that take one beside `text` and `render`: a reference to a page, and to characters.
+        Command::from(crate::commands::linking::Goto {
+            tab: tab(),
+            page: None,
+            label: None,
+            within: Some(0.5),
+            entry: None,
+            link: false,
+            reference: Some(locator_page()),
+        }),
+        Command::from(crate::commands::linking::Goto {
+            tab: tab(),
+            page: None,
+            label: None,
+            within: None,
+            entry: None,
+            link: false,
+            reference: Some(locator_characters()),
+        }),
+        Command::from(crate::commands::text::Select {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+            reference: Some(locator_page()),
+        }),
+        Command::from(crate::commands::text::Select {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+            reference: Some(locator_characters()),
+        }),
+        Command::from(crate::commands::text::Copy {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+            reference: Some(locator_page()),
+        }),
+        Command::from(crate::commands::text::Copy {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+            reference: Some(locator_characters()),
+        }),
+        Command::from(crate::commands::highlight::Highlight {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            reference: Some(locator_characters()),
+        }),
+        Command::from(crate::commands::export::Snapshot {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_page()),
+            rect: [0.0, 0.0, 10.0, 10.0],
+            format: "png".into(),
+            out: Some("/d/x.png".into()),
+            scale: 2.0,
+            anyway: false,
+            to_clipboard: false,
+            as_seen: None,
+        }),
+        Command::from(crate::commands::export::ExportSvg {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_page()),
+            out: "/d/y.svg".into(),
+            rect: None,
+            text: None,
+            scale: 2.0,
+            strip_metadata: false,
+            anyway: false,
+        }),
+        Command::from(crate::commands::export::Snapshot {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_characters()),
+            rect: [0.0, 0.0, 10.0, 10.0],
+            format: "png".into(),
+            out: Some("/d/x.png".into()),
+            scale: 2.0,
+            anyway: false,
+            to_clipboard: false,
+            as_seen: None,
+        }),
+        Command::from(crate::commands::export::ExportSvg {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_characters()),
+            out: "/d/y.svg".into(),
+            rect: None,
+            text: None,
+            scale: 2.0,
+            strip_metadata: false,
             anyway: false,
         }),
         Command::from(crate::commands::locating::Resolve {
@@ -635,6 +759,7 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
             within: None,
             entry: None,
             link: false,
+            reference: None,
         }),
         Command::from(commands::editing::PageDelete {
             tab: "#1".into(),
@@ -658,6 +783,7 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
             unit: None,
             all: false,
             anyway: false,
+            reference: None,
         }),
         Command::from(commands::text::Copy {
             tab: tab(),
@@ -669,6 +795,7 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
             unit: None,
             all: false,
             anyway: false,
+            reference: None,
         }),
         Command::from(commands::highlight::Highlight {
             tab: tab(),
@@ -678,6 +805,7 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
             at: None,
             to: None,
             unit: None,
+            reference: None,
         }),
         Command::from(commands::highlight::HighlightRemove {
             tab: tab(),
@@ -746,6 +874,7 @@ fn the_walks_commands() -> Vec<Command> {
         unit: None,
         all,
         anyway: false,
+        reference: None,
     };
     let mut walk = every_command();
     walk.extend([
@@ -756,6 +885,7 @@ fn the_walks_commands() -> Vec<Command> {
             within: None,
             entry: None,
             link: false,
+            reference: None,
         }),
         Command::from(commands::highlight::Highlights { tab: tab(), page: None }),
         Command::from(pick(false)),
@@ -826,6 +956,7 @@ fn the_persons_link_keeps_a_withheld_place_withheld() {
             within,
             entry: None,
             link,
+            reference: None,
         })
     };
     for (route, command, lets_go) in [
@@ -1025,6 +1156,7 @@ fn no_command_below_full_loses_the_owners_edits() {
                     at: None,
                     to: None,
                     unit: None,
+                    reference: None,
                 })
             };
             for step in [turn("1"), turn("2"), highlight(4), turn("3"), highlight(1)] {
@@ -1088,6 +1220,7 @@ fn a_save_below_full_that_would_drop_the_owners_steps_is_refused() {
         at: None,
         to: None,
         unit: None,
+        reference: None,
     });
     let delete = Command::from(commands::editing::PageDelete {
         tab: "#1".into(),

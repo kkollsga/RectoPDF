@@ -49,6 +49,7 @@ fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64
         within,
         entry,
         link: false,
+        reference: None,
     }
     .into()
 }
@@ -97,6 +98,7 @@ pub fn link_to_page(tab: TabId, position: u32, within: Option<f32>) -> Command {
         within: within.map(f64::from),
         entry: None,
         link: true,
+        reference: None,
     }
     .into()
 }

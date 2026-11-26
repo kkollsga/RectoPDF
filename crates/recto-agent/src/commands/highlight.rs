@@ -7,32 +7,77 @@
 //! as each reads that document's pages: its text, for what a pick takes, or its structure. None gives any text of the document back, so a file that
 //! asks not to be copied needs no `--anyway`. `highlight` and `highlight remove` with a pick read pages through a worker, so they draw and wait.
 
+use super::locating::{HIGHLIGHT_REF_EXAMPLE, REF_PICK};
 use super::{Cmd, Cx, row_access};
 use crate::highlighting::{self, Which};
 use crate::human::edit_state;
 use crate::selecting::Pick;
 use crate::table::*;
 use crate::*;
+use recto_core::locator::Locator;
 use serde_json::{Value, json};
 
-/// Highlights what a pick takes on a page, or across pages: the same arguments as `recto select`.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// Highlights what a pick takes on a page, or across pages: the same arguments as `recto select`. Or, with a reference to characters, exactly those
+/// characters on the page they are on now. Read from a `line`, so a token that can't be a reference, one beside a pick, or one that isn't to characters is
+/// refused as the line is read.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Highlight")]
 pub struct Highlight {
-    #[serde(default)]
     pub tab: TabRef,
-    #[serde(default)]
     pub page: Option<u32>,
-    #[serde(default)]
     pub to_page: Option<u32>,
-    #[serde(default)]
     pub chars: Option<String>,
-    #[serde(default)]
     pub at: Option<String>,
-    #[serde(default)]
     pub to: Option<String>,
-    #[serde(default)]
     pub unit: Option<String>,
+    /// The characters a reference points at now, in place of `page` and the rest of the pick. Only ever to characters: a page is highlighted by `--page`.
+    pub reference: Option<Locator>,
+}
+
+impl TryFrom<line::Highlight> for Highlight {
+    type Error = AgentError;
+    fn try_from(line: line::Highlight) -> Result<Self, AgentError> {
+        let line::Highlight {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            reference,
+        } = line;
+        let others = page.is_some() || to_page.is_some() || chars.is_some() || at.is_some() || to.is_some() || unit.is_some();
+        let reference = super::locating::reference_alone(reference.as_deref(), others, super::locating::PICK_REF_ALONE)?;
+        if reference.is_some_and(|reference| !matches!(reference.target(), recto_core::locator::Target::Characters(_))) {
+            return Err(AgentError::new(Code::USAGE, super::locating::HIGHLIGHT_REF_CHARS, exit::USAGE));
+        }
+        Ok(Self {
+            tab,
+            page,
+            to_page,
+            chars,
+            at,
+            to,
+            unit,
+            reference,
+        })
+    }
+}
+
+impl From<Highlight> for line::Highlight {
+    fn from(asked: Highlight) -> Self {
+        Self {
+            tab: asked.tab,
+            page: asked.page,
+            to_page: asked.to_page,
+            chars: asked.chars,
+            at: asked.at,
+            to: asked.to,
+            unit: asked.unit,
+            reference: asked.reference.as_ref().map(recto_core::locator::encode),
+        }
+    }
 }
 
 impl Highlight {
@@ -47,6 +92,7 @@ impl Highlight {
             unit: self.unit.as_deref(),
             all: false,
             anyway: false,
+            found: None,
         }
     }
 }
@@ -72,10 +118,19 @@ impl Cmd for Highlight {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        json!({ "tab": super::log_tab(&self.tab), "page": self.page, "to_page": self.to_page })
+        let mut details = json!({ "tab": super::log_tab(&self.tab), "page": self.page, "to_page": self.to_page });
+        if let Some(reference) = &self.reference {
+            details["ref_page"] = json!(reference.page().number());
+        }
+        details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        highlighting::add(cx.access, cx.actor, cx.events, &self.pick())
+        let (access, actor) = (cx.access, cx.actor);
+        let events = &mut *cx.events;
+        match &self.reference {
+            None => highlighting::add(access, actor, events, &self.pick()),
+            Some(reference) => super::locating::picking_by_reference(access, self.pick(), reference, |pick| highlighting::add(access, actor, events, pick)),
+        }
     }
     fn human(data: &Value) -> String {
         edit_state(data)
@@ -108,9 +163,31 @@ pub enum RemoveWhat {
     },
 }
 
-/// `highlight remove` as it's written on the wire.
+/// `highlight` and `highlight remove` as they're written on the wire.
 pub mod line {
     use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Highlight {
+        #[serde(default)]
+        pub tab: crate::TabRef,
+        #[serde(default)]
+        pub page: Option<u32>,
+        #[serde(default)]
+        pub to_page: Option<u32>,
+        #[serde(default)]
+        pub chars: Option<String>,
+        #[serde(default)]
+        pub at: Option<String>,
+        #[serde(default)]
+        pub to: Option<String>,
+        #[serde(default)]
+        pub unit: Option<String>,
+        /// Last, so the positional array form keeps reading `[tab, page, ..., unit]` as it always has.
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        pub reference: Option<String>,
+    }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -247,6 +324,7 @@ impl Cmd for HighlightRemove {
                     unit: None,
                     all: false,
                     anyway: false,
+                    found: None,
                 };
                 highlighting::remove(access, actor, events, &self.tab, Which::Pick(&pick))
             }
@@ -322,7 +400,7 @@ pub(crate) const ROWS_HIGHLIGHT: &[Spec] = &[Spec {
     group: GROUP_EDIT,
     access: Access::At(Level::Control),
     summary: "Highlights what `recto select` takes for the same arguments, as Mark Up > Highlight does: an unsaved edit like a turn, written into the PDF as a standard highlight on Save. Across pages it's one step.",
-    args: &[PICK_PAGE, PICK_TO_PAGE, PICK_CHARS, PICK_AT, PICK_TO, PICK_UNIT, TAB],
+    args: &[PICK_PAGE, PICK_TO_PAGE, PICK_CHARS, PICK_AT, PICK_TO, PICK_UNIT, REF_PICK, TAB],
     bare_page: true,
     data: "As `page rotate` (`did`, `edited`, …), with `highlighted: { pages, lines }`.",
     emits: &["edits_changed"],
@@ -330,6 +408,7 @@ pub(crate) const ROWS_HIGHLIGHT: &[Spec] = &[Spec {
         "recto highlight --page 3 --chars 120-180",
         "recto highlight --page 3 --at 150,220 --unit line",
         "recto highlight --page 3 --chars 900- --to-page 4 --json",
+        HIGHLIGHT_REF_EXAMPLE,
     ],
     ..BASE
 }];
