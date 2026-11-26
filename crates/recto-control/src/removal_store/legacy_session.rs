@@ -134,15 +134,18 @@ pub(crate) fn survey_legacy_sessions_with(root: &Path, lineage: &Lineage<'_>, mo
     }
     let Ok(entries) = folder.entries() else { return Ok(()) };
     let mut listed: Vec<Entry> = Vec::new();
+    let mut seen = 0usize;
     for entry in entries {
         let Ok(entry) = entry else { return Ok(()) };
-        if legacy_kind(entry.name.as_encoded_bytes()) == Name::NotOurs {
-            continue;
-        }
-        if listed.len() >= caps.entries {
+        // Every entry the listing returns counts, this store's or not: the root holds other stores' entries, and a root of a million of them is not
+        // read to its end (one `fstatat` each). Only this store's are kept.
+        seen += 1;
+        if seen > caps.entries {
             return Err(Refusal::TooLarge);
         }
-        listed.push(entry);
+        if legacy_kind(entry.name.as_encoded_bytes()) != Name::NotOurs {
+            listed.push(entry);
+        }
     }
     let maps = Maps::of(lineage);
     let mut copies = 0usize;

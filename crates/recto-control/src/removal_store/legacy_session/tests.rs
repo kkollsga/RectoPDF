@@ -244,46 +244,48 @@ fn a_journals_that_is_no_folder_leaves_the_store_unmarked() {
 }
 
 /// Failure: a cap that is passed by one is let through (`>` for `>=`), so the survey reads a cut listing as whole; or one that is exactly met is
-/// refused. Each cap is made small, and tried at the cap and at one past it: the root's entries, the copies opened, a copy's entries and its journals'.
+/// refused; or the root's cap skips the names that aren't this store's, so a root of a million other entries is listed in full. Each cap is made small, and tried at the cap and at one past it: the root's entries, the copies opened, a copy's entries and its journals'.
 #[test]
 fn each_cap_refuses_one_past_it_and_not_at_it() {
-    let state = state();
+    // A bare root, so every entry in it is counted here: two copies and one name that is no copy's (another store's) make three.
+    let dir = recto_testpdf::TempDir::new("recto-caps-");
     for k in 1..=2 {
-        std::fs::create_dir(state.root().join(format!("session.damaged.{k}"))).unwrap();
+        std::fs::create_dir(dir.path().join(format!("session.damaged.{k}"))).unwrap();
     }
+    put(dir.path(), "ledger", b"another store's");
     let root_entries = |entries| LegacyCaps {
         entries,
         ..LegacyCaps::default()
     };
-    assert!(survey_with(state.root(), &root_entries(2)).is_ok(), "two entries at a cap of two");
-    assert_eq!(survey_with(state.root(), &root_entries(1)).unwrap_err(), Refusal::TooLarge);
+    assert!(survey_with(dir.path(), &root_entries(3)).is_ok(), "three entries at a cap of three");
+    assert_eq!(survey_with(dir.path(), &root_entries(2)).unwrap_err(), Refusal::TooLarge);
     let copies = |copies| LegacyCaps {
         copies,
         ..LegacyCaps::default()
     };
-    assert!(survey_with(state.root(), &copies(2)).is_ok());
-    assert_eq!(survey_with(state.root(), &copies(1)).unwrap_err(), Refusal::TooLarge);
+    assert!(survey_with(dir.path(), &copies(2)).is_ok());
+    assert_eq!(survey_with(dir.path(), &copies(1)).unwrap_err(), Refusal::TooLarge);
     // A copy's own entries, and its journals' (the same per-folder cap).
-    let one = state.root().join("session.damaged.1");
+    let one = dir.path().join("session.damaged.1");
     put(&one, "a", b"");
     put(&one, "b", b"");
     let per_folder = |entries| LegacyCaps {
         folder: Caps { entries, ..Caps::default() },
         ..LegacyCaps::default()
     };
-    assert!(survey_with(state.root(), &per_folder(2)).is_ok());
-    assert_eq!(survey_with(state.root(), &per_folder(1)).unwrap_err(), Refusal::TooLarge);
-    let two = state.root().join("session.damaged.2");
+    assert!(survey_with(dir.path(), &per_folder(2)).is_ok());
+    assert_eq!(survey_with(dir.path(), &per_folder(1)).unwrap_err(), Refusal::TooLarge);
+    let two = dir.path().join("session.damaged.2");
     std::fs::create_dir(two.join("journals")).unwrap();
     for name in ["x", "y", "z"] {
         put(&two.join("journals"), name, b"");
     }
     assert_eq!(
-        survey_with(state.root(), &per_folder(2)).unwrap_err(),
+        survey_with(dir.path(), &per_folder(2)).unwrap_err(),
         Refusal::TooLarge,
         "the journals folder is capped too"
     );
-    assert!(survey_with(state.root(), &per_folder(3)).is_ok());
+    assert!(survey_with(dir.path(), &per_folder(3)).is_ok());
 }
 
 /// Failure: a copy that vanishes between the listing and its opening is read as an empty copy, so the survey says "none found" for a folder that was
