@@ -487,6 +487,11 @@ pub(crate) fn every_command() -> Vec<Command> {
         Command::from(commands::updates::UpdateInstall { zip: None, now: false }),
         Command::from(commands::updates::UpdateDevBuilds { set: None }),
         Command::from(commands::updates::Settings { auto_update: None }),
+        Command::from(commands::removal::RemovalCheck { tab: crate::TabRef::default() }),
+        Command::from(commands::removal::RemovalClear {
+            tab: crate::TabRef::default(),
+            confirm: "0123456789abcdef".into(),
+        }),
     ]
 }
 

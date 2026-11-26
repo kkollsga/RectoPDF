@@ -379,3 +379,10 @@ page_move level=control tab=Some("active") about=Some("active") protected_ok=fal
 wait level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=server log=null
 permission_request level=off tab=None about=None protected_ok=false draws=false reads_pages=false route=server log={"level":"read_only"}
 close level=control tab=Some("report") about=Some("report") protected_ok=true draws=false reads_pages=false route=session log={"tab":"by name"}
+removal_check level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=app log={"tab":"active"}
+removal_check level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=false reads_pages=false route=app log={"tab":"#2"}
+removal_check level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=app log={"tab":"active"}
+removal_check level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=false reads_pages=false route=app log={"tab":"#2"}
+removal_clear level=full tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=app log={"tab":"active"}
+removal_clear level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=false reads_pages=false route=app log={"tab":"#2"}
+removal_clear level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=false reads_pages=false route=app log={"tab":"#2"}

@@ -23,26 +23,14 @@ pub struct RemovalCheck {
     pub tab: TabRef,
 }
 
-/// Clears what `removal check` offered: the plan it gave, confirmed.
-#[derive(Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(into = "line::RemovalClear")]
+/// Clears what `removal check` offered: the plan it gave, confirmed. The plan is the words `removal check` gave, read by the app ([`read_plan`]), which
+/// refuses what is not one with a usage error before it looks at anything.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemovalClear {
+    #[serde(default)]
     pub tab: TabRef,
-    pub confirm: PlanId,
-}
-
-/// `removal clear` as it's written on the wire.
-pub mod line {
-    use super::TabRef;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct RemovalClear {
-        #[serde(default)]
-        pub tab: TabRef,
-        pub confirm: String,
-    }
+    pub confirm: String,
 }
 
 /// A plan's number as `removal check` gives it: 16 hex digits, so no client's number type can round it.
@@ -50,43 +38,22 @@ pub fn plan_word(id: PlanId) -> String {
     format!("{:016x}", id.get())
 }
 
-/// What the check's words say how to confirm, and what the line must be for [`RemovalClear`].
+/// What a plan has to look like, in words.
 const BAD_PLAN: &str = "The plan is the 16 letters and digits `removal check` gave.";
 
-impl TryFrom<line::RemovalClear> for RemovalClear {
-    type Error = AgentError;
-    fn try_from(line: line::RemovalClear) -> Result<Self, AgentError> {
-        let usage = || AgentError::new(Code::USAGE, BAD_PLAN, exit::USAGE);
-        let word = line.confirm.trim();
-        let digits = word.len() == 16 && word.bytes().all(|b| b.is_ascii_hexdigit());
-        let id = digits
-            .then(|| u64::from_str_radix(word, 16).ok())
-            .flatten()
-            .and_then(PlanId::from_raw)
-            .ok_or_else(usage)?;
-        Ok(Self { tab: line.tab, confirm: id })
-    }
-}
-
-impl From<&RemovalClear> for line::RemovalClear {
-    fn from(asked: &RemovalClear) -> Self {
-        Self {
-            tab: asked.tab.clone(),
-            confirm: plan_word(asked.confirm),
-        }
-    }
-}
-
-impl From<RemovalClear> for line::RemovalClear {
-    fn from(asked: RemovalClear) -> Self {
-        Self::from(&asked)
-    }
-}
-
-impl std::fmt::Debug for RemovalClear {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        line::RemovalClear::from(self).fmt(f)
-    }
+/// The plan a `--confirm` word names, or a usage refusal.
+///
+/// # Errors
+///
+/// A word that is not 16 hex digits, or is all zeros.
+pub fn read_plan(word: &str) -> Result<PlanId, AgentError> {
+    let word = word.trim();
+    let digits = word.len() == 16 && word.bytes().all(|b| b.is_ascii_hexdigit());
+    digits
+        .then(|| u64::from_str_radix(word, 16).ok())
+        .flatten()
+        .and_then(PlanId::from_raw)
+        .ok_or_else(|| AgentError::new(Code::USAGE, BAD_PLAN, exit::USAGE))
 }
 
 impl Cmd for RemovalCheck {

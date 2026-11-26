@@ -101,6 +101,8 @@ The app itself:
   update install       Installs what's on offer, by what Update to X.Y.Z… does: downloads and verifies with the app in use, then waits for anything in flight, hands off and reopens.
   update dev-builds    Allow development builds, as Settings has it: off unless the owner's turned it on.
   settings             The app's settings, as the Settings window shows them.
+  removal check        Says what clearing the leftovers beside a tab's document would do, and what it would leave.
+  removal clear        Clears the leftovers `removal check` showed, for the plan it gave: moves the unfinished saves to the Trash (empty the Trash to remove them for good) and deletes the copies of the session kept for going back, after which an update that goes back may open without the person's tabs.
 
 Skill files:
   skill show           Prints the generated skill.
@@ -183,6 +185,8 @@ Testing the app:
   qa as-person         Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait.
   qa owner-edit        Makes an edit as the owner: `rotate:PAGE` (a quarter turn), `delete:PAGE`, `undo` or `redo`, as `qa as-person` runs the person's `page rotate`, `page delete`, `undo` or `redo`, under the same rules.
   qa note-input        Says the user just touched the app, by what the event monitor calls.
+  qa removal-hold      Holds the next `removal clear` before the act of a step of its plan until it's released, so what answers a check or a second clear meanwhile can be seen.
+  qa removal-state     Says what Clear leftovers holds: how many plans wait for a yes, whether a clear is running and whether it is held.
   qa hold-reads        Holds files being read for opening where they are until it's told otherwise, as a slow disk would, for what's waiting on them to be seen.
   qa hand-off-quit     Asks to quit for an update, by what the updater calls.
   qa sheet             Says a sheet or panel opened or closed over the window, by what opening one does.

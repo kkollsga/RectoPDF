@@ -5,8 +5,11 @@
 //! Both run on the caller's thread (the socket's, or the window's own thread for the person: `WAITS`), never on the UI thread and never under the session's
 //! lock, which is taken only to read which tab and file.
 
-use super::{AppHost, Inner};
-use recto_agent::commands::removal::{RemovalCheck, RemovalClear, plan_word, removal_needs_app};
+use super::saver::Saver;
+use super::sleeper::OnDisk;
+use super::tools::Tools;
+use super::{AppHost, Serving};
+use recto_agent::commands::removal::{RemovalCheck, RemovalClear, plan_word, read_plan, removal_needs_app};
 use recto_agent::commands::{Cmd, Removal as Family, row_access};
 use recto_agent::{Actor, AgentError, Code, Command, TabRef, exit};
 use recto_control::removal_store::leftovers::leases::{Busy, Outside};
@@ -207,15 +210,23 @@ fn clear_error(error: ClearError) -> AgentError {
 }
 
 /// `removal check` and `removal clear`, for whoever asked: the level's been checked ([`AppHost::run_app`]). Everything else is the controller's.
-pub(crate) fn command(host: &AppHost, inner: &Arc<Inner>, actor: Actor, command: &Command) -> Result<Value, AgentError> {
+pub(crate) fn command(
+    host: &AppHost,
+    tools: &Tools,
+    serving: &Serving,
+    saver: &Saver,
+    on_disk: &OnDisk,
+    actor: Actor,
+    command: &Command,
+) -> Result<Value, AgentError> {
     let Command::Removal(family) = command else {
         return Err(removal_needs_app());
     };
-    let removal = inner.tools.removal();
-    let root = inner.serving.paths.as_ref().map(|paths| paths.root.clone()).ok_or_else(removal_needs_app)?;
+    let removal = tools.removal();
+    let root = serving.paths.as_ref().map(|paths| paths.root.clone()).ok_or_else(removal_needs_app)?;
     let (tab, confirm) = match family {
         Family::RemovalCheck(RemovalCheck { tab }) => (tab, None),
-        Family::RemovalClear(RemovalClear { tab, confirm }) => (tab, Some(*confirm)),
+        Family::RemovalClear(RemovalClear { tab, confirm }) => (tab, Some(read_plan(confirm)?)),
     };
     let document = file_of(host, actor, tab)?;
     let stamp =
@@ -268,9 +279,9 @@ pub(crate) fn command(host: &AppHost, inner: &Arc<Inner>, actor: Actor, command:
             }
             let _clearing = Clearing(&removal.clearing);
             let outside = Outside {
-                keeps_record: inner.saver.store.holds_the_record(),
-                beside_newer: inner.saver.store.beside_newer(),
-                sleep_pass_done: inner.on_disk.sleeper().older_pass_done(),
+                keeps_record: saver.store.holds_the_record(),
+                beside_newer: saver.store.beside_newer(),
+                sleep_pass_done: on_disk.sleeper().older_pass_done(),
             };
             let cleared = run::clear(&removal.store, &asked, id, &world, outside, Instant::now(), &mut Held(&removal.hold)).map_err(clear_error)?;
             if cleared.stopped.is_some() {

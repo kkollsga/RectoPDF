@@ -471,7 +471,6 @@ family! {
     /// Clearing leftovers, which only the app has.
     pub enum Removal {
         RemovalCheck(removal::RemovalCheck),
-        #[line(removal::line::RemovalClear)]
         RemovalClear(removal::RemovalClear),
     }
 }

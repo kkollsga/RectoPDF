@@ -369,6 +369,7 @@ Tools::pub fn folds(&self) -> &crate::sidebar_access::Folds
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
 Tools::pub fn printing(&self) -> &printing::Printing
 Tools::pub fn prompts(&self) -> &crate::prompts::Prompts
+Tools::pub fn removal(&self) -> &super::removal::Removal
 Tools::pub fn tool(&self) -> &snapshot_tool::Tool
 Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn page_ids(&self) -> &Arc<super::page_ids::PageIds>

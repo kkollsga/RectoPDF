@@ -40,11 +40,8 @@ impl Bed {
         }
         let mut out = Vec::new();
         walk(&self.root(), &self.root(), &mut out);
-        walk(
-            &self.document.parent().unwrap().to_path_buf(),
-            &self.document.parent().unwrap().to_path_buf(),
-            &mut out,
-        );
+        let folder = self.document.parent().unwrap();
+        walk(folder, folder, &mut out);
         out.retain(|line| {
             !line.starts_with("run/")
                 && !line.contains("removal")
@@ -200,7 +197,10 @@ fn a_check_or_a_clear_during_a_clear_is_busy_and_nothing_else_is_disturbed() {
     // Held before the act of the second step: the first step (the leases) is done.
     removal.hold_at(1);
     std::thread::scope(|scope| {
-        let clear = scope.spawn(|| bed.agent(Level::Full, &clear_line(&plan)));
+        let clear = std::thread::Builder::new()
+            .name("removal-clear-test".into())
+            .spawn_scoped(scope, || bed.agent(Level::Full, &clear_line(&plan)))
+            .expect("a thread");
         bed.app
             .wait_for("the clear to be held", || removal.held().then_some(()).ok_or_else(|| "not held yet".to_owned()));
         assert!(removal.clearing());

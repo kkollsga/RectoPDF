@@ -2168,3 +2168,53 @@ null
   refused cmd=find code=bad_limit
 {"cmd":"compare","tabs":"#1,#2,#3,#4,#5,#6,#7,#8,#9"}
   refused cmd=compare code=too_many_panes
+{"cmd":"removal_check"}
+  reply {"cmd":"removal_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"removal_check","tab":"#2"}
+  reply {"cmd":"removal_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"removal_check","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_check","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_check","tab":null}
+  refused cmd=unknown code=bad_command
+["removal_check"]
+  reply {"cmd":"removal_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+["removal_check","#2"]
+  reply {"cmd":"removal_check","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"RemovalCheck"}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_clear","confirm":"0123456789abcdef"}
+  reply {"cmd":"removal_clear","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"removal_clear","tab":"#2","confirm":"0123456789abcdef"}
+  reply {"cmd":"removal_clear","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"removal_clear","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_clear"}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_clear","confirm":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_clear","confirm":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"removal_clear","tab":{},"confirm":"0123456789abcdef"}
+  refused cmd=unknown code=bad_command
+["removal_clear"]
+  refused cmd=unknown code=bad_command
+["removal_clear","#2","0123456789abcdef"]
+  reply {"cmd":"removal_clear","error":{"candidates":[],"code":"needs_app","exit":1,"message":"Clearing leftovers belongs to the app, and this session has no window.","next":"Open RectoPDF, and `recto` will talk to that."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"RemovalClear"}
+  refused cmd=unknown code=bad_command

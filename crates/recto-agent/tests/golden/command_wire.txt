@@ -1966,5 +1966,41 @@ null
     refused {"error":{"candidates":[],"code":"bad_limit","exit":1,"message":"A limit has to be at least 1.","next":"Leave it out to get the default, or ask for 1 or more."},"ok":false,"v":1}
 {"cmd":"compare","tabs":"#1,#2,#3,#4,#5,#6,#7,#8,#9"}
     refused {"error":{"candidates":[],"code":"too_many_panes","exit":1,"message":"At most three PDFs can be side by side.","next":"`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried."},"ok":false,"v":1}
+{"cmd":"removal_check"}
+    ok removal_check Removal(RemovalCheck { tab: "active" })
+{"cmd":"removal_check","tab":"#2"}
+    ok removal_check Removal(RemovalCheck { tab: "#2" })
+{"cmd":"removal_check","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_check","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_check","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["removal_check"]
+    ok removal_check Removal(RemovalCheck { tab: "active" })
+["removal_check","#2"]
+    ok removal_check Removal(RemovalCheck { tab: "#2" })
+{"cmd":"RemovalCheck"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_clear","confirm":"0123456789abcdef"}
+    ok removal_clear Removal(RemovalClear { tab: "active", confirm: "0123456789abcdef" })
+{"cmd":"removal_clear","tab":"#2","confirm":"0123456789abcdef"}
+    ok removal_clear Removal(RemovalClear { tab: "#2", confirm: "0123456789abcdef" })
+{"cmd":"removal_clear","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_clear"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_clear","confirm":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_clear","confirm":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"removal_clear","tab":{},"confirm":"0123456789abcdef"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["removal_clear"]
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["removal_clear","#2","0123456789abcdef"]
+    ok removal_clear Removal(RemovalClear { tab: "#2", confirm: "0123456789abcdef" })
+{"cmd":"RemovalClear"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 <65561 bytes>
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That command is too long.","next":"`recto help` lists every command."},"ok":false,"v":1}
