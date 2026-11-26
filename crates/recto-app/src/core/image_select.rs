@@ -295,10 +295,14 @@ mod tests {
             as_seen: None,
         });
         assert_eq!(Look::asked(&agents), None);
-        // A page found by a reference is listed whole: its line takes no point and no page as seen, so it is never read back as the person's click.
-        let by_reference: Command =
-            serde_json::from_value(serde_json::json!({ "cmd": "images", "tab": "#3", "ref": recto_agent::commands::locating::EXAMPLE_REF })).unwrap();
-        assert!(matches!(&by_reference, Command::Read(Read::Images(asked)) if matches!(asked.page, PageOrRef::Ref(_))));
+        // A page found by a reference is listed whole: its line takes no point and no page as seen. One built in Rust with both is still no click of the
+        // person's, whose page is by number.
+        let by_reference = Command::from(Images {
+            tab: TabRef::Id(TabId(3)),
+            page: PageOrRef::Ref(recto_core::locator::decode(recto_agent::commands::locating::EXAMPLE_REF).expect("a token")),
+            at: Some([5.0, 20.0]),
+            as_seen: Some(look(5.0).seen),
+        });
         assert_eq!(Look::asked(&by_reference), None);
     }
 

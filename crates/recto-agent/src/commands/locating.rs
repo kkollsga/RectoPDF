@@ -618,14 +618,16 @@ mod tests {
         );
     }
 
-    /// The six commands that take `--ref` beside `text` and `render`, each with the fields its line needs besides the reference.
-    const REF_COMMANDS: [(&str, &str); 6] = [
+    /// The eight commands that take `--ref` beside `text` and `render`, each with the fields its line needs besides the reference.
+    const REF_COMMANDS: [(&str, &str); 8] = [
         ("goto", "{}"),
         ("select", "{}"),
         ("copy", "{}"),
         ("highlight", "{}"),
         ("snapshot", r#"{"rect":[0,0,10,10],"as":"text"}"#),
         ("export_svg", r#"{"out":"/d/x.svg"}"#),
+        ("images", "{}"),
+        ("image", r#"{"number":1,"out":"/d/x.png"}"#),
     ];
 
     /// A line for one of [`REF_COMMANDS`] with `fields` beside its own.
@@ -653,7 +655,11 @@ mod tests {
             read_line(line_of(cmd, base, json!({ "ref": EXAMPLE_REF_CHARS, "tab": "#2" })))
                 .unwrap_or_else(|error| panic!("{cmd} with a tab: {}", error.message));
             let nothing = read_line(line_of(cmd, base, json!({ "ref": null })));
-            assert_eq!(nothing.is_err(), matches!(cmd, "goto" | "snapshot" | "export_svg"), "{cmd}: a null ref is none");
+            assert_eq!(
+                nothing.is_err(),
+                matches!(cmd, "goto" | "snapshot" | "export_svg" | "images" | "image"),
+                "{cmd}: a null ref is none"
+            );
         }
         // Neither a page, a label nor a reference is refused as the line is read (before the level is asked), in its own words, whatever else came with it.
         for bare in [json!({}), json!({ "ref": null }), json!({ "within": 0.3 }), json!({ "link": true })] {
@@ -688,6 +694,72 @@ mod tests {
         assert_eq!(usage(snap.0, snap.1, json!({})), SNAPSHOT_NEITHER);
         assert_eq!(usage(svg.0, svg.1, json!({ "page": 3, "ref": EXAMPLE_REF })), EXPORT_SVG_BOTH);
         assert_eq!(usage(svg.0, svg.1, json!({})), EXPORT_SVG_NEITHER);
+        let (images, image) = (REF_COMMANDS[6], REF_COMMANDS[7]);
+        assert_eq!(usage(images.0, images.1, json!({ "page": 3, "ref": EXAMPLE_REF })), IMAGES_BOTH);
+        assert_eq!(usage(images.0, images.1, json!({})), IMAGES_NEITHER);
+        assert_eq!(usage(image.0, image.1, json!({ "page": 3, "ref": EXAMPLE_REF })), IMAGE_BOTH);
+        assert_eq!(usage(image.0, image.1, json!({})), IMAGE_NEITHER);
+    }
+
+    /// Failure: `images --ref` takes a point or a page as seen, so a point meant for the page the person saw is read on a page found by its content, which
+    /// may have a new crop or turn; or `image --ref` goes to the person's clipboard, which is made for the page they saw, because the line or a command
+    /// built in Rust (which never passed through the line) is let through. Each is `usage` in constant words, and the Rust-built one is refused for the
+    /// person before the window's clipboard is even asked.
+    #[test]
+    fn images_ref_takes_no_point_and_image_ref_never_goes_to_the_clipboard() {
+        let usage = |cmd: &str, base: &str, fields: Value| {
+            let error = read_line(line_of(cmd, base, fields.clone())).map(|_| ()).expect_err(&format!("{cmd} {fields}"));
+            assert_eq!((error.code, error.exit), (Code::USAGE, exit::USAGE), "{cmd} {fields}");
+            error.message
+        };
+        for beside in [
+            json!({ "at": [1, 2] }),
+            json!({ "as_seen": { "quarter_turns": 0, "file_page": 0, "own": true } }),
+        ] {
+            let mut line = beside.clone();
+            line["ref"] = json!(EXAMPLE_REF);
+            assert_eq!(usage("images", "{}", line.clone()), IMAGES_REF_NO_AT, "{beside}");
+            // By number they are the window's click, as they always were.
+            let mut by_number = beside.clone();
+            by_number["page"] = json!(3);
+            read_line(line_of("images", "{}", by_number)).expect("a click's own line");
+        }
+        for beside in [
+            json!({ "to_clipboard": true }),
+            json!({ "at": [1, 2] }),
+            json!({ "as_seen": { "quarter_turns": 0, "file_page": 0, "own": true } }),
+        ] {
+            let mut line = beside.clone();
+            line["ref"] = json!(EXAMPLE_REF);
+            assert_eq!(usage("image", r#"{"number":1,"out":"/d/x.png"}"#, line), IMAGE_REF_NOT_CLIPBOARD, "{beside}");
+        }
+        // The click to the clipboard needs neither a number nor a file, and it is by page number.
+        read_line(json!({ "cmd": "image", "page": 3, "at": [1, 2], "to_clipboard": true })).expect("the click's line");
+
+        let (_dir, _path, access) = {
+            let dir = recto_testpdf::TempDir::new("recto-image-ref-");
+            let path = dir.join("doc.pdf");
+            std::fs::write(&path, recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))])).unwrap();
+            let mut session = recto_session::Session::new(crate::DrawableLoader);
+            session.open(&path).unwrap();
+            (dir, path, std::sync::Mutex::new(session))
+        };
+        let built = Command::from(super::super::export::Image {
+            tab: TabRef::Active,
+            page: PageOrRef::Ref(made_up_locator(locator::Target::Page)),
+            number: None,
+            out: None,
+            anyway: false,
+            at: Some([1.0, 2.0]),
+            to_clipboard: true,
+            as_seen: Some(crate::extract::AsSeen {
+                quarter_turns: 0,
+                file_page: 0,
+                own: true,
+            }),
+        });
+        let error = crate::execute(&access, Actor::Person, &built, &mut Vec::new()).expect_err("refused");
+        assert_eq!((error.code, error.message.as_str()), (Code::USAGE, IMAGE_REF_NOT_CLIPBOARD));
     }
 
     /// Failure: `highlight --ref` takes a reference to a page or a spot (an `also_spelled` hit's, say) and highlights the whole page, an edit nobody asked for;
@@ -712,7 +784,7 @@ mod tests {
         assert_eq!((error.code, error.message.as_str()), (Code::USAGE, SNAPSHOT_REF_NOT_CLIPBOARD));
     }
 
-    /// Failure: a token that can't be a reference, on one of the six, reaches the level or the tab (an agent at Off is told about its level, a hostile token
+    /// Failure: a token that can't be a reference, on one of the eight, reaches the level or the tab (an agent at Off is told about its level, a hostile token
     /// is looked at beside the session), or is judged only after the combination (a page beside it is "both" and not "bad reference"), or its refusal repeats
     /// it. Refused as the line is read, with constant words; a newer version says so.
     #[test]
