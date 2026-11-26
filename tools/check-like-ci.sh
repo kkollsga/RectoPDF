@@ -94,34 +94,31 @@ like_ci_main() {
   fi
   local status=0
   export LIKE_TARGET=$target LIKE_JOBS=$jobs LIKE_TIMES=$times LIKE_APP=$app
-  # The queue to itself (coordinator, 2026-11-26): CI's runner has nothing else on it, so this Mac's other jobs would add load CI doesn't have. Only the job that runs
-  # the tests takes it, never the listing or the app's build before it (review, 2026-11-26: those held every other agent's work for nothing).
-  HEAVY_SOLO=1 HEAVY_RETRY=1 tools/sysguard/heavy.sh bash -c 'like_ci_rounds' "check.sh --like-ci" || status=$?
-  return "$status"
+  like_ci_rounds
 }
 
-# Inside the queue's job: the rounds, each with its own evidence, and the table when there was more than one or a failure.
+# One round, as its own queue job: the queue to itself (coordinator, 2026-11-26: CI's runner has nothing else on it, so this Mac's other jobs would add load CI
+# doesn't have), for this round only. One ticket per round, so other jobs run between rounds: a `--times 20` of ~350 s rounds held every slot for two hours as one
+# job (review, 2026-11-26). Never the listing or the app's build before the rounds.
+like_ci_queue() {
+  HEAVY_SOLO=1 HEAVY_RETRY=1 tools/sysguard/heavy.sh bash -c 'like_ci_round' "check.sh --like-ci"
+}
+
+# The rounds, each its own queued job with its own evidence, and the table when there was more than one or a failure.
 like_ci_rounds() {
-  local round status=0 rc junit results tests began
+  local round status=0 rc tests results
   check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-like-ci.XXXXXX")
   # This run's evidence only, in the tree's own root (CI's, given in RECTO_EVIDENCE, isn't emptied).
   [ -n "${RECTO_EVIDENCE:-}" ] || rm -rf "$CHECK_EVIDENCE_ROOT"
   mkdir -p "$CHECK_EVIDENCE_ROOT"
   results="$CHECK_EVIDENCE_ROOT/like-ci-results.tsv"
   : > "$results"
+  export check_mark results CHECK_EVIDENCE_ROOT
   for round in $(seq 1 "$LIKE_TIMES"); do
-    stage_name="like-ci-round-$round"
+    export LIKE_ROUND=$round
     rc=0
-    began=$(date +%s)
-    if [ "$LIKE_APP" = 1 ]; then
-      RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast --workspace -j "$LIKE_JOBS" -E "$LIKE_TARGET" || rc=$?
-    else
-      nt --locked --no-fail-fast --workspace -j "$LIKE_JOBS" -E "$LIKE_TARGET" || rc=$?
-    fi
-    echo "like-ci: round $round of $LIKE_TIMES: $([ "$rc" = 0 ] && echo passed || echo failed) in $(($(date +%s) - began)) s."
+    like_ci_queue || rc=$?
     [ "$rc" = 0 ] || status=$rc
-    junit=$(find "$check_mark.junit" -name "*-like-ci-round-$round.xml" 2>/dev/null | head -1)
-    [ -z "$junit" ] || like_ci_note "$junit" "$results"
     # An interrupt is a request to stop, not another sample of a test's failure rate.
     case "$rc" in
       130 | 143)
@@ -150,6 +147,22 @@ like_ci_rounds() {
   fi
   rm -rf "$check_mark" "$check_mark.junit"
   return "$status"
+}
+
+# One round, inside its queue job: the tests once, with their JUnit noted.
+like_ci_round() {
+  local rc=0 junit began
+  stage_name="like-ci-round-$LIKE_ROUND"
+  began=$(date +%s)
+  if [ "$LIKE_APP" = 1 ]; then
+    RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast --workspace -j "$LIKE_JOBS" -E "$LIKE_TARGET" || rc=$?
+  else
+    nt --locked --no-fail-fast --workspace -j "$LIKE_JOBS" -E "$LIKE_TARGET" || rc=$?
+  fi
+  echo "like-ci: round $LIKE_ROUND of $LIKE_TIMES: $([ "$rc" = 0 ] && echo passed || echo failed) in $(($(date +%s) - began)) s."
+  junit=$(find "$check_mark.junit" -name "*-like-ci-round-$LIKE_ROUND.xml" 2>/dev/null | head -1)
+  [ -z "$junit" ] || like_ci_note "$junit" "$results"
+  return "$rc"
 }
 
 # Each test of a round's JUnit, passed or failed, as `class name pass|fail` lines.

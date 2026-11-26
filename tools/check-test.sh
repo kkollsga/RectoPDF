@@ -1571,7 +1571,8 @@ rm -f "$CALLS.policy" "$CALLS.reruns" "$CALLS.heavy"; : > "$CALLS"
 echo "APP_BINARIES='app'" >> tools/check-scope.sh
 out=$(STUB_LIST='recto-cli::app flaky_one' STUB_JUNIT_FAIL='binary_id(=recto-cli::app)' STUB_RERUN_FAILS=1 tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --times 3 2>&1); rc=$?
 check "a filter like CI, N times: the failure fails it" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
-check "its rounds are one solo job, and the listing and the app's build are queued as any other" "1 0" "$(grep -c '^solo=1 bash -c like_ci_rounds' "$CALLS.heavy") $(grep -v 'like_ci_rounds' "$CALLS.heavy" | grep -c '^solo=1')"
+# Failure (review, 2026-11-26): all rounds in one solo job, so a `--times 20` of lifecycle-sized rounds held every slot for hours and starved every other agent.
+check "each round is its own solo job (3 rounds, 3 jobs), and the listing and the app's build are queued as any other" "3 0" "$(grep -c '^solo=1 bash -c like_ci_round' "$CALLS.heavy") $(grep -v 'like_ci_round' "$CALLS.heavy" | grep -c '^solo=1')"
 check "it builds the app for an app binary's test" "1" "$(grep -c '^app-build$' "$CALLS")"
 check "and runs it that many times under the limits, 4 at once for the app's tests" "3" "$(grep -c -- '-j 4 -E binary_id(=recto-cli::app) & test(=flaky_one) profile=ci$' "$CALLS.policy")"
 has "with its rate" "failed 1 of 3" "$(printf '%s' "$out" | tr -s ' ')"
@@ -1583,6 +1584,7 @@ for interrupted in 130 143; do
   out=$(
     . "$SOURCE/tools/check-like-ci.sh"
     nt() { echo run >> "$X/interrupted-$interrupted.calls"; return "$interrupted"; }
+    like_ci_queue() { like_ci_round; }
     LIKE_TIMES=3 LIKE_APP=0 LIKE_JOBS=1 LIKE_TARGET='test(=interrupted)' CHECK_EVIDENCE_ROOT="$X/interrupted-$interrupted-evidence" like_ci_rounds
   ); rc=$?
   check "signal exit $interrupted stops repetitions immediately and preserves its code" "$interrupted 1" "$rc $(wc -l < "$X/interrupted-$interrupted.calls" | tr -d ' ')"
