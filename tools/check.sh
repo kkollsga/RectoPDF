@@ -3,6 +3,8 @@
 #
 #   tools/check.sh --quick    The compile gate, then the tests of crates changed since the branch left main (and uncommitted) and the registration guards (while working)
 #   tools/check.sh --corpus   The index against the pages over every PDF in RECTO_BENCH100, about a quarter of an hour
+#   tools/check.sh --warm-gate  CI's heavy job on a cache-saving run only: the gate's builds (clippy, the Windows check), failures ignored, so the saved cache holds check artifacts
+#                             that light, which holds the gate's verdict, needs (2026-11-26). Nothing is tested, counted or recorded.
 #   tools/check.sh --failed   Only the tests that failed last time in this folder (while fixing them)
 #   tools/check.sh --full     The compile gate, then the tests of what the change can affect (changed crates and their dependents, the guards) and the app
 #                             tiers it can affect, as tools/check-scope.sh says; everything on CI, on `main` and with CHECK_ALL=1 (before handing back).
@@ -11,7 +13,7 @@
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
 #   tools/check.sh --slow     The newest kept run's 20 slowest tests, each tier's time against its budget, the slow stage, and the stages against the run before.
 #   CHECK_PART=light|heavy|core|window|lifecycle tools/check.sh --full    Just that part of what a full run covers, as CI splits it into jobs; never recorded as a pass.
-#                             CI's two jobs are light (the ratchet, the how-to pages, the tools' own tests, each changed crate's `cargo check --tests`) and heavy (all the rest,
+#                             CI's two jobs are light (the ratchet, the how-to pages, the layout and compile gate, the tools' own tests, each changed crate's `cargo check --tests`) and heavy (all the rest,
 #                             which is core, window and lifecycle together); every stage is in exactly one of them (tools/check-test.sh holds that).
 #   tools/check.sh --like-ci <part or filter> [--times N]   CI's profile, concurrency and slower machine, by limits on the process (tools/check-like-ci.sh); never a pass.
 #
@@ -37,7 +39,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
 unset RECTO_SIGN_IDENTITY
-usage() { sed -n '2,17p' "$0"; exit 2; }
+usage() { sed -n '2,/^#   tools\/check.sh --like-ci/p' "$0"; exit 2; }
 mode=""
 why=""
 why_given=""
@@ -62,7 +64,8 @@ mode="${mode:---quick}"
 [ -z "$why_given" ] || [ "$mode" = --full ] || usage
 # A named part of a full run (CI runs the parts as jobs of their own). light is what builds little or nothing: the ratchet, the how-to pages' paths, the tools'
 # own tests and the per-crate `cargo check --tests` (2026-11-15: they were 156 s and up to 131 s on the critical path of the one big job, and on a Mac the tools'
-# tests need no cargo build). core is the layout, the compile gate and the workspace tests, window and lifecycle the app's two tiers (tools/check-scope.sh).
+# tests need no cargo build). The layout and the compile gate (clippy, Windows check, doc links) are light's too since 2026-11-26: heavy builds the same commit anyway, and
+# a run is counted only when both jobs pass, so the gate runs once and out of the heavy job's way (about 55 s). core is the headings' tests and the workspace tests, window and lifecycle the app's two tiers (tools/check-scope.sh).
 # So light, core, window and lifecycle are four parts that together are everything and share no stage, and heavy is core, window and lifecycle in one run:
 # CI's two jobs are light and heavy. A part is never remembered or counted as a run.
 part=${CHECK_PART:-all}
@@ -73,7 +76,7 @@ case "$part" in
     ;;
   *) echo "check: CHECK_PART is light, heavy, core, window or lifecycle, not '$part'." >&2; exit 2 ;;
 esac
-# Which stages this run has, by the part (the one place that says so): the light ones, and the core ones (layout, gate, headings' tests, workspace tests).
+# Which stages this run has, by the part (the one place that says so): the light ones (ratchet, layout, gate, tools' tests), and the core ones (headings' tests, workspace tests).
 runs_light=0 runs_core=0
 case "$part" in
   all) runs_light=1 runs_core=1 ;;
@@ -470,6 +473,7 @@ case "$mode" in
     evidence_report "$status"
     exit "$status"
     ;;
+  --warm-gate) ;; # after the gate's definition, below
   --failed)
     log=$(tools/sysguard/heavy.sh --last-failure) || exit 1
     names=$(sed -nE 's/^ *(FAIL|SIGKILL|SIGABRT|SIGSEGV|TIMEOUT|ABORT) +\[[^]]*\] +(\([^)]*\) +)?[^ ]+ +([^ ]+) *$/\3/p' "$log" | sort -u)
@@ -508,18 +512,20 @@ stage() {
 # The compile gate: what must build and pass the lints before a test job is queued. Clippy for the whole workspace, which is incremental and so costs
 # seconds on what didn't change, then the headings helper's own lints, then the Windows compile check. A compile error is found here, as a quick job at
 # the front of the queue, and no test is ever queued for it (46 of 156 failed jobs in 30 hours were compile, clippy or fmt errors, 2026-11-12).
+# GATE_KEEP_GOING=1 (--warm-gate only): each command is run on its own and a failure doesn't stop the next, so the cache keeps every one's artifacts.
 gate() {
   set -e
   local at
   at=$(date +%s)
-  cargo clippy --workspace --all-targets --locked -- -D warnings
+  step() { if [ -n "${GATE_KEEP_GOING:-}" ]; then "$@" || echo "check: (warm gate) failed, going on: ${*:1:3}"; else "$@"; fi; }
+  step cargo clippy --workspace --all-targets --locked -- -D warnings
   # The headings helper is a workspace of its own, kept apart so distillPDF's lopdf features never reach the app. Its own lints, then its tests below.
-  cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
+  step cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed. A compile error, so it goes before anything runs.
   # Clippy at the level above, so a warning fails it: code only a Windows build compiles is seen nowhere else, and an unused variable in it passed a plain
   # `cargo check` (916efaf). Clippy shares the check's artifacts for dependencies, so nothing more is built than before.
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
-    cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
+    step cargo clippy --workspace --locked --target x86_64-pc-windows-gnu -- -D warnings
   fi
   echo "check: clippy and the Windows compile check took $(($(date +%s) - at)) s"
   # The docs' links of the crates in doc_crates (DOC_LINK_CRATES that changed, tools/check-scope.sh): a link to nothing, or a public doc linking a private item.
@@ -530,6 +536,17 @@ gate() {
     echo "check: $c's doc links took $(($(date +%s) - at)) s"
   done
 }
+# The gate's builds alone, for the run that saves CI's cache: heavy no longer runs the gate, so its check-mode artifacts (clippy's, the Windows target's) would be
+# missing from the cache and `light` would build them every run after the next Cargo.lock change. The same `gate` function, so one set of command lines;
+# its verdict is light's, so a failure here only says so, and each of the three commands runs even if an earlier one failed (GATE_KEEP_GOING).
+if [ "$mode" = --warm-gate ]; then
+  doc_crates=""
+  GATE_KEEP_GOING=1
+  export doc_crates GATE_KEEP_GOING
+  export -f gate
+  HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh --warm-gate" || echo "check: the warm gate failed; the gate's verdict is light's, so this run goes on."
+  exit 0
+fi
 # The changed crates' tests compiled with their own features (see `run`): the light part's one stage that builds, and in a run of everything it is in
 # changed-tests. Only when a second stage follows them (other_mode), as `run` says.
 features_check() {
@@ -539,6 +556,26 @@ features_check() {
   for c in $tests_first; do
     [ "$c" = -p ] || cargo check --locked -p "$c" --tests
   done
+}
+# The app's own test binaries of recto-cli, selected for nextest into CLI_ARGS: $1 an extra filter (or empty), then the binaries. When a stage over the whole
+# workspace ran before in this run (other_mode isn't none: core, or everything), they come out of that build, `--workspace -E 'package(recto-cli) & ...'`, so
+# nothing is built again: `-p recto-cli --test x` unified recto-cli's own features and rebuilt every workspace crate, 26 to 33 s of CI's app stages a run
+# (2026-11-26, the CI time audit; the same fix as the changed crates' tests, 2026-11-15). A run with no such stage (an app part alone, every crate
+# changed) has nothing to reuse and keeps `-p`. $CLI_JOBS, when set, is the stage's concurrency (-j).
+cli_select() {
+  local extra=$1 b bins=""
+  shift
+  CLI_ARGS=()
+  if [ "${other_mode:-none}" != none ]; then
+    for b in "$@"; do bins="$bins${bins:+ | }binary(=$b)"; done
+    CLI_ARGS=(--workspace -E "package(recto-cli) & ($bins)${extra:+ & ($extra)}")
+    [ -z "${CLI_JOBS:-}" ] || CLI_ARGS+=(-j "$CLI_JOBS")
+  else
+    CLI_ARGS=(-p recto-cli)
+    for b in "$@"; do CLI_ARGS+=(--test "$b"); done
+    [ -z "${CLI_JOBS:-}" ] || CLI_ARGS+=(-j "$CLI_JOBS")
+    [ -z "$extra" ] || CLI_ARGS+=(-E "$extra")
+  fi
 }
 run() {
   set -e
@@ -592,7 +629,7 @@ run() {
     # The bundle just built: its notices are this tree's, and only its own program reaches the Keychain. Archive metadata belongs to the updater's
     # tiny signed-bundle round trip in the workspace tests; macOS can add protected provenance to freshly built files, even after xattr reports clearing it.
     stage app-bundle
-    [ "$part" = lifecycle ] || RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test notices -E 'test(=the_built_app_carries_the_notices) | test(=only_the_apps_own_program_in_the_bundle_reaches_the_keychain)'
+    [ "$part" = lifecycle ] || { cli_select 'test(=the_built_app_carries_the_notices) | test(=only_the_apps_own_program_in_the_bundle_reaches_the_keychain)' notices; RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast "${CLI_ARGS[@]}"; }
     # At most four at once: each is a real app, and this Mac is in use. Each run is quiet, off every screen, on its own state folder and
     # pasteboard, so they don't meet. Four took this stage from 191 s to 118 to 140 s, passing three runs out of three at load 25 to 45
     # (docs/reports/build-performance-2026-11-11.md). The tiers (tools/check-scope.sh): window, and lifecycle. Both, as on CI, is every test in the binaries.
@@ -605,9 +642,9 @@ run() {
     if [ "$app_tier_waited" -gt 0 ]; then stage_waited=$app_tier_waited; stage_started=$(date +%s); fi
     local app_status=0
     case "$app_mode" in
-      both) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 || app_status=$? ;;
-      window) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test evidence -j 4 -E "$WINDOW_TESTS" || app_status=$? ;;
-      lifecycle) RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore --test compare --test long_session -j 4 -E "$LIFECYCLE_TESTS" || app_status=$? ;;
+      both) CLI_JOBS=4 cli_select "" app restore compare long_session evidence; RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast "${CLI_ARGS[@]}" || app_status=$? ;;
+      window) CLI_JOBS=4 cli_select "$WINDOW_TESTS" app restore compare evidence; RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast "${CLI_ARGS[@]}" || app_status=$? ;;
+      lifecycle) CLI_JOBS=4 cli_select "$LIFECYCLE_TESTS" app restore compare long_session; RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast "${CLI_ARGS[@]}" || app_status=$? ;;
     esac
     [ "$app_status" = 0 ] || echo app-tests > "$check_mark.failed"
     # The same app with every waiting point late, as a slow disk or a loaded machine has it: the state read past the window's second of patience, so the
@@ -621,12 +658,14 @@ run() {
       # way, so a failure's seams and seed are in its rerun line and the same seed gives the same delays (PLAN R0.7b).
       local slow_switch="ci${CHECK_SLOW_SEED:+,jitter=$CHECK_SLOW_SEED}"
       echo "check: slow: RECTO_QA_SLOW=$slow_switch$([ -n "${CHECK_SLOW_SEED:-}" ] || echo ' (no jitter; CHECK_SLOW_SEED=<n> adds jitter=<n>)')"
-      RECTO_QA_SLOW=$slow_switch RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E "$slow_filter" --no-tests=pass
+      CLI_JOBS=4 cli_select "$slow_filter" app restore
+      RECTO_QA_SLOW=$slow_switch RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast "${CLI_ARGS[@]}" --no-tests=pass
     fi
     # After them, as it's about what they left: no copy of the app registered but the one install (owner, 2026-11-11: "We should only ever have one").
     if [ "$app_mode" = both ] || [ "$app_mode" = lifecycle ]; then
       stage registrations
-      RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast -p recto-cli --test registrations
+      cli_select "" registrations
+      RECTO_REQUIRE_APP=1 nt --locked --no-fail-fast "${CLI_ARGS[@]}"
     fi
     app_tier_release
     [ "$app_status" = 0 ] || { echo "check: app-tests failed (above), and the stages after it that don't depend on it ran." >&2; return "$app_status"; }
@@ -694,7 +733,7 @@ fi
 # The compile gate, before any test is queued. The layout first, outside the queue as it builds nothing: one layout, so two branches that each add a field
 # to a struct literal merge without a conflict (guide §2.8). `cargo fmt --all` fixes it. Then clippy and the Windows check, a quick job of their own: a
 # failure is refused at once the next time on the same code, and no full run is counted for it.
-if [ "$runs_core" = 1 ] && ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check; }; then
+if [ "$runs_light" = 1 ] && ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check; }; then
   echo "check: the layout is off, so nothing was queued. \`cargo fmt --all\` fixes it." >&2
   exit 1
 fi
@@ -707,14 +746,14 @@ done
 export doc_crates
 export -f gate
 gate_status=0
-if [ "$runs_core" = 1 ]; then
+if [ "$runs_light" = 1 ]; then
   HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh$mode gate" || gate_status=$?
 fi
 if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run features_check stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
+export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run features_check stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table cli_select
 export app_tier_dir CHECK_TOP_PID check_mark part runs_light runs_core mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0

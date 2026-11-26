@@ -53,10 +53,10 @@ nt() {
 
 # The tests of the lifecycle tier among the app binaries, one `binary name` a line, from nextest's own filterset so the tier is the one that ran.
 times_lifecycle_tests() {
-  local args="" b
-  for b in $APP_BINARIES; do args="$args --test $b"; done
-  # shellcheck disable=SC2086
-  cargo nextest list --locked -p recto-cli $args -E "$LIFECYCLE_TESTS" -T oneline 2>/dev/null || true
+  # The same selection the stage ran with (cli_select, tools/check.sh): `-p recto-cli` here rebuilt every workspace crate with recto-cli's own features, 26 to
+  # 33 s at the end of a run, outside every stage and hidden by the `|| true` (2026-11-26, review).
+  CLI_JOBS="" cli_select "$LIFECYCLE_TESTS" $APP_BINARIES
+  cargo nextest list --locked "${CLI_ARGS[@]}" -T oneline 2>/dev/null || true
 }
 
 # JUnit files (named NN-stage.xml) to `stage seconds start end binary name` lines. Start and end in seconds, from the clock part of the timestamps.

@@ -65,7 +65,7 @@ if [ -n "${STUB_JUNIT:-}" ] && [[ "$*" == "nextest run "* ]]; then
 fi
 # With STUB_JUNIT_FAIL, the nextest run whose line has it fails one test, `flaky_one`, in its JUnit, and leaves its evidence as the harness would. A rerun of
 # it (its line names the test by binary_id) fails while fewer than STUB_RERUN_FAILS reruns have, and passes after.
-if [ -n "${STUB_JUNIT_FAIL:-}" ] && [[ "$*" == "nextest run "* ]] && [[ "$*" == *"$STUB_JUNIT_FAIL"* ]]; then
+if [ -n "${STUB_JUNIT_FAIL:-}" ] && [[ "$*" == "nextest run "* ]] && { [[ "$*" == *"$STUB_JUNIT_FAIL"* ]] || [[ "$*" == *"${STUB_JUNIT_FAIL/binary(=/binary_id(=recto-cli::}"* ]]; }; then
   junit="target/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
   mkdir -p "$(dirname "$junit")"
   verdict=fail
@@ -82,9 +82,9 @@ if [ -n "${STUB_JUNIT_FAIL:-}" ] && [[ "$*" == "nextest run "* ]] && [[ "$*" == 
   exit 0
 fi
 # STUB_APP_HOOK runs while the app's tests do (the first app run of a check: the window, lifecycle or both tiers' nextest run of the app binary).
-if [ -n "${STUB_APP_HOOK:-}" ] && [[ "$*" == *"--test app "* ]] && [ -z "${RECTO_QA_SLOW:-}" ]; then bash -c "$STUB_APP_HOOK"; fi
+if [ -n "${STUB_APP_HOOK:-}" ] && { [[ "$*" == *"--test app "* ]] || [[ "$*" == *"binary(=app)"* ]]; } && [ -z "${RECTO_QA_SLOW:-}" ]; then bash -c "$STUB_APP_HOOK"; fi
 [ -z "${RECTO_QA_SLOW:-}" ] || echo "$RECTO_QA_SLOW $*" >> "$CALLS.slow"
-[[ "$*" != *"--test notices"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
+[[ "$*" != *"--test notices"* && "$*" != *"binary(=notices)"* ]] || echo "skip=${RECTO_SKIP_APP:-} require=${RECTO_REQUIRE_APP:-} $*" >> "$CALLS.bundle"
 if [ -n "${STUB_DURING:-}" ] && [[ "$*" == "build --locked -p recto-render-service"* ]]; then bash -c "$STUB_DURING"; fi
 if [ -n "${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then exit "${STUB_EXIT:-100}"; fi
 STUB
@@ -219,7 +219,7 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^doc -p alpha --no-deps.*/doc-links/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^check --locked -p alpha --tests$/own-build/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(=alpha\)$/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^doc -p alpha --no-deps.*/doc-links/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^check --locked -p alpha --tests$/own-build/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(=alpha\)$/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(recto-cli\) & \(binary\(=app\) \| binary\(=restore\)\) & .*/slow/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(recto-cli\) & \(binary\(=app\).*/app-tests/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(recto-cli\) & \(binary\(=registrations\).*/registrations/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(recto-cli\) & \(binary\(=notices\).*/app-bundle/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
 check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows doc-links workers headings-build headings-tests own-build changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 # Failure: the tests depend on the shell they run in. The same script's first cases, with the variables CI sets (and a part, and a slow switch), must pass.
@@ -233,7 +233,7 @@ fi
 : > "$CALLS"
 # Failure: the slow stage runs fast, with the slow mode off, or another stage runs slow and every app test pays for it (2026-11-11).
 check "only the slow stage runs with every waiting point late" "1" "$(wc -l < "$CALLS.slow" | tr -d ' ')"
-has "with the ci profile, on its chosen tests" "ci nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 4 -E test(=" "$(cat "$CALLS.slow")"
+has "with the ci profile, on its chosen tests" "ci nextest run --locked --no-fail-fast --workspace -E package(recto-cli) & (binary(=app) | binary(=restore)) & (test(=" "$(cat "$CALLS.slow")"
 rm -f "$CALLS.slow"
 
 # Failure: no record of a real run, so a process review can't count them.
@@ -408,17 +408,17 @@ check "the quick check has it too" "1" "$?"
 # a full run, runs where the app's tests can't have left anything, or fails without saying so.
 fresh_ledger
 commit_code registrations-fail
-out=$(STUB_FAIL="--test registrations" STUB_EXIT=100 full); rc=$?
+out=$(STUB_FAIL="binary(=registrations)" STUB_EXIT=100 full); rc=$?
 check "a stray registration fails the full run" "100" "$rc"
 check "and the ledger names the stage" "fail:registrations" "$(last_ledger_field 4)"
 : > "$CALLS"
 commit_code registrations-pass
 full > /dev/null
-check "it runs, last, in a full run that passes" "registrations" "$(grep -c -- '--test registrations' "$CALLS" | sed 's/^1$/registrations/')"
+check "it runs, last, in a full run that passes" "registrations" "$(grep -c -- 'binary(=registrations)' "$CALLS" | sed 's/^1$/registrations/')"
 check "and the run passes" "pass" "$(last_ledger_field 4)"
 : > "$CALLS"
 tools/check.sh --quick > /dev/null 2>&1
-check "the quick check skips it, as it builds no app" "0" "$(grep -c -- '--test registrations' "$CALLS")"
+check "the quick check skips it, as it builds no app" "0" "$(grep -c -- 'registrations' "$CALLS")"
 : > "$CALLS"
 
 # Failure (icon worker, 2026-11-11): the bundle's own checks ran only with RECTO_SKIP_APP, so a full run never held
@@ -434,7 +434,7 @@ has "needing the app just built, not skipping it" "skip= require=1 " "$bundle"
 has "with the notices' copy" "test(=the_built_app_carries_the_notices)" "$bundle"
 has "and the Keychain boundary" "test(=only_the_apps_own_program_in_the_bundle_reaches_the_keychain)" "$bundle"
 commit_code bundle-fail
-out=$(STUB_FAIL="--test notices" STUB_EXIT=100 full); rc=$?
+out=$(STUB_FAIL="binary(=notices)" STUB_EXIT=100 full); rc=$?
 check "a bundle without its notices fails the full run" "100" "$rc"
 check "and the ledger names the stage" "fail:app-bundle" "$(last_ledger_field 4)"
 rm -f "$CALLS.bundle"
@@ -657,7 +657,7 @@ rm -f "$CALLS.slow"
 CI=true full >/dev/null; rc=$?
 check "on CI a full run passes" "0" "$rc"
 check "with nothing run slow" "0" "$( [ -f "$CALLS.slow" ] && wc -l < "$CALLS.slow" | tr -d ' ' || echo 0)"
-has "and the app tests still run" "-p recto-cli --test app --test restore --test compare --test long_session" "$(cat "$CALLS")"
+has "and the app tests still run" "binary(=app) | binary(=restore) | binary(=compare) | binary(=long_session)" "$(cat "$CALLS")"
 : > "$CALLS"
 rm -f "$CALLS.slow"
 
@@ -799,9 +799,9 @@ echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-only
 check "a change to a window crate passes selectively" "0" "$(sel)"
 has "the start says what was selected" "selective" "$(cat "$X/sel.out")"
 has "and what was skipped" "skipped: lifecycle tier" "$(cat "$X/sel.out")"
-check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare --test evidence -j 4 -E test(~window_test)')"
+check "the window tier runs" "1" "$(sel_has 'binary(=evidence)) & (test(~window_test).*-j 4$')"
 check "the lifecycle tier doesn't" "0" "$(sel_has 'long_session')"
-check "nor the stage that checks what is left registered" "0" "$(sel_has '--test registrations')"
+check "nor the stage that checks what is left registered" "0" "$(sel_has 'registrations')"
 check "the slow stage runs only what is in the window tier" "1" "$(grep -c 'window_test' "$CALLS.slow" | tr -d ' ')"
 check "its crate's tests run, and the guards" "1" "$(sel_has 'nextest run --locked --no-fail-fast --workspace -E package(=beta)$')"
 check "the other crates' tests don't (alpha, gamma)" "0" "$(sel_has 'package(=gamma)')"
@@ -837,8 +837,8 @@ seg_J2() {
 branch_with sel-lifecycle
 echo l >> crates/gamma/src/lib.rs && git add . && git commit -qm gamma-only
 check "a change to the lifecycle's crates passes" "0" "$(sel)"
-check "it runs the lifecycle tier" "1" "$(sel_has 'long_session -j 4 -E test(~life_test)')"
-check "and the stage that checks what is left registered" "1" "$(sel_has '--test registrations')"
+check "it runs the lifecycle tier" "1" "$(sel_has 'binary(=long_session)) & (test(~life_test)) -j 4$')"
+check "and the stage that checks what is left registered" "1" "$(sel_has 'binary(=registrations)')"
 check "and not the window tier" "0" "$(sel_has 'window_test')"
 branch_with sel-dependent
 echo d >> crates/alpha/src/lib.rs && git add . && git commit -qm alpha-only
@@ -849,14 +849,14 @@ check "without the lifecycle tier" "0" "$(sel_has 'long_session')"
 branch_with sel-app
 echo a > app/x.swift && git add . && git commit -qm app-only
 sel > /dev/null
-check "a change to app/ runs both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
+check "a change to app/ runs both tiers" "1" "$(sel_has 'package(recto-cli) & (binary(=app) | binary(=restore) | binary(=compare) | binary(=long_session) | binary(=evidence)) -j 4$')"
 check "but no crate's tests, the guards only" "0" "$(sel_has 'package(=')"
 branch_with sel-tools
 echo t > tools/note.txt && git add . && git commit -qm tools
 sel > /dev/null
 has "a change to the tools says why it runs everything" "everything runs" "$(cat "$X/sel.out")"
 check "it runs every crate's tests" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
-check "and both app tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
+check "and both app tiers" "1" "$(sel_has 'package(recto-cli) & (binary(=app) | binary(=restore) | binary(=compare) | binary(=long_session) | binary(=evidence)) -j 4$')"
 check "that pass is of everything, so the guard has it" "$(git rev-parse HEAD)" "$(tail -1 "$CHECKED")"
 branch_with sel-docs
 echo d >> docs/notes.md && git add . && git commit -qm docs-only
@@ -868,7 +868,7 @@ echo w >> crates/beta/src/lib.rs && git add . && git commit -qm beta-ci
 CI=true sel_full > "$X/sel.out"; cp "$CALLS" "$X/sel.calls"
 has "on CI the same change runs everything" "CI runs everything" "$(cat "$X/sel.out")"
 check "every crate" "1" "$(sel_has 'nextest run --locked --no-fail-fast --no-tests=pass --workspace')"
-check "and both tiers" "1" "$(sel_has 'app --test restore --test compare --test long_session --test evidence -j 4$')"
+check "and both tiers" "1" "$(sel_has 'package(recto-cli) & (binary(=app) | binary(=restore) | binary(=compare) | binary(=long_session) | binary(=evidence)) -j 4$')"
 # main runs everything, whatever changed since it: it is what gets pushed.
 git checkout -q main
 echo mm >> crates/beta/src/lib.rs && git add . && git commit -qm beta-on-main
@@ -1005,20 +1005,22 @@ ci_part() { : > "$CALLS"; env CI=true CHECK_PART="$1" CHECK_ALL=1 GITHUB_REF_NAM
 : > "$CALLS"
 CHECK_PART=light full > "$X/part.out"
 check "light has no tools' tests when nothing under tools/ changed and it isn't CI" "0" "$(grep -c '^check-test$' "$CALLS")"
-check "but it has the ratchet and the cargo check of the changed crate's tests, and nothing that builds the workspace's tests or the app" "1 1 0 0" "$(grep -c '^ratchet$' "$CALLS") $(grep -c '^check --locked -p alpha --tests$' "$CALLS") $(grep -c -- 'nextest run\|^app-build$\|^build ' "$CALLS") $(grep -c '^clippy' "$CALLS")"
+check "but it has the ratchet and the cargo check of the changed crate's tests, and nothing that builds the workspace's tests or the app" "1 1 0" "$(grep -c '^ratchet$' "$CALLS") $(grep -c '^check --locked -p alpha --tests$' "$CALLS") $(grep -c -- 'nextest run\|^app-build$\|^build ' "$CALLS")"
+check "and the gate runs once, in light, with the layout (2026-11-26: it was 55 s of the heavy job)" "1 1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c '^fmt --all --check' "$CALLS") $(grep -c '^doc -p alpha --no-deps' "$CALLS")"
 ci_part light
 check "on CI with no base to compare with, the tools' own tests run, in light" "1 1" "$(grep -c '^check-test$' "$X/calls-light") $(grep -c '^ratchet-test$' "$X/calls-light")"
 ci_part core
-check "the gate runs once, in core, with the layout, and core has no tools' tests and no ratchet" "1 1 0 0" "$(grep -c '^clippy --workspace --all-targets' "$X/calls-core") $(grep -c '^fmt --all --check' "$X/calls-core") $(grep -c '^check-test$' "$X/calls-core") $(grep -c '^ratchet$' "$X/calls-core")"
+check "core has no gate (clippy, layout, doc links), no tools' tests and no ratchet: heavy has no clippy" "0 0 0 0 0" "$(grep -c '^clippy' "$X/calls-core") $(grep -c '^fmt ' "$X/calls-core") $(grep -c '^doc ' "$X/calls-core") $(grep -c '^check-test$' "$X/calls-core") $(grep -c '^ratchet$' "$X/calls-core")"
+check "and light has the gate once, with the layout, on CI as well" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$X/calls-light") $(grep -c '^fmt --all --check' "$X/calls-light")"
 check "core has the workspace's tests and the headings'" "1 1" "$(grep -c -- '--no-tests=pass' "$X/calls-core") $(grep -c '^test --locked --manifest-path crates/recto-headings' "$X/calls-core")"
-check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$X/calls-core")"
+check "but no app" "0" "$(grep -c 'app-build\|binary(=restore)\|--test restore' "$X/calls-core")"
 ci_part window
 check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$X/calls-window") $(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$X/calls-window") $(grep -c 'long_session' "$X/calls-window")"
-check "with the notices, and no gate, layout, ratchet, tools' tests or workspace tests" "1 0 0 0 0 0" "$(grep -c -- '--test notices' "$X/calls-window") $(grep -c '^clippy' "$X/calls-window") $(grep -c '^fmt ' "$X/calls-window") $(grep -c '^ratchet$' "$X/calls-window") $(grep -c '^check-test$' "$X/calls-window") $(grep -c -- '--workspace' "$X/calls-window")"
-check "and no registrations" "0" "$(grep -c -- '--test registrations' "$X/calls-window")"
+check "with the notices, and no gate, layout, ratchet, tools' tests or workspace tests" "1 0 0 0 0 0" "$(grep -c -- 'notices' "$X/calls-window") $(grep -c '^clippy' "$X/calls-window") $(grep -c '^fmt ' "$X/calls-window") $(grep -c '^ratchet$' "$X/calls-window") $(grep -c '^check-test$' "$X/calls-window") $(grep -c -- '--workspace' "$X/calls-window")"
+check "and no registrations" "0" "$(grep -c -- 'registrations' "$X/calls-window")"
 ci_part lifecycle
 check "lifecycle runs the lifecycle tier and the registrations" "1 1 0" "$(grep -c 'long_session -j 4 -E test(~life_test)' "$X/calls-lifecycle") $(grep -c -- '--test registrations' "$X/calls-lifecycle") $(grep -c 'window_test' "$X/calls-lifecycle")"
-check "and not the notices" "0" "$(grep -c -- '--test notices' "$X/calls-lifecycle")"
+check "and not the notices" "0" "$(grep -c -- 'notices' "$X/calls-lifecycle")"
 check "no part is a ledger line, a pass, or a stamp for the push guard" "0 0 0" "$(runs_in_ledger) $([ -f "$PASSES" ] && wc -l < "$PASSES" | tr -d ' ' || echo 0) $([ -f "$CHECKED" ] && wc -l < "$CHECKED" | tr -d ' ' || echo 0)"
 : > "$CALLS"
 CHECK_PART=window full > /dev/null
@@ -1030,14 +1032,32 @@ check "a part runs again on the same code: it is never remembered" "true" "$([ "
 # next hold them).
 ci_part all
 ci_part heavy
-same_calls() { grep -vE -- '--test app --test restore' "$1" | sort; }
+# Failure (review, 2026-11-26): the run's time record listed the lifecycle tests with `-p recto-cli`, which resolves recto-cli's own features and rebuilt every workspace
+# crate at the end of the heavy job, outside every stage. A heavy run, with its record kept (STUB_JUNIT) and the list answered, makes no `-p recto-cli` call at all.
+: > "$CALLS"; env CI=true CHECK_PART=heavy CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch STUB_JUNIT=1 STUB_LIST='recto-cli::restore update::x' tools/check.sh --full > "$X/part-heavy-record.out" 2>&1
+check "a heavy run lists the lifecycle tests for its record, and makes no -p recto-cli call" "1 0" "$(grep -c '^nextest list ' "$CALLS") $(grep -c -- '-p recto-cli' "$CALLS")"
+# Failure (coordinator decision, 2026-11-26): heavy no longer runs the gate, so a cache saved by it had no check-mode artifacts and `light` built them every run after
+# the next Cargo.lock change. The saving run builds them with `--warm-gate` (the same `gate` function): clippy (workspace, headings), the Windows check, no test; and the workflow runs it under the save's own condition, so a normal run doesn't pay it.
+: > "$CALLS"; CI=true tools/check.sh --warm-gate > "$X/warm.out" 2>&1; warm_rc=$?
+check "the warm gate builds the gate's commands and nothing else" "0 1 1 1 0" "$warm_rc $(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c '^clippy --manifest-path crates/recto-headings' "$CALLS") $(grep -c '^clippy --workspace --locked --target' "$CALLS") $(grep -c 'nextest' "$CALLS")"
+save_if=$(grep -A3 "name: Rust's cache, saved on main" "$SOURCE/.github/workflows/ci.yml" | sed -n 's/^ *if: //p')
+warm_if=$(grep -A3 "name: The gate's builds, kept in the cache" "$SOURCE/.github/workflows/ci.yml" | sed -n 's/^ *if: //p')
+CI_YML="$SOURCE/.github/workflows/ci.yml"
+miss=no; [[ "$save_if" == *"cache-hit != 'true'"* ]] && miss=yes
+check "the save step's condition is there, and is the cache-miss one" "yes" "$miss"
+check "the workflow runs the warm gate on the runs that save the cache, and only those" "$save_if" "$warm_if"
+check "its command is the check's own --warm-gate" "tools/check.sh --warm-gate" "$(grep -A4 "name: The gate's builds, kept in the cache" "$CI_YML" | sed -n 's/^ *run: //p')"
+check "and it sits after the heavy part's tests and before the save" "yes" "$(awk '/Full check, its heavy part/ {a=NR} /The gate.s builds, kept in the cache/ {w=NR} /Rust.s cache, saved on main/ {v=NR} END {print (a && w && v && a < w && w < v) ? "yes" : "no"}' "$CI_YML")"
+: > "$CALLS"; STUB_FAIL='clippy --workspace --all-targets' STUB_EXIT=101 CI=true tools/check.sh --warm-gate > "$X/warm-fail.out" 2>&1
+check "a failing clippy of the workspace doesn't stop the warm gate's other two builds, and it still exits 0" "0 1 1" "$? $(grep -c '^clippy --manifest-path crates/recto-headings' "$CALLS") $(grep -c '^clippy --workspace --locked --target' "$CALLS")"
+same_calls() { grep -vE -- '--test app --test restore|binary\(=app\) \| binary\(=restore\)' "$1" | sed -E 's/^nextest run --locked --no-fail-fast (-p recto-cli --test |--workspace -E package\(recto-cli\) \& \(binary\(=)(notices|registrations).*/\2 stage/' | sort; }
 check "light and heavy together run what a run of everything does, each call once" "$(same_calls "$X/calls-all")" "$( { same_calls "$X/calls-light"; same_calls "$X/calls-heavy"; } | sort)"
 check "no call is in both" "" "$(comm -12 <(sort -u "$X/calls-light") <(sort -u "$X/calls-heavy"))"
 check "and light has the stages that were moved out, heavy none of them" "1 1 1 1 0 0 0 0" "$(grep -c '^ratchet$' "$X/calls-light") $(grep -c '^check-test$' "$X/calls-light") $(grep -c '^ratchet-test$' "$X/calls-light") $(grep -c '^check --locked -p alpha --tests$' "$X/calls-light") $(grep -c '^ratchet$' "$X/calls-heavy") $(grep -c '^check-test$' "$X/calls-heavy") $(grep -c '^ratchet-test$' "$X/calls-heavy") $(grep -c '^check --locked -p alpha --tests$' "$X/calls-heavy")"
 # Core, window and lifecycle are heavy, split: every call of heavy is in exactly one of them, as a heavy run is those three at once.
 for part in core window lifecycle; do ci_part "$part"; done
 check "heavy is core, window and lifecycle together" "$(same_calls "$X/calls-heavy" | sort -u)" "$( { same_calls "$X/calls-core"; same_calls "$X/calls-window"; same_calls "$X/calls-lifecycle"; } | sort -u)"
-check "the app tests are two filters in window and lifecycle, and the unfiltered whole in heavy, which is both tiers" "1 1 1" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$X/calls-window") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$X/calls-lifecycle") $(grep -c -- 'long_session --test evidence -j 4$' "$X/calls-heavy")"
+check "the app tests are two filters in window and lifecycle, and the unfiltered whole in heavy, which is both tiers" "1 1 1" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$X/calls-window") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$X/calls-lifecycle") $(grep -c -- 'binary(=long_session) | binary(=evidence)) -j 4$' "$X/calls-heavy")"
 # The CI workflow runs exactly those two parts, so a stage can't be in neither because a job is missing, or in two because one is repeated.
 check "the workflow's jobs run the light part and the heavy part, once each" "heavy light" "$(grep -E '^ +CHECK_PART:' "$SOURCE/.github/workflows/ci.yml" | awk '{ print $2 }' | sort | tr '\n' ' ' | sed 's/ $//')"
 # Failure (2026-11-18): a walls failure skipped the bundled worker setup, but !cancelled() still ran retirement against a missing worker and reported a false second failure.
@@ -1116,7 +1136,7 @@ echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-crate
 check "on CI, a branch that changed no tool since origin/main skips the tools' tests" "0 0" "$(branch_ci)"
 has "and says why" "the tools' tests are skipped: nothing under tools/, .config/ or .github/ changed since $(git merge-base origin/main HEAD | cut -c1-12)" "$(cat "$X/ci.out")"
 ci_core CHECK_PART=heavy GITHUB_REF_NAME="$(git rev-parse --abbrev-ref HEAD)" GITHUB_EVENT_NAME=push > /dev/null
-check "but heavy still runs the rest: the gate and the workspace's tests" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
+check "but heavy still runs the rest: the workspace's tests, and no gate, which is light's" "0 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
 # Failure (2026-11-13): the ratchet's baseline counted as a tool, so every push that only locked a lower number in ran the tools' own tests on CI (183 to
 # 267 s, eight pushes in one evening), and a branch that lowered one ran everything here. It is numbers the ratchet has already checked, first.
 git checkout -q main; git checkout -qb ci-baseline
@@ -1194,27 +1214,27 @@ git checkout -q main
 git checkout -qb rerun-cases
 commit_code rerun-base
 : > "$CALLS"; rm -f "$CALLS.reruns"
-out=$(STUB_JUNIT_FAIL="--test app" full --why "rerun: local"); rc=$?
+out=$(STUB_JUNIT_FAIL="binary(=app)" full --why "rerun: local"); rc=$?
 check "a failed app tier still fails the run" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
 check "and the ledger names the stage that failed, not the one after" "fail:app-tests" "$(last_ledger_field 4)"
-check "the registrations stage runs after a failed app tier" "1" "$(grep -c -- '--test registrations' "$CALLS")"
-check "the slow stage doesn't, as it's the same tests late" "0" "$(grep -c -- '--test app --test restore -j 4 -E' "$CALLS")"
+check "the registrations stage runs after a failed app tier" "1" "$(grep -c -- 'binary(=registrations)' "$CALLS")"
+check "the slow stage doesn't, as it's the same tests late" "0" "$(grep -c -- 'binary(=app) | binary(=restore)) & (test(=' "$CALLS")"
 check "here, nothing is run again unless asked" "0" "$(grep -c 'binary_id(=' "$CALLS")"
 has "the failure says where its evidence is" "evidence of 1 failed test run(s), one folder each, in $PWD/target/recto-evidence" "$out"
 has "with the command that runs it again" "run it again here as it ran: tools/check.sh --like-ci 'binary_id(=recto-cli::app) & test(=flaky_one)' --jobs 4" "$out"
 : > "$CALLS"; rm -f "$CALLS.reruns"
 commit_code rerun-asked
-out=$(CHECK_RERUN=4 STUB_RERUN_FAILS=1 STUB_JUNIT_FAIL="--test app" full --why "rerun: asked"); rc=$?
+out=$(CHECK_RERUN=4 STUB_RERUN_FAILS=1 STUB_JUNIT_FAIL="binary(=app)" full --why "rerun: asked"); rc=$?
 check "asked, the failed test alone runs again that many times" "4" "$(grep -c 'binary_id(=recto-cli::app) & test(=flaky_one)' "$CALLS")"
 check "and only it: the test that passed isn't named" "0" "$(grep 'binary_id(=' "$CALLS" | grep -c steady_one)"
-check "with the stage's arguments but its own filter" "4" "$(grep 'binary_id(=' "$CALLS" | grep -c -- '-p recto-cli --test app --test restore --test compare --test long_session --test evidence -j 4 -E')"
+check "with the stage's arguments but its own filter" "4" "$(grep 'binary_id(=' "$CALLS" | grep -c -- '--workspace -j 4 -E')"
 has "the table gives the rate, counting the first run" "recto-cli::app flaky_one" "$out"
 has "as N of M" "failed 2 of 5" "$(printf '%s' "$out" | tr -s ' ')"
 check "and the run still fails" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
 check "each round keeps its own evidence, and the first run's is there too" "yes yes yes" "$([ -f target/recto-evidence/app-tests/recto-cli--app--flaky_one/rerun.txt ] && echo yes) $([ -f target/recto-evidence/app-tests-rerun-1/recto-cli--app--flaky_one/rerun.txt ] && echo yes) $([ -f target/recto-evidence/app-tests-reruns.txt ] && echo yes)"
 : > "$CALLS"; rm -f "$CALLS.reruns"
 commit_code rerun-budget
-out=$(CHECK_RERUN_SECONDS=0 CHECK_RERUN=4 STUB_JUNIT_FAIL="--test app" full --why "rerun: budget"); rc=$?
+out=$(CHECK_RERUN_SECONDS=0 CHECK_RERUN=4 STUB_JUNIT_FAIL="binary(=app)" full --why "rerun: budget"); rc=$?
 check "the reruns stop at their time bound" "0" "$(grep -c 'binary_id(=' "$CALLS")"
 has "and say so" "reruns stopped after 0 of 4 rounds" "$out"
 has "the table then counts the first run only" "failed 1 of 1" "$(printf '%s' "$out" | tr -s ' ')"
@@ -1639,7 +1659,7 @@ rm -rf "$LOCK"
 seg_P3() {
 p_setup
 # Failure: a holder that fails or is stopped keeps the lock, and everyone else waits the bound out.
-out=$(STUB_FAIL='--test app' tfull); rc=$?
+out=$(STUB_FAIL='binary(=app)' tfull); rc=$?
 check "a check whose app tests fail leaves no lock" "yes no" "$([ "$rc" != 0 ] && echo yes) $([ -e "$LOCK" ] && echo yes || echo no)"
 STUB_APP_HOOK="touch $X/int.in; sleep 1; touch $X/int.done" CHECK_AGAIN=1 CHECK_ALL=1 tools/check.sh --full --why stopped > "$X/int.out" 2>&1 &
 holder=$!

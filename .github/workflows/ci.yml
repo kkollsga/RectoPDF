@@ -14,8 +14,8 @@
 # exactly one (tools/check-test.sh holds that, and that the two values here are those two). Local runs are unchanged: `tools/check.sh --full` is both in one go.
 # `light` is on macOS and not on ubuntu-latest because what it runs is: the tools' tests use BSD `sed -i ''`, `date -j`, `stat -f` and the queue's `sysctl`, and
 # `cargo check` of the app's crates wants the same SDK as `check`. macos-15 and not macos-26: that image got runners on 2026-11-12 when macos-26 didn't (the
-# sandbox job below uses both), and the work in it doesn't depend on the newer one. It restores the cache `check` saves and never saves one: the dependencies
-# the gate's clippy built are check artifacts too, so the loop only builds the workspace's crates. If it never gets a runner the run is "never ran", not red
+# sandbox job below uses both), and the work in it doesn't depend on the newer one. It restores the cache `check` saves and never saves one: the gate's clippy runs here
+# and not there, so on the run that saves the cache `check` builds the same (`--warm-gate`, results ignored) and the cache keeps those artifacts; the loop only builds the workspace's crates. If it never gets a runner the run is "never ran", not red
 # (tools/push-main.sh), and a merge waits on nothing that is not there.
 #
 # The cache, and its limit. GitHub keeps 10 GB of cache for the repository and evicts the least recently used beyond it. On 2026-11-12 it held 10.81 GB in 8
@@ -52,8 +52,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # What a full check runs as its heavy part (CHECK_PART=heavy, tools/check.sh): the layout, the compile gate, the workspace tests, the app, built, and both tiers
-  # of its tests, then what is left registered. The ratchet, the tools' tests and the per-crate feature check are `light`'s.
+  # What a full check runs as its heavy part (CHECK_PART=heavy, tools/check.sh): the workspace tests, the app, built, and both tiers
+  # of its tests, then what is left registered. The ratchet, the layout, the compile gate (clippy, Windows check, doc links), the tools' tests and the per-crate feature
+  # check are `light`'s (2026-11-26: the gate ran once, in light, was about 55 s off this job).
   check:
     runs-on: macos-26
     timeout-minutes: 45
@@ -135,6 +136,12 @@ jobs:
       - name: Dead debug-symbol bundles, left out of the cache
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true' && inputs.lines != true
         run: find target -name '*.dSYM' -prune -exec rm -rf {} +
+      # The gate (clippy, the Windows check) is `light`'s, so this job builds none of it, and a cache saved without it would have no check-mode artifacts: `light`
+      # would build them every run after the next Cargo.lock change. So the run that saves also builds them, results ignored (the verdict is light's): the
+      # same `gate` function (tools/check.sh --warm-gate). Runs that don't save don't pay it.
+      - name: The gate's builds, kept in the cache
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: tools/check.sh --warm-gate
       # Dead test executables: each Cargo.lock change leaves a generation of them in target/debug/deps (993, 7.7 GB, for about 95 real ones, 2026-11-26). Safe because the
       # checkout comes before the restore, so every workspace unit is rebuilt each run and written after the job-start marker; those and what `cargo nextest list`
       # names are kept (tools/ci-prune-test-binaries.sh). A wrong delete only costs a relink, and the step can't fail the job or skip the save.
@@ -185,7 +192,7 @@ jobs:
           path: .git/recto-test-times
           retention-days: 14
           if-no-files-found: ignore
-  # What a full check runs as its light part (CHECK_PART=light): the ratchet, the how-to pages' paths, the tools' own tests when what they test changed since CI's
+  # What a full check runs as its light part (CHECK_PART=light): the ratchet, the layout and compile gate, the how-to pages' paths, the tools' own tests when what they test changed since CI's
   # base (`ci_base` in tools/check-scope.sh, which needs the history: the whole of it is checked out), and `cargo check --tests` of each changed crate. No
   # nextest, no PDFium build, no app. The cache is restored for the check's dependencies and never saved here: one job saves it (`check`).
   light:
