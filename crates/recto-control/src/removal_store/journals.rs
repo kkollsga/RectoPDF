@@ -297,7 +297,7 @@ impl Run<'_> {
         if let Some(hook) = &self.caps.before_open {
             hook(&self.path.join(name));
         }
-        let file = match self.folder.open_file(OsStr::new(name)) {
+        let file = match self.folder.open_private_in(OsStr::new(name)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Gone),
             Err(_) => return Ok(None),

@@ -58,9 +58,9 @@ fn a_swapped_path_changes_nothing_for_an_open_folder() {
     assert_eq!(names(&folder), ["mine"]);
     assert_eq!(names(&folder), ["mine"], "a second listing starts again from the top");
     let mut text = String::new();
-    folder.open_file(OsStr::new("mine")).unwrap().read_to_string(&mut text).unwrap();
+    folder.open_private_in(OsStr::new("mine")).unwrap().read_to_string(&mut text).unwrap();
     assert_eq!(text, "mine");
-    assert!(folder.open_file(OsStr::new("theirs")).is_err());
+    assert!(folder.open_private_in(OsStr::new("theirs")).is_err());
 }
 
 /// Failure: a link, a pipe, a folder or a hard link is taken for a plain file with one name; `.` and `..` are listed.
@@ -92,7 +92,7 @@ fn entries_say_what_each_is_without_following() {
 
 /// Failure: a link is followed, a pipe with no writer is waited on, or a file others can write is read.
 #[test]
-fn open_file_refuses_what_it_should_and_never_waits() {
+fn open_private_in_refuses_what_it_should_and_never_waits() {
     let dir = TempDir::new("recto-folder-");
     std::fs::write(dir.join("plain"), b"x").unwrap();
     std::os::unix::fs::symlink(dir.join("plain"), dir.join("link")).unwrap();
@@ -104,7 +104,7 @@ fn open_file_refuses_what_it_should_and_never_waits() {
     std::thread::spawn(move || {
         let kinds: Vec<bool> = ["plain", "link", "open", "pipe", "absent"]
             .iter()
-            .map(|n| folder.open_file(OsStr::new(n)).is_ok())
+            .map(|n| folder.open_private_in(OsStr::new(n)).is_ok())
             .collect();
         let _ = sender.send(kinds);
     });

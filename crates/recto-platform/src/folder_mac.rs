@@ -108,7 +108,7 @@ impl Folder {
 
     /// Opens a file of this folder for reading, only if it's a plain file of this user's that nobody else can write (the checks of
     /// `local::open_private_file`, on a descriptor). A link isn't followed and a pipe doesn't wait for a writer.
-    pub fn open_file(&self, name: &OsStr) -> io::Result<File> {
+    pub fn open_private_in(&self, name: &OsStr) -> io::Result<File> {
         let name = name_of(name)?;
         // SAFETY: `fd` is open for as long as `self`, and `name` is a NUL-ended string.
         let fd = unsafe {

@@ -47,7 +47,7 @@ impl Folder {
     pub fn entries(&self) -> io::Result<Entries<'_>> {
         Err(io::ErrorKind::Unsupported.into())
     }
-    pub fn open_file(&self, _name: &OsStr) -> io::Result<File> {
+    pub fn open_private_in(&self, _name: &OsStr) -> io::Result<File> {
         Err(io::ErrorKind::Unsupported.into())
     }
 }
