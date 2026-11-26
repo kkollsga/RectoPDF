@@ -8,7 +8,7 @@ use crate::engine::{Engine, EngineConfig, EngineEvents};
 use crate::layout::PageBox;
 use crate::paper::PaperKind;
 use crate::tiles::{JobKind, Op, Outcome, PageMap, Viewport};
-use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind};
+use recto_render_service::{Policy, TileKind};
 use std::path::PathBuf;
 
 struct Quiet;
@@ -104,12 +104,7 @@ fn rig(keyed_for: Option<u32>) -> Rig {
         settle(&engine);
     }
     told(&engine);
-    let service = ServiceConfig::discover().expect("the worker is built");
-    let opened = DocRenderer::open_file(&file.0).expect("the file opens");
-    let mut doc = DocRenderer::with_file(opened, &file.0, None, service, Policy::default()).expect("a renderer");
-    doc.page_size(0).expect("a page size starts the worker");
-    assert!(doc.worker_pid().is_some());
-    let mut open = OpenDoc::for_test(doc, keyed_for);
+    let mut open = OpenDoc::opened_for_test(&file.0, keyed_for);
     open.looks.keep(0, PageLook::undecided(false));
     open.looks.healing.insert(0, Instant::now());
     let renderers = HashMap::from([(file.0.clone(), open)]);

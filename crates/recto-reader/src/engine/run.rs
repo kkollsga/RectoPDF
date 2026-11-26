@@ -477,9 +477,13 @@ pub(super) struct OpenDoc {
 }
 
 impl OpenDoc {
-    /// An open file as a test has it, with no pages decided.
+    /// A file open as a test has it, its worker running, with no pages decided.
     #[cfg(test)]
-    pub(super) fn for_test(doc: DocRenderer, keyed_for: Option<u32>) -> Self {
+    pub(super) fn opened_for_test(path: &Path, keyed_for: Option<u32>) -> Self {
+        let service = ServiceConfig::discover().expect("the worker is built");
+        let file = DocRenderer::open_file(path).expect("the file opens");
+        let mut doc = DocRenderer::with_file(file, path, None, service, Policy::default()).expect("a renderer");
+        doc.page_size(0).expect("a page size starts the worker");
         Self {
             length_told: false,
             doc,
