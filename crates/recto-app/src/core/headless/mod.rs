@@ -45,6 +45,7 @@ mod passwords;
 mod ref_commands;
 // The count it reads is a debug build's only.
 mod flick_cost;
+mod leftovers_sheet;
 #[cfg(debug_assertions)]
 mod per_tab_work;
 mod persons_lane;

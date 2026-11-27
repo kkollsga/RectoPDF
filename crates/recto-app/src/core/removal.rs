@@ -5,6 +5,8 @@
 //! Both run on the caller's thread (the socket's, or the window's own thread for the person: `WAITS`), never on the UI thread and never under the session's
 //! lock, which is taken only to read which tab and file.
 
+pub mod sheet;
+
 use super::saver::Saver;
 use super::sleeper::OnDisk;
 use super::tools::Tools;
@@ -52,6 +54,8 @@ pub struct Removal {
     world: Mutex<Option<World>>,
     /// How long a clear may take, in milliseconds, when a test or a QA run shortens it; 0 is the design's.
     limit_ms: AtomicU64,
+    /// The sheet over the window, and its ids.
+    sheet: sheet::Leftovers,
 }
 
 impl Default for Removal {
@@ -62,6 +66,7 @@ impl Default for Removal {
             hold: Hold::default(),
             world: Mutex::new(None),
             limit_ms: AtomicU64::new(0),
+            sheet: sheet::Leftovers::default(),
         }
     }
 }
@@ -154,6 +159,11 @@ impl Removal {
         }
     }
 
+    /// The sheet over the window, which the person's answers fill.
+    pub fn sheet(&self) -> &sheet::Leftovers {
+        &self.sheet
+    }
+
     /// How many plans wait for a yes.
     pub fn pending(&self) -> usize {
         lock(&self.store).len()
@@ -189,7 +199,7 @@ pub(crate) fn within_the_run(world: &World, paths: &[&std::path::Path]) -> Resul
 impl Removal {
     /// The QA verbs of Clear leftovers (`qa removal-hold`, `qa removal-state`): `None` for any other verb. A hold stops the next clear before the act of a step
     /// until released; the state is what is pending, whether a clear runs and whether it is held.
-    pub(crate) fn qa_verb(&self, verb: &str, value: &str) -> Option<Result<Option<Value>, AgentError>> {
+    pub(crate) fn qa_verb(&self, verb: &str, value: &str, outside: impl FnOnce() -> Outside) -> Option<Result<Option<Value>, AgentError>> {
         Some(match verb {
             "removal_hold" if value == "release" => {
                 self.release();
@@ -202,7 +212,13 @@ impl Removal {
                 }
                 Err(_) => Err(AgentError::new(Code::USAGE, "It's a step number, or `release`.", exit::USAGE)),
             },
-            "removal_state" => Ok(Some(json!({ "pending": self.pending(), "clearing": self.clearing(), "held": self.held() }))),
+            "removal_state" => {
+                let outside = outside();
+                Ok(Some(json!({
+                    "pending": self.pending(), "clearing": self.clearing(), "held": self.held(), "sheet": self.sheet.kind(),
+                    "ready": outside.keeps_record && !outside.beside_newer && outside.sleep_pass_done,
+                })))
+            }
             _ => return None,
         })
     }
@@ -258,6 +274,15 @@ pub(crate) struct Parts<'a> {
 /// `restore_record` from `update/before` while the lock is held and the state isn't `Keeps` yet, so the lock alone is not the lease.
 pub(crate) fn keeps_the_record(keeping: Keeping, holds_the_lock: bool) -> bool {
     holds_the_lock && keeping == Keeping::Keeps
+}
+
+/// What the app knows that no folder says, for a clear's lease and for QA's `ready`.
+pub(crate) fn outside(saver: &Saver, on_disk: &OnDisk, life: &super::Lifecycle) -> Outside {
+    Outside {
+        keeps_record: keeps_the_record(life.keeping(), saver.store.holds_the_record()),
+        beside_newer: saver.store.beside_newer(),
+        sleep_pass_done: on_disk.sleeper().older_pass_done(),
+    }
 }
 
 /// `removal check` and `removal clear`, for whoever asked: the level's been checked ([`AppHost::run_app`]). Everything else is the controller's.
@@ -331,11 +356,7 @@ pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &
                 return Err(busy());
             }
             let _clearing = Clearing(&removal.clearing);
-            let outside = Outside {
-                keeps_record: keeps_the_record(life.keeping(), saver.store.holds_the_record()),
-                beside_newer: saver.store.beside_newer(),
-                sleep_pass_done: on_disk.sleeper().older_pass_done(),
-            };
+            let outside = outside(saver, on_disk, life);
             let cleared = run::clear(
                 &removal.store,
                 &asked,

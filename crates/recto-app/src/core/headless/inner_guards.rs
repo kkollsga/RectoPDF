@@ -127,6 +127,7 @@ AnswerParts::pub fn ask_password(&self, path: &Path)
 AnswerParts::pub fn fail_open(&self, words: String)
 AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
 AnswerParts::pub fn image_looked(&self, said: impl FnOnce(&super::snapshot_tool::Tool, &[Engine]))
+AnswerParts::pub fn leftovers_answered(&self, said: impl FnOnce(&super::removal::sheet::Leftovers) -> Option<String>)
 AnswerParts::pub fn notice(&self, words: String)
 AnswerParts::pub fn person(&self) -> Person<'a>
 AnswerParts::pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing))

@@ -155,6 +155,9 @@ enum ActorRule {
     /// with nothing changed, and the person's does what it does. An agent's run that isn't refused is an agent's command (which `differences_at_control`
     /// holds to what that command does) or the window's own state, which reads nothing of a document; any other is a difference.
     Protected,
+    /// Clear Leftovers: the answer of the person's `removal check` is the sheet over their window, which an agent's is never (an agent reads the answer in
+    /// its own words). The person's run leaves that sheet, and an agent's leaves none; with the sheet put away the two show the same.
+    TheSheetIsThePersons,
 }
 
 /// The actor rule that decides `id` on `app` as it is now, if one does.
@@ -170,6 +173,7 @@ fn actor_rule(app: &HeadlessApp, showing: Showing, id: &str) -> Option<ActorRule
     );
     match id {
         _ if persons_own => Some(ActorRule::PersonsOwn),
+        crate::core::removal::sheet::MENU_ID if !showing.protected() => Some(ActorRule::TheSheetIsThePersons),
         _ if showing.protected() => Some(ActorRule::Protected),
         "find.next" | "find.previous" if !find_open => Some(ActorRule::FindStepWithFindClosed),
         "find.open" if reader.sidebar_hidden => Some(ActorRule::FindOpenWithTheSidebarHidden),
@@ -273,6 +277,21 @@ fn differences(twins: &Twins, showing: Showing, id: &str, title: &str) -> Vec<St
             }
             found.extend(twins.differences_whose(&except, &whose()));
             return found;
+        }
+        Some(ActorRule::TheSheetIsThePersons) => {
+            let kind = twins.person.reader().sheet.map(|sheet| sheet.kind);
+            if kind.as_deref() != Some(crate::core::removal::sheet::KIND) || twins.agent.reader().sheet.is_some() {
+                found.push(format!("the person's check wasn't shown as a sheet ({kind:?}), or an agent's opened one"));
+            }
+            // The person puts the sheet away with no button, which sends nothing, and what's left is compared.
+            twins.person.act(UiAction::SheetAnswered {
+                kind: crate::core::removal::sheet::KIND.into(),
+                id: twins.person.reader().sheet.map_or(0, |sheet| sheet.id),
+                button: crate::core::sheets::NO_BUTTON,
+            });
+            twins.person.settle();
+            person_said.retain(|event| event.name() != "model_changed");
+            agent_said.retain(|event| event.name() != "model_changed");
         }
         Some(ActorRule::PersonsOwn) => {
             if refused.as_deref() != Some("persons_own") || twins.agent.session_json() != kept_before {

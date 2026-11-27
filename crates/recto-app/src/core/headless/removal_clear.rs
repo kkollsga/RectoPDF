@@ -8,24 +8,24 @@ use recto_agent::{Actor, Level};
 use serde_json::Value;
 use std::path::PathBuf;
 
-const DEAD: u32 = 4_000_001;
+pub(super) const DEAD: u32 = 4_000_001;
 
-struct Bed {
-    app: HeadlessApp,
-    document: PathBuf,
+pub(super) struct Bed {
+    pub(super) app: HeadlessApp,
+    pub(super) document: PathBuf,
 }
 
 impl Bed {
-    fn root(&self) -> PathBuf {
+    pub(super) fn root(&self) -> PathBuf {
         self.app.disk().paths().root.clone()
     }
 
-    fn trash(&self) -> PathBuf {
+    pub(super) fn trash(&self) -> PathBuf {
         self.root().join("trash-stand-in")
     }
 
     /// What is under the state folder and the documents' folder, with inode numbers, for "nothing was done".
-    fn listing(&self) -> Vec<String> {
+    pub(super) fn listing(&self) -> Vec<String> {
         use std::os::unix::fs::MetadataExt;
         fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -69,7 +69,7 @@ impl Bed {
 }
 
 /// An app with one document open, a crashed save of another process beside it, and the copies of the session an update and a damaged record leave.
-fn bed() -> Bed {
+pub(super) fn bed() -> Bed {
     let disk = Disk::new();
     let document = disk.pdf("report.pdf", 2);
     let temp = format!("{}{DEAD}-1.tmp", recto_core::save::writer_temp_prefix(&document));
