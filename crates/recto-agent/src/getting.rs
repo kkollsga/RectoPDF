@@ -43,6 +43,15 @@ struct PageRead {
     hidden: Vec<(u32, u32)>,
     /// The key of the index it was read from, `None` for a live read.
     key: Option<CorpusKey>,
+    /// Whether the page was checked for hidden text, and whether some stretches didn't fit in `hidden`.
+    checked: bool,
+    partial: bool,
+}
+
+/// Whether a stored page may be given as it is: it was checked for hidden text and no stretch was dropped. Otherwise its words would show unmarked what
+/// `text` marks, so the page is read live.
+fn index_is_enough(hidden_checked: bool, spans_dropped: bool) -> bool {
+    hidden_checked && !spans_dropped
 }
 
 fn changed() -> AgentError {
@@ -57,10 +66,12 @@ fn from_index<A: SessionAccess>(access: &A, path: &std::path::Path, file_page: u
     let corpus = ReadyCorpus::open(find_key, indexing.root(), key).ok()??;
     let mut buffer = Vec::new();
     let stored = corpus.page(file_page, &mut buffer).ok()?;
-    (stored.kind == PageKind::Text).then(|| PageRead {
+    (stored.kind == PageKind::Text && index_is_enough(stored.hidden_checked, stored.spans_dropped)).then(|| PageRead {
         text: stored.text.to_owned(),
         hidden: stored.hidden_spans(),
         key: Some(key),
+        checked: true,
+        partial: false,
     })
 }
 
@@ -80,6 +91,8 @@ fn read_live(path: &std::path::Path, file_page: u32) -> Result<PageRead, AgentEr
         text: text.to_owned(),
         hidden: spans,
         key: None,
+        checked: said["hidden_text"]["checked"] == true,
+        partial: said["hidden_spans_dropped"].as_u64().is_some_and(|dropped| dropped > 0) || said["hidden_spans_dropped"] == true,
     })
 }
 
@@ -126,8 +139,10 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         Some(read) => read,
         None => {
             let read = read_live(file.path(), found.file_page);
-            // The draw happened, so the host is told, even if what follows refuses the answer.
-            crate::note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
+            // A draw made (the hidden-text check) or failed is told to the host, as `text` does, even if what follows refuses the answer.
+            if read.as_ref().map_or(true, |read| read.checked) {
+                crate::note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
+            }
             read?
         }
     };
@@ -137,7 +152,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
     let page_chars: Vec<char> = read.text.chars().collect();
     let total = u32::try_from(page_chars.len()).unwrap_or(u32::MAX);
     let (from, to, kind, widened) = match (asked.grain, found.characters()) {
-        (Grain::Hit, Some((start, end))) => (start, end.min(total), "hit", Value::Null),
+        (Grain::Hit, Some((start, end))) => (start.min(end.min(total)), end.min(total), "hit", Value::Null),
         (Grain::Hit, None) => (0, total, "page", json!({ "to": "page", "why": "ref_is_page" })),
         (Grain::Page, _) => (0, total, "page", Value::Null),
         (_, _) => (0, total, "page", json!({ "to": "page", "why": "blocks_not_made" })),
@@ -201,6 +216,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         "refs": refs,
         "truncated": given < unit.len(),
         "counts": counts,
+        "hidden_text": { "checked": read.checked, "partial": read.partial },
         "read_from": if read.key.is_some() { "index" } else { "file" },
         "untrusted": untrusted,
     });
@@ -208,4 +224,18 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         data["hidden_spans"] = data_hidden;
     }
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::index_is_enough;
+
+    /// Failure: a stored page is given though the index never checked it for hidden text, or dropped some of its stretches, so its hidden words show as
+    /// plain text. Only a checked page with no dropped stretch is enough.
+    #[test]
+    fn only_a_checked_page_with_no_dropped_stretch_is_taken_from_the_index() {
+        assert!(index_is_enough(true, false));
+        assert!(!index_is_enough(false, false));
+        assert!(!index_is_enough(true, true));
+    }
 }

@@ -3,7 +3,7 @@
 
 use super::changed_under_edits::{look, pdf_bytes, replace};
 use super::files::locked_saying;
-use super::locating::{page_text, pages_saying, reference};
+use super::locating::{hostile_chars, page_text, pages_saying, reference};
 use super::withheld_events::{PASSWORD, person_unlocks};
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::{AgentError, Level, exit};
@@ -162,6 +162,16 @@ fn get_follows_a_moved_page_and_refuses_a_gone_one() {
     assert_eq!(moved["untrusted"]["link"], "doc.pdf#page=4", "{moved}");
     let hit = get(&app, Level::ReadOnly, &words, json!({})).expect("the words moved with their page");
     assert_eq!(hit["untrusted"]["text"], "Mine", "{hit}");
+    // A page found whose text at the characters isn't what the reference was made of: refused, and no text of it given.
+    let hostile = hostile_chars(&words, 0, 4);
+    for grain in ["hit", "page"] {
+        let changed = get(&app, Level::ReadOnly, &hostile, json!({ "grain": grain })).expect_err("text changed");
+        assert_eq!(
+            (changed.code.as_str(), changed.exit),
+            ("reference_unresolved", exit::NOT_FOUND),
+            "{grain}: {changed:?}"
+        );
+    }
     replace(&file, &pages_saying(&["Mine page 1", "Mine page 2", "Mine page 4", "Mine page 5"]));
     look(&app);
     let gone = get(&app, Level::ReadOnly, &page, json!({})).expect_err("gone");
@@ -237,4 +247,34 @@ fn a_grain_that_needs_blocks_answers_the_page_and_says_so() {
     }
     let hit = get(&app, Level::ReadOnly, &token, json!({})).expect("a page for a hit of a page");
     assert_eq!(hit["widened"], json!({ "to": "page", "why": "ref_is_page" }), "{hit}");
+}
+
+/// Failure: a page whose stored copy was never checked for hidden text (the indexer stops checking after repeated failures) is given from the index with
+/// its hidden words unmarked, where `text --ref` marks them, so an agent reads hidden instructions as visible text. The page is read live unless the index
+/// checked it and dropped no spans; either way the answer says `hidden_text`, and as Markdown the hidden words are inside `[hidden: ...]`.
+#[test]
+fn a_page_the_index_did_not_check_for_hidden_text_is_read_live_and_marked() {
+    let disk = Disk::new();
+    let file = disk.file(
+        "hiding.pdf",
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::hidden_text_page())]),
+    );
+    let app = disk.builder().indexing(true).start();
+    app.open(&file);
+    app.recto(Level::Full, &["index"]).expect("asked for");
+    app.wait_until("the index is built", || {
+        app.recto(Level::Full, &["index", "status"]).is_ok_and(|status| status["state"] == "ready")
+    });
+    let token = reference(&app, 1);
+    let said = get(&app, Level::ReadOnly, &token, json!({ "grain": "page", "as": "markdown" })).expect("an answer");
+    let body = said["untrusted"]["markdown"].as_str().expect("markdown");
+    assert!(body.contains("[hidden: "), "hidden words are marked, from whichever copy was read: {said}");
+    assert!(
+        said["hidden_text"]["checked"].is_boolean() && said["hidden_text"]["partial"].is_boolean(),
+        "{said}"
+    );
+    assert!(
+        !body.lines().any(|line| line.contains("HIDDEN-WHITE") && !line.contains("[hidden: ")),
+        "no hidden line is shown as plain text: {body}"
+    );
 }
