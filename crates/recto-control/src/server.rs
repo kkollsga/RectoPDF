@@ -117,7 +117,6 @@ impl From<BindError> for AgentError {
 pub struct Server {
     paths: StatePaths,
     listener: Listener,
-    wake_tx: Stream,
     wake_rx: Stream,
     done_rx: Receiver<Done>,
     /// What every way into the loop from outside a job shares: its channel and wake, whom it asks what agents may be told, and whether any listens.
@@ -171,7 +170,6 @@ impl Server {
         Ok(Self {
             paths: paths.clone(),
             listener,
-            wake_tx,
             wake_rx,
             outlet,
             done_rx,
