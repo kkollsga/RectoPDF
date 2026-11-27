@@ -72,10 +72,10 @@ fn row(id: String, title: String, detail: &str, shortcut: String, from_file: boo
 /// link that couldn't be read, which is shown with why and does nothing.
 #[must_use]
 pub fn link_row(id: String, title: String, enabled: bool) -> PaletteRow {
-    PaletteRow {
-        enabled,
-        ..row(id, title, "Link", String::new(), true)
-    }
+    let row = row(id, title, "Link", String::new(), true);
+    // A row that can't be chosen says so to VoiceOver, in Rust's words.
+    let spoken = if enabled { row.spoken } else { format!("{}, unavailable", row.spoken) };
+    PaletteRow { enabled, spoken, ..row }
 }
 
 /// A key as it's said, not drawn: `⇧⌘G` is "Shift Command G", in the order a Mac draws its marks.

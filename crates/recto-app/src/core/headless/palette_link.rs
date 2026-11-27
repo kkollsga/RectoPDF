@@ -154,3 +154,12 @@ fn an_agent_running_a_refused_link_gets_the_links_own_refusal() {
     }
     assert_eq!(tab_count(&app), 0);
 }
+
+/// Failure: VoiceOver reads the row of a link that can't be read as if it could be chosen. Rust's spoken words for it say "unavailable"; a link that can be
+/// opened says no such thing.
+#[test]
+fn a_refused_row_is_spoken_as_unavailable() {
+    let (app, file) = start_with("s.pdf", 2);
+    assert!(rows_for(&app, "rectopdf:///a/%2E%2E/b.pdf")[0].spoken.ends_with(", unavailable"));
+    assert!(!rows_for(&app, &link_to(&file, 1))[0].spoken.contains("unavailable"));
+}
