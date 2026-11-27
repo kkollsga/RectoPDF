@@ -467,10 +467,16 @@ pub(crate) mod tests {
     fn the_structure_helper_must_be_this_apps_own_when_there_is_one() {
         let dir = temp_dir("structure-id");
         let before = fake_app(&dir.path().join("before"), "1.0.0");
-        assert!(has_identifiers(&before, BUNDLE_ID, false), "a copy with no structure helper (from before it) must pass");
+        assert!(
+            has_identifiers(&before, BUNDLE_ID, false),
+            "a copy with no structure helper (from before it) must pass"
+        );
         let wrong = fake_app(&dir.path().join("wrong"), "1.0.0");
         add_structure_helper(&wrong, "com.example.Other");
-        assert!(!has_identifiers(&wrong, BUNDLE_ID, false), "a structure helper under another identifier is taken for this app's");
+        assert!(
+            !has_identifiers(&wrong, BUNDLE_ID, false),
+            "a structure helper under another identifier is taken for this app's"
+        );
         let adhoc = fake_app(&dir.path().join("adhoc"), "1.0.0");
         add_structure_helper(&adhoc, crate::STRUCTURE_ADHOC_ID);
         assert!(has_identifiers(&adhoc, BUNDLE_ID, false), "the ad hoc structure helper must pass");
