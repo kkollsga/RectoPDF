@@ -53,17 +53,18 @@ fn of(error: &io::Error, enospc: bool, step: &str) -> RenderFailure {
     RenderFailure::OutOfResources
 }
 
-/// Out-of-resources answers in a row, process-wide, since the last open or shared memory that worked. The failure comes before any renderer exists, so nothing of a document can count it.
+/// Out-of-resources answers in a row, process-wide, since the last renderer whose shared memory was had. The failure comes before any renderer exists, so nothing of a document can count it.
 static IN_A_ROW: AtomicU8 = AtomicU8::new(0);
 
 /// Counts a hit (saturating) and says how many there are in a row now.
 fn hit() -> u8 {
-    let n = IN_A_ROW.load(Ordering::Relaxed).saturating_add(1);
-    IN_A_ROW.store(n, Ordering::Relaxed);
-    n
+    // One atomic step, so no increment is lost between threads; `try_update` can't fail with a closure that always answers.
+    IN_A_ROW
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some(n.saturating_add(1)))
+        .map_or(u8::MAX, |before| before.saturating_add(1))
 }
 
-/// An open or a shared memory worked: a run of hits ends.
+/// A renderer's shared memory was had: a run of hits ends.
 fn worked() {
     IN_A_ROW.store(0, Ordering::Relaxed);
 }
@@ -102,7 +103,7 @@ pub(super) fn open_document(path: &std::path::Path) -> Result<std::fs::File, Ren
         Refused::NotADocument => RenderFailure::NotPdf,
         Refused::Look(error) | Refused::Open(error) => of_open(&error),
     })?;
-    worked();
+    // Not a success of the run: the renderer needs its shared memory too, and that is where a run ends ([`create_shared_memory`]).
     Ok(file)
 }
 
@@ -203,5 +204,21 @@ mod tests {
         assert_eq!(out_of_resources_in_a_row(), 0);
         assert_eq!(asked(), Some(RenderFailure::OutOfResources), "a new run starts from one");
         assert_eq!(out_of_resources_in_a_row(), 1);
+    }
+
+    /// Failure: an open that works followed by a shared memory that doesn't (our own descriptors leaked, one below the limit) reset the count at the open, so it never passed one and the page was held with no word for ever. The run is of the whole renderer: `MAX_BUSY` of these in a row end as `Unavailable`.
+    #[test]
+    fn an_open_that_works_doesnt_end_a_run_of_shared_memory_failures() {
+        let path = std::env::temp_dir().join(format!("recto-oor-{}", std::process::id()));
+        std::fs::write(&path, b"%PDF-1.4\n").unwrap();
+        worked();
+        let mut last = None;
+        for _ in 0..MAX_BUSY {
+            let file = DocRenderer::open_file(&path).unwrap();
+            fail_next_shared_memory_with(errno::EMFILE);
+            last = DocRenderer::with_file(file, &path, None, config(), Policy::default()).err();
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(last, Some(RenderFailure::Unavailable));
     }
 }
