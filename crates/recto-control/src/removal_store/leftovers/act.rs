@@ -300,7 +300,7 @@ fn rank(depth: usize, name: &OsStr, kind: Kind) -> u8 {
     }
 }
 
-/// `touched` is set once the walk has been let unlink an entry, so a stop after that is told as a copy partly deleted.
+/// `touched` is set once an entry has really been unlinked, so a stop after that is told as a copy partly deleted.
 fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks, touched: &mut bool) -> Result<Done, Why> {
     if copy_state(pin) != CopyState::Offerable {
         return Err(Why::WentBack);
@@ -325,11 +325,8 @@ fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks, touched: &mu
     }
     let mut walk = Walk {
         rank: &rank,
-        gate: &mut |name| {
-            let go = hooks.entry(name);
-            *touched |= go;
-            go
-        },
+        gate: &mut |name| hooks.entry(name),
+        unlinked: &mut || *touched = true,
     };
     match remove_tree_in(&parent, &pin.name, &pin.tree, &mut walk) {
         Ok(removed) => {

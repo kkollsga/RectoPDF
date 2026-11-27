@@ -537,3 +537,42 @@ fn a_late_installer_refuses_before_the_plan_is_used_up() {
         "the plan was not used up by a lease that wasn't had"
     );
 }
+
+/// Failure (review round 2, a): a copy is told "partly deleted" because the gate let an entry go, though the entry then turned out to be another file and
+/// nothing was unlinked. The words must say nothing was deleted from that copy.
+#[test]
+fn a_stop_right_after_the_gate_with_nothing_unlinked_says_nothing_was_cleared() {
+    let fx = fx();
+    for name in ["session.damaged", "session.damaged.1"] {
+        std::fs::remove_dir_all(fx.fixture.root().join(name)).unwrap();
+    }
+    for entry in std::fs::read_dir(&*fx.fixture.docs).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap().as_encoded_bytes().starts_with(b".append-") {
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            }
+            .unwrap();
+        }
+    }
+    let id = id_of(&fx.check(Who::Person));
+    let whole = fx.fixture.root().join("update").join("before").join(".whole");
+    struct Swap(PathBuf, bool);
+    impl Hooks for Swap {
+        fn entry(&mut self, name: &OsStr) -> bool {
+            if name == OsStr::new(".whole") && !self.1 {
+                self.1 = true;
+                std::fs::remove_file(&self.0).unwrap();
+                std::fs::write(&self.0, b"another file").unwrap();
+            }
+            true
+        }
+    }
+    impl Steps for Swap {}
+    let cleared = fx.clear(id, Who::Person, Instant::now(), &mut Swap(whole, false)).expect("started");
+    assert!(cleared.stopped.is_some(), "{}", cleared.words);
+    assert!(cleared.words.contains("Nothing was cleared"), "{}", cleared.words);
+    assert!(!cleared.words.contains("partly"), "{}", cleared.words);
+}
