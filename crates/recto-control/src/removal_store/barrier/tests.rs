@@ -248,11 +248,10 @@ fn a_walk_killed_at_every_step_resumes_at_exactly_the_next_one() {
             }
             held.acknowledge(&plan, &mut progress, i, Ack::Done).unwrap();
         }
-        let first_again = done.iter().skip(r.base() as usize + 1).position(|i| *i == k);
-        assert!(first_again.is_some());
-        done.sort_unstable();
-        done.dedup();
-        assert_eq!(done, (0..=r.last()).collect::<Vec<_>>(), "k {k}: a step never ran");
+        // Everything up to the barrier, then each step once up to `k` (which was done and not acknowledged), then `k` again and on to the last: no step
+        // before the last slot runs twice.
+        let expected: Vec<u32> = (0..=r.base()).chain(r.base() + 1..=k).chain(k..=r.last()).collect();
+        assert_eq!(done, expected, "k {k}");
         let mut walk = progress;
         held.retire(&plan, &mut walk).unwrap();
         assert!(walk.succeeded(&plan));
@@ -602,12 +601,35 @@ fn one_transaction_at_a_time_and_abandon_is_for_the_record_given() {
     let rec = pending(root.path());
     assert_eq!(abandon(root.path(), &rec).unwrap_err(), AbandonError::RecoveryRequired);
     assert!(path(root.path()).exists(), "an abandon that was refused took the file");
-    // A record another body than the one given.
-    let other = temp();
-    r.begin_ok(other.path());
-    let mut bytes = std::fs::read(path(other.path())).unwrap();
-    bytes.truncate(bytes.len());
-    assert!(matches!(abandon(temp().path(), &rec), Err(AbandonError::Gone)));
+    // A real record that is another one than the one given: both before slot 0 (so only the mismatch can stop the abandon), the other of another plan.
+    let (mine, other) = (temp(), temp());
+    let stopper = stop_at(Point::ReadBack);
+    let mut p = r.progress();
+    r.begin(
+        mine.path(),
+        &mut p,
+        &Opts {
+            cap: MAX_BARRIER_BYTES,
+            at: &stopper,
+        },
+    )
+    .unwrap_err();
+    let given = pending(mine.path());
+    let r2 = rig_named("-other");
+    let mut p = r2.progress();
+    r2.begin(
+        other.path(),
+        &mut p,
+        &Opts {
+            cap: MAX_BARRIER_BYTES,
+            at: &stopper,
+        },
+    )
+    .unwrap_err();
+    let before = std::fs::read(path(other.path())).unwrap();
+    assert_eq!(abandon(other.path(), &given).unwrap_err(), AbandonError::Gone);
+    assert!(std::fs::read(path(other.path())).unwrap() == before, "another record was taken away");
+    abandon(mine.path(), &given).unwrap();
 }
 
 /// Catches a slot being made durable for a step the walk may not take: a walk stopped by a failure, a walk of another plan, and a retire handed another plan's
@@ -665,7 +687,17 @@ fn a_failed_begin_leaves_what_is_not_the_file_it_made() {
         Flow::Go
     };
     let mut progress = r.progress();
-    assert!(r.begin(root.path(), &mut progress, &Opts { cap: MAX_BARRIER_BYTES, at: &at }).is_err());
+    assert!(
+        r.begin(
+            root.path(),
+            &mut progress,
+            &Opts {
+                cap: MAX_BARRIER_BYTES,
+                at: &at
+            }
+        )
+        .is_err()
+    );
     assert_eq!(std::fs::read(&file).unwrap(), b"someone else's", "a file that was not ours was taken away");
     assert_eq!(progress.acked(), r.base());
 }
@@ -688,7 +720,15 @@ fn slot_0_needs_the_name_to_still_lead_to_the_file() {
         };
         let mut progress = r.progress();
         assert_eq!(
-            r.begin(root.path(), &mut progress, &Opts { cap: MAX_BARRIER_BYTES, at: &at }).unwrap_err(),
+            r.begin(
+                root.path(),
+                &mut progress,
+                &Opts {
+                    cap: MAX_BARRIER_BYTES,
+                    at: &at
+                }
+            )
+            .unwrap_err(),
             BeginError::NotDurable,
             "{point:?}"
         );
@@ -702,5 +742,58 @@ fn slot_0_needs_the_name_to_still_lead_to_the_file() {
                 assert_eq!(rec.acked(), r.base(), "slot 0 was written to a file the name did not lead to");
             }
         }
+    }
+}
+
+/// Catches a kill while a later slot is written, or while the record is retired, leaving a state a restart can't go on from: at each step's slot (written, and
+/// flushed) the record shows that step acknowledged and resumes at the one after it, though the walk that was killed had not acknowledged it; a kill during the
+/// retire leaves the record gone.
+#[test]
+fn a_kill_at_each_later_slot_and_at_the_retire_is_gone_on_from() {
+    let r = rig();
+    for k in r.base() + 1..r.last() {
+        for synced in [false, true] {
+            let dir = temp();
+            let (held, mut progress) = r.begin_ok(dir.path());
+            for i in r.base() + 1..k {
+                held.acknowledge(&r.plan, &mut progress, i, Ack::Done).unwrap();
+            }
+            let stopper = stop_at(if synced { Point::SlotSynced(k + 1) } else { Point::SlotWritten(k + 1) });
+            let got = held.acknowledge_with(
+                &r.plan,
+                &mut progress,
+                k,
+                Ack::Done,
+                &Opts {
+                    cap: MAX_BARRIER_BYTES,
+                    at: &stopper,
+                },
+            );
+            assert_eq!(got.unwrap_err(), AckError::Stopped, "k {k}");
+            assert_eq!(progress.acked(), k, "k {k}: the walk was acknowledged by a step that was killed");
+            let rec = pending(dir.path());
+            assert_eq!(rec.acked(), k + 1, "k {k} synced {synced}");
+            let (plan, walk) = rec.resume().unwrap();
+            assert_eq!(walk.next(&plan), Some(plan.steps()[k as usize + 1]));
+        }
+    }
+    for point in [Point::Unlinked, Point::UnlinkSynced] {
+        let dir = temp();
+        let (held, mut progress) = r.begin_ok(dir.path());
+        for i in r.base() + 1..r.last() {
+            held.acknowledge(&r.plan, &mut progress, i, Ack::Done).unwrap();
+        }
+        let stopper = stop_at(point);
+        let got = held.retire_with(
+            &r.plan,
+            &mut progress,
+            &Opts {
+                cap: MAX_BARRIER_BYTES,
+                at: &stopper,
+            },
+        );
+        assert_eq!(got.unwrap_err(), AckError::Stopped, "{point:?}");
+        assert_eq!(progress.acked(), r.last(), "{point:?}: retired by a kill");
+        assert!(matches!(look(dir.path()), Looked::Nothing), "{point:?}");
     }
 }
