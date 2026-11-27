@@ -94,6 +94,15 @@ impl Folder {
     pub fn open_private_in(&self, _name: &OsStr) -> io::Result<File> {
         Err(io::ErrorKind::Unsupported.into())
     }
+    pub fn open_private_rw_in(&self, _name: &OsStr) -> io::Result<File> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    pub fn create_private_in(&self, _name: &OsStr) -> io::Result<File> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    pub fn rename_excl_in(&self, _from: &OsStr, _to: &OsStr) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// Taking a pinned folder away: nothing is, off the Mac.

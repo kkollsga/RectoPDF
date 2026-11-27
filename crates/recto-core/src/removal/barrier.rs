@@ -39,6 +39,29 @@ const MAX_ARTIFACTS: u32 = 8_192;
 const MAX_BATCH: u16 = 128;
 const NO_ROOT: u8 = 0xFF;
 
+/// Where a transaction record says a walk stood: the plan's digest and the acknowledged count. Only decoding a record makes one (its fields are this
+/// module's alone; tests of `Progress::resume` that have no record to decode make one with `new`, which a real build does not have).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checkpoint {
+    digest: PlanDigest,
+    acked: u32,
+}
+
+impl Checkpoint {
+    #[cfg(test)]
+    pub(super) const fn new(digest: PlanDigest, acked: u32) -> Self {
+        Self { digest, acked }
+    }
+
+    pub(super) const fn digest(&self) -> PlanDigest {
+        self.digest
+    }
+
+    pub const fn acked(&self) -> u32 {
+        self.acked
+    }
+}
+
 /// Who asked for the removal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Actor {
@@ -182,7 +205,10 @@ impl Recorded {
     }
 
     pub const fn checkpoint(&self) -> Checkpoint {
-        Checkpoint::new(self.plan.digest, self.acked)
+        Checkpoint {
+            digest: self.plan.digest,
+            acked: self.acked,
+        }
     }
 
     /// What may be said, by the acknowledged prefix alone.

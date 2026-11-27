@@ -3,6 +3,7 @@
 //! content, and nothing is wired to a command yet.
 
 mod backups;
+pub mod barrier;
 #[cfg(test)]
 mod copy_fixtures;
 #[cfg(test)]

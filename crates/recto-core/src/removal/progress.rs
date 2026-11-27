@@ -67,23 +67,6 @@ pub struct Progress {
     acted: bool,
 }
 
-/// Where a transaction record says a walk stood: the plan's digest and the acknowledged count. Only decoding a record makes one (`removal::barrier`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Checkpoint {
-    digest: PlanDigest,
-    acked: u32,
-}
-
-impl Checkpoint {
-    pub(super) const fn new(digest: PlanDigest, acked: u32) -> Self {
-        Self { digest, acked }
-    }
-
-    pub const fn acked(&self) -> u32 {
-        self.acked
-    }
-}
-
 /// The index of the first step with `effect`. Every plan contains each of the markers once.
 pub(super) fn index_of(plan: &Plan, effect: Effect) -> u32 {
     plan.steps.iter().position(|s| s.effect == effect).map_or(u32::MAX, |i| i as u32)
@@ -110,14 +93,14 @@ impl Progress {
     /// passed the barrier (`barrier::decode_barrier`), never from a request, an agent or a file the app didn't write. This function only
     /// checks that it fits the plan; it cannot tell where it came from.
     pub fn resume(plan: &Plan, checkpoint: &Checkpoint) -> Result<Self, OrderError> {
-        if checkpoint.digest != plan.digest {
+        if checkpoint.digest() != plan.digest {
             return Err(OrderError::WrongPlan);
         }
         // Nothing in a leftovers plan is a point of no return that a record could hold: the next run looks again and the person confirms what remains.
         if plan.request.scope() == Scope::Leftovers {
             return Err(OrderError::NotResumable);
         }
-        if checkpoint.acked as usize > plan.steps.len() || checkpoint.acked <= index_of(plan, Effect::PersistBarrier) {
+        if checkpoint.acked() as usize > plan.steps.len() || checkpoint.acked() <= index_of(plan, Effect::PersistBarrier) {
             return Err(OrderError::NotResumable);
         }
         Ok(Self::at(checkpoint))
@@ -126,8 +109,8 @@ impl Progress {
     /// The progress a checkpoint stands at, without the resume checks: for reading an outcome from a record that is not yet resumable.
     pub(super) fn at(checkpoint: &Checkpoint) -> Self {
         Self {
-            digest: checkpoint.digest,
-            acked: checkpoint.acked,
+            digest: checkpoint.digest(),
+            acked: checkpoint.acked(),
             stopped: false,
             acted: false,
         }
