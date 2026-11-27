@@ -6,7 +6,6 @@
 //! holds or repeats any part of the text.
 
 use super::{MAX_NAME_BYTES, MAX_PAGE, MAX_PATH_BYTES, MAX_READ_BYTES};
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 /// Longest fragment (the part after `#`) read.
@@ -110,7 +109,19 @@ fn read_path(path: &str) -> Result<PathBuf, AddressError> {
             return Err(AddressError::Path);
         }
     }
+    path_of(bytes)
+}
+
+/// The path of these bytes as they are: no normalisation. Where a path isn't bytes (not a Mac), only what is UTF-8.
+#[cfg(unix)]
+fn path_of(bytes: Vec<u8>) -> Result<PathBuf, AddressError> {
+    use std::os::unix::ffi::OsStrExt;
     Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)))
+}
+
+#[cfg(not(unix))]
+fn path_of(bytes: Vec<u8>) -> Result<PathBuf, AddressError> {
+    String::from_utf8(bytes).map(PathBuf::from).map_err(|_| AddressError::Path)
 }
 
 fn decode_component(component: &str) -> Result<Vec<u8>, AddressError> {
@@ -164,6 +175,7 @@ mod tests {
     use super::*;
     use crate::locator::address_of;
     use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     fn read(text: &str) -> Result<Address, AddressError> {
