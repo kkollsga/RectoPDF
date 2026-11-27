@@ -9,7 +9,6 @@ use std::io;
 #[cfg(target_os = "macos")]
 mod errno {
     pub const ENOMEM: i32 = 12;
-    pub const EACCES: i32 = 13;
     pub const ENFILE: i32 = 23;
     pub const EMFILE: i32 = 24;
     pub const ENOSPC: i32 = 28;
@@ -109,6 +108,8 @@ mod tests {
     use crate::host::{DocRenderer, Policy, ServiceConfig};
     use std::path::Path;
 
+    const EACCES: i32 = 13;
+
     /// Failure: an open that ran out of descriptors failed the whole document ("The page renderer couldn't be started") for a Mac that was only short for a moment. It's `OutOfResources`, which counts as busy, and an error that is about the file (a refusal) stays `Unavailable` and is not busy.
     #[test]
     fn running_out_of_descriptors_is_busy_and_a_refusal_is_not() {
@@ -121,7 +122,7 @@ mod tests {
         // A disk that is full is not this for a file's open.
         fail_next_open_with(errno::ENOSPC);
         assert_eq!(DocRenderer::open_file(Path::new("/dev/null/anything")).unwrap_err(), RenderFailure::Unavailable);
-        fail_next_open_with(errno::EACCES);
+        fail_next_open_with(EACCES);
         let failure = DocRenderer::open_file(Path::new("/dev/null/anything")).unwrap_err();
         assert_eq!(failure, RenderFailure::Unavailable);
         assert!(!failure.is_busy());
@@ -151,7 +152,7 @@ mod tests {
         for errno in [errno::EMFILE, errno::ENFILE, errno::EAGAIN, errno::ENOMEM, errno::ENOSPC] {
             assert_eq!(attempt(errno), Some(RenderFailure::OutOfResources), "errno {errno}");
         }
-        let failure = attempt(errno::EACCES).unwrap();
+        let failure = attempt(EACCES).unwrap();
         assert_eq!(failure, RenderFailure::Unavailable);
         assert!(!failure.is_busy());
     }
