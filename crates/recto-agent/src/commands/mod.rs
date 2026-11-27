@@ -619,6 +619,8 @@ const COMBINATIONS: &[(&str, &str)] = &[
 pub fn refused_for_its_combination(tag: &str, error: &AgentError) -> bool {
     let words = error.message.as_str();
     (error.code == Code::USAGE && COMBINATIONS.contains(&(tag, words))) || (tag == "compare" && error.code == Code::TOO_MANY_PANES)
+        // A link is free text to the table, read as the line is: a text that isn't one is the command's refusal, the same by either route.
+        || (tag == "open" && error.code == Code::NOT_A_LINK)
 }
 
 /// Whether a wire name is a typed payload's, read from a line of its own and checked whole as it's read (step R2.5).

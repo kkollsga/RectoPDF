@@ -49,10 +49,10 @@ impl TryFrom<line::Open> for Open {
     fn try_from(line: line::Open) -> Result<Self, AgentError> {
         let line::Open { path, page, link } = line;
         match (path, link) {
-            (Some(_), Some(_)) => Err(AgentError::new(Code::USAGE, BOTH, exit::USAGE).then("`recto open report.pdf` or `recto open --link \"<link>\"`.")),
-            (None, None) => Err(AgentError::new(Code::USAGE, NEITHER, exit::USAGE).then("`recto open report.pdf` or `recto open --link \"<link>\"`.")),
+            (Some(_), Some(_)) => Err(AgentError::new(Code::USAGE, BOTH, exit::USAGE).then("`recto open report.pdf` or `recto open --link <link>`.")),
+            (None, None) => Err(AgentError::new(Code::USAGE, NEITHER, exit::USAGE).then("`recto open report.pdf` or `recto open --link <link>`.")),
             (Some(path), None) => Ok(Self { path, page }),
-            (None, Some(_)) if page.is_some() => Err(AgentError::new(Code::USAGE, LINK_WITH_PAGE, exit::USAGE).then("`recto open --link \"<link>\"` alone.")),
+            (None, Some(_)) if page.is_some() => Err(AgentError::new(Code::USAGE, LINK_WITH_PAGE, exit::USAGE).then("`recto open --link <link>` alone.")),
             (None, Some(link)) => {
                 let read = recto_core::locator::read_address(&link).map_err(|why| AgentError::new(Code::NOT_A_LINK, why.message(), exit::USAGE))?;
                 Ok(Self {

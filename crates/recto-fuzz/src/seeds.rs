@@ -256,7 +256,8 @@ pub fn agent_seeds() -> Vec<Vec<u8>> {
     }
     for spec in TABLE {
         for example in spec.examples {
-            let words: Vec<&str> = example.split(' ').skip(1).collect();
+            let shell = recto_agent::skill::shell_words(example);
+            let words: Vec<&str> = shell.iter().skip(1).map(String::as_str).collect();
             seeds.push([&[1u8, 0][..], words.join("\0").as_bytes()].concat());
             // Mistyped flags, which is where the advice has to mend a line.
             seeds.push([&[1u8, 0][..], words.join("\0").replace("--", "--x").as_bytes()].concat());
