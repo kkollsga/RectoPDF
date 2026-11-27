@@ -111,23 +111,21 @@ fn spans_in(spans: &[(u32, u32)], from: u32, to: u32) -> Vec<(u32, u32)> {
 
 /// `recto get`: the unit the reference points at, as text or Markdown, with refs to go on from.
 pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: &Asked<'_>) -> Result<Value, AgentError> {
-    let Where {
-        found, source, id, position, ..
-    } = PageOrRef::Ref(*asked.reference).locate(access, asked.tab, crate::locating::CharsChecked::AgainstItsText)?;
+    let Where { found, id, position, .. } = PageOrRef::Ref(*asked.reference).locate(access, asked.tab, crate::locating::CharsChecked::AgainstItsText)?;
     let Some(found) = found else {
         return Err(crate::locating::bad_reference());
     };
     let tab = found.tab_ref();
     let file = crate::reading::tab_file(access, &tab)?;
-    let stamped = recto_platform::file_stamp(&source.path).map_err(|_| changed())?;
+    let stamped = recto_platform::file_stamp(file.path()).map_err(|_| changed())?;
     if stamped != found.stamp {
         return Err(changed());
     }
 
-    let read = match from_index(access, &source.path, source.page) {
+    let read = match from_index(access, file.path(), found.file_page) {
         Some(read) => read,
         None => {
-            let read = read_live(&source.path, source.page);
+            let read = read_live(file.path(), found.file_page);
             // The draw happened, so the host is told, even if what follows refuses the answer.
             crate::note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
             read?
@@ -150,7 +148,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
     let hidden = spans_in(&read.hidden, from, from + given as u32);
 
     let counts = json!({ "chars_in_unit": unit.len(), "chars_given": given, "hidden_spans": hidden.len() });
-    let mut untrusted = json!({ "link": locator::link_of(&source.path, source.page + 1).ok() });
+    let mut untrusted = json!({ "link": locator::link_of(file.path(), found.file_page + 1).ok() });
     let mut data_hidden = Value::Null;
     match asked.form {
         Form::Text => {
@@ -170,11 +168,11 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
     }
 
     // Refs: the unit's own, the page it is on, and (for a page) its neighbours in the tab as it stands.
-    let opened = recto_session::identify::Opened::open(&source.path, found.stamp).ok_or_else(changed)?;
+    let opened = recto_session::identify::Opened::open(file.path(), found.stamp).ok_or_else(changed)?;
     let caps = ScanCaps::STANDARD;
     let mut referrer = Referrer::new(opened.reader(), opened.map(), &caps);
     let here = position;
-    let up = page_ref(&mut referrer, Some(source.page));
+    let up = page_ref(&mut referrer, Some(found.file_page));
     let refs = if kind == "hit" {
         json!({ "self": locator::encode(asked.reference), "next": null, "prev": null, "up": up })
     } else {
@@ -187,7 +185,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
     // The same version of the file, and of the index it was read from, to the end.
     crate::locating::still_located(access, &found)?;
     if let Some(key) = read.key
-        && CorpusKey::of_file(&source.path).ok() != Some(key)
+        && CorpusKey::of_file(file.path()).ok() != Some(key)
     {
         return Err(changed());
     }
