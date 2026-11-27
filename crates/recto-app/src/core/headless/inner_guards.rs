@@ -63,12 +63,14 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// listener's two words), `AnswerParts`, 88 (ten), and the `Person` they carry, 8 (one): made on the stack for one menu id or one answered command, never
 /// kept. And D6's sheet (2026-11-27): Published 808 to 824 (one `SheetModel` of 112 bytes in the reader's view where the save problem's 96 sat: its kind, id
 /// and destructive index, so every feature's sheet is one record), and Inner 4,480 to 4,488 (Clear Leftovers' sheet slot, a mutex and a box that holds nothing
-/// at rest). One of each per app.
+/// at rest). And 8.4's cap on links from outside (2026-11-27): Inner 4,488 to 4,496 and Window 464 to 472, one `Box` of the arrival times (a plain Box: a few
+/// dozen bytes allocated once per app, at launch, for a mutex, a queue that holds at most 8 times and a flag; the coordinator chose it over 56 inline). One of
+/// each per app.
 const BUDGETS: [(&str, usize); 14] = [
-    ("Inner", 4488),
+    ("Inner", 4496),
     ("Lifecycle", 344),
     ("Serving", 1040),
-    ("Window", 464),
+    ("Window", 472),
     ("Notices", 80),
     ("Tools", 1448),
     ("Published", 824),
@@ -379,6 +381,7 @@ Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn printing_held(&self) -> Arc<printing::Printing>
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
+Window.pub(in crate::core) links: Box<super::link_open::Arrivals>
 Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
