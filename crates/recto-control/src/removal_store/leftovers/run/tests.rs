@@ -626,3 +626,26 @@ fn only_the_documents_own_saves_add_no_line_of_whose() {
     assert!(!person.words.contains("Among them"), "{}", person.words);
     assert!(person.names.others.is_empty() && person.names.missing == 0, "{:?}", person.names);
 }
+
+/// Failure: two unfinished saves of one document that isn't there read "of 2 documents that aren't there" (saves counted as documents), or a document whose
+/// name cleans to nothing is shown as `“”` instead of being counted with the documents that aren't there.
+#[test]
+fn missing_counts_documents_and_a_name_that_cleans_to_nothing_is_one_of_them() {
+    let fx = fx();
+    let docs = &fx.fixture.docs;
+    let prefix = |name: &str| recto_core::save::writer_temp_prefix(Path::new(name));
+    for attempt in [4, 5] {
+        std::fs::write(docs.join(format!("{}{DEAD}-{attempt}.tmp", prefix("gone.pdf"))), b"nobody's").unwrap();
+    }
+    let person = fx.check(Who::Person);
+    assert_eq!((person.names.others.len(), person.names.missing), (0, 1), "{:?}", person.names);
+    assert!(person.words.contains("of 1 document that isn't there."), "{}", person.words);
+    // A document whose name is only invisible characters has no name to show.
+    let blank = "\u{200B}\u{200B}";
+    std::fs::write(docs.join(blank), b"%PDF").unwrap();
+    std::fs::write(docs.join(format!("{}{DEAD}-6.tmp", prefix(blank))), b"x").unwrap();
+    let person = fx.check(Who::Person);
+    assert!(person.names.others.is_empty(), "{:?}", person.names);
+    assert_eq!(person.names.missing, 2, "{:?}", person.names);
+    assert!(!person.words.contains("“”"), "{}", person.words);
+}

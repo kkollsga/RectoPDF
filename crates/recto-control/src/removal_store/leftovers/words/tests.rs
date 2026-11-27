@@ -246,3 +246,25 @@ fn a_name_cannot_close_its_quotes_and_a_long_one_is_cut() {
     let line = whose(&said).expect("a line");
     assert!(line.chars().count() < 120 && line.contains("…”"), "{line}");
 }
+
+/// Failure: a long name is cut in the middle of a character the eye sees as one: its accent dropped, a flag left as one letter, an emoji joined to the one
+/// that is cut away.
+#[test]
+fn a_long_name_is_cut_between_characters_the_eye_sees_not_inside_one() {
+    let line = |name: &str| {
+        let names = Names {
+            others: vec![name.to_owned()],
+            ..Names::default()
+        };
+        whose_saves(&names).expect("a line")
+    };
+    let accent = line(&format!("{}e\u{301}xyz", "a".repeat(59)));
+    assert!(accent.contains(&format!("“{}…”", "a".repeat(59))), "{accent}");
+    let flag = line(&format!("{}\u{1F1F3}\u{1F1F4}xyz", "a".repeat(59)));
+    assert!(flag.contains(&format!("“{}…”", "a".repeat(59))), "{flag}");
+    let joined = line(&format!("{}\u{1F468}\u{200D}\u{1F469}xyz", "a".repeat(59)));
+    assert!(joined.contains(&format!("“{}…”", "a".repeat(59))), "{joined}");
+    // A whole flag that fits is kept.
+    let kept = line(&format!("{}\u{1F1F3}\u{1F1F4}xyz", "a".repeat(58)));
+    assert!(kept.contains("\u{1F1F3}\u{1F1F4}…”"), "{kept}");
+}

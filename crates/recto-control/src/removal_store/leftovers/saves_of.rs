@@ -20,7 +20,7 @@ const PREFIX_LEN: usize = ".append-".len() + 16 + 1;
 pub struct Others {
     /// The cleaned names of the other documents found, sorted, none twice.
     pub names: Vec<String>,
-    /// Saves of a document that isn't in the folder.
+    /// Documents that aren't in the folder, or have no name to show, that have an unfinished save: each counted once however many saves.
     pub missing: u32,
     /// There were more saves than [`MAX_SAVES`].
     pub more: bool,
@@ -31,7 +31,7 @@ pub fn saves_of(temps: &[TempPin], document: &Path) -> Others {
     let own = recto_core::save::writer_temp_prefix(document);
     let mut folders: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     let mut names = BTreeSet::new();
-    let mut missing = 0;
+    let mut gone: BTreeSet<(PathBuf, String)> = BTreeSet::new();
     for temp in temps.iter().take(MAX_SAVES) {
         let text = temp.name().to_string_lossy();
         let prefix = text.get(..PREFIX_LEN).unwrap_or(&text);
@@ -46,12 +46,14 @@ pub fn saves_of(temps: &[TempPin], document: &Path) -> Others {
             Some(name) => {
                 names.insert(name.clone());
             }
-            None => missing += 1,
+            None => {
+                gone.insert((temp.folder().to_owned(), prefix.to_owned()));
+            }
         }
     }
     Others {
         names: names.into_iter().collect(),
-        missing,
+        missing: u32::try_from(gone.len()).unwrap_or(u32::MAX),
         more: temps.len() > MAX_SAVES,
     }
 }
@@ -66,9 +68,12 @@ fn documents_in(folder: &Path) -> HashMap<String, String> {
         if text.starts_with(".append-") {
             continue;
         }
-        found
-            .entry(recto_core::save::writer_temp_prefix(Path::new(&name)))
-            .or_insert_with(|| recto_core::clean_line(text));
+        // A name with nothing left once cleaned has nothing to show: its saves are counted with the documents that aren't there.
+        let cleaned = recto_core::clean_line(text);
+        if cleaned.is_empty() {
+            continue;
+        }
+        found.entry(recto_core::save::writer_temp_prefix(Path::new(&name))).or_insert(cleaned);
     }
     found
 }

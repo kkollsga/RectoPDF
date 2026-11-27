@@ -1983,9 +1983,9 @@ null
 {"cmd":"RemovalCheck"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"removal_clear","confirm":"0123456789abcdef"}
-    ok removal_clear Removal(RemovalClear { tab: "active", confirm: "0123456789abcdef" })
+    ok removal_clear Removal(RemovalClear { tab: "active", confirm: "…" })
 {"cmd":"removal_clear","tab":"#2","confirm":"0123456789abcdef"}
-    ok removal_clear Removal(RemovalClear { tab: "#2", confirm: "0123456789abcdef" })
+    ok removal_clear Removal(RemovalClear { tab: "#2", confirm: "…" })
 {"cmd":"removal_clear","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"removal_clear"}
@@ -1999,7 +1999,7 @@ null
 ["removal_clear"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["removal_clear","#2","0123456789abcdef"]
-    ok removal_clear Removal(RemovalClear { tab: "#2", confirm: "0123456789abcdef" })
+    ok removal_clear Removal(RemovalClear { tab: "#2", confirm: "…" })
 {"cmd":"RemovalClear"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 <65561 bytes>

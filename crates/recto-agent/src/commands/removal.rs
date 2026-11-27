@@ -25,12 +25,19 @@ pub struct RemovalCheck {
 
 /// Clears what `removal check` offered: the plan it gave, confirmed. The plan is the words `removal check` gave, read by the app ([`read_plan`]), which
 /// refuses what is not one with a usage error before it looks at anything.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemovalClear {
     #[serde(default)]
     pub tab: TabRef,
     pub confirm: String,
+}
+
+/// A plan's number is what lets a clear run, so it is never written to a log or a failure's text.
+impl std::fmt::Debug for RemovalClear {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemovalClear").field("tab", &self.tab).field("confirm", &"…").finish()
+    }
 }
 
 /// A plan's number as `removal check` gives it: 16 hex digits, so no client's number type can round it.
@@ -191,3 +198,18 @@ pub(crate) const ROWS_REMOVAL_CLEAR: &[Spec] = &[Spec {
     client_wait_s: 60,
     ..BASE
 }];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: the plan's number reaches a log or a panic message through `{:?}` of the command that carries it.
+    #[test]
+    fn a_clear_never_shows_its_plan_in_debug() {
+        let command: RemovalClear = serde_json::from_value(json!({"confirm": "0123456789abcdef"})).unwrap();
+        for text in [format!("{command:?}"), format!("{command:#?}")] {
+            assert!(!text.contains("0123456789abcdef"), "{text}");
+            assert!(text.contains("confirm"), "{text}");
+        }
+    }
+}

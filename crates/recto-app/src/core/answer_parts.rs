@@ -131,14 +131,14 @@ impl<'a> AnswerParts<'a> {
         self.core.push(super::CoreCall::ImageLooks);
     }
 
-    /// Clear Leftovers' own: what came of the person's check or clear, said to its sheet; the notice, if it gives words; then the window published again and the
-    /// host told ([`super::removal::sheet::answered`]).
+    /// Clear Leftovers' own: what came of the person's check or clear, said to its sheet; the notice, if it gives words; then the window published again, which
+    /// tells the host ([`super::removal::sheet::answered`]).
     pub fn leftovers_answered(&self, said: impl FnOnce(&super::removal::sheet::Leftovers) -> Option<String>) {
         if let Some(words) = said(self.tools.removal().sheet()) {
             self.say(words);
         }
+        // Reconcile publishes the window and tells the host once; a second call here told it twice.
         self.core.push(super::CoreCall::Reconcile);
-        self.listener.model_changed();
     }
 
     /// What the person may start on a thread of its own.
