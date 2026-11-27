@@ -13,6 +13,7 @@ use recto_testpdf::TempDir;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::num::NonZeroU16;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
@@ -81,12 +82,18 @@ pub fn check(data: &[u8]) {
     let note = by_file.join(alias_named_for(&mine));
     let _ = std::fs::write(&note, content);
     if !name.is_empty() {
+        #[cfg(unix)]
         let name = OsString::from_vec(name);
+        #[cfg(not(unix))]
+        let name = OsString::from(String::from_utf8_lossy(&name).into_owned());
         let in_root = corpus.join(&name);
         let _ = match kind % 4 {
             0 => std::fs::write(&in_root, content),
             1 => std::fs::create_dir(&in_root),
+            #[cfg(unix)]
             2 => std::os::unix::fs::symlink("/nonexistent", &in_root),
+            #[cfg(not(unix))]
+            2 => std::fs::write(&in_root, content),
             _ => std::fs::hard_link(&note, &in_root),
         };
         let _ = std::fs::write(by_file.join(&name), content);

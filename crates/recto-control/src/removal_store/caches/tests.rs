@@ -394,7 +394,8 @@ fn a_corpus_root_holds_only_what_the_app_writes_or_is_unknown() {
     let k = |byte| hex_key(byte);
     let upper = hex_key(0xab).to_uppercase();
     type Make = fn(&Path);
-    let cases: Vec<(&str, String, Make, Option<(Owner, Format)>)> = vec![
+    type Case = (&'static str, String, Make, Option<(Owner, Format)>);
+    let cases: Vec<Case> = vec![
         ("uppercase hex", upper.clone(), |p| dir(p), UNKNOWN),
         ("a key as a file", k(1), plain, UNKNOWN),
         ("a key as a link", k(2), link, UNKNOWN),
@@ -695,7 +696,7 @@ fn a_folder_swapped_after_it_was_checked_is_still_the_one_that_was_opened() {
 /// everything when it did not. Each leaves its stores unmarked.
 #[test]
 fn something_that_vanishes_between_the_listing_and_its_opening_leaves_its_stores_unmarked() {
-    let (w, mine, _theirs) = two_documents();
+    let (w, _mine, _theirs) = two_documents();
     let note = w.corpus.join("by-file").join(names::path_alias(w.mine.as_os_str().as_encoded_bytes()));
     let hook: Hook = {
         let note = note.clone();
