@@ -348,9 +348,11 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         {
             let mut field = lock(self.field);
             Self::field_from_record(&mut field, &record);
-            if *ask == FindAsk::Close {
+            // The last ask wins: a step kept for its hit isn't made in what's typed or closed after it.
+            if matches!(ask, FindAsk::Close | FindAsk::Query(_)) {
                 field.pending_step = None;
-            } else if matches!(ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
+            }
+            if matches!(ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
                 field.note = too_long.then(|| find::too_long().message);
             }
         }
