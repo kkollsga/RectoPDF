@@ -347,6 +347,7 @@ pub(crate) fn command(host: &AppHost, parts: Parts<'_>, actor: Actor, command: &
             let checked = run::check(&removal.store, &asked, may_confirm, &world, &mut run::random_id, Instant::now()).map_err(|error| match error {
                 CheckError::Changed => refuse(Code::REMOVAL_PLAN_CHANGED, words::confirm_refusal(ConfirmRefusal::Stale), exit::FAILED),
                 CheckError::Offer(why) => refuse(Code::REMOVAL_BUSY, words::confirm_refusal(why), exit::BUSY),
+                CheckError::RemovalPending => refuse(Code::REMOVAL_BUSY, words::busy(Busy::RemovalPending), exit::BUSY),
             })?;
             let found = checked.found;
             let mut data = json!({

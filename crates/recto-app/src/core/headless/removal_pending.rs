@@ -115,3 +115,19 @@ fn a_pdf_edited_in_an_unreadable_record_window_can_be_saved() {
     let (saved, changed) = turn_and_save(disk);
     assert!(saved.is_ok() && changed, "{saved:?}, file changed: {changed}");
 }
+
+/// Failure (D3b review): `removal check` while an unfinished removal's record is there answers as a look that found nothing to offer (and an agent or a
+/// person reads "nothing to clear"), where `removal clear` is refused as busy. Both are refused as `removal_busy`, in the same words, and nothing is offered.
+#[test]
+fn a_removal_check_while_a_removal_is_pending_is_refused_as_busy() {
+    let bed = super::removal_clear::bed();
+    pending_at(&bed.root(), 1);
+    for level in [Level::ReadOnly, Level::Full] {
+        let refused = bed
+            .app
+            .agent(level, r#"{"cmd":"removal_check"}"#)
+            .expect_err("a check while a removal is pending");
+        assert_eq!(refused.code, "removal_busy", "{level:?}: {refused:?}");
+        assert!(refused.message.contains("left unfinished"), "{refused:?}");
+    }
+}
