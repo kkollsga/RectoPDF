@@ -20,11 +20,8 @@ path = "src/main.rs"
 [dependencies]
 # The owner's library, at its published 0.1.7 commit, with no Python and no OCR. Its own lopdf pin is taken to RectoPDF's by the patch below.
 distillpdf = { git = "https://github.com/kkollsga/distillPDF", rev = "fbf5b22f641982a41374507466aafdb615fbf512", default-features = false }
-recto-core = { path = "../recto-core" }
 recto-index = { path = "../recto-index" }
 recto-platform = { path = "../recto-platform" }
-recto-proto = { path = "../recto-proto" }
-recto-render-service = { path = "../recto-render-service" }
 serde_json = { version = "1", default-features = false, features = ["std", "float_roundtrip"] }
 
 [profile.dev]
@@ -50,6 +47,8 @@ recto-platform = { path = "../recto-platform", features = ["test-seams"] }
 # To make a decompression bomb for `tests/images.rs`. Already in this lockfile through distillPDF, so it adds no crate.
 flate2 = "1"
 recto-testpdf = { path = "../recto-testpdf" }
+# The sample example prints a file's own contents beside the generated ones.
+recto-core = { path = "../recto-core" }
 
 # distillPDF pins lopdf `0e89b89`; RectoPDF's crates are on `e5f4971`, the fork's `main`. One lopdf here, as `tests/lockfile.rs` holds: distillPDF's is
 # taken to the app's commit. The URL names `www.github.com`, which GitHub sends on to the same repository, because Cargo won't patch a source to itself.

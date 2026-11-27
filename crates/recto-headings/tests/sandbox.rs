@@ -141,6 +141,43 @@ fn a_walled_helper_refuses_a_job_that_names_a_path() {
     assert!(status.is_some_and(|status| status.success()), "{status:?}");
 }
 
+/// Failure: the walls change what the helper finds, because something it needs is read by a name (an encoding, a CMap, a font table, a path distillPDF opens again) and the sandbox refuses it,
+/// so a document gets other contents, or none, behind the walls than in a test: and the session, which only ever starts the walled one, would never have been tested on what it gets. The
+/// headings job is run walled and bare on three documents (plain, in heavy type, and one with a hidden heading), and every line must be the same but for the two numbers that are a
+/// run's own.
+#[test]
+fn the_walled_helper_finds_what_the_bare_one_does() {
+    let bundle = Bundle::new("same");
+    let hidden = recto_testpdf::HIDDEN_HEADINGS[0];
+    let documents = [
+        TempPdf::new("plain.pdf", &recto_testpdf::headings_document()),
+        TempPdf::new("bold.pdf", &recto_testpdf::bold_headings_document()),
+        TempPdf::new("hidden.pdf", &recto_testpdf::headings_document_with(hidden.1, [0.0, 0.0, 612.0, 792.0], "")),
+    ];
+    let job = json!({ "kind": "headings", "memory_limit": 512u64 << 20 });
+    for pdf in &documents {
+        let (walled, status) = start(&bundle.exe(), &pdf.0).job_to_the_end(&job);
+        let (bare, _) = start(Path::new(EXE), &pdf.0).job_to_the_end(&job);
+        assert!(status.is_some_and(|status| status.success()), "{status:?}");
+        assert_eq!((&walled[0]["walled"], &bare[0]["walled"]), (&json!(true), &json!(false)));
+        let own = |lines: &[Value]| -> Vec<Value> {
+            lines[1..]
+                .iter()
+                .cloned()
+                .map(|mut line| {
+                    if let Some(object) = line.as_object_mut() {
+                        object.remove("distilled_ms");
+                        object.remove("helper_peak_bytes");
+                    }
+                    line
+                })
+                .collect()
+        };
+        assert!(walled.len() > 2, "it found something to compare: {walled:?}");
+        assert_eq!(own(&walled), own(&bare), "{:?}", pdf.0);
+    }
+}
+
 /// Failure: a helper signed without the sandbox (a build script's mistake) reads a hostile document with no walls, and the release's check lets it through. After it's signed again
 /// with no entitlements it exits with the code for a missing sandbox (77) before it says anything or reads a byte, and `--check` fails it.
 #[test]

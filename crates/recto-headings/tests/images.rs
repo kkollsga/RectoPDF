@@ -6,11 +6,10 @@
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use recto_index::corpus::CorpusKey;
+use recto_platform::helper::{self, Priority, Spawned};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages_with};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
 
 /// The bomb's side in pixels: 6000 x 6000 RGB is 108 MB of samples, inside distillPDF's 64 Mpx cap, so its decoder would take every byte.
 const SIDE: usize = 6000;
@@ -68,26 +67,28 @@ fn peak_here() -> u64 {
         .peak_footprint_bytes
 }
 
-/// The helper as the session runs it, with the session's limit: its report line, after its hello.
+/// The helper as the session runs it, with the session's limit and the document on descriptor 3: its last line, the end of its answer, after its hello.
 fn helper_report(path: &std::path::Path) -> Value {
-    let key = CorpusKey::of_file(path).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings"))
-        .env_clear()
-        .env("MallocLargeCache", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "memory_limit": 512u64 << 20 })).unwrap();
+    let document = std::fs::File::open(path).unwrap();
+    let Spawned {
+        mut child,
+        mut stdin,
+        mut stdout,
+    } = helper::spawn_with_document(
+        std::path::Path::new(env!("CARGO_BIN_EXE_recto-headings")),
+        &[("MallocLargeCache", std::ffi::OsStr::new("0"))],
+        Priority::Inherited,
+        &document,
+    )
+    .unwrap();
+    writeln!(stdin, "{}", json!({ "kind": "headings", "memory_limit": 512u64 << 20 })).unwrap();
     let mut said = String::new();
-    child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
+    stdout.read_to_string(&mut said).unwrap();
     drop(stdin);
     let _ = child.wait();
     hello::after_hello(&said)
         .lines()
-        .next()
+        .last()
         .and_then(|line| serde_json::from_str(line).ok())
         .unwrap_or(Value::Null)
 }
@@ -100,7 +101,7 @@ fn the_headings_helper_never_decodes_an_image() {
     let pdf = TempPdf::new("bomb.pdf", &document_with_a_bomb());
     let report = helper_report(&pdf.0);
     assert_eq!(report["state"], "ready", "{report}");
-    assert_eq!(report["kept"].as_u64(), Some(6), "every heading, from the text: {report}");
+    assert_eq!(report["found"].as_u64(), Some(6), "every heading, from the text: {report}");
     let helper_peak = report["helper_peak_bytes"].as_u64().expect("the helper's peak");
     assert!(
         helper_peak < SAMPLE_BYTES,
