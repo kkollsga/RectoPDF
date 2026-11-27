@@ -443,3 +443,25 @@ fn hidden_words_are_marked_and_the_mark_cannot_be_forged() {
         "Fig 1"
     );
 }
+
+/// Failure: a block's range stops at its first and last letter, so every paragraph loses its final full stop, an opening quote, a `$` or a list's `1.`, and a copy of the block is cut short.
+#[test]
+fn a_block_keeps_the_marks_next_to_its_letters() {
+    let page = chars("Hello world.\n\u{201C}Quoted words,\u{201D} he said.\n$5 million\n1. First item;");
+    let mapped = map_page(
+        0,
+        &page,
+        &[para("Hello world."), para("Quoted words, he said."), para("5 million"), para("1. First item")],
+    );
+    assert_eq!(mapped.counts.stored_total(), 4, "{:?}", mapped.counts);
+    assert_eq!(span(&mapped, 0), (0, 12));
+    let quote_start = 13;
+    assert_eq!(span(&mapped, 1), (quote_start, quote_start + 24));
+    assert_eq!(span(&mapped, 2).0, 38, "the `$`");
+    let text: String = page[span(&mapped, 3).0 as usize..span(&mapped, 3).1 as usize].iter().collect();
+    assert_eq!(text, "1. First item;");
+    // Never into a block already mapped, never across a space, never over another word's letters.
+    let page = chars("one.two. three");
+    let mapped = map_page(0, &page, &[para("two"), para("one")]);
+    assert_eq!((span(&mapped, 0), span(&mapped, 1)), ((3, 8), (0, 3)));
+}

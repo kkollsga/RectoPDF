@@ -217,6 +217,24 @@ fn runs(key: &[char], needle: &[char], from: usize, budget: &mut usize, mut each
     true
 }
 
+/// Most characters a block's range reaches over on each side for the marks next to its letters.
+const MAX_WIDEN: u32 = 8;
+
+/// A block's characters are its letters and what is stuck to them: the full stop that ends a paragraph, an opening quote, a `$`, the `)` after a number. So the range is
+/// widened over adjacent characters that aren't space and aren't letters or digits (those are other words), at most [`MAX_WIDEN`] a side, and never into a block already mapped.
+fn widen(page: &[char], (start, end): (u32, u32), mapped: &[(u32, u32)]) -> (u32, u32) {
+    let sticks =
+        |at: u32| page.get(at as usize).is_some_and(|c| !c.is_whitespace() && !c.is_alphanumeric()) && !mapped.iter().any(|(a, b)| *a <= at && at < *b);
+    let (mut from, mut to) = (start, end);
+    while start - from < MAX_WIDEN && from > 0 && sticks(from - 1) {
+        from -= 1;
+    }
+    while to - end < MAX_WIDEN && sticks(to) {
+        to += 1;
+    }
+    (from, to)
+}
+
 /// A box as whole points a record holds, in the order left, bottom, right, top. A side that isn't a number is 0.
 fn whole_points(bbox: [f32; 4]) -> [i16; 4] {
     let whole = |side: f32| {
@@ -320,6 +338,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             }
             continue;
         };
+        let (start, end) = widen(page, (start, end), &mapped);
         mapped.push((start, end));
         previous_end = end;
         out.counts.stored[shape] += 1;
