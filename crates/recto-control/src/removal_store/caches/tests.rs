@@ -273,7 +273,9 @@ fn the_targets_set_is_what_index_clear_removes() {
         fs::copy(w.contents.join(&name), copy.join(&name)).unwrap();
     }
     let before = listed(&copy);
-    recto_index::generated::clear(&copy, &w.mine);
+    // The app's clear takes the file's version keys as well as its path (merged with `build/generated-clear-old-tags`), as `recto index clear` passes them.
+    let versions = corpus::keys_of_file(&w.corpus, &w.mine);
+    recto_index::generated::clear(&copy, &w.mine, &versions);
     let removed: BTreeSet<String> = before.difference(&listed(&copy)).cloned().collect();
     assert_eq!(removed.len(), 1);
     assert_eq!(
