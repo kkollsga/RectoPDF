@@ -19,6 +19,8 @@ pub struct PaletteRow {
     pub from_file: bool,
     /// What VoiceOver says for the row: its title, where it lives, and its key in words, as "Find Next, Edit, Command G".
     pub spoken: String,
+    /// Whether choosing it does anything: a row that can't be chosen is drawn quieter.
+    pub enabled: bool,
 }
 
 /// Everything the palette draws.
