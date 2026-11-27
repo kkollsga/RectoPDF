@@ -26,6 +26,9 @@
 # Wrap it in tools/sysguard/heavy.sh: the build is a full-LTO build.
 set -euo pipefail
 
+# A release claims `rectopdf:` links; the one switch that lets a package skip that is a test's (tools/dev-build.sh), and never a release's.
+[ -z "${RECTO_DEV_BUILD_UNCLAIMED:-}" ] || { echo "RECTO_DEV_BUILD_UNCLAIMED is for a test's dev package, not a release" >&2; exit 1; }
+
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$APP_DIR/.." && pwd)"
 ALLOW_DIRTY=0; SIGNED=0; BUILT_ONLY=0; ALREADY_BUILT=0; CHECK_SIGNED=0; NO_NOTARIZE=0
@@ -76,8 +79,6 @@ VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}
 TAG="v$VERSION"
 
 # Compiled in: this is what makes it a release, and it can't be turned on or off afterwards.
-# A release claims `rectopdf:` links; the one switch that lets a package skip that is a test's (tools/dev-build.sh), and never a release's.
-[ -z "${RECTO_DEV_BUILD_UNCLAIMED:-}" ] || { echo "RECTO_DEV_BUILD_UNCLAIMED is for a test's dev package, not a release" >&2; exit 1; }
 export RECTO_RELEASE=1
 APP="$APP_DIR/build.noindex/RectoPDF.app"
 OUT="$APP_DIR/build.noindex/release"

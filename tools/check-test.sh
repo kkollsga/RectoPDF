@@ -1758,8 +1758,9 @@ case "$out" in *"the build doesn't claim"*) echo "FAIL  with the variable it was
 out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/tools/dev-build.sh" --place "$X/q/none.zip" 2>&1); rc=$?
 check "any mode but --package refuses the test's variable" "1" "$rc"
 has "naming it" "RECTO_DEV_BUILD_UNCLAIMED is for --package" "$out"
-out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/app/release-zip.sh" --allow-dirty 2>&1); rc=$?
-check "release-zip.sh refuses the variable" "1" "$rc"
+out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/app/release-zip.sh" --signed --already-built 2>&1); rc=$?
+# --signed --already-built with no identity fails within a second on its own if the refusal were broken or late: nothing is built or signed.
+check "release-zip.sh refuses the variable, first, before any other step" "1" "$rc"
 has "naming it" "RECTO_DEV_BUILD_UNCLAIMED is for a test's dev package" "$out"
 }
 
