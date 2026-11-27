@@ -210,43 +210,30 @@ fn a_copy_the_system_opens_is_never_a_regular_app() {
     };
     assert_eq!(asked("LSUIElement"), "true", "a copy that's opened must not be a regular app");
     assert_eq!(asked("CFBundleIdentifier"), "io.github.kkollsga.RectoPDF", "the copy is the app otherwise");
+    // And it claims no link scheme: a test's app registered with Launch Services takes a click on the owner's Mac (a `rectopdf:` link opens a test copy, or
+    // goes to a quiet run that ignores it). Only a release build claims it (`app/build.sh`), so neither the test build nor its copy carries `CFBundleURLTypes`.
+    // If this build is a release build, rebuild with `app/build.sh`.
+    let claims = |plist: &std::path::Path| {
+        std::process::Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Print :CFBundleURLTypes"])
+            .arg(plist)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(!claims(&plist), "the copy claims links (rebuild with app/build.sh, without RECTO_RELEASE)");
+    let built = app_path().and_then(|binary| Some(binary.parent()?.parent()?.join("Info.plist")));
+    assert!(
+        !built.is_some_and(|plist| claims(&plist)),
+        "the test build claims links (rebuild with app/build.sh, without RECTO_RELEASE)"
+    );
     let valid = std::process::Command::new("/usr/bin/codesign")
         .args(["--verify"])
         .arg(&copy.bundle)
         .status()
         .unwrap();
     assert!(valid.success(), "the copy's own signature has to hold, or it won't start");
-}
-
-/// Failure: a test's app registered with Launch Services takes a click on the owner's Mac: a `rectopdf:` link opens a test copy, or goes to a quiet run that ignores
-/// it. Only a release build (the shipped app, the owner's dev copy) claims the scheme (`app/build.sh`), so neither the test build nor a copy of it carries
-/// `CFBundleURLTypes`. If this build is a release build, rebuild with `app/build.sh`.
-#[test]
-fn a_tests_build_claims_no_link_scheme() {
-    let Some(binary) = app_path() else { return };
-    let url_types = |plist: &std::path::Path| {
-        std::process::Command::new("/usr/libexec/PlistBuddy")
-            .args(["-c", "Print :CFBundleURLTypes"])
-            .arg(plist)
-            .output()
-            .unwrap()
-    };
-    let built = binary
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("the bundle's Contents")
-        .join("Info.plist");
-    let output = url_types(&built);
-    assert!(
-        !output.status.success(),
-        "the test build claims links, so a click on this Mac can go to it (rebuild with app/build.sh, without RECTO_RELEASE): {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let Some(copy) = OwnCopy::new() else { return };
-    assert!(
-        !url_types(&copy.bundle.join("Contents/Info.plist")).status.success(),
-        "a copy of the build claims links"
-    );
 }
 
 /// Failure: a test's own copy of the app is left registered with Launch Services after it's dropped, a second RectoPDF in Open With

@@ -6,10 +6,11 @@
 //! Hostile by construction (any page can send one): a link opens one local PDF, read-only, at a page, and nothing else; at most [`Arrivals::MAX_OUTSIDE`]
 //! of them are taken in [`Arrivals::SPAN_MS`]; a bad one is refused in Rust's constant words, which never repeat any part of it.
 
-use super::Inner;
 use super::answer_parts::AnswerParts;
 use super::opening::open_for_person;
 use super::person;
+use super::window::Window;
+use super::{CoreQueue, Lifecycle};
 use recto_agent::commands::Move;
 use recto_agent::commands::tabs::Open;
 use recto_agent::{Code, Command};
@@ -53,25 +54,25 @@ impl Arrivals {
 }
 
 /// `UiAction::OpenLink`: the link the system handed over, as sent. Read here, then dropped.
-pub fn from_outside(inner: &Inner, link: String) {
-    let notices = inner.window.notices();
-    if !inner.window.links.arrived(inner.life.now_ms()) {
-        if !inner.window.links.told.swap(true, Ordering::SeqCst) {
+pub fn from_outside(window: &Window, life: &Lifecycle, core: &CoreQueue, link: String) {
+    let notices = window.notices();
+    if !window.links.arrived(life.now_ms()) {
+        if !window.links.told.swap(true, Ordering::SeqCst) {
             notices.fail_open(TOO_MANY.into());
         }
         return;
     }
     match read_address(&link) {
-        Ok(address) => open_for_person(&inner.life, &inner.core, address.path, address.file_page),
+        Ok(address) => open_for_person(life, core, address.path, address.file_page),
         Err(why) => notices.fail_open(format!("This link couldn't be opened. {}", why.message())),
     }
 }
 
 /// `UiAction::OpenAt`: a file the system handed over with what came after `#`. No cap: it's the Finder's open, not a link from a page.
-pub fn open_at(inner: &Inner, path: PathBuf, fragment: &str) {
+pub fn open_at(window: &Window, life: &Lifecycle, core: &CoreQueue, path: PathBuf, fragment: &str) {
     match read_page_fragment(fragment) {
-        Ok(page) => open_for_person(&inner.life, &inner.core, path, page),
-        Err(why) => inner.window.notices().fail_open(why.message().into()),
+        Ok(page) => open_for_person(life, core, path, page),
+        Err(why) => window.notices().fail_open(why.message().into()),
     }
 }
 

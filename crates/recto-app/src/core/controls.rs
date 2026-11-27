@@ -168,11 +168,11 @@ impl Inner {
                 return Acted::DONE;
             }
             UiAction::OpenAt { path, fragment } => {
-                super::link_open::open_at(self, PathBuf::from(path), &fragment);
+                super::link_open::open_at(&self.window, &self.life, &self.core, PathBuf::from(path), &fragment);
                 return Acted::DONE;
             }
             UiAction::OpenLink { link } => {
-                super::link_open::from_outside(self, link);
+                super::link_open::from_outside(&self.window, &self.life, &self.core, link);
                 return Acted::DONE;
             }
             UiAction::OpenRecent { key } => {
