@@ -251,13 +251,22 @@ impl Folder {
     /// Opens a file of this folder for reading, only if it's a plain file of this user's that nobody else can write (the checks of
     /// `local::open_private_file`, on a descriptor). A link isn't followed and a pipe doesn't wait for a writer.
     pub fn open_private_in(&self, name: &OsStr) -> io::Result<File> {
+        self.open_checked(name, libc::O_RDONLY)
+    }
+
+    /// As [`Self::open_private_in`], for reading and writing in place: the file of a record that is changed in its place and never made longer.
+    pub fn open_private_rw_in(&self, name: &OsStr) -> io::Result<File> {
+        self.open_checked(name, libc::O_RDWR)
+    }
+
+    fn open_checked(&self, name: &OsStr, access: libc::c_int) -> io::Result<File> {
         let name = name_of(name)?;
         // SAFETY: `fd` is open for as long as `self`, and `name` is a NUL-ended string.
         let fd = unsafe {
             libc::openat(
                 self.fd.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                access | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
             )
         };
         if fd < 0 {
@@ -270,6 +279,38 @@ impl Folder {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this file isn't a private file of this user's"));
         }
         Ok(file)
+    }
+
+    /// Makes a new file `name` in this folder, mode 0600, for writing: it fails with `AlreadyExists` if anything is at the name, a link included, and a
+    /// link is never followed (`O_CREAT | O_EXCL | O_NOFOLLOW`).
+    pub fn create_private_in(&self, name: &OsStr) -> io::Result<File> {
+        let name = name_of(name)?;
+        // SAFETY: `fd` is open for as long as `self`, and `name` is a NUL-ended string; the mode is the one `openat` reads for `O_CREAT`.
+        let fd = unsafe {
+            libc::openat(
+                self.fd.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::c_uint::from(0o600u16),
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a new descriptor `openat` just returned, owned by nobody else.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    /// Gives the entry `from` the name `to`, in this folder, in one step that fails with `AlreadyExists` if anything is at `to`
+    /// (`renameatx_np` with `RENAME_EXCL`): a name is never replaced, and a reader sees no file or the whole one.
+    pub fn rename_excl_in(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
+        let (from, to) = (name_of(from)?, name_of(to)?);
+        let fd = self.fd.as_raw_fd();
+        // SAFETY: `fd` is open for as long as `self`, and both names are NUL-ended strings of one entry each.
+        if unsafe { libc::renameatx_np(fd, from.as_ptr(), fd, to.as_ptr(), libc::RENAME_EXCL) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 

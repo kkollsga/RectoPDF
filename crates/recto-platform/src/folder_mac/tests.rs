@@ -113,6 +113,61 @@ fn open_private_in_refuses_what_it_should_and_never_waits() {
     assert_eq!(ok, [true, false, false, false, false]);
 }
 
+/// Failure: a record's file is made over a link or another file, made readable by others, or opened in place through a link or a pipe, a file others can write,
+/// or by a name that leaves the folder; or a name is replaced by a rename instead of refused.
+#[test]
+fn a_record_file_is_made_new_opened_in_place_and_renamed_without_replacing() {
+    use std::io::Write as _;
+    let dir = TempDir::new("recto-folder-");
+    std::fs::write(dir.join("plain"), b"x").unwrap();
+    std::os::unix::fs::symlink(dir.join("plain"), dir.join("link")).unwrap();
+    std::fs::write(dir.join("open"), b"x").unwrap();
+    std::fs::set_permissions(dir.join("open"), std::fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
+    let folder = opened(dir.path());
+
+    let mut made = folder.create_private_in(OsStr::new("new")).unwrap();
+    made.write_all(b"abc").unwrap();
+    assert_eq!(std::fs::metadata(dir.join("new")).unwrap().mode() & 0o777, 0o600);
+    for taken in ["new", "plain", "link", "pipe"] {
+        assert_eq!(
+            folder.create_private_in(OsStr::new(taken)).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists,
+            "{taken}"
+        );
+    }
+    assert_eq!(std::fs::read(dir.join("plain")).unwrap(), b"x", "a link was written through");
+    for bad in ["", ".", "..", "a/b", "/etc/x"] {
+        assert!(folder.create_private_in(OsStr::new(bad)).is_err(), "create {bad:?}");
+        assert!(folder.open_private_rw_in(OsStr::new(bad)).is_err(), "rw {bad:?}");
+        assert!(folder.rename_excl_in(OsStr::new("new"), OsStr::new(bad)).is_err(), "rename {bad:?}");
+    }
+
+    let folder = std::sync::Arc::new(folder);
+    let opens = {
+        let folder = folder.clone();
+        recto_testpdf::returns_in_time("a pipe was waited on", move || {
+            ["plain", "link", "open", "pipe", "absent"].map(|n| folder.open_private_rw_in(OsStr::new(n)).is_ok())
+        })
+    };
+    assert_eq!(opens, [true, false, false, false, false]);
+    let mut rw = folder.open_private_rw_in(OsStr::new("new")).unwrap();
+    rw.write_all(b"Z").unwrap();
+    assert_eq!(std::fs::read(dir.join("new")).unwrap(), b"Zbc", "written in place");
+
+    assert_eq!(
+        folder.rename_excl_in(OsStr::new("new"), OsStr::new("plain")).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(std::fs::read(dir.join("plain")).unwrap(), b"x", "a name was replaced");
+    folder.rename_excl_in(OsStr::new("new"), OsStr::new("named")).unwrap();
+    assert!(!dir.join("new").exists() && dir.join("named").exists());
+    assert_eq!(
+        folder.rename_excl_in(OsStr::new("new"), OsStr::new("other")).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
 /// Failure: a name that is not one plain name of this folder reaches `openat`. An absolute name makes `openat` ignore the folder's descriptor
 /// (`/dev/fd/N` reopens descriptor N, such as a person's PDF), and `.`, `..`, an empty name or a `/` leave the folder.
 #[test]

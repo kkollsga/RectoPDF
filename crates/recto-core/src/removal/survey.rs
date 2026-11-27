@@ -36,6 +36,11 @@ impl ArtifactKey {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// A key read back from a transaction record (`barrier`).
+    pub(super) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 /// One artifact an adapter found.

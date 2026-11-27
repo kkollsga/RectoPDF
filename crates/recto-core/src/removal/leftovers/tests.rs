@@ -281,7 +281,11 @@ fn a_failed_purge_counts_as_an_act_and_a_failed_move_does_not() {
 fn it_is_never_resumable() {
     let p = plan_of(&SOME);
     for acked in 0..=p.steps().len() as u32 {
-        assert_eq!(Progress::resume(&p, p.digest(), acked), Err(OrderError::NotResumable), "acked {acked}");
+        assert_eq!(
+            Progress::resume(&p, &Checkpoint::new(p.digest(), acked)),
+            Err(OrderError::NotResumable),
+            "acked {acked}"
+        );
     }
 }
 

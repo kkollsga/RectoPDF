@@ -107,6 +107,13 @@ fn hostile_state_records_do_no_harm() {
     smoke("record", seed(), rounds(400), 8 * 1024);
 }
 
+/// Failure: a damaged or hostile transaction record panics its decoder, is read as another plan than it recorded, or holds a count or layout that does
+/// not fit its file.
+#[test]
+fn hostile_removal_barriers_do_no_harm() {
+    smoke("removal_barrier", seed(), rounds(300), 16 * 1024);
+}
+
 /// Failure: a damaged or hostile removal ledger panics its reader, breaks a cap, reads back differently from how it was written, or lets a
 /// lineage over it call a ledger with a gap complete.
 #[test]
