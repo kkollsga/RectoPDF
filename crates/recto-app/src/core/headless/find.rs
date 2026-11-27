@@ -130,3 +130,36 @@ fn an_agents_step_to_a_hit_selects_it_on_the_page() {
         "at the hit's characters: {went}"
     );
 }
+
+/// Failure (the last ask wins): the person's ⌘G with Find closed is kept for its hit while the query runs, and a new query typed before it came was still
+/// made when the new query's hits arrived, so Find jumped to a hit nobody asked for in what they had just typed. Typing a query ends the kept step: its
+/// hits come with no hit gone to.
+#[test]
+fn a_step_kept_for_its_hit_is_forgotten_when_a_new_query_is_typed() {
+    let app = findable_for_kept_step();
+    let finder = app.core().host.session.finder().clone();
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.settle();
+    app.act(UiAction::FindClose);
+    app.settle();
+    recto_platform::slow::gate::hold(&[Seam::Worker]);
+    app.act(UiAction::Menu { id: "find.next".into() });
+    app.wait_until("Find started again for the step", || finder.looking().is_some());
+    app.act(UiAction::FindTyped { text: "pdf page 2".into() });
+    recto_platform::slow::gate::open(Seam::Worker);
+    app.settle();
+    let view = find::view(app.core());
+    assert!(view.open && view.row_count > 0 && !view.running, "{view:?}");
+    assert_eq!(
+        view.current_row, None,
+        "no hit gone to in what was typed after the step was asked for: {view:?}"
+    );
+}
+
+fn findable_for_kept_step() -> HeadlessApp {
+    let disk = Disk::new();
+    let doc = disk.pdf("findable.pdf", 30);
+    let app = disk.start();
+    app.open(&doc);
+    app
+}
