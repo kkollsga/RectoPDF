@@ -205,6 +205,17 @@ pub(crate) const ROWS_WAIT: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "wait blocks-ready",
+        tag: "wait",
+        group: GROUP_SYNC,
+        summary: "Waits for the tab's blocks (paragraphs, headings, list items and the rest) to be made, asking for the index and then the blocks if nobody has.",
+        args: &[TAB, TIMEOUT],
+        fixed: &[("condition", "blocks_ready")],
+        data: "`{ tab, state, pages, stored, dropped, bytes, bytes_per_page, by_kind }`, numbers only, once they're made. Exit 8 with `blocks_refused` if the file needs a password, exit 1 with `blocks_refused` or `blocks_failed` if they won't or can't be made, and exit 7 if the time runs out.",
+        examples: &["recto wait blocks-ready", "recto wait blocks-ready --tab #2 --timeout 5m"],
+        ..BASE
+    },
+    Spec {
         name: "wait indexing-done",
         tag: "wait",
         group: GROUP_SYNC,
@@ -228,7 +239,7 @@ pub(crate) const ROWS_WATCH: &[Spec] = &[Spec {
             flag: Some("--events"),
             kind: Kind::List(EVENT_GROUPS),
             required: false,
-            help: "Which: `tabs`, `pages`, `edits`, `draws`, `indexing`, `contents` (generated contents being made), `access`, `view`, `find` (Find's hits coming in, and done), with commas between. All if left out.",
+            help: "Which: `tabs`, `pages`, `edits`, `draws`, `indexing`, `contents` (generated contents being made), `blocks` (blocks being made), `access`, `view`, `find` (Find's hits coming in, and done), with commas between. All if left out.",
         },
         Arg {
             key: "timeout_ms",

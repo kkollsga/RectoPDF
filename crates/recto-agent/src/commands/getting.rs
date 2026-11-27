@@ -209,7 +209,7 @@ pub(crate) const ROWS_GET: &[Spec] = &[Spec {
     tag: "get",
     group: GROUP_READ,
     access: Access::At(Level::ReadOnly),
-    summary: "The text a reference points at, as text or Markdown, with references to go on from it. `--grain hit` is the words the reference names (a reference to a page gives the page), `page` the whole page. `paragraph`, `section` and `chapter` need document blocks, which aren't made yet, so they answer the page and `widened` says so. The answer is cut at a line end by `--max-chars`, and `refs.next` is the next page, not the rest of this one. It resolves the reference as `text --ref` does: only a page found or moved answers, and a reference to characters needs them unchanged. Nothing is kept between calls, and no path is given: `untrusted.link` is the file's name and `#page=N`. A protected document is refused.",
+    summary: "The text a reference points at, as text or Markdown, with references to go on from it. `--grain hit` is the words the reference names (a reference to a page gives the page), `page` the whole page. `paragraph`, `section` and `chapter` need document blocks: the first ask starts making them in the background (`recto wait blocks-ready` waits for them), and until they can be read they answer the page and `widened` says why (`blocks_building` while they're on their way). The answer is cut at a line end by `--max-chars`, and `refs.next` is the next page, not the rest of this one. It resolves the reference as `text --ref` does: only a page found or moved answers, and a reference to characters needs them unchanged. Nothing is kept between calls, and no path is given: `untrusted.link` is the file's name and `#page=N`. A protected document is refused.",
     args: &[
         Arg {
             key: "ref",

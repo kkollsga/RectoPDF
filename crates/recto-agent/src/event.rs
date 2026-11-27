@@ -84,6 +84,27 @@ pub enum Event {
         helper_peak_bytes: Value,
         walled: Value,
     },
+    /// Blocks are being made for a file: `path` isn't said on the wire, it's what [`crate::withheld`] judges the event by.
+    BlocksBuilding {
+        path: PathBuf,
+        file: String,
+    },
+    /// Blocks' job ended. Every number is the session's own: the time from starting the helper to its end, the helper's footprint as watched from outside, what the mapping counted and
+    /// what was stored. `walled` is as for [`Event::ContentsGenerated`].
+    BlocksBuilt {
+        path: PathBuf,
+        file: String,
+        state: &'static str,
+        code: Option<String>,
+        elapsed_ms: Value,
+        helper_peak_bytes: Value,
+        walled: Value,
+        pages: Value,
+        stored: Value,
+        dropped: Value,
+        bytes: Value,
+        map_ms: Value,
+    },
     LevelChanged {
         level: &'static str,
         was: &'static str,
@@ -138,6 +159,8 @@ impl Event {
             Self::IndexingFinished { .. } => "indexing_finished",
             Self::ContentsGenerating { .. } => "contents_generating",
             Self::ContentsGenerated { .. } => "contents_generated",
+            Self::BlocksBuilding { .. } => "blocks_building",
+            Self::BlocksBuilt { .. } => "blocks_built",
             Self::LevelChanged { .. } => "level_changed",
             Self::ViewSettingsChanged { .. } | Self::LayoutChanged { .. } | Self::ComparisonChanged { .. } => "view_changed",
             Self::FindRunning { .. } | Self::FindOpened { .. } | Self::FindClosed => "find_changed",
@@ -154,6 +177,7 @@ impl Event {
             Self::PageDrawn { .. } | Self::PageFailed { .. } => "draws",
             Self::IndexingStarted { .. } | Self::IndexingFinished { .. } => "indexing",
             Self::ContentsGenerating { .. } | Self::ContentsGenerated { .. } => "contents",
+            Self::BlocksBuilding { .. } | Self::BlocksBuilt { .. } => "blocks",
             Self::LevelChanged { .. } => "access",
             Self::ViewSettingsChanged { .. } | Self::LayoutChanged { .. } | Self::ComparisonChanged { .. } => "view",
             Self::FindRunning { .. } | Self::FindOpened { .. } | Self::FindClosed | Self::FindFinished { .. } => "find",
@@ -185,6 +209,24 @@ impl Event {
                 walled,
                 ..
             } => json!({ "file": file, "state": state, "code": code, "elapsed_ms": elapsed_ms, "helper_peak_bytes": helper_peak_bytes, "walled": walled }),
+            Self::BlocksBuilding { file, .. } => json!({ "file": file }),
+            Self::BlocksBuilt {
+                file,
+                state,
+                code,
+                elapsed_ms,
+                helper_peak_bytes,
+                walled,
+                pages,
+                stored,
+                dropped,
+                bytes,
+                map_ms,
+                ..
+            } => json!({
+                "file": file, "state": state, "code": code, "elapsed_ms": elapsed_ms, "helper_peak_bytes": helper_peak_bytes, "walled": walled,
+                "pages": pages, "stored": stored, "dropped": dropped, "bytes": bytes, "map_ms": map_ms,
+            }),
             Self::LevelChanged { level, was } => json!({ "level": level, "was": was }),
             Self::ViewSettingsChanged { paper, sidebar } => json!({ "paper": paper, "sidebar": sidebar }),
             Self::LayoutChanged { tab, layout } => json!({ "tab": tab.0, "layout": layout }),
@@ -333,6 +375,19 @@ pub(crate) mod tests {
                 file: String::new(),
             },
             Event::ContentsGenerated {
+                path: path.clone(),
+                file: String::new(),
+                state: "done",
+                code: None,
+                elapsed_ms: Value::Null,
+                helper_peak_bytes: Value::Null,
+                walled: Value::Null,
+            },
+            Event::BlocksBuilding {
+                path: path.clone(),
+                file: String::new(),
+            },
+            Event::BlocksBuilt {
                 path,
                 file: String::new(),
                 state: "done",
@@ -340,6 +395,11 @@ pub(crate) mod tests {
                 elapsed_ms: Value::Null,
                 helper_peak_bytes: Value::Null,
                 walled: Value::Null,
+                pages: Value::Null,
+                stored: Value::Null,
+                dropped: Value::Null,
+                bytes: Value::Null,
+                map_ms: Value::Null,
             },
             Event::LevelChanged { level: "off", was: "off" },
             Event::ViewSettingsChanged { paper: "auto", sidebar: true },
@@ -368,6 +428,8 @@ pub(crate) mod tests {
                 | Event::IndexingFinished { .. }
                 | Event::ContentsGenerating { .. }
                 | Event::ContentsGenerated { .. }
+                | Event::BlocksBuilding { .. }
+                | Event::BlocksBuilt { .. }
                 | Event::LevelChanged { .. }
                 | Event::ViewSettingsChanged { .. }
                 | Event::LayoutChanged { .. }

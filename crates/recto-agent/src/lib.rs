@@ -11,6 +11,7 @@ pub use code::Code;
 pub mod close_rule;
 pub use actor::Actor;
 pub mod agreement;
+pub mod blocks;
 pub mod effect;
 pub mod later;
 pub use effect::Effect;
@@ -181,6 +182,8 @@ pub enum Condition {
     IndexingDone,
     /// The tab's generated contents are ready. Asking counts as wanting them made.
     ContentsGenerated,
+    /// The tab's blocks are made. Asking counts as wanting the index and then the blocks made.
+    BlocksReady,
 }
 
 /// Every command. A feature without a command here isn't finished.
@@ -432,6 +435,10 @@ pub trait SessionAccess {
     }
     /// How generated contents get made here, if they do.
     fn generating(&self) -> Option<&dyn generated::Generating> {
+        None
+    }
+    /// How blocks get made here, if they do (`blocks`).
+    fn blocking(&self) -> Option<&dyn blocks::Blocking> {
         None
     }
     /// How Find runs in the background here, if it does. Without it, `recto find` finds in the command itself.
@@ -1109,8 +1116,11 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
     if condition == Condition::ContentsGenerated {
         return generated::look(access, tab);
     }
+    if condition == Condition::BlocksReady {
+        return blocks::look(access, tab);
+    }
     access.with(|s| match condition {
-        Condition::IndexingDone | Condition::ContentsGenerated => ConditionState::Waiting,
+        Condition::IndexingDone | Condition::ContentsGenerated | Condition::BlocksReady => ConditionState::Waiting,
         Condition::TabOpen => match select(s, tab) {
             // A waiter is an agent.
             Ok(id) => ConditionState::Met(where_json(s, Actor::Agent(Level::ReadOnly), id)),
@@ -1153,6 +1163,7 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
         Condition::PageDrawn => &["tabs", "draws"],
         Condition::IndexingDone => &["tabs", "indexing"],
         Condition::ContentsGenerated => &["tabs", "contents"],
+        Condition::BlocksReady => &["tabs", "indexing", "blocks"],
     }
 }
 

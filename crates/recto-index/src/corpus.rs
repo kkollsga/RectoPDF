@@ -46,6 +46,8 @@ mod aux;
 mod blocks;
 mod identities;
 use aux::Aux;
+#[cfg(any(test, feature = "test-seams"))]
+pub use blocks::build_text_corpus;
 pub use blocks::{BLOCKS_RULES, Begin, BlocksBuild, BlocksMade, BlocksTally, PutError, StoredBlocks, remove_blocks, rules_tag as blocks_rules_tag};
 pub use identities::{FileIdentities, Identities, IdentityInfo, RECORD_BYTES, remove_identities};
 mod retry;

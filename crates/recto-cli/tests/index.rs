@@ -2,6 +2,8 @@
 
 #[path = "index/backup_check.rs"]
 mod backup_check;
+#[path = "index/blocks.rs"]
+mod blocks;
 mod common;
 #[path = "index/damage.rs"]
 mod damage;

@@ -467,11 +467,18 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &TabRef, all: bool) -> Re
     if all {
         indexing.cancel(None);
         wait_until_stopped(indexing, None);
+        if let Some(blocking) = access.blocking() {
+            crate::blocks::stop(blocking, None);
+        }
         let report = corpus::clear_all(indexing.root()).map_err(|_| failed())?;
         let contents = access.generating().map(|generating| crate::generated::clear(generating, None, &[]));
         return said_cleared(report, contents);
     }
     let (_, files) = tab_files(access, tab)?;
+    if let Some(blocking) = access.blocking() {
+        let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        crate::blocks::stop(blocking, Some(&paths));
+    }
     let mut report = corpus::Cleared::default();
     let mut all_keys = Vec::new();
     for file in &files {

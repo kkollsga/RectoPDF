@@ -37,6 +37,8 @@ serde_json.workspace = true
 [dev-dependencies]
 # Test-only: `FindKey::for_tests`.
 recto-platform = { workspace = true, features = ["test-seams"] }
+# Test-only: a corpus made from page texts (`corpus::build_text_corpus`), for the blocks' tests.
+recto-index = { workspace = true, features = ["test-seams"] }
 # Its own integration tests read codes as the wire does.
 recto-agent = { path = ".", features = ["test-words"] }
 # To make an encrypted file with permissions, as nothing else here writes one.

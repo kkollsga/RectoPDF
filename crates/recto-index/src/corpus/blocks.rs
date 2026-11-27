@@ -435,5 +435,37 @@ pub(super) fn remove_files(paths: &CorpusPaths) {
     let _ = fs::remove_file(bin_path(paths));
 }
 
+/// **For a test:** a finished corpus whose pages' text is `texts` (a page of `None` has no text), made as a build makes one, for the file `key` stands for (noted as that file's when `file` is given). What a document's index would hold of it, without a renderer.
+///
+/// # Errors
+///
+/// What the build says.
+#[cfg(any(test, feature = "test-seams"))]
+pub fn build_text_corpus(find_key: &FindKey, root: &Path, (key, file): (CorpusKey, Option<&Path>), texts: &[Option<String>]) -> io::Result<()> {
+    use super::{DocMeta, FedPage, FeedError, PageFeed};
+    struct Texts<'a>(&'a [Option<String>]);
+    impl PageFeed for Texts<'_> {
+        fn page_count(&mut self) -> Result<u32, FeedError> {
+            Ok(self.0.len() as u32)
+        }
+        fn read(&mut self, page: u32) -> Result<FedPage, FeedError> {
+            let text = self.0[page as usize].as_deref().unwrap_or("");
+            Ok(FedPage {
+                chars: text.chars().map(|ch| recto_proto::CharRecord::new(ch as u32, 0)).collect(),
+                boxes: Vec::new(),
+                hidden_checked: true,
+            })
+        }
+        fn still_the_same_file(&mut self) -> bool {
+            true
+        }
+    }
+    let (meta, limits) = (DocMeta::default(), BuildLimits::default());
+    match file {
+        Some(file) => super::build_for_file(find_key, file, root, key, &mut Texts(texts), &meta, &limits).map(|_| ()),
+        None => super::build(find_key, root, key, &mut Texts(texts), &meta, &limits).map(|_| ()),
+    }
+}
+
 #[cfg(test)]
 mod tests;
