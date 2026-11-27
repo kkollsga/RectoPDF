@@ -578,45 +578,51 @@ fn a_stop_right_after_the_gate_with_nothing_unlinked_says_nothing_was_cleared() 
     assert!(!cleared.words.contains("partly"), "{}", cleared.words);
 }
 
-/// Failure: the person's confirmation says nothing of the other documents whose crashed saves are in the folder (so the yes is to something unnamed), names a
-/// document by the wrong file, drops a save whose document is gone (its own name is all there is), lists more than ten, or the agent's check names any of it.
+/// Failure: the person's confirmation says nothing of the other documents whose crashed saves are in the folder (so the yes is to something unnamed), names the
+/// document asked about as one of them, names a document by the wrong file, shows a raw temporary's name for a document that isn't there, lists more than
+/// ten, or the agent's check names any of it.
 #[test]
-fn the_persons_check_names_the_documents_the_saves_are_of_and_an_agents_names_none() {
+fn the_persons_check_names_the_other_documents_the_saves_are_of_and_an_agents_names_none() {
     let fx = fx();
     let docs = &fx.fixture.docs;
-    let other = docs.join("other.pdf");
-    std::fs::write(&other, b"%PDF another").unwrap();
+    std::fs::write(docs.join("other.pdf"), b"%PDF another").unwrap();
     let prefix = |name: &str| recto_core::save::writer_temp_prefix(Path::new(name));
     std::fs::write(docs.join(format!("{}{DEAD}-3.tmp", prefix("other.pdf"))), b"theirs").unwrap();
-    // A save whose document isn't there: its own name is all there is.
+    // A save whose document isn't there is counted, and its temporary's name is not shown.
     let gone = format!("{}{DEAD}-4.tmp", prefix("gone.pdf"));
     std::fs::write(docs.join(&gone), b"nobody's").unwrap();
     let person = fx.check(Who::Person);
-    let line = person
-        .words
-        .lines()
-        .find(|line| line.starts_with("The unfinished saves are of"))
-        .expect("a line of whose");
-    assert!(line.contains("“other.pdf”") && line.contains("“mine.pdf”") && line.contains(&gone), "{line}");
-    assert_eq!(person.names.saves.len(), 3, "{:?}", person.names.saves);
+    let line = person.words.lines().find(|line| line.starts_with("Among them")).expect("a line of whose");
+    assert_eq!(
+        line, "Among them are unfinished saves of “other.pdf” and of 1 document that isn't there.",
+        "{}",
+        person.words
+    );
+    assert!(!person.words.contains(".append-") && !line.contains("mine.pdf"), "{}", person.words);
+    assert_eq!((person.names.others.len(), person.names.missing), (1, 1), "{:?}", person.names);
     let agent = fx.check(Who::Agent);
     assert!(
-        !agent.words.contains("other.pdf") && !agent.words.contains("unfinished saves are of") && agent.names.saves.is_empty(),
+        !agent.words.contains("other.pdf") && !agent.words.contains("Among them") && agent.names.others.is_empty(),
         "{}",
         agent.words
     );
-    // Twelve more documents make thirteen names with the three already there; ten are listed and the rest counted.
+    // Twelve more documents make thirteen with other.pdf; ten are listed and three counted.
     for n in 0..12 {
         let name = format!("doc{n:02}.pdf");
         std::fs::write(docs.join(&name), b"%PDF").unwrap();
         std::fs::write(docs.join(format!("{}{DEAD}-9.tmp", prefix(&name))), b"x").unwrap();
     }
     let long = fx.check(Who::Person);
-    let line = long
-        .words
-        .lines()
-        .find(|line| line.starts_with("The unfinished saves are of"))
-        .expect("a line of whose");
+    let line = long.words.lines().find(|line| line.starts_with("Among them")).expect("a line of whose");
     assert_eq!(line.matches('“').count(), 10, "{line}");
-    assert!(line.ends_with("and 5 more."), "{line}");
+    assert!(line.contains(" and 3 more and of 1 document that isn't there."), "{line}");
+}
+
+/// Failure: with only the document's own crashed saves beside it, the person is told of other documents' saves that don't exist.
+#[test]
+fn only_the_documents_own_saves_add_no_line_of_whose() {
+    let fx = fx();
+    let person = fx.check(Who::Person);
+    assert!(!person.words.contains("Among them"), "{}", person.words);
+    assert!(person.names.others.is_empty() && person.names.missing == 0, "{:?}", person.names);
 }

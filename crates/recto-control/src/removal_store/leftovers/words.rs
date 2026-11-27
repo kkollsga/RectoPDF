@@ -19,8 +19,13 @@ use recto_core::removal::{ConfirmRefusal, Refusal, Store};
 pub struct Names {
     pub document: Option<String>,
     pub folder: Option<String>,
-    /// Whose the unfinished saves are, by the documents' cleaned names, sorted, none twice ([`super::saves_of`]). Only the person's confirmation lists them.
-    pub saves: Vec<String>,
+    /// The documents other than this one that have an unfinished save in a folder listed: cleaned names, sorted, none twice ([`super::saves_of`]). Only the
+    /// person's confirmation lists them.
+    pub others: Vec<String>,
+    /// How many unfinished saves are of a document that isn't there.
+    pub missing: u32,
+    /// There were more saves than were looked into, so the lists above are not the whole.
+    pub more: bool,
 }
 
 /// How many names the confirmation lists before it says how many more there are.
@@ -83,10 +88,7 @@ pub fn check(names: &Names, found: &Found) -> String {
     if found.is_empty() {
         return nothing(found);
     }
-    let mut lines = vec![format!(
-        "Before RectoPDF can remove anything from {}, it has to clear what it left behind:",
-        quoted(&names.document, "this document")
-    )];
+    let mut lines = vec!["RectoPDF left these behind:".to_owned()];
     if found.saves_here > 0 {
         let one = found.saves_here == 1;
         lines.push(format!(
@@ -119,19 +121,47 @@ pub fn check(names: &Names, found: &Found) -> String {
     lines.join("\n")
 }
 
-/// The line that says whose the unfinished saves are, for the person: the documents by name, at most [`MAX_LISTED`], then how many more. Nothing without names.
+/// The longest a document's name is shown, in characters: a longer one is cut with an ellipsis.
+const MAX_NAME: usize = 60;
+
+/// A name as the sheet shows it: its curly quotes made plain, so it can't close the quotes it is shown in and go on in RectoPDF's voice, and cut if long.
+fn shown(name: &str) -> String {
+    let plain: String = name.chars().map(|c| if matches!(c, '“' | '”') { '"' } else { c }).collect();
+    if plain.chars().count() <= MAX_NAME {
+        return format!("“{plain}”");
+    }
+    format!("“{}…”", plain.chars().take(MAX_NAME).collect::<String>())
+}
+
+/// The line that says whose some of the unfinished saves are, for the person, when a save belongs to another document: those documents by name (at most
+/// [`MAX_LISTED`], then how many more, or just "more" where the count isn't known), and a count of those whose document isn't there, never the name of a
+/// temporary. Nothing for an agent, or when every save is the document's own.
 fn whose_saves(names: &Names) -> Option<String> {
-    let listed: Vec<String> = names.saves.iter().take(MAX_LISTED).map(|name| format!("“{name}”")).collect();
-    if listed.is_empty() {
+    if names.others.is_empty() && names.missing == 0 {
         return None;
     }
-    let more = names.saves.len().saturating_sub(MAX_LISTED);
-    let list = match (listed.as_slice(), more) {
-        ([only], 0) => only.clone(),
-        (all, 0) => format!("{} and {}", all[..all.len() - 1].join(", "), all[all.len() - 1]),
-        (all, more) => format!("{} and {more} more", all.join(", ")),
+    let listed: Vec<String> = names.others.iter().take(MAX_LISTED).map(|name| shown(name)).collect();
+    let beyond = names.others.len().saturating_sub(MAX_LISTED);
+    let list = match (listed.as_slice(), beyond, names.more) {
+        ([], ..) => String::new(),
+        (all, 0, false) if all.len() > 1 => format!("{} and {}", all[..all.len() - 1].join(", "), all[all.len() - 1]),
+        (all, 0, false) => all.join(", "),
+        (all, _, true) => format!("{} and more", all.join(", ")),
+        (all, beyond, false) => format!("{} and {beyond} more", all.join(", ")),
     };
-    Some(format!("The unfinished saves are of {list}."))
+    let gone = match names.missing {
+        0 => String::new(),
+        1 => "1 document that isn't there".to_owned(),
+        count => format!("{count} documents that aren't there"),
+    };
+    let of = match (list.is_empty(), gone.is_empty()) {
+        (false, true) => list,
+        (false, false) => format!("{list} and of {gone}"),
+        _ => gone,
+    };
+    let several = names.others.len() + names.missing as usize > 1 || names.more;
+    let (verb, saves) = if several { ("are", "unfinished saves") } else { ("is", "an unfinished save") };
+    Some(format!("Among them {verb} {saves} of {of}."))
 }
 
 /// The lines for what a clear leaves where it is.
