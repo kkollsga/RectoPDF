@@ -866,6 +866,7 @@ fn whole_file(failure: RenderFailure) -> bool {
             | RenderFailure::NotDrawableNow { .. }
             | RenderFailure::TooBusy { .. }
             | RenderFailure::TooBusyToStart
+            | RenderFailure::OutOfResources
             | RenderFailure::ExportRefused { .. }
     )
 }
@@ -950,6 +951,18 @@ mod tests {
         assert!(matches!(traits_outcome(Err(RenderFailure::Unavailable), false), Outcome::DocumentFailed { .. }));
         assert!(matches!(traits_outcome(Ok(0), true), Outcome::Cancelled));
         assert!(matches!(traits_outcome(Ok(u64::MAX), false), Outcome::Heavy(true)));
+    }
+
+    /// Failure: the Mac out of descriptors or memory for a moment (the renderer's file or shared memory couldn't be had) failed the whole document, "The page renderer couldn't be started", though asking again would have drawn it. `OutOfResources` is held on every path a job takes, as a busy start is, and isn't about the file; the same moment's refusal (`Unavailable`) still fails it.
+    #[test]
+    fn a_renderer_the_mac_was_out_of_resources_for_is_held_and_asked_again() {
+        assert!(matches!(open_failed(RenderFailure::OutOfResources), Outcome::LookLater));
+        assert!(matches!(draw_failed(RenderFailure::OutOfResources), Outcome::LookLater));
+        assert!(matches!(size_outcome(Err(RenderFailure::OutOfResources)), Outcome::LookLater));
+        assert!(matches!(text_outcome(RenderFailure::OutOfResources, false), Outcome::LookLater));
+        assert!(matches!(traits_outcome(Err(RenderFailure::OutOfResources), false), Outcome::LookLater));
+        assert!(!whole_file(RenderFailure::OutOfResources));
+        assert!(matches!(open_failed(RenderFailure::Unavailable), Outcome::DocumentFailed { .. }));
     }
 
     /// Failure (2026-11-25, a full check at load 37 after an update): the renderer was slow to start on a busy Mac, and the whole document was failed for the session: "The page renderer couldn't be started", no page drawn again, Find saying a page couldn't be read. A start or open the Mac was too busy for is held on every path a job takes (a draw, a size, a renderer that couldn't be had), with no document problem; a renderer that really can't start, which the service says after a run of them, still fails the document and says so.

@@ -89,7 +89,7 @@ fn asked<R, T>(
         let before = busy(renderer);
         match ask(renderer) {
             Ok(value) => return Ok(value),
-            Err(RenderFailure::TooBusyToStart) => {}
+            Err(RenderFailure::TooBusyToStart | RenderFailure::OutOfResources) => {}
             Err(failure) => {
                 return Err(match meaning(failure) {
                     FeedError::Cant(_) if busy(renderer) > before => FeedError::Cant(TOO_BUSY),
@@ -123,7 +123,7 @@ fn whole_file(failure: RenderFailure) -> FeedError {
         RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused => about_the_install(failure),
         RenderFailure::NotFound => FeedError::Cant("not_found"),
         // The busy Mac gave the worker too little time to start: a paused build, as a start that timed out was.
-        RenderFailure::TooBusyToStart => FeedError::Cant(TOO_BUSY),
+        RenderFailure::TooBusyToStart | RenderFailure::OutOfResources => FeedError::Cant(TOO_BUSY),
         RenderFailure::SourceChanged => FeedError::FileChanged,
         _ => FeedError::Cant("couldnt_open"),
     }
@@ -133,7 +133,7 @@ fn whole_file(failure: RenderFailure) -> FeedError {
 fn read_failure(failure: RenderFailure) -> FeedError {
     match failure {
         RenderFailure::Unavailable => FeedError::Cant("render_unavailable"),
-        RenderFailure::TooBusyToStart => whole_file(failure),
+        RenderFailure::TooBusyToStart | RenderFailure::OutOfResources => whole_file(failure),
         RenderFailure::PageReadFailed {
             reason: KillReason::Deadline, ..
         } => FeedError::Page(FailReason::Deadline),

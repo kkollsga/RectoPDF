@@ -630,15 +630,12 @@ impl PersonsPage<'_> {
 
     fn open(&self, path: &Path) -> Result<DocRenderer, AgentError> {
         let Some(keys) = self.keys else { return open_for_text(path) };
-        let file = DocRenderer::open_file(path)?;
-        let key = crate::print::key_for(&file, &self.as_printed(path, 0), Some(keys));
-        Ok(DocRenderer::with_file(
-            file,
-            path,
-            key,
-            recto_render_service::ServiceConfig::discover()?,
-            recto_render_service::Policy::default(),
-        )?)
+        let config = recto_render_service::ServiceConfig::discover()?;
+        Ok(crate::render::ask_again::opened_again(|| {
+            let file = DocRenderer::open_file(path)?;
+            let key = crate::print::key_for(&file, &self.as_printed(path, 0), Some(keys));
+            DocRenderer::with_file(file, path, key, config.clone(), recto_render_service::Policy::default())
+        })?)
     }
 }
 
