@@ -155,7 +155,7 @@ struct Spells(Vec<Found>);
 
 impl InkSource for Spells {
     fn page(&mut self, page: u32) -> Option<PageInk> {
-        if page % 2 != 0 {
+        if !page.is_multiple_of(2) {
             return None;
         }
         let (mut chars, mut boxes) = (Vec::new(), Vec::new());
