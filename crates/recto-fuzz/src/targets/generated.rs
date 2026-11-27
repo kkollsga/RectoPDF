@@ -214,7 +214,7 @@ pub fn check(data: &[u8]) {
         }
         // As the structure helper's answer: whatever the bytes say, and a hello, page lines and an end built from them.
         for answer in [data.to_vec(), shaped_answer(data)] {
-            if let Ok((headings, numbers)) = read_all(&answer, MAX_ENTRIES) {
+            if let Ok((headings, numbers)) = read_all(&answer, MAX_ENTRIES, recto_index::generated::MAX_PAGES) {
                 answer_holds(&headings);
                 assert!(
                     numbers

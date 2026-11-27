@@ -1,6 +1,6 @@
 //! The structure helper's `headings` job, as the session reads it: one line a page that has headings and one end line, each believed only as far as it is checked (`docs/engineering/generated-contents.md`).
 //!
-//! **What a line may be.** A page line is exactly `{"page","found"}`: a page after the last one and before the claimed total's cap, with at least one entry, each exactly `{"level","bbox","title"}`
+//! **What a line may be.** A page line is exactly `{"page","found"}`: a page after the last one and before the document's own page count (the session's, not the helper's), with at least one entry, each exactly `{"level","bbox","title"}`
 //! (a level from 1 to 6, a box that's null or four numbers that fit an `f32`, a title of at most `MAX_TITLE_BYTES` that has a letter or a digit once cleaned), and the entries in all no more than the
 //! limit. The end is `{"state":"ready", …}` with the pages claimed in range and above every page line, the failed pages no more than the pages, `truncated` a bool, `found` equal to the entries
 //! received, and nothing else but numbers and bools. A `refused`, `changed` or `failed` is only ever the first thing said. Anything else is bad, and the helper is killed.
@@ -24,6 +24,8 @@ const MAX_NUMBERS: usize = 32;
 #[derive(Debug)]
 pub struct HeadingsAnswer {
     max_entries: usize,
+    /// The document's pages as the session knows them: no page line may be at or past it.
+    pages: u32,
     found: Vec<Found>,
     /// The last page line's page.
     last_page: Option<u32>,
@@ -42,10 +44,11 @@ struct End {
 }
 
 impl HeadingsAnswer {
-    /// An answer that takes at most `max_entries` entries: `recto_index::generated::MAX_ENTRIES` in use.
-    pub fn new(max_entries: usize) -> Self {
+    /// An answer that takes at most `max_entries` entries: `recto_index::generated::MAX_ENTRIES` in use, on a document of `pages` pages as the session knows them.
+    pub fn new(max_entries: usize, pages: u32) -> Self {
         Self {
             max_entries,
+            pages,
             found: Vec::new(),
             last_page: None,
             lines: 0,
@@ -69,7 +72,7 @@ impl HeadingsAnswer {
             return Err(BAD);
         }
         let page = line["page"].as_u64().and_then(|page| u32::try_from(page).ok()).filter(|page| *page < MAX_PAGES);
-        let page = page.filter(|page| self.last_page.is_none_or(|last| *page > last)).ok_or(BAD)?;
+        let page = page.filter(|page| *page < self.pages && self.last_page.is_none_or(|last| *page > last)).ok_or(BAD)?;
         let entries = line.get("found").and_then(Value::as_array).filter(|entries| !entries.is_empty()).ok_or(BAD)?;
         if self.found.len() + entries.len() > self.max_entries {
             return Err(BAD);
@@ -173,8 +176,8 @@ impl Answer for HeadingsAnswer {
 
 /// What the whole of an answer comes to, read from bytes the way the live reader reads them (a hello, page lines, an end), for the fuzz target and the tests. `Err` is why it wasn't
 /// believed: the reader's own `bad_answer`, or a helper that said it refused, changed or failed, or stopped with no end.
-pub fn read_all(said: &[u8], max_entries: usize) -> Result<(Headings, Value), &'static str> {
-    let (answer, end, bad) = super::read_bytes(said, HeadingsAnswer::new(max_entries));
+pub fn read_all(said: &[u8], max_entries: usize, pages: u32) -> Result<(Headings, Value), &'static str> {
+    let (answer, end, bad) = super::read_bytes(said, HeadingsAnswer::new(max_entries, pages));
     if bad {
         return Err(BAD);
     }

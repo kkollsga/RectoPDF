@@ -365,7 +365,7 @@ impl Runner for Walled {
         let Some(structure) = self.structure() else {
             return (Outcome::Failed("helper_missing".into()), Value::Null);
         };
-        let (ended, mut report) = structure.run(&job.path, job.key, &headings::job(), HeadingsAnswer::new(MAX_ENTRIES), deadline, stop);
+        let (ended, mut report) = structure.run(&job.path, job.key, &headings::job(), HeadingsAnswer::new(MAX_ENTRIES, job.pages), deadline, stop);
         let outcome = match ended {
             Ended::Answered(answer) => check_what_was_found(job, answer, deadline, stop, &mut report),
             Ended::Refused(code) => Outcome::Refused(code),

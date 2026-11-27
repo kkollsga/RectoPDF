@@ -31,7 +31,7 @@ fn end(pages: u32, found: usize) -> String {
 fn a_good_answer_is_believed_whole() {
     let line_one = r#"{"page":0,"found":[{"level":2,"bbox":null,"title":"1 Introduction"}]}"#;
     let bytes = said(&[line_one, &page(3, &["A", "B"]), &end(6, 3)]);
-    let (found, numbers) = read_all(&bytes, 10).expect("believed");
+    let (found, numbers) = read_all(&bytes, 10, 100).expect("believed");
     assert_eq!((found.pages, found.pages_failed, found.truncated), (6, 0, false));
     let seen: Vec<_> = found.found.iter().map(|one| (one.page, one.level, one.title.as_str(), one.bbox)).collect();
     assert_eq!(
@@ -110,16 +110,16 @@ fn an_answer_that_doesnt_add_up_is_refused() {
         ("a line that isn't an object", vec!["[1,2]".to_string()]),
     ] {
         let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-        assert_eq!(read_all(&said(&lines), 10).map(|_| ()), Err("bad_answer"), "{name}");
+        assert_eq!(read_all(&said(&lines), 10, 100).map(|_| ()), Err("bad_answer"), "{name}");
     }
 }
 
 /// Failure: the number of entries isn't held by the reader, so a hostile helper fills the session with them up to its byte cap. One past `max_entries` is refused, and the limit itself is fine.
 #[test]
 fn one_entry_past_the_limit_is_refused() {
-    assert!(read_all(&said(&[&page(0, &["A", "B", "C"]), &end(2, 3)]), 3).is_ok());
+    assert!(read_all(&said(&[&page(0, &["A", "B", "C"]), &end(2, 3)]), 3, 100).is_ok());
     assert_eq!(
-        read_all(&said(&[&page(0, &["A", "B"]), &page(1, &["C", "D"]), &end(2, 4)]), 3).map(|_| ()),
+        read_all(&said(&[&page(0, &["A", "B"]), &page(1, &["C", "D"]), &end(2, 4)]), 3, 100).map(|_| ()),
         Err("bad_answer")
     );
 }
@@ -130,15 +130,15 @@ fn one_entry_past_the_limit_is_refused() {
 fn nothing_may_follow_the_end_and_the_end_is_needed() {
     let first = page(0, &["A"]);
     let finished = [first.as_str(), &end(2, 1)];
-    assert!(read_all(&said(&finished), 10).is_ok());
+    assert!(read_all(&said(&finished), 10, 100).is_ok());
     for after in [end(2, 1), page(1, &["B"]), r#"{"state":"changed"}"#.to_string(), "".to_string()] {
         let mut lines = finished.to_vec();
         lines.push(&after);
-        assert_eq!(read_all(&said(&lines), 10).map(|_| ()), Err("bad_answer"), "{after:?}");
+        assert_eq!(read_all(&said(&lines), 10, 100).map(|_| ()), Err("bad_answer"), "{after:?}");
     }
-    assert_eq!(read_all(&said(&[&first]), 10).map(|_| ()), Err("helper_stopped"), "cut off before its end");
-    assert_eq!(read_all(&said(&[]), 10).map(|_| ()), Err("helper_stopped"), "a hello and nothing");
-    assert_eq!(read_all(b"", 10).map(|_| ()), Err("helper_stopped"), "nothing at all");
+    assert_eq!(read_all(&said(&[&first]), 10, 100).map(|_| ()), Err("helper_stopped"), "cut off before its end");
+    assert_eq!(read_all(&said(&[]), 10, 100).map(|_| ()), Err("helper_stopped"), "a hello and nothing");
+    assert_eq!(read_all(b"", 10, 100).map(|_| ()), Err("helper_stopped"), "nothing at all");
 }
 
 /// Failure: the hello is skipped by its place and not read, so a helper that starts with anything else is believed, or one that says it isn't walled still reaches the answer's reader. It's
@@ -154,11 +154,11 @@ fn the_first_line_must_be_the_hello() {
         "not json",
     ] {
         let bytes = format!("{first}\n{rest}\n");
-        assert_eq!(read_all(bytes.as_bytes(), 10).map(|_| ()), Err("bad_answer"), "{first}");
+        assert_eq!(read_all(bytes.as_bytes(), 10, 100).map(|_| ()), Err("bad_answer"), "{first}");
     }
     let unwalled = format!("{}\n{rest}\n", r#"{"state":"hello","walled":false}"#);
     assert!(
-        read_all(unwalled.as_bytes(), 10).is_ok(),
+        read_all(unwalled.as_bytes(), 10, 100).is_ok(),
         "it's the host that decides what an unwalled one is worth, from the kernel's word and not this line's"
     );
 }
@@ -168,7 +168,7 @@ fn the_first_line_must_be_the_hello() {
 #[test]
 fn what_is_said_instead_of_an_answer_is_in_rust_words_and_only_first() {
     let said_one = |line: &str| {
-        let (answer, ended, bad) = super::super::read_bytes(&said(&[line]), HeadingsAnswer::new(10));
+        let (answer, ended, bad) = super::super::read_bytes(&said(&[line]), HeadingsAnswer::new(10, 100));
         drop(answer);
         (ended, bad)
     };
@@ -187,7 +187,7 @@ fn what_is_said_instead_of_an_answer_is_in_rust_words_and_only_first() {
         (Some(Said::Failed("helper_stopped".into())), false)
     );
     assert_eq!(
-        read_all(&said(&[r#"{"state":"refused","code":"needs_password"}"#]), 10).map(|_| ()),
+        read_all(&said(&[r#"{"state":"refused","code":"needs_password"}"#]), 10, 100).map(|_| ()),
         Err("refused")
     );
 }
@@ -198,9 +198,9 @@ fn what_is_said_instead_of_an_answer_is_in_rust_words_and_only_first() {
 fn a_line_at_the_cap_is_parsed_and_over_it_is_not() {
     let filler = "a".repeat(MAX_LINE_BYTES - 14);
     let bytes = said(&[&format!(r#"{{"page":0,"x":"{filler}"}}"#)]);
-    assert_eq!(read_all(&bytes, 10).map(|_| ()), Err("bad_answer"));
+    assert_eq!(read_all(&bytes, 10, 100).map(|_| ()), Err("bad_answer"));
     let long = said(&[&"x".repeat(MAX_LINE_BYTES + 1)]);
-    assert_eq!(read_all(&long, 10).map(|_| ()), Err("bad_answer"));
+    assert_eq!(read_all(&long, 10, 100).map(|_| ()), Err("bad_answer"));
 }
 
 /// Failure: a helper's end line carries the names the session measures itself by (`walled`, `elapsed_ms`, `helper_peak_watched_bytes`), so a hostile helper writes its own proof of being
@@ -210,6 +210,15 @@ fn an_end_line_may_not_name_the_sessions_own_numbers() {
     for name in ["walled", "elapsed_ms", "helper_peak_watched_bytes"] {
         let value = if name == "walled" { "false" } else { "12" };
         let end = end(1, 1).replace(r#""distilled_ms":120"#, &format!(r#""{name}":{value}"#));
-        assert_eq!(read_all(&said(&[&page(0, &["A"]), &end]), 10).map(|_| ()), Err("bad_answer"), "{name}");
+        assert_eq!(read_all(&said(&[&page(0, &["A"]), &end]), 10, 100).map(|_| ()), Err("bad_answer"), "{name}");
     }
+}
+
+/// Failure: the page count comes only from the helper's end line, so a hostile helper sends page lines for pages the document doesn't have (up to the cap), and the ink check starts a render
+/// worker for each. A page at or past the session's own count is a bad answer, and the last page is fine.
+#[test]
+fn a_page_past_the_documents_own_pages_is_refused() {
+    let last = |pages| read_all(&said(&[&page(4, &["A"]), &end(5, 1)]), 10, pages).map(|_| ());
+    assert_eq!(last(5), Ok(()));
+    assert_eq!(last(4), Err("bad_answer"));
 }

@@ -128,7 +128,7 @@ fn a_line_of_open_brackets_is_refused_on_the_readers_own_stack() {
         .stack_size(READER_STACK)
         .spawn(|| {
             let line = vec![b'['; MAX_LINE_BYTES];
-            let mut answer = headings::HeadingsAnswer::new(10);
+            let mut answer = headings::HeadingsAnswer::new(10, 100);
             Answer::take(&mut answer, &line)
         })
         .unwrap()
