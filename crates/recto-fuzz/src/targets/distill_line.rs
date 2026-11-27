@@ -83,7 +83,7 @@ pub fn check(data: &[u8]) {
         assert!(spans.windows(2).all(|pair| pair[0].1 <= pair[1].0), "mapped blocks overlap");
         let mut chunk = Vec::new();
         codec::seal_page(seal(), &mapped.blocks, &mut chunk).expect("what is mapped is what a record holds");
-        assert_eq!(codec::open_page(seal(), line.page, &mut chunk), Ok(mapped.blocks));
+        assert_eq!(codec::open_page(seal(), line.page, page.len() as u32, &mut chunk), Ok(mapped.blocks));
     }
 }
 

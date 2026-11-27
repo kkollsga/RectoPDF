@@ -368,6 +368,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
     let mut out = Mapped {
         blocks: PageBlocks {
             page: page_no,
+            chars: page.len().min(MAX_PAGE_CHARS as usize) as u32,
             blocks: Vec::new(),
         },
         counts: Counts::default(),

@@ -97,5 +97,7 @@ pub struct Block {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageBlocks {
     pub page: u32,
+    /// The page's characters in the `recto text` numbering these blocks' offsets are in (at most [`MAX_PAGE_CHARS`]): a record read against a page of another length is stale.
+    pub chars: u32,
     pub blocks: Vec<Block>,
 }

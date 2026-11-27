@@ -10,6 +10,9 @@ use crate::seal::{CorpusSeal, Purpose};
 use recto_core::{Toc, TocLine};
 use recto_platform::find_key::FindKey;
 
+/// The characters of the made-up page the records are for.
+const CHARS: u32 = 5000;
+
 fn seal_for(byte: u8) -> CorpusSeal {
     let key = FindKey::for_tests(1);
     CorpusSeal::create(&key, CorpusKey::from_hex(&format!("{byte:02x}").repeat(32)).unwrap())
@@ -30,7 +33,7 @@ fn block(kind: Kind, start: u32, end: u32) -> Block {
 }
 
 fn page_of(blocks: Vec<Block>) -> PageBlocks {
-    PageBlocks { page: 3, blocks }
+    PageBlocks { page: 3, chars: CHARS, blocks }
 }
 
 fn sealed(seal: &CorpusSeal, page: &PageBlocks) -> Vec<u8> {
@@ -47,8 +50,13 @@ fn raw(seal: &CorpusSeal, plain: &[u8]) -> Vec<u8> {
 }
 
 fn plain_of(count: u16, page: u32, blocks: &[[u8; 19]]) -> Vec<u8> {
+    plain_with_chars(count, page, CHARS, blocks)
+}
+
+fn plain_with_chars(count: u16, page: u32, chars: u32, blocks: &[[u8; 19]]) -> Vec<u8> {
     let mut plain = vec![FORMAT];
     plain.extend_from_slice(&page.to_le_bytes());
+    plain.extend_from_slice(&chars.to_le_bytes());
     plain.extend_from_slice(&count.to_le_bytes());
     for one in blocks {
         plain.extend_from_slice(one);
@@ -78,9 +86,9 @@ fn a_record_reads_back_as_written() {
     ]);
     let mut chunk = sealed(&seal, &page);
     assert_eq!(chunk.len(), codec::record_len(4));
-    assert_eq!(codec::open_page(&seal, 3, &mut chunk), Ok(page));
+    assert_eq!(codec::open_page(&seal, 3, CHARS, &mut chunk), Ok(page));
     let empty = page_of(Vec::new());
-    assert_eq!(codec::open_page(&seal, 3, &mut sealed(&seal, &empty)), Ok(empty));
+    assert_eq!(codec::open_page(&seal, 3, CHARS, &mut sealed(&seal, &empty)), Ok(empty));
 }
 
 /// Failure: a changed, cut, extended or moved record is used: any byte turned, any cut, another page's, another corpus's or another purpose's chunk.
@@ -92,24 +100,36 @@ fn a_damaged_or_foreign_record_is_refused() {
     for at in 0..chunk.len() {
         let mut bad = chunk.clone();
         bad[at] ^= 1;
-        assert_eq!(codec::open_page(&seal, 3, &mut bad), Err(OpenError::Damaged), "byte {at} turned");
+        assert_eq!(codec::open_page(&seal, 3, CHARS, &mut bad), Err(OpenError::Damaged), "byte {at} turned");
     }
     for len in 0..chunk.len() {
-        assert_eq!(codec::open_page(&seal, 3, &mut chunk[..len].to_vec()), Err(OpenError::Damaged), "cut to {len}");
+        assert_eq!(
+            codec::open_page(&seal, 3, CHARS, &mut chunk[..len].to_vec()),
+            Err(OpenError::Damaged),
+            "cut to {len}"
+        );
     }
     let mut longer = chunk.clone();
     longer.push(0);
-    assert_eq!(codec::open_page(&seal, 3, &mut longer), Err(OpenError::Damaged));
-    assert_eq!(codec::open_page(&seal, 4, &mut chunk.clone()), Err(OpenError::Damaged), "another page's record");
+    assert_eq!(codec::open_page(&seal, 3, CHARS, &mut longer), Err(OpenError::Damaged));
     assert_eq!(
-        codec::open_page(&seal_for(2), 3, &mut chunk.clone()),
+        codec::open_page(&seal, 4, CHARS, &mut chunk.clone()),
+        Err(OpenError::Damaged),
+        "another page's record"
+    );
+    assert_eq!(
+        codec::open_page(&seal_for(2), 3, CHARS, &mut chunk.clone()),
         Err(OpenError::Damaged),
         "another corpus's key"
     );
     let mut other_purpose = Vec::new();
     seal.seal(Purpose::Identity(3), &mut other_purpose, |out| out.extend_from_slice(&plain_of(0, 3, &[])))
         .unwrap();
-    assert_eq!(codec::open_page(&seal, 3, &mut other_purpose), Err(OpenError::Damaged), "an identity record");
+    assert_eq!(
+        codec::open_page(&seal, 3, CHARS, &mut other_purpose),
+        Err(OpenError::Damaged),
+        "an identity record"
+    );
 }
 
 /// Failure: a record under another format is thrown away as damage (a later build's blocks lost to an older one), or used as this build's.
@@ -118,7 +138,7 @@ fn another_format_is_foreign_not_damage() {
     let seal = seal_for(1);
     let mut plain = plain_of(0, 3, &[]);
     plain[0] = FORMAT + 1;
-    assert_eq!(codec::open_page(&seal, 3, &mut raw(&seal, &plain)), Err(OpenError::Foreign));
+    assert_eq!(codec::open_page(&seal, 3, CHARS, &mut raw(&seal, &plain)), Err(OpenError::Foreign));
 }
 
 /// Failure: a record past a cap or saying what no build writes is used (the signs: 513 blocks, a count that isn't the length, a kind or flag or level out of range, an empty, overlapping or off-the-page block, another page's number inside).
@@ -126,8 +146,8 @@ fn another_format_is_foreign_not_damage() {
 fn what_no_build_writes_is_refused_after_the_seal() {
     let seal = seal_for(1);
     let good = one_block(1, 1, 0, 0, 10);
-    let refused = |plain: Vec<u8>, what: &str| assert_eq!(codec::open_page(&seal, 3, &mut raw(&seal, &plain)), Err(OpenError::Damaged), "{what}");
-    assert!(codec::open_page(&seal, 3, &mut raw(&seal, &plain_of(1, 3, &[good]))).is_ok());
+    let refused = |plain: Vec<u8>, what: &str| assert_eq!(codec::open_page(&seal, 3, CHARS, &mut raw(&seal, &plain)), Err(OpenError::Damaged), "{what}");
+    assert!(codec::open_page(&seal, 3, CHARS, &mut raw(&seal, &plain_of(1, 3, &[good]))).is_ok());
     refused(
         plain_of(MAX_BLOCKS as u16 + 1, 3, &vec![one_block(1, 1, 0, 0, 1); MAX_BLOCKS + 1]),
         "513 blocks",
@@ -157,7 +177,7 @@ fn what_no_build_writes_is_refused_after_the_seal() {
     let mut long = raw(&seal, &plain_of(0, 3, &[]));
     long.resize(MAX_RECORD_BYTES + 1, 0);
     assert_eq!(
-        codec::open_page(&seal, 3, &mut long),
+        codec::open_page(&seal, 3, CHARS, &mut long),
         Err(OpenError::Damaged),
         "a chunk past the longest record"
     );
@@ -171,7 +191,7 @@ fn the_block_cap_holds_at_the_limit_and_one_over() {
     let at_cap = make(MAX_BLOCKS);
     let mut chunk = sealed(&seal, &at_cap);
     assert!(chunk.len() <= MAX_RECORD_BYTES);
-    assert_eq!(codec::open_page(&seal, 3, &mut chunk), Ok(at_cap));
+    assert_eq!(codec::open_page(&seal, 3, CHARS, &mut chunk), Ok(at_cap));
     assert!(codec::seal_page(&seal, &make(MAX_BLOCKS + 1), &mut Vec::new()).is_err());
     let mut overlapping = make(2);
     overlapping.blocks[1].start = 0;
@@ -549,4 +569,25 @@ fn a_page_past_the_character_cap_maps_nothing_and_says_so() {
         mapped.counts
     );
     assert_eq!(mapped.work, 0);
+}
+
+/// Failure: a record made for a page whose text has since changed length (the file edited, the way text is read changed) is used, so its offsets cut the new text in the wrong places; or it's thrown away as damage
+/// when it is only out of date.
+#[test]
+fn a_record_for_another_length_of_page_is_stale_not_damaged() {
+    let seal = seal_for(1);
+    let chunk = sealed(&seal, &page_of(vec![block(Kind::Paragraph, 0, 10)]));
+    assert!(codec::open_page(&seal, 3, CHARS, &mut chunk.clone()).is_ok());
+    for now in [0, CHARS - 1, CHARS + 1, u32::MAX] {
+        assert_eq!(codec::open_page(&seal, 3, now, &mut chunk.clone()), Err(OpenError::Stale), "{now}");
+    }
+    // A page past the cap is the cap, as the mapping took it: both the one record and a longer page today agree.
+    let mut capped = page_of(Vec::new());
+    capped.chars = super::MAX_PAGE_CHARS;
+    let chunk = sealed(&seal, &capped);
+    assert!(codec::open_page(&seal, 3, super::MAX_PAGE_CHARS + 900, &mut chunk.clone()).is_ok());
+    // Damage is still damage, whatever length is asked for.
+    let mut bad = chunk.clone();
+    bad[20] ^= 1;
+    assert_eq!(codec::open_page(&seal, 3, CHARS + 1, &mut bad), Err(OpenError::Damaged));
 }

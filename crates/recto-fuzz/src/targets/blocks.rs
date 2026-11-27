@@ -11,6 +11,8 @@ use recto_platform::find_key::FindKey;
 use std::sync::OnceLock;
 
 const PAGE: u32 = 5;
+/// The characters of the page the records are opened for.
+const CHARS: u32 = 4000;
 
 fn seal() -> &'static CorpusSeal {
     static SEAL: OnceLock<CorpusSeal> = OnceLock::new();
@@ -23,10 +25,12 @@ fn seal() -> &'static CorpusSeal {
 }
 
 fn holds(page: &PageBlocks) {
-    assert!(page.page == PAGE && page.blocks.len() <= MAX_BLOCKS);
+    assert!(page.page == PAGE && page.chars == CHARS && page.blocks.len() <= MAX_BLOCKS);
     let mut spans: Vec<(u32, u32)> = page.blocks.iter().map(|b| (b.start, b.end)).collect();
     for block in &page.blocks {
-        assert!(block.level <= MAX_LEVEL && block.start < block.end && block.end <= MAX_PAGE_CHARS && block.page == PAGE);
+        assert!(block.level <= MAX_LEVEL && block.page == PAGE, "{block:?}");
+        assert!(block.start < block.end && block.end <= CHARS && CHARS <= MAX_PAGE_CHARS, "{block:?}");
+        assert!(block.bbox[0] <= block.bbox[2] && block.bbox[1] <= block.bbox[3], "{block:?}");
     }
     spans.sort_unstable();
     assert!(spans.windows(2).all(|pair| pair[0].1 <= pair[1].0), "blocks overlap");
@@ -44,13 +48,13 @@ pub fn check(data: &[u8]) {
         out
     };
     let before = chunk.clone();
-    if let Ok(page) = codec::open_page(seal(), PAGE, &mut chunk) {
+    if let Ok(page) = codec::open_page(seal(), PAGE, CHARS, &mut chunk) {
         holds(&page);
         let mut again = Vec::new();
         codec::seal_page(seal(), &page, &mut again).expect("what opened writes back");
         assert_eq!(codec::record_len(page.blocks.len()), again.len());
         assert_eq!(again.len(), before.len(), "a record that opens is exactly as long as it was written");
-        let reopened = codec::open_page(seal(), PAGE, &mut again).expect("what was written opens");
+        let reopened = codec::open_page(seal(), PAGE, CHARS, &mut again).expect("what was written opens");
         assert_eq!(reopened, page);
     }
 }
@@ -59,6 +63,7 @@ pub fn check(data: &[u8]) {
 pub fn plain(kinds: &[u8]) -> Vec<u8> {
     let mut plain = vec![codec::FORMAT];
     plain.extend_from_slice(&PAGE.to_le_bytes());
+    plain.extend_from_slice(&CHARS.to_le_bytes());
     plain.extend_from_slice(&(kinds.len() as u16).to_le_bytes());
     for (at, kind) in kinds.iter().enumerate() {
         let mut block = [0u8; 19];
