@@ -1114,6 +1114,15 @@ fn flag_for_stray_word(spec: &Spec, word: &str) -> Option<(&'static str, String)
     Some((tab_flag, value))
 }
 
+/// What a path argument says to a link. A link is never a path: `file:///x.pdf` would be a relative file named `file:`, and a `rectopdf:` one the same.
+const IS_A_LINK: &str = "That's a link, not a path. Open it with `recto open --link \"<link>\"`.";
+
+/// Whether `value` starts as a `rectopdf:` or `file:` link does.
+fn is_link(value: &str) -> bool {
+    let starts = |scheme: &str| value.get(..scheme.len()).is_some_and(|head| head.eq_ignore_ascii_case(scheme));
+    starts("rectopdf:") || starts("file:")
+}
+
 fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
     match arg.kind {
         Kind::Tab | Kind::Text => Ok(json!(value)),
@@ -1137,6 +1146,9 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             _ => Err(format!("`{}` should be a whole number from 1 to {max}.", recto_core::clean_line(value))),
         },
         Kind::Path => {
+            if is_link(value) {
+                return Err(IS_A_LINK.to_string());
+            }
             let path = std::path::absolute(PathBuf::from(value)).map_err(|_| "That path couldn't be read.".to_string())?;
             path.to_str().map(|path| json!(path)).ok_or_else(|| "That path isn't valid text.".to_string())
         }
@@ -1412,6 +1424,19 @@ mod tests {
         }
     }
 
+    /// Failure: a link given where a path goes is taken for a relative file named `rectopdf:` and fails somewhere far from the cause, or `--link`'s text is
+    /// lost on its way to the wire.
+    #[test]
+    fn a_link_is_for_link_and_a_path_refuses_one_with_the_hint() {
+        let parsed = parse_line(r#"recto open --link rectopdf:///d/a.pdf#page=3"#).expect("open --link parses");
+        assert_eq!(parsed.fields.get("link"), Some(&json!("rectopdf:///d/a.pdf#page=3")));
+        assert!(parsed.command().is_ok());
+        for link in ["rectopdf:///d/a.pdf", "file:///d/a.pdf", "FILE:///d/a.pdf"] {
+            let error = parse_line(&format!("recto open {link}")).err().expect("a link is no path");
+            assert!(error.message.contains("recto open --link"), "{}", error.message);
+        }
+    }
+
     /// A value each kind of argument takes.
     fn sample_of(kind: Kind) -> &'static str {
         match kind {
@@ -1434,6 +1459,15 @@ mod tests {
         }
     }
 
+    /// A value for this argument: its kind's, but a link where the argument is one, since the words of a text are refused as a link.
+    fn sample_for(arg: &Arg) -> &'static str {
+        if arg.key == "link" && arg.kind == Kind::Text {
+            "rectopdf:///d/a.pdf#page=2"
+        } else {
+            sample_of(arg.kind)
+        }
+    }
+
     /// The line a row makes from these of its arguments, each with its value, and its required ones with a sample, as `recto` sends it.
     fn line_of(spec: &Spec, given: &[(&Arg, &str)]) -> Result<String, AgentError> {
         let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
@@ -1444,11 +1478,15 @@ mod tests {
             words.extend(page.and_then(|arg| arg.flag).map(str::to_string));
             words.push("1".to_string());
         }
+        // A row that names its file by a path or by a link is refused with neither, so a line without one gets a path.
+        if spec.tag == "open" && !by("path") && !by("link") {
+            words.push("/d/out.pdf".to_string());
+        }
         let required = spec
             .args
             .iter()
             .filter(|arg| arg.required && !given.iter().any(|(each, _)| each.key == arg.key));
-        for (arg, value) in required.map(|arg| (arg, sample_of(arg.kind))).chain(given.iter().copied()) {
+        for (arg, value) in required.map(|arg| (arg, sample_for(arg))).chain(given.iter().copied()) {
             words.extend(arg.flag.map(str::to_string));
             if !value.is_empty() {
                 words.push(value.to_string());
@@ -1477,7 +1515,7 @@ mod tests {
             for arg in spec.args {
                 let values: Vec<&str> = match arg.kind {
                     Kind::Choice(words) | Kind::List(words) => words.to_vec(),
-                    other => vec![sample_of(other)],
+                    _ => vec![sample_for(arg)],
                 };
                 for value in values {
                     // A switch that only goes with another (`find --jump` needs a step) is refused alone for that, and only for that.
@@ -1491,7 +1529,7 @@ mod tests {
                     }
                 }
             }
-            let all: Vec<(&Arg, &str)> = spec.args.iter().map(|arg| (arg, sample_of(arg.kind))).collect();
+            let all: Vec<(&Arg, &str)> = spec.args.iter().map(|arg| (arg, sample_for(arg))).collect();
             if let Err(error) = line_of(spec, &all) {
                 assert!(
                     crate::commands::refused_for_its_combination(spec.tag, &error),
@@ -1531,7 +1569,6 @@ mod tests {
             "watch --events nope",
             "render --page 1",
             "permission request root",
-            "open",
             "--level full",
             "search",
         ] {
@@ -1546,7 +1583,7 @@ mod tests {
     /// from the command's own words (`PageOrRef::of`), and says what to type next.
     #[test]
     fn text_and_render_with_neither_a_page_nor_a_ref_are_usage_errors_as_typed() {
-        for words in [vec!["text"], vec!["render", "--out", "x.png"], vec!["goto"]] {
+        for words in [vec!["text"], vec!["render", "--out", "x.png"], vec!["goto"], vec!["open"]] {
             let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
             let typed = parse_cli(&words).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
             let error = typed.command().expect_err(&format!("{words:?} names no page"));

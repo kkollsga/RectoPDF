@@ -4,6 +4,7 @@
 use super::{Cmd, Cx, row_access};
 use crate::Code;
 use crate::human::*;
+use crate::open_at;
 use crate::table::*;
 use crate::*;
 use serde::Deserialize;
@@ -19,6 +20,48 @@ pub struct Open {
     /// One-based page to land on.
     #[serde(default)]
     pub page: Option<u32>,
+}
+
+/// `open` as it's written on the wire: a path or a link, and a page. `link` is read as the line is, so no command ever holds one: what's run is
+/// `{path, page}`, and the link text goes no further than this.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+    use std::path::PathBuf;
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Open {
+        #[serde(default)]
+        pub path: Option<PathBuf>,
+        #[serde(default)]
+        pub page: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub link: Option<String>,
+    }
+}
+
+pub(crate) const BOTH: &str = "Name the file by its path or by a link, not both.";
+const NEITHER: &str = "Name the PDF: `recto open <file>` or `recto open --link <link>`.";
+pub(crate) const LINK_WITH_PAGE: &str = "A link names its own page; leave out `--page`.";
+
+impl TryFrom<line::Open> for Open {
+    type Error = AgentError;
+    fn try_from(line: line::Open) -> Result<Self, AgentError> {
+        let line::Open { path, page, link } = line;
+        match (path, link) {
+            (Some(_), Some(_)) => Err(AgentError::new(Code::USAGE, BOTH, exit::USAGE).then("`recto open report.pdf` or `recto open --link \"<link>\"`.")),
+            (None, None) => Err(AgentError::new(Code::USAGE, NEITHER, exit::USAGE).then("`recto open report.pdf` or `recto open --link \"<link>\"`.")),
+            (Some(path), None) => Ok(Self { path, page }),
+            (None, Some(_)) if page.is_some() => Err(AgentError::new(Code::USAGE, LINK_WITH_PAGE, exit::USAGE).then("`recto open --link \"<link>\"` alone.")),
+            (None, Some(link)) => {
+                let read = recto_core::locator::read_address(&link).map_err(|why| AgentError::new(Code::NOT_A_LINK, why.message(), exit::USAGE))?;
+                Ok(Self {
+                    path: read.path,
+                    page: read.file_page,
+                })
+            }
+        }
+    }
 }
 
 impl Cmd for Open {
@@ -333,7 +376,8 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         if page.is_some() && !actor.sees_protected() && s.tabs().withheld_from_agents(id) {
             return Some(Err(protected_refusal()));
         }
-        let pages = s.pages().count(id);
+        // The saved file's count: a page of a link or `--page` is a page of the file on disk, mapped to the tab below.
+        let pages = s.tabs().tab(id).map_or(0, |record| record.page_count);
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
         }
@@ -375,18 +419,22 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         }
     };
     access.with(|s| {
-        if let Some(page) = page {
-            go_to(s, id, page, 0.0, actor.author(), recto_session::trail::Chosen::ByItself)?;
+        let landed = page.map(|page| open_at::landing(s, id, page));
+        if let Some(open_at::Landing::At(place)) = landed {
+            go_to(s, id, place, 0.0, actor.author(), recto_session::trail::Chosen::ByItself)?;
         }
         if is_new {
             events.push(event::tab_opened(s, id));
         } else if active_before != Some(id) {
             events.push(event::tab_activated(s, id));
         }
-        if page.is_some() {
+        if matches!(landed, Some(open_at::Landing::At(_))) {
             events.push(page_now(s, id));
         }
         let mut data = where_json(s, actor, id);
+        if let (Some(page), Some(landed)) = (page, &landed) {
+            open_at::say(&mut data, page, landed);
+        }
         // A PDF is open once, so what's asked for by any name is this tab, and an agent is told.
         if !is_new {
             data["already_open"] = json!(true);
@@ -396,31 +444,46 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     })
 }
 
+/// `open`'s answer: where the tab is, as `where` says, and where the asked-for page of the file landed.
+const OPEN_DATA: &str = "`{ tab, sel, page, has_label, pages, file_pages, can_go_back, can_go_forward, active, edited, user_edits_undone, structure, problem, note, untrusted: { name, label } }`. `untrusted.label` is what the file calls the page, such as `iv`, where that isn't its number, and `has_label` says there is one. `user_edits_undone: true` means the user's edits are undone and can still be redone, so the page matches the file but closing would lose them. With a `--page` or a link's page: `file_page` (the page of the file on disk that was asked for), `landed` (false when unsaved edits removed it, and the tab stays where it was) and a `note` when the numbers differ or it didn't land.";
+
 pub(crate) const ROWS_OPEN: &[Spec] = &[Spec {
     name: "open",
     tag: "open",
     group: GROUP_MOVE,
     access: Access::At(Level::Control),
-    summary: "Opens a PDF as the active tab, or goes to its tab if it's already open. A `--page` it doesn't have opens nothing.",
+    summary: "Opens a PDF as the active tab, or goes to its tab if it's already open. Names the PDF by its path, or by a link with `--link`. A page the file on disk doesn't have opens nothing.",
     args: &[
         Arg {
             key: "path",
             flag: None,
             kind: Kind::Path,
-            required: true,
+            required: false,
             help: "The PDF.",
+        },
+        Arg {
+            key: "link",
+            flag: Some("--link"),
+            kind: Kind::Text,
+            required: false,
+            help: "A link to a page of a PDF, as Copy Link makes (rectopdf:///…/name.pdf#page=12), or a file address (file:///…/name.pdf#page=12).",
         },
         Arg {
             key: "page",
             flag: Some("--page"),
             kind: Kind::Page,
             required: false,
-            help: "The page to land on, counted from 1.",
+            help: "The page of the file on disk to land on, counted from 1; in a tab with unsaved edits it lands where that page is now.",
         },
     ],
-    data: AGENT_EXITS_PAGE,
+    data: OPEN_DATA,
     emits: &["tab_opened", "tab_activated", "page_changed"],
-    examples: &["recto open report.pdf", "recto open /Users/me/report.pdf --page 12 --json"],
+    examples: &[
+        "recto open report.pdf",
+        "recto open /Users/me/report.pdf --page 12 --json",
+        "recto open --link \"rectopdf:///Users/me/manual.pdf#page=42\"",
+        "recto open --link \"file:///Users/me/manual.pdf#page=42\"",
+    ],
     ..BASE
 }];
 

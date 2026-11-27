@@ -7,15 +7,15 @@
 {"cmd":"open","path":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"open","path":null}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"Name the PDF: `recto open <file>` or `recto open --link <link>`.","next":"`recto open report.pdf` or `recto open --link \"<link>\"`."},"ok":false,"v":1}
 {"cmd":"open"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"Name the PDF: `recto open <file>` or `recto open --link <link>`.","next":"`recto open report.pdf` or `recto open --link \"<link>\"`."},"ok":false,"v":1}
 {"cmd":"open","path":"/d/x.pdf","page":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"open","path":"/d/x.pdf","page":null}
     ok open Open { path: "/d/x.pdf", page: None }
 ["open"]
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"Name the PDF: `recto open <file>` or `recto open --link <link>`.","next":"`recto open report.pdf` or `recto open --link \"<link>\"`."},"ok":false,"v":1}
 ["open","/d/x.pdf",3]
     ok open Open { path: "/d/x.pdf", page: Some(3) }
 {"cmd":"Open"}

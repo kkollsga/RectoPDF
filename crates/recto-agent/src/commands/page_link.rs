@@ -22,7 +22,7 @@ pub struct Link {
     pub page: u32,
     #[serde(default)]
     pub tab: TabRef,
-    /// **The person's Copy Link:** the file's whole address, with the page, as text for the window's clipboard ([`crate::clipboard`]). Wire-only: no flag, no
+    /// **The person's Copy Link:** RectoPDF's own link to the file, `rectopdf:///…#page=N`, with the page, as text for the window's clipboard ([`crate::clipboard`]). Wire-only: no flag, no
     /// row argument. Anyone but the actor at the window is refused, before any tab is read, and the answer holds no address and no path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub to_clipboard: bool,
@@ -115,7 +115,7 @@ pub(crate) const ROWS_LINK: &[Spec] = &[Spec {
     tag: "link",
     group: GROUP_READ,
     access: Access::At(Level::ReadOnly),
-    summary: "The standard link to a page of the tab's file: the file's own name and `#page=N`, which any PDF reader opens at that page. Not `links`, which lists where a page's own links lead. It names no folder, reads no file and changes nothing; the person's Copy Link is this command. In a tab with unsaved edits the link names the page's place in the file on disk, and a page added from another PDF has none until saved.",
+    summary: "The standard link to a page of the tab's file: the file's own name and `#page=N`, which any PDF reader opens at that page. Not `links`, which lists where a page's own links lead. It names no folder, reads no file and changes nothing. The person's Copy Link, which is this command, copies RectoPDF's own link with the folder; an agent gets the name only. In a tab with unsaved edits the link names the page's place in the file on disk, and a page added from another PDF has none until saved.",
     args: &[
         Arg {
             key: "page",
@@ -205,11 +205,11 @@ mod tests {
         let folder = file.0.parent().unwrap().to_string_lossy().into_owned();
         let texts = access.clipboard.texts.lock().unwrap().clone();
         assert_eq!(texts.len(), 1);
-        assert!(texts[0].starts_with("file:///") && texts[0].ends_with("/a%20b%231.pdf#page=1"), "{texts:?}");
+        assert!(texts[0].starts_with("rectopdf:///") && texts[0].ends_with("/a%20b%231.pdf#page=1"), "{texts:?}");
         let said_text = said.to_string();
         assert_eq!(said["as"], "clipboard");
         assert!(
-            !said_text.contains(&folder) && !said_text.contains("file://") && !said_text.contains("untrusted"),
+            !said_text.contains(&folder) && !said_text.contains("file://") && !said_text.contains("rectopdf:") && !said_text.contains("untrusted"),
             "{said_text}"
         );
     }

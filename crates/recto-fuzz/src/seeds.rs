@@ -222,6 +222,10 @@ pub fn json_lines() -> Vec<String> {
         [
             r#"{"cmd":"open","path":"/fuzz/p12.pdf","page":3}"#,
             r#"{"cmd":"open","path":"/fuzz/p12.pdf","page":4294967295}"#,
+            r#"{"cmd":"open","link":"rectopdf:///fuzz/p12.pdf#page=3"}"#,
+            r#"{"cmd":"open","link":"rectopdf:///fuzz/p12.pdf#page=99999999999999999999"}"#,
+            r#"{"cmd":"open","link":"rectopdf:///fuzz/%2E%2E/p12.pdf"}"#,
+            r#"{"cmd":"open","link":"file:///fuzz/p12.pdf#page=3"}"#,
             r#"{"cmd":"tabs","from":4294967295,"limit":0}"#,
             r##"{"cmd":"tap","tab":"#1"}"##,
             r##"{"cmd":"goto","tab":"#99999999999999999999","page":1}"##,

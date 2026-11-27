@@ -388,6 +388,7 @@ family! {
 family! {
     /// Opening and moving around.
     pub enum Move {
+        #[line(tabs::line::Open)]
         Open(tabs::Open),
         #[line(linking::line::Goto)]
         Goto(linking::Goto),
@@ -579,6 +580,8 @@ pub(crate) fn human(tag: &str, data: &Value) -> Option<String> {
 /// The refusals of flags that can't go together, by command, which a typed payload makes as it's read (step R2.5).
 #[cfg(any(test, feature = "test-words"))]
 const COMBINATIONS: &[(&str, &str)] = &[
+    ("open", tabs::BOTH),
+    ("open", tabs::LINK_WITH_PAGE),
     ("compare", compare::OFF_ALONE),
     ("compare", compare::TOGGLE_ALONE),
     ("compare", compare::READING_ALONE),
