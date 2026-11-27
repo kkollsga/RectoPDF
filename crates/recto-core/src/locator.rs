@@ -7,6 +7,7 @@
 //! incomplete scan proves neither unique nor gone.
 //! Nothing here opens a file, computes a second page identity, retains per-tab state or starts work.
 
+mod address;
 mod codec;
 mod geometry;
 mod link;
@@ -14,8 +15,9 @@ mod resolve;
 mod source;
 mod text;
 
+pub use address::{Address, AddressError, read_address, read_page_fragment};
 pub use codec::{decode, encode};
-pub use link::{LinkError, MAX_ADDRESS_BYTES, MAX_LINK_BYTES, MAX_NAME_BYTES, MAX_PATH_BYTES, address_of, link_of, page_link};
+pub use link::{LinkError, MAX_ADDRESS_BYTES, MAX_LINK_BYTES, MAX_NAME_BYTES, MAX_PATH_BYTES, MAX_READ_BYTES, SCHEME, address_of, link_of, page_link};
 pub use resolve::{
     DocumentMatch, Looked, MAX_CANDIDATES, Placed, Referrer, Resolution, ScanCaps, Status, TAG_PAGES, Unreferenceable, document_tags, reference, resolve,
 };

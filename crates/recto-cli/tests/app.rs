@@ -325,21 +325,39 @@ fn contents_fold_reveal_at_once_and_keep_a_thumb() {
     run.ok(&["qa", "hover", "2"]);
     let shown = run.ok(&["qa", "reveal", "2"]);
     assert_eq!(shown["reveal"]["shown"], true, "{shown}");
-    // Copy Link on a contents row (the row's right-click, by AppKit's own `menu(for:)`, nothing posted): the whole file address and the row's page as the
-    // one text on the clipboard, made by the one `address_of`. "Section 1.1" is contents row 2, the sidebar's row 3.
+    // Copy Link on a contents row (the row's right-click, by AppKit's own `menu(for:)`, nothing posted): RectoPDF's link to the row's page as the
+    // text on the clipboard, made by the one `address_of`. "Section 1.1" is contents row 2, the sidebar's row 3.
     let page = u32::try_from(rows[3]["page"].as_u64().expect("the row's page")).expect("a page");
     run.ok(&["qa", "contents-context-menu", "2:edit.copy_link"]);
     run.settled();
     let clipboard = run.ok(&["qa", "copied"]);
     let types: Vec<&str> = clipboard["types"].as_array().unwrap().iter().filter_map(|kind| kind["type"].as_str()).collect();
-    // Plain text only: AppKit adds the string's legacy name for the same bytes; no file URL and no URL, which would make another app attach the file.
+    // The link as text and as a URL, and the legacy names AppKit adds for the same bytes. A `rectopdf:` URL makes no app attach a file (a `file:` one would),
+    // and is what lets Notes and Mail paste a link that can be clicked.
     assert_eq!(types.first(), Some(&"public.utf8-plain-text"), "{clipboard}");
+    // AppKit also converts the URL type: `CorePasteboardFlavorType 0x75726C20` (the same bytes) and a URL-list pair, `dyn.…` and "Apple URL pasteboard
+    // type", whose bytes are its own wrapping of the URL. Those two may differ from the text's bytes, and must hold the copied link and no `file://`
+    // address; every other type equals the text's bytes. Neither a file URL nor a file-name list is there, which would make another app attach the file.
+    let derived = |kind: &str| kind == "Apple URL pasteboard type" || kind.starts_with("dyn.");
     assert!(
-        types.iter().all(|kind| matches!(*kind, "public.utf8-plain-text" | "NSStringPboardType")),
+        types.iter().all(|kind| matches!(
+            *kind,
+            "public.utf8-plain-text" | "public.url" | "NSStringPboardType" | "CorePasteboardFlavorType 0x75726C20"
+        ) || derived(kind)),
         "{clipboard}"
     );
-    let digests: Vec<_> = clipboard["types"].as_array().unwrap().iter().map(|kind| kind["sha256"].clone()).collect();
-    assert!(digests.windows(2).all(|pair| pair[0] == pair[1]), "the same bytes under each name: {clipboard}");
+    assert!(types.contains(&"public.url"), "{clipboard}");
+    assert!(!types.contains(&"public.file-url") && !types.contains(&"NSFilenamesPboardType"), "{clipboard}");
+    let text_sha = clipboard["types"][0]["sha256"].clone();
+    for kind in clipboard["types"].as_array().unwrap() {
+        let name = kind["type"].as_str().unwrap_or_default();
+        assert_eq!(kind["holds_file_url"], false, "{name} holds a file address: {clipboard}");
+        if derived(name) {
+            assert_eq!(kind["holds_text"], true, "{name} doesn't hold the copied link: {clipboard}");
+        } else {
+            assert_eq!(kind["sha256"], text_sha, "{name} isn't the text's bytes: {clipboard}");
+        }
+    }
     assert_eq!(
         clipboard["untrusted"]["text"].as_str(),
         Some(recto_core::locator::address_of(&file.0, page).expect("an address").as_str()),

@@ -729,7 +729,7 @@ impl Tool {
         let ticket = lock(&self.links).land();
         debug_assert!(ticket.is_some(), "an address landed that no Copy Link asked for");
         let ticket = ticket.unwrap_or_else(|| lock(&self.jobs).ticket());
-        let put = self.offer_ready(ticket, self.offer_text(text));
+        let put = self.offer_ready(ticket, super::copy_link::offer(text));
         lock(&self.links).landed(put);
         put
     }
@@ -1412,7 +1412,7 @@ mod tests {
         tool.link_asked();
         assert!(tool.offer_link("file:///a.pdf#page=1".into()), "the link is put");
         assert!(!snapshot_lands(&tool, snapshot), "the older snapshot is not, and the host isn't told");
-        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT]);
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT, crate::core::copy_link::UTI_URL]);
         // Taken by the host already, the older snapshot still doesn't come after it.
         lock(&tool.ready).take();
         assert!(!snapshot_lands(&tool, snapshot));
@@ -1432,7 +1432,7 @@ mod tests {
         // And a newer link, after, is put.
         tool.link_asked();
         assert!(tool.offer_link("file:///b.pdf#page=2".into()));
-        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT]);
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT, crate::core::copy_link::UTI_URL]);
     }
 
     /// Failure: a slot cleared after a refused send (⌘Q, Stay) starts its tickets again from 0 while the clipboard's newest ticket is high, so every later
@@ -1484,7 +1484,7 @@ mod tests {
             tool.offer_link("file:///b.pdf#page=2".into()),
             "the link asked last is its own place, not an older one"
         );
-        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT]);
+        assert_eq!(on_the_clipboard(&tool), [extract::UTI_TEXT, crate::core::copy_link::UTI_URL]);
     }
 
     /// Failure: a Copy Link whose address lost the clipboard to a newer ask is still said to be copied.
@@ -1584,7 +1584,10 @@ mod tests {
         tool.text_asked();
         tool.link_asked();
         assert!(tool.offer_link("file:///a.pdf#page=1".into()));
-        assert_eq!(tool.take_offer_with(|| Some("older text".into())).expect("the link").types, [extract::UTI_TEXT]);
+        assert_eq!(
+            tool.take_offer_with(|| Some("older text".into())).expect("the link").types,
+            [extract::UTI_TEXT, crate::core::copy_link::UTI_URL]
+        );
         assert!(
             tool.take_offer_with(|| Some("older text".into())).is_none(),
             "the older text is thrown away, not offered after the link"

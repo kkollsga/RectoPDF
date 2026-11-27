@@ -156,6 +156,7 @@ codes! {
     BAD_EVENTS = "bad_events", Next::ByExit;
     BAD_LIMIT = "bad_limit", Next::ByExit;
     BAD_OUTPUT = "bad_output", Next::Says("Choose a file name ending in .png.");
+    BAD_PAGE = "bad_page", Next::Says("A page is a whole number from 1, as #page=12.");
     BAD_PAGES = "bad_pages", Next::ByExit;
     BAD_PATH = "bad_path", Next::Says("Give the whole path. `recto` does this for you.");
     BAD_PATTERN = "bad_pattern", Next::ByExit;
@@ -252,6 +253,7 @@ codes! {
     NOT_A_FILE = "not_a_file", Next::ByExit;
     NOT_A_FOLDER = "not_a_folder", Next::ByExit;
     NOT_A_JPEG = "not_a_jpeg", Next::ByExit;
+    NOT_A_LINK = "not_a_link", Next::Says("A link here is one Copy Link makes, rectopdf:///…/name.pdf#page=12, or a file address, file:///…/name.pdf#page=12.");
     NOT_A_PDF = "not_a_pdf", Next::ByExit;
     NOT_A_SECTION = "not_a_section", Next::ByExit;
     NOT_ALLOWED = "not_allowed", Next::Says("Ask the user to give this user account access to the file.");

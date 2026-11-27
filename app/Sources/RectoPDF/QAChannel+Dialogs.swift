@@ -50,7 +50,10 @@ extension QAChannel {
             let types = (delegate.pasteboard.types ?? []).map { type -> [String: Any] in
                 if promised.contains(type.rawValue) && value != type.rawValue { return ["type": type.rawValue, "promised": true] }
                 let data = delegate.pasteboard.data(forType: type) ?? Data()
-                return ["type": type.rawValue, "bytes": data.count, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+                // Whether the bytes hold the copied text (a URL type's wrapping of it) and a `file://` address, which only a test of what a type carries asks.
+                let holdsText = text.map { !$0.isEmpty && data.range(of: Data($0.utf8)) != nil } ?? false
+                let holdsFile = data.range(of: Data("file://".utf8)) != nil
+                return ["type": type.rawValue, "bytes": data.count, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), "holds_text": holdsText, "holds_file_url": holdsFile]
             }
             answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "types": types, "write": delegate.lastCopyWrite, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
             return false

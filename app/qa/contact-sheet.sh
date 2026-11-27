@@ -134,6 +134,12 @@ print(next(e[i]['entry'] for i in range(len(e)-1) if e[i+1]['depth']>e[i]['depth
     r qa mouse-down "1:300,300"; r qa mouse-up
     r qa print-to-pdf "$root/printed-$look.pdf"; settle; shot print-restricted
 
+    # A link from outside, as the person's open, to a page the file doesn't have (it says so, and opens nothing) and then to one that lands. The link is the
+    # shape Copy Link makes; a quiet run can't be sent a click by Launch Services, so the same open is sent by the person's route.
+    plain="$root/in/plain-$look.pdf"
+    r qa as-person "open --link \"rectopdf://$plain#page=999\""; settle; shot link-missing-page
+    r qa as-person "open --link \"rectopdf://$plain#page=2\""; settle; shot link-landed
+
     # The password sheet.
     r qa as-person "open \"$root/in/locked.pdf\""; until_state "a['sheet'].get('kind') == 'password'"; settle; shot password
     printf 'shots' | r qa password; until_state "not a['sheet']"

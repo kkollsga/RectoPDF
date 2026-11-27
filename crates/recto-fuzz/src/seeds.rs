@@ -222,6 +222,10 @@ pub fn json_lines() -> Vec<String> {
         [
             r#"{"cmd":"open","path":"/fuzz/p12.pdf","page":3}"#,
             r#"{"cmd":"open","path":"/fuzz/p12.pdf","page":4294967295}"#,
+            r#"{"cmd":"open","link":"rectopdf:///fuzz/p12.pdf#page=3"}"#,
+            r#"{"cmd":"open","link":"rectopdf:///fuzz/p12.pdf#page=99999999999999999999"}"#,
+            r#"{"cmd":"open","link":"rectopdf:///fuzz/%2E%2E/p12.pdf"}"#,
+            r#"{"cmd":"open","link":"file:///fuzz/p12.pdf#page=3"}"#,
             r#"{"cmd":"tabs","from":4294967295,"limit":0}"#,
             r##"{"cmd":"tap","tab":"#1"}"##,
             r##"{"cmd":"goto","tab":"#99999999999999999999","page":1}"##,
@@ -252,7 +256,8 @@ pub fn agent_seeds() -> Vec<Vec<u8>> {
     }
     for spec in TABLE {
         for example in spec.examples {
-            let words: Vec<&str> = example.split(' ').skip(1).collect();
+            let shell = recto_agent::skill::shell_words(example);
+            let words: Vec<&str> = shell.iter().skip(1).map(String::as_str).collect();
             seeds.push([&[1u8, 0][..], words.join("\0").as_bytes()].concat());
             // Mistyped flags, which is where the advice has to mend a line.
             seeds.push([&[1u8, 0][..], words.join("\0").replace("--", "--x").as_bytes()].concat());

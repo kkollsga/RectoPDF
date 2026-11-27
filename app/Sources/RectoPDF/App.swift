@@ -136,7 +136,11 @@ final class Bridge: AppListener, @unchecked Sendable {
     private let quietGuard = QuietRunGuard()
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        if isQuiet { quietGuard.install() }
+        if isQuiet {
+            quietGuard.install()
+        } else {
+            NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(linkArrived(_:withReply:)), forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+        }
         if isQuiet, let every = core.qaPolicyNudgeMs() { quietGuard.nudge(every: every, inPutBack: core.qaPolicyNudgeInPutBack()) }
     }
 
@@ -396,10 +400,17 @@ final class Bridge: AppListener, @unchecked Sendable {
         return true
     }
 
+    /// A `rectopdf:` link the system hands over, from another app or a web page, as it was sent: Rust reads it. A quiet run never installs this; its guard
+    /// ignores these events.
+    @objc private func linkArrived(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let link = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue else { return }
+        _ = core.act(action: .openLink(link: link))
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         // A quiet run opens what its QA channel says, and nothing the system sends it.
         guard !isQuiet else { return }
-        for url in urls where url.isFileURL { _ = core.act(action: .open(path: url.path)) }
+        for url in urls where url.isFileURL { _ = core.act(action: .openAt(path: url.path, fragment: url.fragment ?? "")) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

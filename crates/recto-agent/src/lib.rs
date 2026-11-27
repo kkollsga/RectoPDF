@@ -34,6 +34,7 @@ pub mod keys;
 pub mod linking;
 mod loader;
 mod locating;
+mod open_at;
 pub mod print;
 pub mod quiet_files;
 mod reading;

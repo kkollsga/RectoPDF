@@ -62,8 +62,8 @@ pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<
 }
 
 /// A file to open, for the person: `open`, queued for the session thread, which holds it until the state's been read, as an open always waited. Never waits.
-pub fn open(core: &CoreQueue, path: PathBuf) {
-    core.push(CoreCall::Run(crate::queue::PersonCommand::input(Open { path, page: None }.into())));
+pub fn open(core: &CoreQueue, path: PathBuf, page: Option<u32>) {
+    core.push(CoreCall::Run(crate::queue::PersonCommand::input(Open { path, page }.into())));
 }
 
 /// Whether a person's command is an open, which waits for the state to be read.
@@ -162,19 +162,20 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
 }
 
 /// **A file the person opens:** the Open panel's, a drop, the Finder's, File > Open Recent's and the palette's recent file, all this one way. `open`, queued
-/// for the session thread, as [`open`]; and asked for before the state's read, it's what a launch that goes back passes on.
-pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf) {
+/// for the session thread, as [`open`]; and asked for before the state's read, it's what a launch that goes back passes on (the path only: the page isn't
+/// kept). `page` is a page of the file on disk, from 1, as a link names it.
+pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf, page: Option<u32>) {
     if !life.state_read() {
         updates::note_asked_to_open(std::slice::from_ref(&path));
     }
-    open(core, path);
+    open(core, path, page);
 }
 
 /// **Opens a file from the files opened lately by its key,** as File > Open Recent and the palette's row do: the very file that was offered, however the
 /// list has moved since, and nothing if it's left the list. `recent` is the list the session thread last published: it never waits.
 pub fn open_recent(recent: &[RecentFile], life: &Lifecycle, core: &CoreQueue, key: &str) {
     if let Some(path) = recent_path(recent, key) {
-        open_for_person(life, core, path);
+        open_for_person(life, core, path, None);
     }
 }
 
@@ -226,7 +227,7 @@ mod tests {
             open: false,
         };
         let list = [file("k1", &recent)];
-        open_for_person(&life, &core, panel.clone());
+        open_for_person(&life, &core, panel.clone(), None);
         open_recent(&list, &life, &core, "k1");
         open_recent(&[file("k2", &gone)], &life, &core, "a key that's left the list");
         let asked = super::updates::Hooks::new(Arc::new(super::updates::RealInstaller)).documents_asked_for();

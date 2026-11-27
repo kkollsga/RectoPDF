@@ -39,6 +39,13 @@ package() {
   [[ "$dev" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.[1-9][0-9]{0,8}$ ]] || fail "$dev isn't X.Y.Z.N with N from 1"
   [ -x "$built/Contents/MacOS/RectoPDF" ] || fail "no app at $built"
   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")" = "$release" ] || fail "the app at $built isn't $release"
+  # Skipped only for a test's copy of a non-release build (RECTO_DEV_BUILD_UNCLAIMED, set by restore/update.rs, never by app/release-zip.sh, which refuses
+  # it), which must not claim the scheme. Said plainly, so a package made so is never taken for an owner's.
+  if [ -n "${RECTO_DEV_BUILD_UNCLAIMED:-}" ]; then
+    echo "this package doesn't claim rectopdf: links, and is for a test" >&2
+  else
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$built/Contents/Info.plist" 2>/dev/null)" = "rectopdf" ] || fail "the build doesn't claim rectopdf: links"
+  fi
   # A folder of its own, so the app it's made from can be anywhere, the folder it's zipped into included.
   local staging="$out/.packaging"
   rm -rf "$staging"
@@ -129,6 +136,12 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# The test's switch (see package) is for --package alone: the owner's build, --first-install and --place never honour it, so a build that doesn't claim
+# rectopdf: links can't be made for the owner's app by it.
+if [ "$mode" != package ] && [ -n "${RECTO_DEV_BUILD_UNCLAIMED:-}" ]; then
+  fail "RECTO_DEV_BUILD_UNCLAIMED is for --package in a test, not for the owner's builds"
+fi
 
 if [ "$mode" = package ]; then
   [ -n "$dev" ] || dev="$(release_version).1"

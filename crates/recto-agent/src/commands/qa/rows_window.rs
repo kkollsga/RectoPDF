@@ -741,7 +741,7 @@ pub(crate) const ROWS: &[Spec] = &[
         group: GROUP_QA,
         summary: "What the app's last copy put on the clipboard: its text, and every type on it in order, with each one's size and SHA-256. A quiet run has a clipboard of its own, and the real one is never touched.",
         fixed: &[("verb", "copied")],
-        data: "`{ chars, clipboard, types: [ { type, bytes, sha256, promised } ], untrusted: { text } }`. `type` is a uniform type identifier, as `public.png`. A type the app only promised, made when a paste asks for it, as a snapshot's SVG, has `promised: true` and no bytes: `qa paste` asks for it.",
+        data: "`{ chars, clipboard, types: [ { type, bytes, sha256, holds_text, holds_file_url, promised } ], untrusted: { text } }`. `type` is a uniform type identifier, as `public.png`. `holds_text` is whether its bytes contain the copied text (a URL type wraps it), and `holds_file_url` whether they contain a `file://` address. A type the app only promised, made when a paste asks for it, as a snapshot's SVG, has `promised: true` and no bytes: `qa paste` asks for it.",
         examples: &["recto qa copied --json"],
         client_wait_s: 35,
         ..BASE

@@ -210,6 +210,24 @@ fn a_copy_the_system_opens_is_never_a_regular_app() {
     };
     assert_eq!(asked("LSUIElement"), "true", "a copy that's opened must not be a regular app");
     assert_eq!(asked("CFBundleIdentifier"), "io.github.kkollsga.RectoPDF", "the copy is the app otherwise");
+    // And it claims no link scheme: a test's app registered with Launch Services takes a click on the owner's Mac (a `rectopdf:` link opens a test copy, or
+    // goes to a quiet run that ignores it). Only a release build claims it (`app/build.sh`), so neither the test build nor its copy carries `CFBundleURLTypes`.
+    // If this build is a release build, rebuild with `app/build.sh`.
+    let claims = |plist: &std::path::Path| {
+        std::process::Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Print :CFBundleURLTypes"])
+            .arg(plist)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(!claims(&plist), "the copy claims links (rebuild with app/build.sh, without RECTO_RELEASE)");
+    let built = app_path().and_then(|binary| Some(binary.parent()?.parent()?.join("Info.plist")));
+    assert!(
+        !built.is_some_and(|plist| claims(&plist)),
+        "the test build claims links (rebuild with app/build.sh, without RECTO_RELEASE)"
+    );
     let valid = std::process::Command::new("/usr/bin/codesign")
         .args(["--verify"])
         .arg(&copy.bundle)

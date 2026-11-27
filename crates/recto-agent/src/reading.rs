@@ -4,7 +4,7 @@ use crate::Code;
 use crate::TabRef;
 use crate::{AgentError, SessionAccess, exit, generated, select};
 use recto_core::{OpenError, SignatureEntry, SignatureState};
-use recto_session::DocLoader;
+use recto_session::{DocLoader, Session, TabId};
 use recto_sign::{SignatureFacts, Status};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -98,6 +98,33 @@ fn place_in(positions: Option<&[u32]>, file_page: u32) -> Option<u32> {
     }
 }
 
+/// For each page of the saved file, its place now in tab `id` (`u32::MAX` when unsaved edits removed it): `None` for a tab with no edit list, where the
+/// numbers are the same. Sized by the record's page count; reads nothing but the session's own state.
+pub(crate) fn positions_of<L: DocLoader>(s: &Session<L>, id: TabId) -> Option<Vec<u32>> {
+    let record = s.tabs().tab(id)?;
+    s.lists().get(id).map(|edits| {
+        let mut positions = vec![u32::MAX; record.page_count as usize];
+        for (position, slot) in edits.slots().iter().enumerate() {
+            if slot.source == 0
+                && let Some(place) = positions.get_mut(slot.page as usize)
+            {
+                *place = u32::try_from(position).unwrap_or(u32::MAX);
+            }
+        }
+        debug_assert!(
+            {
+                let mut placed: Vec<u32> = positions.iter().copied().filter(|place| *place != u32::MAX).collect();
+                let before = placed.len();
+                placed.sort_unstable();
+                placed.dedup();
+                placed.len() == before
+            },
+            "two pages of the file stand at one place"
+        );
+        positions
+    })
+}
+
 pub(crate) fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, AgentError> {
     access
         .with(|s| {
@@ -106,27 +133,7 @@ pub(crate) fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<Tab
                 .tabs()
                 .tab(id)
                 .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?;
-            let positions = s.lists().get(id).map(|edits| {
-                let mut positions = vec![u32::MAX; record.page_count as usize];
-                for (position, slot) in edits.slots().iter().enumerate() {
-                    if slot.source == 0
-                        && let Some(place) = positions.get_mut(slot.page as usize)
-                    {
-                        *place = u32::try_from(position).unwrap_or(u32::MAX);
-                    }
-                }
-                debug_assert!(
-                    {
-                        let mut placed: Vec<u32> = positions.iter().copied().filter(|place| *place != u32::MAX).collect();
-                        let before = placed.len();
-                        placed.sort_unstable();
-                        placed.dedup();
-                        placed.len() == before
-                    },
-                    "two pages of the file stand at one place"
-                );
-                positions
-            });
+            let positions = positions_of(s, id);
             Ok(TabFile {
                 id: id.0,
                 path: s

@@ -17,18 +17,27 @@ fn menu() -> UiAction {
     UiAction::Menu { id: ID.into() }
 }
 
-/// What the host would put on the clipboard now, if it is plain text and the only type: the text.
-fn pasteboard(app: &HeadlessApp) -> Option<String> {
+/// What the host would put on the clipboard now, if it is the link as text and as a URL, the same bytes: the text.
+pub(super) fn pasteboard(app: &HeadlessApp) -> Option<String> {
     let inner = app.core();
     let offer = inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine))?;
-    assert_eq!(offer.types, ["public.utf8-plain-text"], "plain text only: no file URL, no URL type");
+    assert_eq!(
+        offer.types,
+        ["public.utf8-plain-text", "public.url"],
+        "text, then the URL type: never a file URL"
+    );
     let bytes = inner.tools.tool().ready_bytes(offer.serial, "public.utf8-plain-text").expect("its bytes");
+    assert_eq!(
+        inner.tools.tool().ready_bytes(offer.serial, "public.url"),
+        Some(bytes.clone()),
+        "the URL type holds the same bytes"
+    );
     Some(String::from_utf8(bytes).expect("text"))
 }
 
 /// What a reader of the address does with its path: the bytes, undone from `%XX`.
 fn path_of(address: &str) -> (String, &str) {
-    let (path, page) = address.strip_prefix("file://").expect("a file address").split_once('#').expect("a page");
+    let (path, page) = address.strip_prefix("rectopdf://").expect("a rectopdf link").split_once('#').expect("a page");
     let bytes = path.as_bytes();
     let mut out = Vec::new();
     let mut at = 0;
@@ -79,7 +88,7 @@ fn edit_copy_link_puts_the_files_address_and_page_on_the_clipboard_as_text() {
     assert_eq!((Path::new(&path), page), (file.as_path(), "page=2"), "{address}");
     let said = app.core().window.notices().notice().expect("said");
     assert_eq!(
-        said, "Copied a link to page 2. Preview may open it at the first page.",
+        said, "Copied a link to page 2. It opens in RectoPDF; on a Mac without RectoPDF it does nothing.",
         "the owner's decision of 2026-11-26: it says so"
     );
     // Nothing selected sends nothing.
@@ -214,7 +223,7 @@ fn a_copy_link_the_freeze_took_gives_its_place_back() {
     app.act(menu());
     app.settle();
     let address = pasteboard(&app).expect("a copy");
-    assert!(address.starts_with("file://"), "the link asked last is on the clipboard: {address}");
+    assert!(address.starts_with("rectopdf://"), "the link asked last is on the clipboard: {address}");
 }
 
 /// Failure: after a Copy Link that was refused, a snapshot and then a Copy Link, the clipboard has the snapshot (a refusal left its place), or the person
@@ -237,7 +246,7 @@ fn a_refused_link_a_snapshot_and_a_link_leave_the_last_on_the_clipboard() {
     app.act(menu());
     app.settle();
     let address = pasteboard(&app).expect("a copy");
-    assert!(address.starts_with("file://"), "the link, asked last: {address}");
+    assert!(address.starts_with("rectopdf://"), "the link, asked last: {address}");
     let said = app.core().window.notices().notice().expect("said");
     assert!(said.starts_with("Copied a link to page"), "{said}");
 }

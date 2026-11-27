@@ -113,6 +113,12 @@ if [ -f "$BUILD/icon/Assets.car" ]; then
     cp -X "$BUILD/icon/Assets.car" "$APP/Contents/Resources/Assets.car"
     ICON_NAME="<key>CFBundleIconName</key><string>AppIcon</string>"
 fi
+# Only the shipped app and the owner's dev copy (both RECTO_RELEASE) claim `rectopdf:`. A test's build and every copy a test launches claim nothing, so no
+# click on this Mac goes to a test's app.
+URL_TYPES=""
+if [ -n "${RECTO_RELEASE:-}" ]; then
+    URL_TYPES='<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>io.github.kkollsga.RectoPDF.link</string><key>CFBundleTypeRole</key><string>Viewer</string><key>CFBundleURLSchemes</key><array><string>rectopdf</string></array></dict></array>'
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -126,6 +132,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     $ICON_NAME
+    $URL_TYPES
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>

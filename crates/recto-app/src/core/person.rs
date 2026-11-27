@@ -281,6 +281,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::find::answered,
     super::highlight::answered,
     super::copy_link::answered,
+    super::link_open::answered,
     super::updates::answered,
     super::printing::answered,
     super::snapshot_tool::answered,

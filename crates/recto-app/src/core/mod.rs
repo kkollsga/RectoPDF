@@ -37,6 +37,7 @@ pub(crate) mod keeper;
 pub(crate) mod keeping;
 mod launching;
 mod life;
+mod link_open;
 pub mod menu_rows;
 mod navigation;
 mod opening;

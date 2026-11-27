@@ -487,6 +487,10 @@ mod tests {
                     let make = |run: &Path| {
                         let mut line = base_line(spec, &example, run);
                         line[arg.key] = json!(form.replace(BESIDE, &run.join("mine.pdf").to_string_lossy()));
+                        // `open` names its file by a path or by a link, not both: a link tried is the file's name.
+                        if spec.tag == "open" && arg.key == "link" {
+                            line.as_object_mut().expect("a line is an object").remove("path");
+                        }
                         line
                     };
                     // A line that isn't a command reaches nothing. Nor does a choice's: its words are fixed, and a typed payload refuses any other as
