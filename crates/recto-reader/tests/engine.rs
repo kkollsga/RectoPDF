@@ -522,12 +522,18 @@ fn the_fifo_helper_finds_a_reader_that_comes_late() {
     let fifo = fifo_in(&folder, "late.pdf");
     let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
     let plain = std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(&fifo);
-    assert_eq!(plain.err().and_then(|error| error.raw_os_error()), Some(ENXIO), "a single try with no reader yet");
+    assert_eq!(
+        plain.err().and_then(|error| error.raw_os_error()),
+        Some(ENXIO),
+        "a single try with no reader yet"
+    );
     let reader = {
         let fifo = fifo.clone();
         std::thread::spawn(move || {
             // The reader the test makes comes late: nothing is ever sent, so this waits out its 150 ms.
-            let _ = std::sync::mpsc::channel::<()>().1.recv_timeout(Duration::from_millis(150));
+            let (keep_open, never) = std::sync::mpsc::channel::<()>();
+            let _ = never.recv_timeout(Duration::from_millis(150));
+            drop(keep_open);
             std::fs::File::open(fifo).map(drop)
         })
     };
