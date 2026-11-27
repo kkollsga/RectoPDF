@@ -43,7 +43,7 @@ impl<'a> Ink<'a> {
     }
 
     /// Whether the job is over: past its time or no longer wanted. Once it is, it stays so.
-    fn over(&mut self) -> bool {
+    pub(crate) fn over(&mut self) -> bool {
         if self.stopped_for.is_none() {
             self.stopped_for = if Instant::now() > self.deadline {
                 Some("out_of_time")
@@ -86,6 +86,10 @@ impl<'a> Ink<'a> {
 }
 
 impl InkSource for Ink<'_> {
+    fn over(&mut self) -> bool {
+        Ink::over(self)
+    }
+
     /// A page the worker couldn't answer for, past its deadline on a starved machine or with the worker gone, gets one more go with a fresh worker: otherwise every heading on it is dropped unseen, as one that can't be checked isn't kept (CI, 2026-11-11: five of six headings, on a loaded virtual machine).
     fn page(&mut self, page: u32) -> Option<PageInk> {
         if self.over() {

@@ -75,6 +75,10 @@ pub struct PageInk {
 pub trait InkSource {
     /// `None` if the page couldn't be read at all.
     fn page(&mut self, page: u32) -> Option<PageInk>;
+    /// Whether the job is over (past its time, or no longer wanted): asked before each heading, so a page of many headings is stopped inside it. Once true, it stays true.
+    fn over(&mut self) -> bool {
+        false
+    }
 }
 
 /// Most character comparisons looking for one heading on one page. A hostile page of two million `a`s and a heading of 240 of them would otherwise be half a billion. Past this the heading counts as not found.
@@ -100,36 +104,58 @@ fn shown(frame: PageFrame, x: f32, y: f32) -> (f32, f32, f32) {
     }
 }
 
+/// One of a page's letters, in reading order: the letter, whether it was hidden, where its centre is in the page's own coordinates (and as shown, for a turned page), and where its top is on
+/// the page as shown, with the shown height.
+struct PageLetter {
+    letter: char,
+    hidden: bool,
+    at: (f32, f32),
+    shown_at: (f32, f32),
+    top_shown: f32,
+    height: f32,
+}
+
+/// A page's letters, made once for all its headings.
+fn page_letters(page: &PageInk) -> Vec<PageLetter> {
+    let mut letters_in = Vec::new();
+    for (record, char_box) in page.chars.iter().zip(&page.boxes) {
+        let [left, bottom, right, top] = *char_box;
+        let (cx, cy) = ((left + right) / 2.0, (bottom + top) / 2.0);
+        let (sx, sy, _) = shown(page.frame, cx, cy);
+        let (_, top_shown, height) = shown(page.frame, left, top).max_by_y(shown(page.frame, right, bottom));
+        let hidden = record.has(CharRecord::NO_INK);
+        letters(record.ch().encode_utf8(&mut [0; 4]), |letter| {
+            letters_in.push(PageLetter {
+                letter,
+                hidden,
+                at: (cx, cy),
+                shown_at: (sx, sy),
+                top_shown,
+                height,
+            })
+        });
+    }
+    letters_in
+}
+
 /// Whether a heading can be seen where distillPDF found it, and how far down its page it is. PDFium's characters inside the heading's box must spell it, with ink under nearly all of them: some slack, since the check's padding is forgiving and its own measure flags 0.15% of real characters. A heading whose box holds nothing that spells it isn't kept, however it's spelled elsewhere on the page: a visible speck of the same words in a corner says nothing about the heading.
-fn seen_at(title: &str, bbox: [f32; 4], page: &PageInk) -> Option<u16> {
+fn seen_at(title: &str, bbox: [f32; 4], page_turned: bool, letters_in: &[PageLetter]) -> Option<u16> {
     let mut key = Vec::new();
     letters(title, |c| key.push(c));
     if key.is_empty() {
         return None;
     }
     let [x0, y0, x1, y1] = bbox;
-    let inside = |x: f32, y: f32| x >= x0.min(x1) - BOX_SLACK && x <= x0.max(x1) + BOX_SLACK && y >= y0.min(y1) - BOX_SLACK && y <= y0.max(y1) + BOX_SLACK;
-    // The page's letters in reading order, each with whether it was hidden, whether it's in the heading's box, and where its top is on the page as shown.
-    let mut letters_in: Vec<(char, bool, bool, f32, f32)> = Vec::new();
-    for (record, char_box) in page.chars.iter().zip(&page.boxes) {
-        let [left, bottom, right, top] = *char_box;
-        let (cx, cy) = ((left + right) / 2.0, (bottom + top) / 2.0);
-        // distillPDF's box is in the page's own coordinates on an upright page, which is all it finds headings on in 0.1.7. On a turned page it's taken in either, as there's nothing to test it on.
-        let (sx, sy, _) = shown(page.frame, cx, cy);
-        let in_box = inside(cx, cy) || (page.frame.turns & 3 != 0 && inside(sx, sy));
-        let (_, top_shown, height) = shown(page.frame, left, top).max_by_y(shown(page.frame, right, bottom));
-        let hidden = record.has(CharRecord::NO_INK);
-        letters(record.ch().encode_utf8(&mut [0; 4]), |c| {
-            letters_in.push((c, hidden, in_box, top_shown, height))
-        });
-    }
+    let inside = |(x, y): (f32, f32)| x >= x0.min(x1) - BOX_SLACK && x <= x0.max(x1) + BOX_SLACK && y >= y0.min(y1) - BOX_SLACK && y <= y0.max(y1) + BOX_SLACK;
+    // distillPDF's box is in the page's own coordinates on an upright page, which is all it finds headings on in 0.1.7. On a turned page it's taken in either, as there's nothing to test it on.
+    let in_box = |letter: &PageLetter| inside(letter.at) || (page_turned && inside(letter.shown_at));
     let mut comparisons = 0usize;
     if letters_in.len() < key.len() {
         return None;
     }
     // A heading that wraps has a box around its first line only, so it has to start in the box, and may go on past it.
     for start in 0..=letters_in.len() - key.len() {
-        if letters_in[start].0 != key[0] || !letters_in[start].2 {
+        if letters_in[start].letter != key[0] || !in_box(&letters_in[start]) {
             continue;
         }
         comparisons += key.len();
@@ -137,10 +163,10 @@ fn seen_at(title: &str, bbox: [f32; 4], page: &PageInk) -> Option<u16> {
             return None;
         }
         let window = &letters_in[start..start + key.len()];
-        if window.iter().zip(&key).all(|((c, ..), k)| c == k) && window.iter().filter(|(_, hidden, ..)| *hidden).count() * 10 <= key.len() {
+        if window.iter().zip(&key).all(|(one, k)| one.letter == *k) && window.iter().filter(|one| one.hidden).count() * 10 <= key.len() {
             let (top, height) = window
                 .iter()
-                .fold((f32::MIN, 0.0f32), |(top, height), (.., at, of)| (top.max(*at), height.max(*of)));
+                .fold((f32::MIN, 0.0f32), |(top, height), one| (top.max(one.top_shown), height.max(one.height)));
             let place = if height > 0.0 && top.is_finite() {
                 ((height - top) / height).clamp(0.0, 1.0)
             } else {
@@ -172,18 +198,25 @@ pub fn keep_visible(headings: Headings, ink: &mut dyn InkSource) -> Generated {
         pages_failed: headings.pages_failed,
         ..Generated::default()
     };
-    // The page being looked at, or `None` for one that couldn't be checked.
-    let mut current: Option<(u32, Option<PageInk>)> = None;
+    // The page being looked at, with its letters made once, or `None` for one that couldn't be checked.
+    let mut current: Option<(u32, Option<(bool, Vec<PageLetter>)>)> = None;
     for found in headings.found {
+        // Between headings, not only between pages: a page of thousands of them is a long time.
+        if ink.over() {
+            break;
+        }
         if current.as_ref().is_none_or(|(page, _)| *page != found.page) {
-            let read = ink.page(found.page).filter(|page| page.checked && page.boxes.len() == page.chars.len());
+            let read = ink
+                .page(found.page)
+                .filter(|page| page.checked && page.boxes.len() == page.chars.len())
+                .map(|page| (page.frame.turns & 3 != 0, page_letters(&page)));
             if read.is_none() {
                 generated.pages_not_checked += 1;
             }
             current = Some((found.page, read));
         }
-        let Some((_, Some(page))) = &current else { continue };
-        let Some(place) = found.bbox.and_then(|bbox| seen_at(&found.title, bbox, page)) else {
+        let Some((_, Some((turned, page)))) = &current else { continue };
+        let Some(place) = found.bbox.and_then(|bbox| seen_at(&found.title, bbox, *turned, page)) else {
             generated.hidden_dropped += 1;
             continue;
         };
@@ -279,6 +312,41 @@ mod tests {
         assert!((100..140).contains(&generated.entries[0].place), "{}", generated.entries[0].place);
     }
 
+    /// A source that is over from its second look on, and counts the looks.
+    struct Over {
+        page: Option<PageInk>,
+        looks: u32,
+    }
+
+    impl InkSource for Over {
+        fn page(&mut self, _page: u32) -> Option<PageInk> {
+            self.page.take()
+        }
+        fn over(&mut self) -> bool {
+            self.looks += 1;
+            self.looks > 1
+        }
+    }
+
+    /// Failure: a page of thousands of headings is checked to its end after the job's deadline has passed or it was cancelled, since the job's limits were looked at only between pages, and each heading costs a pass over the page's letters.
+    #[test]
+    fn a_job_that_is_over_stops_inside_a_page() {
+        let lines: Vec<(String, f32, bool)> = (0..50).map(|n| (format!("Heading {n}"), 700.0 - n as f32 * 14.0, false)).collect();
+        let lines: Vec<(&str, f32, bool)> = lines.iter().map(|(text, y, hidden)| (text.as_str(), *y, *hidden)).collect();
+        let found: Vec<Found> = lines.iter().map(|(text, y, _)| found(0, text, *y)).collect();
+        let mut source = Over { page: page(&lines), looks: 0 };
+        let generated = keep_visible(
+            Headings {
+                pages: 1,
+                found,
+                ..Headings::default()
+            },
+            &mut source,
+        );
+        assert_eq!(generated.entries.len(), 1, "the first heading was looked at and no other");
+        assert_eq!(source.looks, 2, "asked before the first heading, and before the second, which stopped it");
+    }
+
     /// Failure: a heading that wraps onto a second line is left out, as distillPDF's box is around its first line only.
     #[test]
     fn a_heading_that_wraps_is_kept() {
@@ -372,7 +440,7 @@ mod tests {
         let text = "a".repeat(200_000);
         let crowded = page(&[(&text, 300.0, false)]).unwrap();
         let started = std::time::Instant::now();
-        assert!(seen_at(&format!("{}b", "a".repeat(239)), [0.0, 0.0, 1e9, 1e9], &crowded).is_none());
+        assert!(seen_at(&format!("{}b", "a".repeat(239)), [0.0, 0.0, 1e9, 1e9], false, &page_letters(&crowded)).is_none());
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
     }
 

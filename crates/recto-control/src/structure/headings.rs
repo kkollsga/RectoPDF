@@ -72,7 +72,9 @@ impl HeadingsAnswer {
             return Err(BAD);
         }
         let page = line["page"].as_u64().and_then(|page| u32::try_from(page).ok()).filter(|page| *page < MAX_PAGES);
-        let page = page.filter(|page| *page < self.pages && self.last_page.is_none_or(|last| *page > last)).ok_or(BAD)?;
+        let page = page
+            .filter(|page| *page < self.pages && self.last_page.is_none_or(|last| *page > last))
+            .ok_or(BAD)?;
         let entries = line.get("found").and_then(Value::as_array).filter(|entries| !entries.is_empty()).ok_or(BAD)?;
         if self.found.len() + entries.len() > self.max_entries {
             return Err(BAD);
