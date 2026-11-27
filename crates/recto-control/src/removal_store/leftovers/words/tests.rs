@@ -141,3 +141,27 @@ fn a_waiting_save_is_said_to_be_in_this_folder_only_when_it_is() {
     });
     assert!(both.contains("in this folder") && both.contains("in 1 other folder."), "{both}");
 }
+
+/// Failure: a word the window's sheet shows is empty or a button's title repeats another's (two buttons that read the same), or a sentence a person reads
+/// shows the command's name in code marks, which a person doesn't read.
+#[test]
+fn the_sheets_words_are_set_and_a_person_reads_no_code_marks() {
+    let titles = [
+        MENU_TITLE,
+        OFFER_TITLE,
+        LOOKED_TITLE,
+        STOPPED_TITLE,
+        REFUSED_TITLE,
+        CANCEL,
+        OK,
+        LOOK_AGAIN,
+        COULDNT,
+        BUTTON,
+    ];
+    assert!(titles.iter().all(|word| !word.trim().is_empty()), "{titles:?}");
+    let mut distinct = titles.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), titles.len(), "{titles:?}");
+    assert!(!busy(Busy::Windowless).contains('`'), "{}", busy(Busy::Windowless));
+}

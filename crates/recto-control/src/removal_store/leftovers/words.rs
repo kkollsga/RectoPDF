@@ -48,8 +48,20 @@ impl Found {
     }
 }
 
-/// The button the window's sheet would have, and the one `recto` names in its answer.
+/// The button the window's sheet has, and the one `recto` names in its answer.
 pub const BUTTON: &str = "Move to Trash and Delete";
+
+/// The window's side of the same words: the Edit menu's row and the sheet over the window, every word Rust's.
+pub const MENU_TITLE: &str = "Clear Leftovers…";
+pub const OFFER_TITLE: &str = "Clear leftovers?";
+pub const LOOKED_TITLE: &str = "Clear Leftovers";
+pub const STOPPED_TITLE: &str = "Clear Leftovers didn't finish";
+pub const REFUSED_TITLE: &str = "Leftovers weren't cleared";
+pub const CANCEL: &str = "Cancel";
+pub const OK: &str = "OK";
+pub const LOOK_AGAIN: &str = "Look Again";
+/// What a sheet says of a failure it has no sentence of its own for: never the failure's text, which may carry a path or a document's words.
+pub const COULDNT: &str = "RectoPDF couldn't clear leftovers just now. Nothing was cleared.";
 
 fn n(count: u32, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
@@ -163,7 +175,7 @@ pub fn confirm_refusal(why: ConfirmRefusal) -> &'static str {
 pub fn busy(why: Busy) -> &'static str {
     match why {
         Busy::Installer => "An update is being installed. Try again in a moment. Nothing was cleared.",
-        Busy::Windowless => "A `recto session` is running. Try again in a moment. Nothing was cleared.",
+        Busy::Windowless => "A recto session is running. Try again in a moment. Nothing was cleared.",
         Busy::Starting => "RectoPDF is still tidying up after starting. Try again in a moment. Nothing was cleared.",
         Busy::BesideNewer => "A newer version of RectoPDF has been used on this Mac. Clear leftovers from that version. Nothing was cleared.",
     }
