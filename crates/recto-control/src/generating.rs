@@ -420,14 +420,28 @@ impl Runner for HelperProcess {
     }
 }
 
+/// The bytes up to the first newline, and what's after it, if there was one.
+fn split_line(bytes: &[u8]) -> (&[u8], Option<&[u8]>) {
+    match bytes.iter().position(|byte| *byte == b'\n') {
+        Some(end) => (&bytes[..end], Some(&bytes[end + 1..])),
+        None => (bytes, None),
+    }
+}
+
 /// What the helper said, believing nothing it hasn't checked: a report line, and for a finished job the contents, read as the kept file is read.
 pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
-    let mut lines = said.splitn(2, |byte| *byte == b'\n');
-    let Some(report) = lines
-        .next()
-        .and_then(|line| serde_json::from_slice::<Value>(line).ok())
-        .filter(Value::is_object)
-    else {
+    let object = |line: &[u8]| serde_json::from_slice::<Value>(line).ok().filter(Value::is_object);
+    let (first_line, mut rest) = split_line(said);
+    let mut first = object(first_line);
+    // The helper says hello first (`{"state":"hello","walled":…}`), before it reads its job. One line is skipped, and only that: its `walled` goes on with the numbers.
+    let mut walled = None;
+    if first.as_ref().is_some_and(|line| line["state"] == "hello") {
+        walled = first.as_ref().and_then(|line| line["walled"].as_bool());
+        let (line, after) = split_line(rest.unwrap_or_default());
+        first = object(line);
+        rest = after;
+    }
+    let Some(report) = first else {
         return (Outcome::Failed("helper_stopped".into()), Value::Null);
     };
     let code = || {
@@ -439,8 +453,7 @@ pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
             .to_string()
     };
     let outcome = match report["state"].as_str() {
-        Some("ready") => match lines
-            .next()
+        Some("ready") => match rest
             .map(|line| line.strip_suffix(b"\n").unwrap_or(line))
             .map(|line| Generated::decode(line, key))
         {
@@ -463,6 +476,10 @@ pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
                 .collect()
         })
         .unwrap_or_default();
+    let mut numbers = numbers;
+    if let Some(walled) = walled {
+        numbers.insert("walled".into(), Value::Bool(walled));
+    }
     (outcome, Value::Object(numbers))
 }
 
@@ -630,6 +647,31 @@ mod tests {
         }
         let (_, numbers) = read_answer(json!({ "state": "changed", "words": "anything", "n": 1 }).to_string().as_bytes(), key(1));
         assert_eq!(numbers, json!({ "n": 1 }), "only numbers are passed on");
+    }
+
+    /// Failure: the hello line a helper now prints first (`state: hello`) is read as the answer, so every job reads as `helper_stopped`; or a second one, or the hello of a helper that
+    /// says nothing else, is skipped too and what follows is believed; or `walled` is lost, and nothing records whether a document was read behind the walls.
+    #[test]
+    fn a_helpers_hello_is_skipped_once_and_its_walled_goes_on() {
+        let hello = json!({ "state": "hello", "walled": true }).to_string();
+        let good = format!("{hello}\n{}\n{}\n", json!({ "state": "ready", "elapsed_ms": 5 }), sample().encode(key(1)));
+        let (outcome, numbers) = read_answer(good.as_bytes(), key(1));
+        assert!(matches!(outcome, Outcome::Ready(made) if *made == sample()));
+        assert_eq!(numbers, json!({ "elapsed_ms": 5, "walled": true }));
+        let twice = format!("{hello}\n{hello}\n{}\n", json!({ "state": "refused", "code": "no_pages" }));
+        assert!(
+            matches!(read_answer(twice.as_bytes(), key(1)).0, Outcome::Failed(code) if code == "helper_stopped"),
+            "a second hello isn't skipped"
+        );
+        assert!(
+            matches!(read_answer(hello.as_bytes(), key(1)).0, Outcome::Failed(code) if code == "helper_stopped"),
+            "a hello alone is no answer"
+        );
+        let (_, unwalled) = read_answer(
+            format!("{}\n{}", json!({ "state": "hello", "walled": false }), json!({ "state": "changed" })).as_bytes(),
+            key(1),
+        );
+        assert_eq!(unwalled, json!({ "walled": false }));
     }
 
     /// Failure: the time a job gets doesn't grow with the document, so a long one is always killed, or has no ceiling.

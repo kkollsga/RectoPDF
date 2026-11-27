@@ -22,7 +22,19 @@ pub struct Spawned {
 #[derive(Debug)]
 pub struct Helper(());
 
+pub const DOCUMENT_FD: i32 = 3;
+
+pub const DOCUMENT_PATH: &str = "/dev/fd/3";
+
 pub fn spawn(_exe: &Path, _env: &[(&str, &OsStr)], _priority: Priority) -> io::Result<Spawned> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+pub fn spawn_with_document(_exe: &Path, _env: &[(&str, &OsStr)], _priority: Priority, _document: &File) -> io::Result<Spawned> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+pub fn inherited_document() -> io::Result<File> {
     Err(io::ErrorKind::Unsupported.into())
 }
 

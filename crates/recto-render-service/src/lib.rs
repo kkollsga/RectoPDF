@@ -67,11 +67,11 @@ pub mod exit_code {
     pub const BAD_ARGUMENTS: i32 = 75;
     pub const PROTOCOL: i32 = 76;
     /// It's in an app bundle, or a release, and the App Sandbox isn't on: the helper is signed wrong. It read no document.
-    pub const NO_WALL: i32 = 77;
+    pub const NO_WALL: i32 = recto_platform::helper_app::exit::NO_WALL;
     /// Its walls couldn't go up: macOS gave it no Mach rights to drop. It read no document.
-    pub const NO_RIGHTS_TO_DROP: i32 = 78;
+    pub const NO_RIGHTS_TO_DROP: i32 = recto_platform::helper_app::exit::NO_RIGHTS_TO_DROP;
     /// Its walls couldn't go up: launchd still answered after the drop. It read no document.
-    pub const LAUNCHD_REACHABLE: i32 = 79;
+    pub const LAUNCHD_REACHABLE: i32 = recto_platform::helper_app::exit::LAUNCHD_REACHABLE;
 }
 
 /// Where the renderer lives in the app, and when it must be walled in. `docs/engineering/sandbox.md`.

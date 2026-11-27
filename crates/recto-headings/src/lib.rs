@@ -63,13 +63,18 @@ impl Failure {
     }
 }
 
-/// Reads a document's headings, a page at a time. `progress` hears each page as `(done, total)`. Nothing here starts a thread or holds more than a few pages.
-pub fn find_headings(path: &Path, scan: Scan, cancel: Option<&CancelToken>, progress: &mut dyn FnMut(u32, u32)) -> Result<Headings, Failure> {
+/// Opens a document with distillPDF's bounded engine: what every job of the helper starts with, by a path or by `/dev/fd/3` (the one descriptor a walled helper is given).
+pub fn open(path: &Path) -> Result<PdfDocument, Failure> {
     let Some(text_path) = path.to_str() else { return Err(Failure::CouldntRead) };
-    let document = PdfDocument::open_with_engine(text_path, Engine::LazyStrict).map_err(|error| match error {
+    PdfDocument::open_with_engine(text_path, Engine::LazyStrict).map_err(|error| match error {
         distillpdf::Error::Encrypted => Failure::NeedsPassword,
         _ => Failure::CouldntRead,
-    })?;
+    })
+}
+
+/// Reads a document's headings, a page at a time. `progress` hears each page as `(done, total)`. Nothing here starts a thread or holds more than a few pages.
+pub fn find_headings(path: &Path, scan: Scan, cancel: Option<&CancelToken>, progress: &mut dyn FnMut(u32, u32)) -> Result<Headings, Failure> {
+    let document = open(path)?;
     let mut on_page = |_: distillpdf::pages::PageProgress| {};
     let stats: DocStats = match scan {
         Scan::Full => document.scan_document(cancel, &mut on_page),
