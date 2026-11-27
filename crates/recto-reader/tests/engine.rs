@@ -526,7 +526,8 @@ fn the_fifo_helper_finds_a_reader_that_comes_late() {
     let reader = {
         let fifo = fifo.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150)); // the late reader the test makes
+            // The reader the test makes comes late: nothing is ever sent, so this waits out its 150 ms.
+            let _ = std::sync::mpsc::channel::<()>().1.recv_timeout(Duration::from_millis(150));
             std::fs::File::open(fifo).map(drop)
         })
     };
