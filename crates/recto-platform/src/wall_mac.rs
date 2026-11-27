@@ -75,16 +75,14 @@ pub fn sandbox_in_force() -> bool {
     in_a_sandbox() && std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some_and(|id| !id.is_empty())
 }
 
-/// For tests only: whether the kernel has process `pid` in any sandbox: 1 is, 0 isn't, -1 couldn't tell. `recto-headings` forbids unsafe code, so its test asks here. Asks; logs nothing.
-#[cfg(feature = "test-seams")]
+/// Whether the kernel has process `pid` in any sandbox: 1 is, 0 isn't, -1 couldn't tell. The host uses it for its check from outside before it writes a job to the structure helper, and tests use it too (`recto-headings` forbids unsafe code, so it asks here). Asks; logs nothing.
 pub fn pid_sandboxed(pid: u32) -> i32 {
     // SAFETY: a null operation with no filter asks only whether there's a sandbox, and passes nothing to read.
     unsafe { sandbox_check(pid as c_int, std::ptr::null(), 0) }
 }
 
-/// For tests only: what the kernel says of process `pid` reading `path` by its name (`file-read-data`, the path filter): 0 is allowed, 1 is denied, -1 couldn't tell. A descriptor
-/// the process was given isn't a name, so it isn't asked about here.
-#[cfg(feature = "test-seams")]
+/// What the kernel says of process `pid` reading `path` by its name (`file-read-data`, the path filter): 0 is allowed, 1 is denied, -1 couldn't tell. A descriptor
+/// the process was given isn't a name, so it isn't asked about here. The host uses it before a job, and tests use it too.
 pub fn pid_may_read(pid: u32, path: &std::path::Path) -> i32 {
     const SANDBOX_FILTER_PATH: c_int = 1;
     let Some(path) = path.to_str().and_then(|text| std::ffi::CString::new(text).ok()) else {

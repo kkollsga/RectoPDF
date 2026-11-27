@@ -359,6 +359,11 @@ codes! {
     SOURCE_CHANGED = "source_changed", Next::Says("Tell the user this file changed. `recto edits` shows what's unsaved. `recto discard` throws the edits away, which needs Full access if some are the user's, and opening the file again starts from what's there now.");
     STATE_REFUSED = "state_refused", Next::ByExit;
     STILL_BUSY = "still_busy", Next::ByExit;
+    STRUCTURE_INSIDE_ANOTHER_SANDBOX = "structure_inside_another_sandbox", Next::Says("Run `recto` outside the sandbox it's in, or ask the user to: the helper that reads a document's headings can't start inside another sandbox. Nothing needs reinstalling.");
+    STRUCTURE_NOT_SANDBOXED = "structure_not_sandboxed", Next::Says("Tell the user this copy of RectoPDF is signed wrong, so it won't make generated contents. Installing a release again fixes it. In a source tree, `tools/check.sh` or `app/build.sh` lays the helper out as it should be.");
+    STRUCTURE_START_REFUSED = "structure_start_refused", Next::Says("Tell the user macOS refused to start the helper that reads a document's headings. A security tool, or a sandbox `recto` runs in, may be blocking it.");
+    STRUCTURE_UNCONFIRMED = "structure_unconfirmed", Next::Says("Ask again later; if it keeps happening, tell the user RectoPDF couldn't confirm its heading reader was walled off on this Mac.");
+    STRUCTURE_WALLS_FAILED = "structure_walls_failed", Next::Says("Tell the user RectoPDF's heading reader can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling.");
     TARGET_EXISTS = "target_exists", Next::ByExit;
     TIMED_OUT = "timed_out", Next::ByExit;
     TOO_COMPLEX = "too_complex", Next::ByExit;

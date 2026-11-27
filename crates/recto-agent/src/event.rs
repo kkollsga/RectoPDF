@@ -74,7 +74,7 @@ pub enum Event {
         path: PathBuf,
         file: String,
     },
-    /// `elapsed_ms` and `helper_peak_bytes` are the helper's own numbers, passed on as it gave them.
+    /// `elapsed_ms` and `helper_peak_bytes` are the session's own measurements (from starting the helper to its end; the helper's footprint as watched from outside), never numbers the helper gave. `walled` is whether the session found the helper behind its walls before it gave it the document (`true`), or never got that far (`null`).
     ContentsGenerated {
         path: PathBuf,
         file: String,
@@ -82,6 +82,7 @@ pub enum Event {
         code: Option<String>,
         elapsed_ms: Value,
         helper_peak_bytes: Value,
+        walled: Value,
     },
     LevelChanged {
         level: &'static str,
@@ -181,8 +182,9 @@ impl Event {
                 code,
                 elapsed_ms,
                 helper_peak_bytes,
+                walled,
                 ..
-            } => json!({ "file": file, "state": state, "code": code, "elapsed_ms": elapsed_ms, "helper_peak_bytes": helper_peak_bytes }),
+            } => json!({ "file": file, "state": state, "code": code, "elapsed_ms": elapsed_ms, "helper_peak_bytes": helper_peak_bytes, "walled": walled }),
             Self::LevelChanged { level, was } => json!({ "level": level, "was": was }),
             Self::ViewSettingsChanged { paper, sidebar } => json!({ "paper": paper, "sidebar": sidebar }),
             Self::LayoutChanged { tab, layout } => json!({ "tab": tab.0, "layout": layout }),
@@ -337,6 +339,7 @@ pub(crate) mod tests {
                 code: None,
                 elapsed_ms: Value::Null,
                 helper_peak_bytes: Value::Null,
+                walled: Value::Null,
             },
             Event::LevelChanged { level: "off", was: "off" },
             Event::ViewSettingsChanged { paper: "auto", sidebar: true },

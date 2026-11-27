@@ -6,7 +6,7 @@
 
 | Crate | Status | Contract | Must not |
 |---|---|---|---|
-| `recto-headings` | **Started** | A helper process in a workspace of its own: finds one document's headings with distillPDF, keeps those it can see through a render worker's check, says them on stdout, and exits. Generated contents' format and folder are `recto_index::generated`, the verdict on a file's own `recto_core::verdict` | Write anything; be built with the main workspace, which would give the app distillPDF's lopdf features |
+| `recto-headings` | **Started** | A helper process in a workspace of its own, laid out as `RectoStructure.app` and walled as the renderer is: takes the document as descriptor 3 and one job on stdin (`count`, `headings`), finds the headings with distillPDF and says them, a line a page and one end (`answer.rs`), and exits. It has no render worker and never checks for hidden text: that is the session's (`recto_index::generated::visible`) Generated contents' format and folder are `recto_index::generated`, the verdict on a file's own `recto_core::verdict` | Write anything; open a path a job names; start a process; be built with the main workspace, which would give the app distillPDF's lopdf features |
 
 ## Dependencies
 

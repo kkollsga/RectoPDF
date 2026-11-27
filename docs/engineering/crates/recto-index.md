@@ -6,7 +6,7 @@
 
 | Crate | Status | Contract | Must not |
 |---|---|---|---|
-| `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. Selecting: a page's text with its boxes as shown, hit-testing, words, lines, ranges and what's copied. The page-text corpus on disk: its format, its builder over any page source, its reader and eviction | Touch the UI; name a renderer |
+| `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. Selecting: a page's text with its boxes as shown, hit-testing, words, lines, ranges and what's copied. The page-text corpus on disk: its format, its builder over any page source, its reader and eviction | Touch the UI; name a renderer `generated::visible` is the pure half of the check for hidden text (what distillPDF found, which of it can be seen, running heads, the cap on a line of the structure helper's answer), moved from `recto-headings`; `CorpusKey::of_open` is a key from a file already open, for the file the structure helper is given. |
 
 ## Per-item sizes
 

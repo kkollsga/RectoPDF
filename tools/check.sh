@@ -607,6 +607,9 @@ run() {
   stage workers
   cargo build --locked -p recto-render-service -p recto-indexer
   cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --bin recto-headings
+  # The structure helper is only ever started walled, laid out as RectoStructure.app (S6b): tests find it at target/Helpers, three folders up from a test binary, as the app's own build lays it
+  # out in Contents/Helpers. Signed ad hoc; the script's own layout and check say when it isn't right. Skipped by a check-test stub tree, which has no script.
+  if [ -x app/render-helper.sh ]; then app/render-helper.sh --layout-structure "${CARGO_TARGET_DIR:-target}" "${CARGO_TARGET_DIR:-target}/debug/recto-headings" >/dev/null; fi
   stage headings-tests
   [ "$runs_core" = 0 ] || cargo test --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}"
   # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.

@@ -18,6 +18,7 @@ pub mod record_store;
 pub mod removal_store;
 pub mod server;
 pub mod state;
+pub mod structure;
 pub mod terminal;
 
 pub use state::StatePaths;

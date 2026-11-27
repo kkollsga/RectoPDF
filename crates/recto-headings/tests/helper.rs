@@ -1,7 +1,7 @@
-//! The real helper process, on generated PDFs, the way the session runs it: a job on stdin, two lines back on stdout. The render worker has to be built beside it, as `tools/check.sh` does.
+//! The real helper process, on generated PDFs, the way the session runs it: the document on descriptor 3, a job on stdin, a line a page and one end back on stdout. Run bare, from `target/`: the walled one is `tests/sandbox.rs`, and what the session does with the answer (the check for hidden text) is `recto-control`'s `tests/structure.rs`.
 
 use recto_index::corpus::CorpusKey;
-use recto_index::generated::Generated;
+use recto_index::generated::visible::MAX_LINE_BYTES;
 use recto_platform::helper::{self, Helper, Priority};
 use recto_testpdf::TempPdf;
 use serde_json::{Value, json};
@@ -14,39 +14,49 @@ mod hello;
 use hello::after_hello;
 use std::time::{Duration, Instant};
 
-fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Option<Generated>, Duration) {
+/// What the helper said after its hello, one job.
+struct Run {
+    /// Each line, as JSON.
+    lines: Vec<Value>,
+    elapsed: Duration,
+}
+
+impl Run {
+    /// The last thing it said: the end line, a refusal, or nothing.
+    fn last(&self) -> &Value {
+        self.lines.last().unwrap_or(&Value::Null)
+    }
+}
+
+/// The `headings` job as the session sends it, on the document given on descriptor 3.
+fn run(path: &std::path::Path, close_stdin: bool) -> Run {
     let started = Instant::now();
+    let document = std::fs::File::open(path).unwrap();
     let helper::Spawned {
         mut child,
         mut stdin,
         mut stdout,
-    } = helper::spawn(
+    } = helper::spawn_with_document(
         std::path::Path::new(env!("CARGO_BIN_EXE_recto-headings")),
         &[("MallocLargeCache", std::ffi::OsStr::new("0"))],
         Priority::Inherited,
+        &document,
     )
     .unwrap();
-    writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "memory_limit": 512u64 << 20 })).unwrap();
+    writeln!(stdin, "{}", json!({ "kind": "headings", "memory_limit": 512u64 << 20 })).unwrap();
     let held_open = (!close_stdin).then_some(stdin);
     let mut said = String::new();
     stdout.read_to_string(&mut said).unwrap();
     let _ = child.wait();
     drop(held_open);
-    let mut lines = after_hello(&said).lines();
-    let report: Value = lines.next().and_then(|line| serde_json::from_str(line).ok()).unwrap_or(Value::Null);
-    let generated = lines.next().map(|line| Generated::decode(line.as_bytes(), key).unwrap());
-    (report, generated, started.elapsed())
-}
-
-/// Failure: a file replaced after it was asked for gets the old version's headings, or the new one's under the old key.
-#[test]
-fn a_file_that_isnt_the_one_asked_for_gets_nothing() {
-    let pdf = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    std::fs::write(&pdf.0, recto_testpdf::text_lines(&["not even a PDF now"])).unwrap();
-    let (report, generated, _) = run(&pdf.0, key, false);
-    assert_eq!(report["state"], "changed", "{report}");
-    assert!(generated.is_none());
+    let lines = after_hello(&said)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or(Value::Null))
+        .collect();
+    Run {
+        lines,
+        elapsed: started.elapsed(),
+    }
 }
 
 /// Failure: something that isn't a PDF, or one distillPDF's bounded reader refuses, makes the helper panic or hang, rather than say it couldn't be read.
@@ -54,11 +64,9 @@ fn a_file_that_isnt_the_one_asked_for_gets_nothing() {
 fn what_cant_be_read_is_refused_plainly() {
     for (name, bytes) in [("junk.pdf", b"%PDF-1.7 this is not really a PDF".to_vec()), ("empty.pdf", Vec::new())] {
         let pdf = TempPdf::new(name, &bytes);
-        let key = CorpusKey::of_file(&pdf.0).unwrap();
-        let (report, generated, elapsed) = run(&pdf.0, key, false);
-        assert_eq!(report["state"], "refused", "{name}: {report}");
-        assert!(generated.is_none());
-        assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
+        let run = run(&pdf.0, false);
+        assert_eq!((run.lines.len(), run.last()["state"].as_str()), (1, Some("refused")), "{name}: {:?}", run.lines);
+        assert!(run.elapsed < Duration::from_secs(30), "{:?}", run.elapsed);
     }
 }
 
@@ -66,10 +74,10 @@ fn what_cant_be_read_is_refused_plainly() {
 #[test]
 fn a_form_bomb_ends() {
     let pdf = TempPdf::new("bomb.pdf", &recto_testpdf::form_bomb());
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (report, _, elapsed) = run(&pdf.0, key, false);
+    let run = run(&pdf.0, false);
+    let report = run.last();
     assert!(matches!(report["state"].as_str(), Some("ready" | "refused")), "{report}");
-    assert!(elapsed < Duration::from_secs(60), "{elapsed:?}");
+    assert!(run.elapsed < Duration::from_secs(60), "{:?}", run.elapsed);
     assert!(report["helper_peak_bytes"].as_u64().is_none_or(|peak| peak < 512 << 20), "{report}");
 }
 
@@ -79,77 +87,58 @@ fn a_form_bomb_ends() {
 #[test]
 fn it_goes_when_its_stdin_closes() {
     let pdf = TempPdf::new("bomb.pdf", &recto_testpdf::form_bomb());
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (report, generated, elapsed) = run(&pdf.0, key, true);
-    assert_eq!((report, generated), (Value::Null, None), "it worked on after its stdin closed, for {elapsed:?}");
-    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
-}
-
-/// Failure: a heading set so no one can see it reaches the generated contents. Every way in `recto_testpdf::HIDDEN_HEADINGS`, including the four a review got through: no width (`0 Tz`), invisible glyphs read as a space by `/ActualText`, white text over a paragraph, and white text whose words are also in a visible speck in a corner. And every visible heading stays.
-#[test]
-fn no_way_of_hiding_a_heading_gets_it_into_the_contents() {
-    for (name, hidden) in recto_testpdf::HIDDEN_HEADINGS {
-        let pdf = TempPdf::new(
-            &format!("{name}.pdf"),
-            &recto_testpdf::headings_document_with(hidden, [0.0, 0.0, 612.0, 792.0], ""),
-        );
-        let key = CorpusKey::of_file(&pdf.0).unwrap();
-        let (report, generated, _) = run(&pdf.0, key, false);
-        assert_eq!(report["state"], "ready", "{name}: {report}");
-        let generated = generated.expect("contents");
-        let titles: Vec<String> = generated.entries.iter().map(|entry| entry.title.clone()).collect();
-        assert!(titles.iter().all(|title| !title.contains("HIDDEN")), "{name}: {titles:?}");
-        assert_eq!(
-            titles,
-            ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"],
-            "{name}"
-        );
-        // Each at its page, near its top, and what was found is what's kept and what was left out as hidden: distillPDF may take a hidden line for a
-        // heading, and then it's left out here; should it stop finding them, nothing's left out, and this still holds.
-        let pages: Vec<u32> = generated.entries.iter().map(|entry| entry.page).collect();
-        assert_eq!(pages, [0, 1, 2, 3, 4, 5], "{name}");
-        assert!(generated.entries.iter().all(|entry| entry.place < 200), "{name}: {:?}", generated.entries);
-        assert_eq!(
-            report["found"].as_u64(),
-            Some(titles.len() as u64 + u64::from(generated.hidden_dropped)),
-            "{name}: {report}"
-        );
-    }
-}
-
-/// Failure: on a page whose media box doesn't start at 0, every heading is put at the top of its page, so going to one lands in the wrong place.
-#[test]
-fn place_is_right_on_a_media_box_that_doesnt_start_at_zero() {
-    let pdf = TempPdf::new("moved.pdf", &recto_testpdf::headings_document_with("", [0.0, 792.0, 612.0, 1584.0], ""));
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (report, generated, _) = run(&pdf.0, key, false);
-    let generated = generated.unwrap_or_else(|| panic!("{report}"));
-    assert_eq!(generated.entries.len(), 6, "{generated:?}");
-    // The headings' baseline is 72 points from the top of 792.
+    let run = run(&pdf.0, true);
     assert!(
-        generated.entries.iter().all(|entry| (60..140).contains(&entry.place)),
-        "{:?}",
-        generated.entries
+        run.lines.is_empty(),
+        "it worked on after its stdin closed, for {:?}: {:?}",
+        run.elapsed,
+        run.lines
     );
+    assert!(run.elapsed < Duration::from_secs(10), "{:?}", run.elapsed);
 }
 
-/// Failure: headings in heavy type, which cover more than half of each glyph's box, are taken for hidden text and left out, as a review's crafted file lost all six. Drawn with and without them, they add what anyone can see.
+/// Failure: the headings job says its answer in a shape the session doesn't read: lines out of page order, a line longer than the cap, an end line whose `found` isn't what the page lines held, or anything said after the end. On the six-page headings document: a line a page, pages strictly increasing, and one end.
 #[test]
-fn headings_in_heavy_type_stay() {
-    let pdf = TempPdf::new("bold.pdf", &recto_testpdf::bold_headings_document());
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (report, generated, _) = run(&pdf.0, key, false);
-    let titles: Vec<String> = generated
-        .unwrap_or_else(|| panic!("{report}"))
-        .entries
-        .iter()
-        .map(|entry| entry.title.clone())
-        .collect();
+fn the_headings_job_says_a_line_a_page_and_one_end() {
+    let pdf = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
+    let run = run(&pdf.0, false);
+    let (end, pages) = run.lines.split_last().expect("it said something");
+    assert_eq!(end["state"], "ready", "{:?}", run.lines);
     assert_eq!(
-        titles,
-        ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"],
-        "{report}"
+        (end["pages"].as_u64(), end["pages_failed"].as_u64(), end["truncated"].as_bool()),
+        (Some(6), Some(0), Some(false)),
+        "{end}"
     );
+    let mut last = None;
+    let mut sent = 0;
+    for line in pages {
+        let page = line["page"].as_u64().unwrap_or_else(|| panic!("a page line: {line}"));
+        assert!(last.is_none_or(|before| page > before), "pages out of order at {page} after {last:?}");
+        last = Some(page);
+        assert_eq!(line.as_object().unwrap().len(), 2, "exactly a page and what was found: {line}");
+        sent += line["found"].as_array().unwrap_or_else(|| panic!("{line}")).len();
+        assert!(line.to_string().len() <= MAX_LINE_BYTES);
+    }
+    assert_eq!(pages.len(), 6, "a line for each page with a heading: {:?}", run.lines);
+    assert_eq!(end["found"].as_u64(), Some(sent as u64), "the end counts what the page lines held");
+}
+
+/// Failure: a bare helper, which has no walls to refuse a path with, opens a file by the name a job gives it, so a job that names one reads outside the document the host chose. It answers
+/// `unsupported_job` whatever the build, for the old shape (`file` and `key` alone) and for a `headings` job that also carries a `file`.
+#[test]
+fn a_job_that_names_a_path_is_refused_by_a_bare_helper_too() {
+    let pdf = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    for job in [
+        json!({ "file": pdf.0, "key": key.hex(), "memory_limit": 512u64 << 20 }),
+        json!({ "kind": "headings", "file": pdf.0, "key": key.hex() }),
+        json!({ "kind": "something else" }),
+    ] {
+        let (said, status) = converse(&job, Some(&std::fs::File::open(&pdf.0).unwrap()));
+        assert_eq!(said.len(), 2, "{job}: {said:?}");
+        assert_eq!(said[1], json!({ "state": "failed", "code": "unsupported_job" }), "{job}");
+        assert!(status.is_some_and(|status| status.success()), "{status:?}");
+    }
 }
 
 /// How long the helper has to be gone once it has a reason to go (stdin closed, memory limit passed), whatever its main thread is doing. It's a rule, not a measure of speed: the faults below hold the helper for 15 s or 30 s, so only going at once passes, and a starved machine has to be 10 times slower than this one to fail it by itself.
@@ -191,18 +180,19 @@ fn wait_for(child: &mut Helper, bound: Duration) -> Option<ExitStatus> {
 /// Starts the helper on a small valid PDF with `job`'s extra fields (a debug build reads the `test_` ones), closes its stdin or keeps it open, and waits at most `bound` for it to go.
 fn start_and_wait(extra: Value, close_stdin: bool, bound: Duration) -> Went {
     let pdf = TempPdf::new("small.pdf", &recto_testpdf::headings_document());
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let mut job = json!({ "file": pdf.0, "key": key.hex() });
+    let document = std::fs::File::open(&pdf.0).unwrap();
+    let mut job = json!({ "kind": "headings" });
     job.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
     let started = Instant::now();
     let helper::Spawned {
         mut child,
         mut stdin,
         mut stdout,
-    } = helper::spawn(
+    } = helper::spawn_with_document(
         std::path::Path::new(env!("CARGO_BIN_EXE_recto-headings")),
         &[("MallocLargeCache", std::ffi::OsStr::new("0"))],
         Priority::Inherited,
+        &document,
     )
     .unwrap();
     writeln!(stdin, "{job}").unwrap();
@@ -280,9 +270,8 @@ fn completed_jobs_do_not_leak_stdin() {
 fn stdin_fd_probe() {
     let count = || std::fs::read_dir("/dev/fd").unwrap().count();
     let pdf = TempPdf::new("invalid.pdf", b"not a PDF");
-    let key = CorpusKey::of_file(&pdf.0).unwrap();
     let before = count();
-    let _ = run(&pdf.0, key, false);
+    let _ = run(&pdf.0, false);
     assert_eq!(count(), before, "completed helper leaked a parent descriptor");
 }
 

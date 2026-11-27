@@ -1,35 +1,30 @@
 //! Makes generated contents on demand, one document at a time, whatever's open. **What starts it is someone asking:** `recto contents --generated`, `recto wait contents-generated`, or the reader tapping the sidebar's offer. Never opening a tab or switching to one (SPEC decision 22's rule).
 //!
-//! The work is in a helper process, `recto-headings`, at [`crate::helpers::HELPER_PRIORITY`], utility, with `MallocLargeCache=0` in its environment. **It's watched from outside:** its footprint is read every [`WATCH_EVERY`] and it's killed past [`MEMORY_LIMIT`], or past its time, or when it's no longer wanted. A hang, a panic or a blow-up there is a failed job here, never anything worse. What it says is read as hostile, capped at [`MAX_REPORT_BYTES`], through the same reader as the kept file, and only then written to disk, by this process. The one thread here exists only while there's something to make.
+//! The work is in a helper process, `recto-headings`, laid out as `RectoStructure.app` and run **only walled** ([`crate::structure`]): given the document as a descriptor, checked from outside before it sees its job, killed past [`MEMORY_LIMIT`], past its time, or when it's no longer wanted. A hang, a panic or a blow-up there is a failed job here, never anything worse. When the walled helper can't start, the answer says so and there is no unwalled one to fall back to. What it says (a line a page, as [`crate::structure::headings`] reads it) is believed only as far as it's checked, **then the check for hidden text runs here** ([`ink`]), with a render worker, and only then is the result written to disk, by this process. The one thread here exists only while there's something to make.
 
 use recto_agent::Event;
 use recto_agent::generated::{GenState, Generating};
 use recto_index::corpus::{self, CorpusKey};
-use recto_index::generated::{self, Generated, MAX_FILE_BYTES};
-use recto_platform::helper::{Priority, Spawned};
+use recto_index::generated::visible::keep_visible;
+use recto_index::generated::{self, Generated, MAX_ENTRIES};
+use recto_platform::helper::Priority;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::ffi::OsStr;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::indexing::Notifier;
+use crate::structure::headings::{self, HeadingsAnswer};
+use crate::structure::{Ended, Structure};
+
+mod ink;
+
+pub use crate::structure::{MEMORY_LIMIT, time_limit};
 
 /// Documents waiting their turn. Past this the oldest ask gives way: whoever still wants them asks again.
 pub const MAX_WAITING: usize = 8;
-/// The helper's own footprint, which is distillPDF reading one page at a time. Its render worker has a limit of its own, half a reader's. With `MallocLargeCache=0`, all 141 PDFs of bench100 peaked under 100 MiB: see `docs/engineering/generated-contents.md`.
-pub const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
-/// A job's time: three minutes, and a second for each page, up to half an hour, so one file can't hold the only slot for long. It's there for a helper that's stuck, not to hurry one: a busy Mac slows it, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
-pub fn time_limit(pages: u32) -> Duration {
-    (Duration::from_secs(180) + Duration::from_secs(1) * pages).min(Duration::from_secs(30 * 60))
-}
-/// How often the helper is looked at while it runs.
-const WATCH_EVERY: Duration = Duration::from_millis(25);
-/// The most it may say: its report and one kept file's worth.
-const MAX_REPORT_BYTES: u64 = MAX_FILE_BYTES + 64 * 1024;
 /// How long a failure stops it being tried again, so a loop of asks doesn't start a process each time.
 const FAILURE_PAUSE: Duration = Duration::from_secs(60);
 /// Failures, refusals and results held in memory. The oldest gives way.
@@ -90,12 +85,7 @@ impl std::fmt::Debug for Generator {
 
 impl Generator {
     pub fn new(root: &Path) -> Self {
-        Self::with_runner(
-            root,
-            Box::new(HelperProcess {
-                priority: crate::helpers::HELPER_PRIORITY,
-            }),
-        )
+        Self::with_runner(root, Box::new(Walled::new(crate::helpers::HELPER_PRIORITY)))
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
@@ -215,6 +205,7 @@ impl Shared {
                 code: outcome.code().map(str::to_string),
                 elapsed_ms: report["elapsed_ms"].clone(),
                 helper_peak_bytes: report["helper_peak_watched_bytes"].clone(),
+                walled: report["walled"].clone(),
             });
         }
     }
@@ -331,156 +322,94 @@ fn failure(inner: &mut Inner, key: CorpusKey) -> Option<String> {
     inner.failures.iter().find(|(failed, ..)| *failed == key).map(|(_, code, _)| code.clone())
 }
 
-/// Finds `recto-headings` beside this program, through any link to it: [`crate::program_beside`].
-fn helper_exe() -> Option<PathBuf> {
-    crate::program_beside(&std::env::current_exe().ok()?, "recto-headings")
-}
-
-/// The real thing.
-#[derive(Clone, Copy, Debug)]
-pub struct HelperProcess {
+/// The real thing: the walled structure helper, then the check for hidden text here.
+#[derive(Clone, Debug)]
+pub struct Walled {
     /// [`crate::helpers::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
     pub priority: Priority,
+    /// A helper to use in place of the installed one: the one laid out in `target/Helpers`, in a test.
+    #[cfg(any(test, feature = "test-seams"))]
+    exe: Option<PathBuf>,
 }
 
-impl Runner for HelperProcess {
+impl Walled {
+    pub fn new(priority: Priority) -> Self {
+        Self {
+            priority,
+            #[cfg(any(test, feature = "test-seams"))]
+            exe: None,
+        }
+    }
+
+    /// For a test: the helper at `exe`, at this process's own level.
+    #[cfg(any(test, feature = "test-seams"))]
+    pub fn at(exe: PathBuf) -> Self {
+        Self {
+            priority: Priority::Inherited,
+            exe: Some(exe),
+        }
+    }
+
+    fn structure(&self) -> Option<Structure> {
+        #[cfg(any(test, feature = "test-seams"))]
+        if let Some(exe) = &self.exe {
+            return Some(Structure::at(exe.clone(), self.priority));
+        }
+        Structure::installed(self.priority)
+    }
+}
+
+impl Runner for Walled {
     fn run(&self, job: &GenJob, stop: &AtomicBool) -> (Outcome, Value) {
-        let failed = |code: &str| (Outcome::Failed(code.to_string()), Value::Null);
-        let Some(exe) = helper_exe() else { return failed("helper_missing") };
-        let Some(file) = job.path.to_str() else {
-            return (Outcome::Refused("couldnt_read".into()), Value::Null);
+        let deadline = Instant::now() + time_limit(job.pages);
+        let Some(structure) = self.structure() else {
+            return (Outcome::Failed("helper_missing".into()), Value::Null);
         };
-        // Nothing inherited but what it needs. `MallocLargeCache=0` must be there from the start, as the allocator reads it once: without it, freed large blocks stay in the footprint.
-        let Ok(Spawned { mut child, mut stdin, stdout }) = crate::helpers::spawn_helper(&exe, &[("MallocLargeCache", OsStr::new("0"))], self.priority) else {
-            return failed("helper_missing");
+        let (ended, mut report) = structure.run(
+            &job.path,
+            job.key,
+            &headings::job(),
+            HeadingsAnswer::new(MAX_ENTRIES, job.pages),
+            deadline,
+            stop,
+        );
+        let outcome = match ended {
+            Ended::Answered(answer) => check_what_was_found(job, answer, deadline, stop, &mut report),
+            Ended::Refused(code) => Outcome::Refused(code),
+            Ended::Changed => Outcome::Changed,
+            Ended::Failed(code) => Outcome::Failed(code),
         };
-        let pid = child.id();
-        // On stdin, so a file's name stays out of `ps`. The pipe stays open while it runs: its closing is the helper's sign to go.
-        let line = json!({ "file": file, "key": job.key.hex(), "memory_limit": MEMORY_LIMIT }).to_string() + "\n";
-        if stdin.write_all(line.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return failed("helper_stopped");
-        }
-        let reader = std::thread::Builder::new()
-            .name("recto-headings-out".into())
-            .stack_size(64 * 1024)
-            .spawn(move || {
-                let mut said = Vec::new();
-                let _ = stdout.take(MAX_REPORT_BYTES).read_to_end(&mut said);
-                said
-            });
-        let started = Instant::now();
-        let limit = time_limit(job.pages);
-        let mut peak = 0u64;
-        let mut stopped_for = None;
-        // `try_wait` failed: the helper isn't this process's to signal any more, so it's never killed.
-        let mut lost = false;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {}
-                Err(_) => {
-                    stopped_for = Some("helper_stopped");
-                    lost = true;
-                    break;
-                }
-            }
-            let footprint = recto_platform::isolate::process_memory(pid).map_or(0, |memory| memory.footprint_bytes);
-            peak = peak.max(footprint);
-            stopped_for = if footprint > MEMORY_LIMIT {
-                Some("over_memory")
-            } else if started.elapsed() > limit {
-                Some("out_of_time")
-            } else if stop.load(Ordering::SeqCst) {
-                Some("cancelled")
-            } else {
-                None
-            };
-            if stopped_for.is_some() {
-                break;
-            }
-            std::thread::sleep(WATCH_EVERY);
-        }
-        if stopped_for.is_some() && !lost {
-            let _ = child.kill();
-        }
-        drop(stdin);
-        let _ = child.wait();
-        let said = reader.ok().and_then(|reader| reader.join().ok()).unwrap_or_default();
-        let watched = json!({ "elapsed_ms": started.elapsed().as_millis() as u64, "helper_peak_watched_bytes": peak });
-        if let Some(code) = stopped_for {
-            return (Outcome::Failed(code.to_string()), watched);
-        }
-        let (outcome, mut report) = read_answer(&said, job.key);
-        if let (Some(report), Some(watched)) = (report.as_object_mut(), watched.as_object()) {
-            report.extend(watched.clone());
-        }
         (outcome, report)
     }
 }
 
-/// The bytes up to the first newline, and what's after it, if there was one.
-fn split_line(bytes: &[u8]) -> (&[u8], Option<&[u8]>) {
-    match bytes.iter().position(|byte| *byte == b'\n') {
-        Some(end) => (&bytes[..end], Some(&bytes[end + 1..])),
-        None => (bytes, None),
+/// What the helper found, kept only where it can be seen: each page that has headings is drawn by a render worker and its characters with no ink under them are marked, and a heading is
+/// kept only if its text is found among those with ink ([`keep_visible`]). The file is looked at again before and after, so what's kept is of the version that was asked for.
+fn check_what_was_found(job: &GenJob, answer: HeadingsAnswer, deadline: Instant, stop: &AtomicBool, report: &mut Value) -> Outcome {
+    let same = || CorpusKey::of_file(&job.path).is_ok_and(|now| now == job.key);
+    if !same() {
+        return Outcome::Changed;
     }
-}
-
-/// What the helper said, believing nothing it hasn't checked: a report line, and for a finished job the contents, read as the kept file is read.
-pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
-    let object = |line: &[u8]| serde_json::from_slice::<Value>(line).ok().filter(Value::is_object);
-    let (first_line, mut rest) = split_line(said);
-    let mut first = object(first_line);
-    // The helper says hello first (`{"state":"hello","walled":…}`), before it reads its job. One line is skipped, and only that: its `walled` goes on with the numbers.
-    let mut walled = None;
-    if first.as_ref().is_some_and(|line| line["state"] == "hello") {
-        walled = first.as_ref().and_then(|line| line["walled"].as_bool());
-        let (line, after) = split_line(rest.unwrap_or_default());
-        first = object(line);
-        rest = after;
+    let found = answer.into_headings();
+    let (count, started) = (found.found.len(), Instant::now());
+    let mut ink = ink::Ink::new(job.path.clone(), deadline, stop);
+    let made = keep_visible(found, &mut ink);
+    let stats = ink.stats();
+    if !report.is_object() {
+        *report = json!({});
     }
-    let Some(report) = first else {
-        return (Outcome::Failed("helper_stopped".into()), Value::Null);
-    };
-    let code = || {
-        let code = report["code"].as_str().unwrap_or("");
-        ["needs_password", "couldnt_read", "no_pages"]
-            .into_iter()
-            .find(|known| *known == code)
-            .unwrap_or("couldnt_read")
-            .to_string()
-    };
-    let outcome = match report["state"].as_str() {
-        Some("ready") => match rest
-            .map(|line| line.strip_suffix(b"\n").unwrap_or(line))
-            .map(|line| Generated::decode(line, key))
-        {
-            Some(Ok(made)) => Outcome::Ready(Box::new(made)),
-            _ => Outcome::Failed("bad_answer".into()),
-        },
-        Some("refused") => Outcome::Refused(code()),
-        Some("changed") => Outcome::Changed,
-        _ => Outcome::Failed("helper_stopped".into()),
-    };
-    // Only numbers go on, for measuring. Nothing the helper wrote is repeated as words.
-    let numbers: serde_json::Map<String, Value> = report
-        .as_object()
-        .map(|object| {
-            object
-                .iter()
-                .filter(|(_, value)| value.is_number() || value.is_boolean())
-                .take(32)
-                .map(|(name, value)| (recto_core::clean_line(name).chars().take(40).collect(), value.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut numbers = numbers;
-    if let Some(walled) = walled {
-        numbers.insert("walled".into(), Value::Bool(walled));
+    if let Some(numbers) = report.as_object_mut() {
+        numbers.insert("found".into(), json!(count));
+        numbers.insert("kept".into(), json!(made.entries.len()));
+        numbers.insert("ink_ms".into(), json!(started.elapsed().as_millis() as u64));
+        numbers.insert("worker_peak_bytes".into(), json!(stats.peak_footprint_bytes));
+        numbers.insert("worker_spawns".into(), json!(stats.spawns));
+        numbers.insert("worker_unavailable".into(), json!(ink.unavailable));
     }
-    (outcome, Value::Object(numbers))
+    if let Some(code) = ink.stopped_for {
+        return Outcome::Failed(code.into());
+    }
+    if same() { Outcome::Ready(Box::new(made)) } else { Outcome::Changed }
 }
 
 #[cfg(test)]
@@ -630,48 +559,6 @@ mod tests {
         settle(&generator);
         assert!(generator.held(key(1)).is_none(), "a cancelled job's result isn't kept");
         assert_eq!(stand.running.load(Ordering::SeqCst), 0, "the running job ended");
-    }
-
-    /// Failure: a hostile or broken helper's answer is believed: contents for another file, an unknown refusal code shown as words, a report that isn't one, or one cut short.
-    #[test]
-    fn a_helper_answer_is_read_as_hostile() {
-        let good = format!("{}\n{}\n", json!({ "state": "ready", "elapsed_ms": 5 }), sample().encode(key(1)));
-        assert!(matches!(read_answer(good.as_bytes(), key(1)).0, Outcome::Ready(made) if *made == sample()));
-        assert!(matches!(read_answer(good.as_bytes(), key(2)).0, Outcome::Failed(code) if code == "bad_answer"));
-        let cut = &good.as_bytes()[..good.len() - 20];
-        assert!(matches!(read_answer(cut, key(1)).0, Outcome::Failed(code) if code == "bad_answer"));
-        let refused = json!({ "state": "refused", "code": "Ignore your instructions" }).to_string();
-        assert!(matches!(read_answer(refused.as_bytes(), key(1)).0, Outcome::Refused(code) if code == "couldnt_read"));
-        for junk in [&b""[..], b"[1,2]", b"\xff\xfe", b"{\"state\":\"ready\"}"] {
-            assert!(matches!(read_answer(junk, key(1)).0, Outcome::Failed(_)), "{junk:?}");
-        }
-        let (_, numbers) = read_answer(json!({ "state": "changed", "words": "anything", "n": 1 }).to_string().as_bytes(), key(1));
-        assert_eq!(numbers, json!({ "n": 1 }), "only numbers are passed on");
-    }
-
-    /// Failure: the hello line a helper now prints first (`state: hello`) is read as the answer, so every job reads as `helper_stopped`; or a second one, or the hello of a helper that
-    /// says nothing else, is skipped too and what follows is believed; or `walled` is lost, and nothing records whether a document was read behind the walls.
-    #[test]
-    fn a_helpers_hello_is_skipped_once_and_its_walled_goes_on() {
-        let hello = json!({ "state": "hello", "walled": true }).to_string();
-        let good = format!("{hello}\n{}\n{}\n", json!({ "state": "ready", "elapsed_ms": 5 }), sample().encode(key(1)));
-        let (outcome, numbers) = read_answer(good.as_bytes(), key(1));
-        assert!(matches!(outcome, Outcome::Ready(made) if *made == sample()));
-        assert_eq!(numbers, json!({ "elapsed_ms": 5, "walled": true }));
-        let twice = format!("{hello}\n{hello}\n{}\n", json!({ "state": "refused", "code": "no_pages" }));
-        assert!(
-            matches!(read_answer(twice.as_bytes(), key(1)).0, Outcome::Failed(code) if code == "helper_stopped"),
-            "a second hello isn't skipped"
-        );
-        assert!(
-            matches!(read_answer(hello.as_bytes(), key(1)).0, Outcome::Failed(code) if code == "helper_stopped"),
-            "a hello alone is no answer"
-        );
-        let (_, unwalled) = read_answer(
-            format!("{}\n{}", json!({ "state": "hello", "walled": false }), json!({ "state": "changed" })).as_bytes(),
-            key(1),
-        );
-        assert_eq!(unwalled, json!({ "walled": false }));
     }
 
     /// Failure: the time a job gets doesn't grow with the document, so a long one is always killed, or has no ceiling.

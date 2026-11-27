@@ -3,6 +3,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+/// Where the built app keeps the structure helper, relative to its `Contents`: in a helper app of its own (S6b), no longer in `MacOS`.
+const STRUCTURE_HELPER: &str = "Helpers/RectoStructure.app/Contents/MacOS/recto-headings";
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -156,7 +159,12 @@ fn the_headings_helper_carries_no_find_text_cipher() {
     let Some(bundle) = built_bundle() else { return };
     let seal_marks: [&[u8]; 2] = [b"RECTOSL1", b"recto find text v4"];
     let carries = |name: &str| {
-        let bytes = std::fs::read(bundle.join("MacOS").join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let path = if name == "recto-headings" {
+            bundle.join(STRUCTURE_HELPER)
+        } else {
+            bundle.join("MacOS").join(name)
+        };
+        let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
         seal_marks
             .iter()
             .filter(|mark| bytes.windows(mark.len()).any(|window| window == **mark))
@@ -180,7 +188,12 @@ fn only_the_apps_own_program_in_the_bundle_reaches_the_keychain() {
         "the app's own executable doesn't reach the Keychain, so the look sees nothing"
     );
     for name in ["recto", "recto-indexer", "recto-headings", "recto-updater"] {
-        let found = keychain(&bundle.join("MacOS").join(name));
+        let program = if name == "recto-headings" {
+            bundle.join(STRUCTURE_HELPER)
+        } else {
+            bundle.join("MacOS").join(name)
+        };
+        let found = keychain(&program);
         assert!(found.is_empty(), "the app's {name} reaches the Keychain: {found:?}");
     }
     let helper = bundle.join("Helpers/RectoRender.app/Contents/MacOS");

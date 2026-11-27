@@ -26,7 +26,7 @@ const GOLDEN: &[(&str, &str)] = &[
     ("contents_generating", r#"{"event":"contents_generating","file":"cd34"}"#),
     (
         "contents_generated",
-        r#"{"code":"ok","elapsed_ms":120,"event":"contents_generated","file":"cd34","helper_peak_bytes":1048576,"state":"done"}"#,
+        r#"{"code":"ok","elapsed_ms":120,"event":"contents_generated","file":"cd34","helper_peak_bytes":1048576,"state":"done","walled":true}"#,
     ),
     ("level_changed", r#"{"event":"level_changed","level":"full","was":"control"}"#),
     ("view_changed settings", r#"{"event":"view_changed","paper":"warm","sidebar":true}"#),
@@ -110,6 +110,7 @@ fn made() -> Vec<(&'static str, Event)> {
                 code: Some("ok".into()),
                 elapsed_ms: json!(120),
                 helper_peak_bytes: json!(1_048_576),
+                walled: json!(true),
             },
         ),
         ("level_changed", Event::LevelChanged { level: "full", was: "control" }),

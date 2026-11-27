@@ -36,6 +36,12 @@ pub fn in_structure_helper(exe: Option<&Path>) -> bool {
     matches!(folders.as_slice(), [file, macos, contents, app, helpers] if *file == exe_name && macos == "MacOS" && contents == "Contents" && app == STRUCTURE_APP && helpers == "Helpers")
 }
 
+/// Whether the structure helper must put its walls up before it reads a document: in a release build always, and in any build when it is laid out in an app. The renderer's rule again
+/// (`recto-render-service`'s): a debug build run bare from `target/` has no bundle to take walls from, so it runs without, and the host reads that as `walled: false` and refuses it.
+pub fn walls_required(exe: Option<&Path>, release: bool) -> bool {
+    release || in_structure_helper(exe)
+}
+
 /// Exit codes a helper uses when its walls can't go up, the same numbers as the renderer's. The host reads them off the exit status; none is a crash. Each means no document was read.
 pub mod exit {
     /// The App Sandbox isn't on: the helper is signed wrong.
@@ -70,6 +76,10 @@ mod tests {
             assert!(!in_structure_helper(Some(Path::new(bare))), "{bare}");
         }
         assert!(in_structure_helper(None), "not knowing where it is fails closed");
+        let bare = Some(Path::new("/repo/target/debug/recto-headings"));
+        assert!(walls_required(bare, true), "a release build always needs its walls, wherever it is");
+        assert!(!walls_required(bare, false), "a bare debug build has none to put up");
+        assert!(walls_required(Some(bundled), false), "laid out in an app, any build needs them");
         assert_eq!(
             structure_helper(Path::new("/A.app/Contents/MacOS")).unwrap(),
             Path::new("/A.app/Contents/Helpers/RectoStructure.app/Contents/MacOS").join(format!("recto-headings{}", std::env::consts::EXE_SUFFIX))

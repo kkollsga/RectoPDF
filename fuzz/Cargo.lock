@@ -581,11 +581,13 @@ dependencies = [
 name = "recto-control"
 version = "0.1.3"
 dependencies = [
+ "getrandom",
  "libc",
  "recto-agent",
  "recto-core",
  "recto-index",
  "recto-platform",
+ "recto-render-service",
  "recto-session",
  "serde_json",
 ]

@@ -43,7 +43,6 @@ fi
 sign_app() {
     "$APP_DIR/render-helper.sh" --sign "$APP/Contents"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
-    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-headings"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
     if [ "$SIGN_IDENTITY" = - ]; then
@@ -98,7 +97,6 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
 cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
-cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
 cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
 # Every third-party component that ships, with its licence (tools/notices.py writes it; recto-cli's `notices` test holds it to the lockfiles).
 mkdir -p "$APP/Contents/Resources"
@@ -157,6 +155,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 # The renderer: the worker and the library `tools/pdfium.sh` checked, in their sandboxed helper, where `ServiceConfig::discover` looks first. Signed by sign_app below.
 "$APP_DIR/render-helper.sh" --layout "$APP/Contents" "$RUST_OUT/recto-render-service" "$REPO/target/pdfium/libpdfium.dylib"
+# The structure helper (generated contents): `recto-headings` in a sandboxed helper of its own, never in `MacOS`, since the session starts it only walled. Signed by sign_app below.
+"$APP_DIR/render-helper.sh" --layout-structure "$APP/Contents" "$RUST_OUT/recto-headings"
 sign_app
 "$APP_DIR/render-helper.sh" --check "$APP"
 echo "==> built $APP"

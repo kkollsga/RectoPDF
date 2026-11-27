@@ -772,6 +772,12 @@ mod tests {
         ("recto-agent/src/selecting.rs", 1, 0, "the characters a pick takes"),
         ("recto-app/src/core/proof_draw.rs", 1, 0, "a new version's own test page, no tab's"),
         (
+            "recto-control/src/generating/ink.rs",
+            1,
+            0,
+            "the characters and ink of each page that has a generated heading, for the check for hidden text: of the file as saved, which is what the contents are kept for, so no tab's set",
+        ),
+        (
             "recto-reader/src/engine/run.rs",
             1,
             1,

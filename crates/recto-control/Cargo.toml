@@ -20,6 +20,8 @@ recto-agent.workspace = true
 recto-core.workspace = true
 recto-index.workspace = true
 recto-platform.workspace = true
+# The check for hidden text in the session: the render worker draws each page that has headings (`generating/ink.rs`). Already in the tree through recto-agent.
+recto-render-service.workspace = true
 recto-session.workspace = true
 serde_json.workspace = true
 

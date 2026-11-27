@@ -5,7 +5,7 @@
 mod common;
 
 use common::app::{Run, app_path, chaptered, numbered, settle_guard_arg, still_running, wait_for};
-use common::{State, bin};
+use common::{Raw, State, bin};
 use recto_agent::{Level, exit};
 use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
 use serde_json::{Value, json};
@@ -204,6 +204,10 @@ fn the_sidebar_offers_generated_contents_and_labels_them() {
     let offered = run.report();
     assert_eq!(offered["app"]["contents"]["note"], "Generate contents", "{offered}");
     assert!(offered["app"]["contents"]["note_height"].as_f64().unwrap() > 0.0);
+    // Listening before the click, so the end of the job is seen as the app says it: made by a helper that was shown walled before it was given the document.
+    let mut events = Raw::connect(&run.state);
+    events.send(&json!({ "cmd": "watch", "events": ["contents"], "count": 2, "timeout_ms": job.as_millis() as u64 + 60_000 }).to_string());
+    assert_eq!(events.read().unwrap()["data"]["watching"], true);
     run.ok(&["qa", "click-row", "note"]);
     let deadline = std::time::Instant::now() + job;
     loop {
@@ -214,6 +218,18 @@ fn the_sidebar_offers_generated_contents_and_labels_them() {
             break;
         }
     }
+    let started = events.read().unwrap();
+    assert_eq!(started["data"]["event"], "contents_generating", "{started}");
+    let finished = events.read().unwrap();
+    assert_eq!(
+        (finished["data"]["event"].as_str(), finished["data"]["state"].as_str()),
+        (Some("contents_generated"), Some("ready")),
+        "{finished}"
+    );
+    assert_eq!(
+        finished["data"]["walled"], true,
+        "the helper wasn't shown walled before it was given the document: {finished}"
+    );
     let shown = wait_for(&run, |state| state["app"]["contents"]["note"] == "Generated contents");
     // What was left out and why, should any be: CI once showed five of the six with no word of which or why (2026-11-11).
     let made = run.ok(&["contents", "--generated"]);

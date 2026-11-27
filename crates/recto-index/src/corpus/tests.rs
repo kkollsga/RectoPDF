@@ -202,6 +202,19 @@ fn a_replaced_file_has_another_key_even_with_its_size_and_time_put_back() {
     assert_ne!(in_place, CorpusKey::of_file(&path).unwrap());
 }
 
+/// Failure: the key of the file the structure helper was given (`of_open`, the host's check before and after) isn't the key `of_file` makes of its name, so a document is always seen as changed; or it ignores a write in place, so a document edited while it is read is believed.
+#[test]
+fn the_key_of_an_open_file_is_the_key_of_its_path_and_moves_with_it() {
+    let temp = Temp::new();
+    let path = temp.file("doc.pdf", b"%PDF-1.7 the first version of it");
+    let mut file = File::options().read(true).write(true).open(&path).unwrap();
+    let before = CorpusKey::of_open(&file).unwrap();
+    assert_eq!(before, CorpusKey::of_file(&path).unwrap());
+    std::io::Write::write_all(&mut file, b"%PDF-1.7 the other version of it").unwrap();
+    assert_ne!(before, CorpusKey::of_open(&file).unwrap(), "an in-place write moves it");
+    assert_eq!(CorpusKey::of_open(&file).unwrap(), CorpusKey::of_file(&path).unwrap());
+}
+
 /// Failure: a file changed only in its first or last bytes keeps its key on a volume whose times don't move, because those bytes aren't really what's hashed, or it's only a matter of the sizes. Each part of what's hashed must move the key, and the samples must be the file's ends, with no byte counted twice.
 #[test]
 fn every_part_of_a_key_moves_it() {
