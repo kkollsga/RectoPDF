@@ -3,6 +3,7 @@
 //! listing tests of what a part lets other code reach share ([`surface`]), and the lines of a source outside its test items that every scan of shipping
 //! code reads ([`production`]), as this is the test-only crate every crate with such a test has already.
 
+pub mod blocks;
 pub mod production;
 pub mod surface;
 

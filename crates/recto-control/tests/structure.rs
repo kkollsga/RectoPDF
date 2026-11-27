@@ -6,7 +6,10 @@
 
 use recto_agent::generated::{GenState, Generating};
 use recto_control::generating::{GenJob, Generator, Outcome, Runner, Walled};
-use recto_control::structure::{Ended, Structure, headings};
+use recto_control::structure::blocks::{self, BlocksAnswer, PageStore};
+use recto_control::structure::{Answer, Ended, Said, Structure, headings};
+use recto_index::blocks::PageBlocks;
+use recto_index::blocks::map::Shape;
 use recto_index::corpus::CorpusKey;
 use recto_index::generated::{self, Generated};
 use recto_testpdf::TempPdf;
@@ -262,4 +265,130 @@ fn a_file_swapped_by_a_rename_while_it_is_read_is_changed() {
         std::fs::rename(&other, path).unwrap();
     });
     assert!(matches!(ended, Ended::Changed), "{ended:?}");
+}
+
+/// A store with no text for any page, that keeps the pages it was handed.
+#[derive(Default)]
+struct NoText(Vec<(u32, usize)>);
+
+impl PageStore for NoText {
+    fn text(&mut self, _page: u32, _chars: &mut Vec<char>) -> bool {
+        false
+    }
+
+    fn put(&mut self, page: &PageBlocks) -> Result<(), &'static str> {
+        self.0.push((page.page, page.blocks.len()));
+        Ok(())
+    }
+}
+
+/// Failure: the walled helper's blocks job, as the real runner reads it, says a page twice or none, gives candidates the session can't read (so every page maps nothing), counts a table as stored, or isn't the walled one. On the three-page blocks document with a store that has no text: every page is put once, in order, with no blocks stored (there is no text to find them in); candidates are counted by kind with the table among those not stored; and the numbers say walled.
+#[test]
+fn the_walled_helper_gives_blocks_for_every_page() {
+    let pdf = TempPdf::new("blocks.pdf", &recto_testpdf::blocks::blocks_document());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let stop = AtomicBool::new(false);
+    let (ended, numbers) = Structure::at(walled_helper(), recto_platform::helper::Priority::Inherited).run(
+        &pdf.0,
+        key,
+        &blocks::job(),
+        BlocksAnswer::new(NoText::default(), 3),
+        Instant::now() + Duration::from_secs(120),
+        &stop,
+    );
+    let Ended::Answered(answer) = ended else {
+        panic!("not answered: {ended:?} {numbers}")
+    };
+    let (store, tally) = answer.into_parts();
+    assert_eq!(
+        store.0.iter().map(|(page, _)| *page).collect::<Vec<_>>(),
+        [0, 1, 2],
+        "every page, once, in order"
+    );
+    assert!(store.0.iter().all(|(_, stored)| *stored == 0), "no text, nothing stored: {:?}", store.0);
+    assert_eq!((tally.pages, tally.pages_without_text), (3, 3));
+    assert!(numbers["candidates"].as_u64().is_some_and(|n| n > 0), "{numbers}");
+    assert!(
+        numbers["dropped_table"].as_u64().is_some_and(|n| n >= 1),
+        "the table is counted, never stored: {numbers}"
+    );
+    assert_eq!(numbers["stored"], 0);
+    assert_eq!(numbers["walled"], true, "{numbers}");
+    assert_eq!(numbers["pages_failed"], 0, "{numbers}");
+    for shape in [Shape::Paragraph, Shape::Heading, Shape::ListItem] {
+        assert!(
+            numbers[format!("dropped_{}", shape.name())].as_u64().is_some_and(|n| n > 0),
+            "{} among {numbers}",
+            shape.name()
+        );
+    }
+}
+
+/// The pages of a document, from the helper's own `count` job.
+struct Pages(Option<u32>);
+
+impl Answer for Pages {
+    fn take(&mut self, line: &[u8]) -> Result<Said, &'static str> {
+        let line: Value = serde_json::from_slice(line).map_err(|_| "bad_answer")?;
+        self.0 = line["pages"].as_u64().and_then(|pages| u32::try_from(pages).ok());
+        if line["state"] == "counted" && self.0.is_some() {
+            Ok(Said::End)
+        } else {
+            Err("bad_answer")
+        }
+    }
+}
+
+/// A measurement, not a test: the blocks job on the files named by `RECTO_BLOCKS_FILES` (separated by `:`), through the walled helper, with a store that has no text (so the mapping costs nothing and
+/// the helper's own work and the answer's size are what's measured). Prints, a file a line: wall, the helper's peak as the session watched it, the answer's bytes a page, the candidates by kind, what was cut
+/// and failed, and the time the answer spent. At utility priority, and again at normal when `RECTO_BLOCKS_NORMAL` is set.
+///
+/// `cargo test --release -p recto-control --test structure blocks_measure -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement"]
+fn blocks_measure() {
+    let files = std::env::var("RECTO_BLOCKS_FILES").expect("RECTO_BLOCKS_FILES: files separated by ':'");
+    let levels = if std::env::var_os("RECTO_BLOCKS_NORMAL").is_some() {
+        vec![
+            ("utility", recto_platform::helper::Priority::Utility),
+            ("normal", recto_platform::helper::Priority::Inherited),
+        ]
+    } else {
+        vec![("utility", recto_platform::helper::Priority::Utility)]
+    };
+    for file in files.split(':').filter(|file| !file.is_empty()) {
+        let path = PathBuf::from(file);
+        let key = CorpusKey::of_file(&path).unwrap();
+        for (name, priority) in &levels {
+            let structure = Structure::at(walled_helper(), *priority);
+            let stop = AtomicBool::new(false);
+            let until = || Instant::now() + Duration::from_secs(1800);
+            let count = serde_json::json!({ "kind": "count", "memory_limit": recto_control::structure::MEMORY_LIMIT });
+            let Ended::Answered(Pages(Some(pages))) = structure.run(&path, key, &count, Pages(None), until(), &stop).0 else {
+                panic!("no page count for {file}")
+            };
+            let started = Instant::now();
+            let (ended, numbers) = structure.run(&path, key, &blocks::job(), BlocksAnswer::new(NoText::default(), pages), until(), &stop);
+            let wall = started.elapsed();
+            let Ended::Answered(_) = ended else { panic!("{file}: {ended:?} {numbers}") };
+            let by_kind: Vec<String> = Shape::ALL
+                .iter()
+                .map(|shape| format!("{}={}", shape.name(), numbers[format!("dropped_{}", shape.name())]))
+                .collect();
+            let per_page = numbers["answer_bytes"].as_u64().unwrap_or(0) as f64 / f64::from(pages);
+            println!(
+                "BLOCKS {} [{name}] pages={pages} wall={:.2}s helper_peak_watched={:.1}MiB helper_peak_own={:.1}MiB answer_bytes/page={per_page:.0} candidates={} ({}) cut={} pages_failed={} map_ms={} distilled_ms={}",
+                path.file_name().unwrap().to_string_lossy(),
+                wall.as_secs_f64(),
+                numbers["helper_peak_watched_bytes"].as_f64().unwrap_or(0.0) / 1048576.0,
+                numbers["helper_peak_bytes"].as_f64().unwrap_or(0.0) / 1048576.0,
+                numbers["candidates"],
+                by_kind.join(" "),
+                numbers["cut"],
+                numbers["pages_failed"],
+                numbers["map_ms"],
+                numbers["distilled_ms"],
+            );
+        }
+    }
 }

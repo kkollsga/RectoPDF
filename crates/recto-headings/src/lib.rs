@@ -5,6 +5,7 @@
 //! **It only finds them.** Whether a heading can be seen, and not hidden text, is the session's to check (`recto_index::generated::visible`): it needs a render worker, which a helper walled off as the page drawer is can't start. What is found goes out a page a line ([`answer`]).
 
 pub mod answer;
+pub mod blocks;
 
 use distillpdf::model::BlockKind;
 use distillpdf::pages::{CancelToken, DocStats};

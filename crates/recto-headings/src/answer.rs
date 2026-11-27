@@ -33,16 +33,19 @@ pub fn page_line(page: u32, found: &[Found]) -> (String, usize) {
 
 /// The last line: how the read ended. `sent` is how many entries went out in page lines, which the session checks against what it received.
 pub fn end_line(headings: &Headings, sent: usize, truncated: bool, distilled_ms: u64, peak: Option<u64>) -> String {
-    json!({
+    let mut end = json!({
         "state": "ready",
         "pages": headings.pages,
         "pages_failed": headings.pages_failed,
         "truncated": truncated,
         "found": sent,
         "distilled_ms": distilled_ms,
-        "helper_peak_bytes": peak,
-    })
-    .to_string()
+    });
+    // Left out when it can't be read: the session believes numbers and bools only.
+    if let (Some(peak), Some(object)) = (peak, end.as_object_mut()) {
+        object.insert("helper_peak_bytes".into(), peak.into());
+    }
+    end.to_string()
 }
 
 #[cfg(test)]

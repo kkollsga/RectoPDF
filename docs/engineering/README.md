@@ -57,6 +57,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | Highlights | [`highlight.md`](highlight.md) |
 | References: `ref` and `resolve` | [`locator.md`](locator.md) |
 | Generated contents | [`generated-contents.md`](generated-contents.md) |
+| Blocks (the helper's job and the session's answer) | [`blocks.md`](blocks.md) |
 | The agent interface | [`agent-interface.md`](agent-interface.md) |
 | Slow mode | [`slow-mode.md`](slow-mode.md) |
 | One failure is enough: evidence, reruns, like-CI, main's CI | [`failures.md`](failures.md) |

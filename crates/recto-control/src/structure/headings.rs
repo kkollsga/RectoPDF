@@ -117,24 +117,6 @@ impl HeadingsAnswer {
         });
         Ok(Said::End)
     }
-
-    /// A refusal, a change or a failure: the only things said instead of an answer, and only as the first.
-    fn instead(&self, state: Option<&str>, line: &Map<String, Value>) -> Result<Said, &'static str> {
-        if self.lines != 0 {
-            return Err(BAD);
-        }
-        match state {
-            Some("refused") => {
-                let code = line.get("code").and_then(Value::as_str).unwrap_or("");
-                let known = ["needs_password", "couldnt_read", "no_pages"].into_iter().find(|known| *known == code);
-                Ok(Said::Refused(known.unwrap_or("couldnt_read").to_string()))
-            }
-            Some("changed") => Ok(Said::Changed),
-            // What it failed at is its own word for it, never repeated.
-            Some("failed") => Ok(Said::Failed("helper_stopped".into())),
-            _ => Err(BAD),
-        }
-    }
 }
 
 /// One entry of a page line, as believed.
@@ -171,7 +153,7 @@ impl Answer for HeadingsAnswer {
         } else {
             match line.get("state").and_then(Value::as_str) {
                 Some("ready") => self.end_line(line),
-                state => self.instead(state, line),
+                _ => super::instead(self.lines == 0, line),
             }
         };
         self.lines += 1;

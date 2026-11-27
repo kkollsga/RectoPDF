@@ -203,6 +203,19 @@ fn a_line_at_the_cap_is_parsed_and_over_it_is_not() {
     assert_eq!(read_all(&long, 10, 100).map(|_| ()), Err("bad_answer"));
 }
 
+/// Failure: the headings cap is not the one held (a larger cap, or the blocks job's 512 KiB, taken for it): the old test's `x` repeated is refused by any cap, so it can't tell. Here the line is a valid page line, padded with spaces JSON allows, so only its length decides: exactly the cap is believed, and a byte more is a bad answer.
+#[test]
+fn a_valid_headings_line_is_believed_at_the_cap_and_refused_a_byte_over() {
+    let line = page(0, &["A"]);
+    let padded = |len: usize| format!("{line}{}", " ".repeat(len - line.len()));
+    let (found, _) = read_all(&said(&[&padded(MAX_LINE_BYTES), &end(1, 1)]), 10, 100).expect("a valid line of exactly the cap is believed");
+    assert_eq!(found.found.len(), 1);
+    assert_eq!(
+        read_all(&said(&[&padded(MAX_LINE_BYTES + 1), &end(1, 1)]), 10, 100).map(|_| ()),
+        Err("bad_answer")
+    );
+}
+
 /// Failure: a helper's end line carries the names the session measures itself by (`walled`, `elapsed_ms`, `helper_peak_watched_bytes`), so a hostile helper writes its own proof of being
 /// walled and its own timings into the report. An end line that names any of them is a bad answer.
 #[test]

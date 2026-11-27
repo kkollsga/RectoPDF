@@ -16,12 +16,12 @@ impl Answer for Lines {
 }
 
 /// A folder of its own for stand-in helpers and what they leave, removed at the end.
-fn folder(name: &str) -> recto_testpdf::TempDir {
+pub(super) fn folder(name: &str) -> recto_testpdf::TempDir {
     recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-structure-{name}-"))
 }
 
 /// A stand-in helper: a shell script, started as the real one is.
-fn stand_in(folder: &Path, script: &str) -> std::path::PathBuf {
+pub(super) fn stand_in(folder: &Path, script: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = folder.join("stand-in");
     std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -29,12 +29,12 @@ fn stand_in(folder: &Path, script: &str) -> std::path::PathBuf {
     path
 }
 
-fn never() -> (Instant, AtomicBool) {
+pub(super) fn never() -> (Instant, AtomicBool) {
     (Instant::now() + Duration::from_secs(60), AtomicBool::new(false))
 }
 
 /// Whether process `pid` is still there, by the signal that touches nothing.
-fn alive(pid: u32) -> bool {
+pub(super) fn alive(pid: u32) -> bool {
     std::process::Command::new("/bin/kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())
@@ -113,20 +113,20 @@ fn a_line_is_read_up_to_its_cap_and_the_total_has_a_ceiling() {
     let mut budget = MAX_ANSWER_BYTES;
     let mut buf = Vec::new();
     let at_the_cap = [vec![b'a'; MAX_LINE_BYTES], vec![b'\n']].concat();
-    assert_eq!(next_line(&mut &at_the_cap[..], &mut buf, &mut budget), Ok(true));
+    assert_eq!(next_line(&mut &at_the_cap[..], &mut buf, &mut budget, MAX_LINE_BYTES), Ok(true));
     assert_eq!(buf.len(), MAX_LINE_BYTES);
     let over = [vec![b'a'; MAX_LINE_BYTES + 1], vec![b'\n']].concat();
-    assert_eq!(next_line(&mut &over[..], &mut buf, &mut budget), Err("bad_answer"));
+    assert_eq!(next_line(&mut &over[..], &mut buf, &mut budget, MAX_LINE_BYTES), Err("bad_answer"));
     assert!(buf.len() <= MAX_LINE_BYTES, "nothing past the cap is held: {}", buf.len());
     // Past the total: a budget of 10 takes a line of 9 and its newline, and not one of 10.
     let (mut tight, ok, long) = (10u64, b"123456789\nrest", b"1234567890\n");
-    assert_eq!(next_line(&mut &ok[..], &mut buf, &mut tight), Ok(true));
+    assert_eq!(next_line(&mut &ok[..], &mut buf, &mut tight, MAX_LINE_BYTES), Ok(true));
     assert_eq!(tight, 0);
     let mut tight = 10u64;
-    assert_eq!(next_line(&mut &long[..], &mut buf, &mut tight), Err("bad_answer"));
+    assert_eq!(next_line(&mut &long[..], &mut buf, &mut tight, MAX_LINE_BYTES), Err("bad_answer"));
     let mut whole = MAX_ANSWER_BYTES;
-    assert_eq!(next_line(&mut &b"cut off"[..], &mut buf, &mut whole), Err("bad_answer"));
-    assert_eq!(next_line(&mut &b""[..], &mut buf, &mut whole), Ok(false));
+    assert_eq!(next_line(&mut &b"cut off"[..], &mut buf, &mut whole, MAX_LINE_BYTES), Err("bad_answer"));
+    assert_eq!(next_line(&mut &b""[..], &mut buf, &mut whole, MAX_LINE_BYTES), Ok(false));
 }
 
 /// Failure: a 64 KiB line of `[` overflows the reader thread's stack in a debug build (serde_json's recursion needs more than 64 KiB there) and takes the whole app with it, instead of being

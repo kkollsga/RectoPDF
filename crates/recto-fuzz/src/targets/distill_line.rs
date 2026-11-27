@@ -1,17 +1,20 @@
 //! Hostile page lines from the block helper, and a hostile page to map them onto. The input is a page's text, a zero byte, then lines of JSON, one page each
 //! (`{"page":N,"blocks":[{"kind","level","box","text","continues"}]}`).
 //!
+//! The same lines also go through the session's reader, wrapped as a helper says them (a hello, the lines, an end that adds up) into `structure::blocks::read_all` with a store in memory: what is put is in page order and once, and what is stored and dropped adds up to what was said.
+//!
 //! What must hold: no panic or hang; every block is stored or counted as dropped (the unreadable too); what's stored is inside the page, in whole points and in order, overlaps nothing, is at
 //! most 512 blocks, and seals into a record that opens as the same blocks. And the rule itself, checked from the page and the candidate again: each stored block's letters are its candidate's
 //! letters, exactly, and a block the rule's second step placed was the one place on the page that overlapped no block stored before it.
 
+use recto_control::structure::blocks::{PageStore, read_all};
 use recto_core::match_letters;
 use recto_index::blocks::map::{PageLines, Step, map_line};
-use recto_index::blocks::{MAX_BLOCKS, MAX_LEVEL, codec};
+use recto_index::blocks::{MAX_BLOCKS, MAX_LEVEL, PageBlocks, codec};
 use recto_index::corpus::CorpusKey;
 use recto_index::seal::CorpusSeal;
 use recto_platform::find_key::FindKey;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Most characters of page the target reads: a page is mapped, not stored, so a small one finds what a big one would.
 const MAX_PAGE: usize = 4096;
@@ -34,9 +37,95 @@ fn letters_of(text: impl IntoIterator<Item = char>) -> Vec<char> {
     out
 }
 
+/// Every page has the one page of text the target was given; what is put is kept where the target can read it whatever became of the answer.
+struct Memory {
+    page: Vec<char>,
+    put: Arc<Mutex<Vec<PageBlocks>>>,
+}
+
+impl PageStore for Memory {
+    fn text(&mut self, _page: u32, chars: &mut Vec<char>) -> bool {
+        chars.extend_from_slice(&self.page);
+        !self.page.is_empty()
+    }
+
+    fn put(&mut self, page: &PageBlocks) -> Result<(), &'static str> {
+        self.put.lock().expect("a store").push(page.clone());
+        Ok(())
+    }
+}
+
+/// The lines as a helper's whole answer. The first run is every line as it came, which mostly ends as a bad answer and may stop anywhere; the second is the lines the reader takes, in order, with an end that adds up, which must be believed whole.
+fn through_the_session(page: &[char], lines: &[&[u8]]) {
+    let hello = br#"{"state":"hello","walled":true}"#;
+    let whole = |lines: &[&[u8]], end: Option<String>| {
+        let mut said = hello.to_vec();
+        for line in lines {
+            said.push(b'\n');
+            said.extend_from_slice(line);
+        }
+        said.push(b'\n');
+        if let Some(end) = end {
+            said.extend_from_slice(end.as_bytes());
+            said.push(b'\n');
+        }
+        said
+    };
+    let in_order = |put: &Mutex<Vec<PageBlocks>>| {
+        let put = put.lock().expect("a store");
+        assert!(
+            put.iter().enumerate().all(|(at, page)| page.page as usize == at),
+            "put out of order or twice: {:?}",
+            put.iter().map(|page| page.page).collect::<Vec<_>>()
+        );
+    };
+    let put = Arc::new(Mutex::new(Vec::new()));
+    let _ = read_all(
+        &whole(lines, None),
+        PAGES,
+        Memory {
+            page: page.to_vec(),
+            put: Arc::clone(&put),
+        },
+    );
+    in_order(&put);
+    // What the reader would take, by a reader of its own: pages in order from 0, none missing.
+    let (mut reader, mut next, mut said_blocks) = (PageLines::new(PAGES), 0u32, 0u64);
+    let taken: Vec<&[u8]> = lines
+        .iter()
+        .take_while(|line| match reader.read(line) {
+            Ok(read) if read.page == next => {
+                next += 1;
+                said_blocks += (read.candidates.len() + read.unreadable as usize) as u64;
+                true
+            }
+            _ => false,
+        })
+        .copied()
+        .collect();
+    let end = format!(r#"{{"state":"ready","pages":{next},"pages_failed":0,"blocks":{said_blocks},"cut":0}}"#);
+    let put = Arc::new(Mutex::new(Vec::new()));
+    let (_, tally, _) = read_all(
+        &whole(&taken, Some(end)),
+        next,
+        Memory {
+            page: page.to_vec(),
+            put: Arc::clone(&put),
+        },
+    )
+    .expect("lines the reader takes, and an end that adds up, are believed");
+    in_order(&put);
+    assert_eq!(put.lock().expect("a store").len(), taken.len(), "every page was put");
+    let (stored, dropped) = (tally.stored.iter().sum::<u32>(), tally.dropped.iter().sum::<u32>() + tally.unreadable);
+    assert_eq!(u64::from(stored) + u64::from(dropped), said_blocks, "every block is stored or dropped");
+}
+
 pub fn check(data: &[u8]) {
     let (page, lines) = data.split_at(data.iter().position(|byte| *byte == 0).unwrap_or(data.len()));
+    // `split_at` leaves the zero byte at the front of the lines: it went in front of the first line, which was never read as a page line.
+    let lines = lines.get(1..).unwrap_or_default();
     let page: Vec<char> = String::from_utf8_lossy(page).chars().take(MAX_PAGE).collect();
+    through_the_session(&page, &lines.split(|byte| *byte == b'\n').take(MAX_LINES).collect::<Vec<_>>());
     let mut reader = PageLines::new(PAGES);
     for line in lines.split(|byte| *byte == b'\n').take(MAX_LINES) {
         let Ok(line) = reader.read(line) else { continue };
@@ -103,5 +192,17 @@ pub fn seeds() -> Vec<Vec<u8>> {
     long.extend_from_slice(br#"{"page":0,"blocks":[{"kind":"para","text":""#);
     long.extend_from_slice(&vec![b'a'; 2000]);
     long.extend_from_slice(b"\"}]}");
-    vec![whole, long, vec![0], Vec::new()]
+    // An answer the session believes whole: three pages, in order, with a block that maps and one that doesn't.
+    let mut believed = b"Annual Report\nsecond page text\nthird".to_vec();
+    believed.push(0);
+    believed.extend_from_slice(
+        [
+            r#"{"page":0,"blocks":[{"kind":"heading","level":1,"box":[10,700,300,720],"text":"Annual Report","continues":false},{"kind":"figure","box":null,"text":""}]}"#,
+            r#"{"page":1,"blocks":[{"kind":"para","level":0,"box":[10,20,300,60],"text":"second page text","continues":true},{"kind":"para","text":"not on the page"}]}"#,
+            r#"{"page":2,"blocks":[]}"#,
+        ]
+        .join("\n")
+        .as_bytes(),
+    );
+    vec![whole, long, believed, vec![0], Vec::new()]
 }
