@@ -191,11 +191,32 @@ impl Counts {
 pub struct Mapped {
     pub blocks: PageBlocks,
     pub counts: Counts,
+    /// Steps the search took: characters compared and mapped blocks looked at. Bounded by [`MAX_COMPARISONS`] whatever the page and the candidates.
+    pub work: u64,
 }
 
-/// Where every start of `needle` in `key` at or after `from` is, in order, until `each` says stop (false) or the budget runs out. Each character looked at costs 1.
+/// What a page's search may still spend, and what it has.
+struct Meter {
+    left: usize,
+    work: u64,
+}
+
+impl Meter {
+    /// Spends `steps`; false when there isn't that much left (nothing more is spent after).
+    fn spend(&mut self, steps: usize) -> bool {
+        self.work += steps as u64;
+        if self.left < steps {
+            self.left = 0;
+            return false;
+        }
+        self.left -= steps;
+        true
+    }
+}
+
+/// Where every start of `needle` in `key` at or after `from` is, in order, until `each` says stop (false) or the budget runs out. Each character looked at costs 1, and `each` charges what it looks at itself.
 /// Returns false only when the budget ran out first.
-fn runs(key: &[char], needle: &[char], from: usize, budget: &mut usize, mut each: impl FnMut(usize) -> bool) -> bool {
+fn runs(key: &[char], needle: &[char], from: usize, meter: &mut Meter, mut each: impl FnMut(usize, &mut Meter) -> bool) -> bool {
     if needle.is_empty() || key.len() < needle.len() {
         return true;
     }
@@ -204,17 +225,20 @@ fn runs(key: &[char], needle: &[char], from: usize, budget: &mut usize, mut each
         while matched < needle.len() && key[start + matched] == needle[matched] {
             matched += 1;
         }
-        let cost = matched + usize::from(matched < needle.len());
-        if *budget < cost {
-            *budget = 0;
+        if !meter.spend(matched + usize::from(matched < needle.len())) {
             return false;
         }
-        *budget -= cost;
-        if matched == needle.len() && !each(start) {
-            return true;
+        if matched == needle.len() && (!each(start, meter) || meter.left == 0) {
+            return meter.left > 0;
         }
     }
     true
+}
+
+/// Whether `[from, to)` shares a character with a mapped block. `mapped` is sorted and its blocks overlap none another, so the first that ends after `from` is the only one to look at.
+fn overlaps(mapped: &[(u32, u32)], from: u32, to: u32) -> bool {
+    let first = mapped.partition_point(|(_, b)| *b <= from);
+    mapped.get(first).is_some_and(|(a, _)| *a < to)
 }
 
 /// Most characters a block's range reaches over on each side for the marks next to its letters.
@@ -223,8 +247,7 @@ const MAX_WIDEN: u32 = 8;
 /// A block's characters are its letters and what is stuck to them: the full stop that ends a paragraph, an opening quote, a `$`, the `)` after a number. So the range is
 /// widened over adjacent characters that aren't space and aren't letters or digits (those are other words), at most [`MAX_WIDEN`] a side, and never into a block already mapped.
 fn widen(page: &[char], (start, end): (u32, u32), mapped: &[(u32, u32)]) -> (u32, u32) {
-    let sticks =
-        |at: u32| page.get(at as usize).is_some_and(|c| !c.is_whitespace() && !c.is_alphanumeric()) && !mapped.iter().any(|(a, b)| *a <= at && at < *b);
+    let sticks = |at: u32| page.get(at as usize).is_some_and(|c| !c.is_whitespace() && !c.is_alphanumeric()) && !overlaps(mapped, at, at + 1);
     let (mut from, mut to) = (start, end);
     while start - from < MAX_WIDEN && from > 0 && sticks(from - 1) {
         from -= 1;
@@ -258,6 +281,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             blocks: Vec::new(),
         },
         counts: Counts::default(),
+        work: 0,
     };
     // Only what a record can point into is looked at.
     let page = &page[..page.len().min(MAX_PAGE_CHARS as usize)];
@@ -267,8 +291,12 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
         key.push(letter);
         origin.push(at as u32);
     });
-    let mut budget = MAX_COMPARISONS;
+    let mut meter = Meter {
+        left: MAX_COMPARISONS,
+        work: 0,
+    };
     let mut previous_end = 0u32;
+    // Sorted by where they start, and overlapping none another.
     let mut mapped: Vec<(u32, u32)> = Vec::new();
     for candidate in candidates {
         let shape = candidate.shape.index();
@@ -302,22 +330,24 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             continue;
         }
         // The characters a run at letter `start` covers, if no block already mapped has any of them.
-        let free = |start: usize, mapped: &[(u32, u32)]| {
+        let free = |start: usize, mapped: &[(u32, u32)], meter: &mut Meter| {
             let (from, to) = (origin[start], origin[start + needle.len() - 1] + 1);
-            mapped.iter().all(|(a, b)| to <= *a || *b <= from).then_some((from, to))
+            // Looking at the mapped blocks is work too: a binary search of them, charged by its steps.
+            meter.spend(1 + (usize::BITS - mapped.len().leading_zeros()) as usize);
+            (!overlaps(mapped, from, to)).then_some((from, to))
         };
         let mut found = None;
         let after = origin.partition_point(|at| *at < previous_end);
-        let mut complete = runs(&key, &needle, after, &mut budget, |start| {
-            found = free(start, &mapped);
+        let mut complete = runs(&key, &needle, after, &mut meter, |start, meter| {
+            found = free(start, &mapped, meter);
             found.is_none()
         });
         let mut ambiguous = false;
         if found.is_none() && complete {
             let mut seen = 0;
             let mut only = None;
-            complete = runs(&key, &needle, 0, &mut budget, |start| {
-                if let Some(span) = free(start, &mapped) {
+            complete = runs(&key, &needle, 0, &mut meter, |start, meter| {
+                if let Some(span) = free(start, &mapped, meter) {
                     seen += 1;
                     only = Some(span);
                 }
@@ -339,7 +369,8 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             continue;
         };
         let (start, end) = widen(page, (start, end), &mapped);
-        mapped.push((start, end));
+        let at = mapped.partition_point(|(a, _)| *a < start);
+        mapped.insert(at, (start, end));
         previous_end = end;
         out.counts.stored[shape] += 1;
         out.blocks.blocks.push(Block {
@@ -352,5 +383,6 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             continues: candidate.continues,
         });
     }
+    out.work = meter.work;
     out
 }

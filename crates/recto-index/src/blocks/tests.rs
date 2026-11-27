@@ -465,3 +465,26 @@ fn a_block_keeps_the_marks_next_to_its_letters() {
     let mapped = map_page(0, &page, &[para("two"), para("one")]);
     assert_eq!((span(&mapped, 0), span(&mapped, 1)), ((3, 8), (0, 3)));
 }
+
+/// Failure: the check that a run overlaps no mapped block isn't counted, so a page of 2M one letters under 500 mapped blocks, asked for one letter again and again, costs billions of
+/// steps where the search's bound says 20 million. Counts the steps taken, not the time.
+#[test]
+fn looking_at_the_mapped_blocks_is_part_of_the_bound() {
+    // 500 blocks of 4,000 `a`s fill the page's first 2M characters; then one-letter blocks have only places that are taken.
+    let page = vec!['a'; 2_000_000];
+    let mut candidates: Vec<Candidate> = (0..500).map(|_| para(&"a".repeat(4000))).collect();
+    candidates.extend((0..20).map(|_| para("a")));
+    let mapped = map_page(0, &page, &candidates);
+    assert_eq!(mapped.blocks.blocks.len(), 500, "{:?}", mapped.counts);
+    assert!(
+        mapped.work <= 2 * map::MAX_COMPARISONS as u64,
+        "{} steps for a search bounded at {}",
+        mapped.work,
+        map::MAX_COMPARISONS
+    );
+    assert!(
+        mapped.counts.why.out_of_budget > 0,
+        "the later one-letter blocks run out of budget: {:?}",
+        mapped.counts
+    );
+}
