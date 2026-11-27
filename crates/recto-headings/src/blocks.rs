@@ -43,8 +43,8 @@ pub struct Out {
     pub continues: bool,
 }
 
-/// Block `index` of a page, ready to go out. `None` for a kind that is never sent. `continuations` are the page's own.
-pub fn out_of(block: &Block, index: usize, continuations: &[BlockContinuation]) -> Option<Out> {
+/// Block `index` of page `page` (1-based, the number the stream was asked for: distillPDF's own `Block::page` isn't relied on), ready to go out. `None` for a kind that is never sent. `continuations` are the page's own.
+pub fn out_of(block: &Block, page: u32, index: usize, continuations: &[BlockContinuation]) -> Option<Out> {
     let kind = kind_name(block.kind)?;
     let level = if block.kind == BlockKind::Heading {
         block.heading_level.unwrap_or(0).min(MAX_LEVEL)
@@ -62,7 +62,7 @@ pub fn out_of(block: &Block, index: usize, continuations: &[BlockContinuation]) 
         level,
         bbox: block.bbox.filter(|bbox| bbox.iter().all(|side| side.is_finite())),
         text,
-        continues: continuations.iter().any(|c| c.block == index && c.page > block.page),
+        continues: continuations.iter().any(|c| c.block == index && c.page > page),
     })
 }
 
@@ -108,16 +108,19 @@ pub fn page_line(page: u32, outs: &[Out]) -> (String, usize, usize) {
 
 /// The last line: how the read ended. Numbers only. `blocks` is how many went out in page lines, which the session checks against what it received.
 pub fn end_line(pages: u32, pages_failed: u32, blocks_sent: u64, cut: u64, distilled_ms: u64, peak: Option<u64>) -> String {
-    serde_json::json!({
+    let mut end = serde_json::json!({
         "state": "ready",
         "pages": pages,
         "pages_failed": pages_failed,
         "blocks": blocks_sent,
         "cut": cut,
         "distilled_ms": distilled_ms,
-        "helper_peak_bytes": peak,
-    })
-    .to_string()
+    });
+    // Left out when it can't be read: the session believes numbers and bools only.
+    if let (Some(peak), Some(object)) = (peak, end.as_object_mut()) {
+        object.insert("helper_peak_bytes".into(), peak.into());
+    }
+    end.to_string()
 }
 
 /// How far distillPDF scans first. Typography unless the job says `"scan":"full"`: the blocks job doesn't need the running heads that the full scan learns, and typography is faster.
@@ -151,7 +154,7 @@ pub fn said_of(number: u32, result: Result<PageOutput, distillpdf::Error>) -> Re
                 .blocks
                 .iter()
                 .enumerate()
-                .filter_map(|(index, block)| out_of(block, index, &page.continuations))
+                .filter_map(|(index, block)| out_of(block, number, index, &page.continuations))
                 .collect();
             let (line, sent, cut) = page_line(number - 1, &outs);
             Ok(PageSaid {

@@ -54,7 +54,7 @@ fn every_kind_reads_back_as_the_session_reads_it() {
     let outs: Vec<Out> = blocks
         .iter()
         .enumerate()
-        .filter_map(|(index, block)| out_of(block, index, &continued))
+        .filter_map(|(index, block)| out_of(block, 1, index, &continued))
         .collect();
     assert_eq!(outs.len(), 11, "header and dest_anchors are never sent: {outs:?}");
     let (line, sent, cut) = page_line(4, &outs);
@@ -107,7 +107,7 @@ fn a_box_that_isnt_finite_is_not_said_and_only_a_later_page_continues() {
     let mut odd = block("para", "x", json!({}));
     odd.bbox = Some([0.0, f32::NAN, 5.0, f32::INFINITY]);
     let back = [BlockContinuation { block: 0, page: 1, bbox: None }];
-    let made = out_of(&odd, 0, &back).unwrap();
+    let made = out_of(&odd, 1, 0, &back).unwrap();
     assert_eq!((made.bbox, made.continues), (None, false));
     let (line, _, _) = page_line(0, &[made]);
     assert!(serde_json::from_str::<Value>(&line).is_ok(), "{line}");
@@ -205,6 +205,16 @@ fn the_blocks_job_says_every_page_once_in_order_and_ends() {
         sum += read.candidates.len() as u64;
         kinds.extend(read.candidates.iter().map(|candidate| candidate.shape.name()));
     }
+    let mut tables = 0;
+    for line in pages {
+        for block in line["blocks"].as_array().unwrap() {
+            if matches!(block["kind"].as_str(), Some("table" | "figure")) {
+                tables += 1;
+                assert_eq!(block["text"], "", "a table's cells and a figure's markup are never sent: {block}");
+            }
+        }
+    }
+    assert!(tables > 0, "the document has a table");
     assert_eq!(end["state"], "ready", "{end}");
     assert_eq!(
         (end["pages"].as_u64(), end["pages_failed"].as_u64(), end["cut"].as_u64()),
@@ -263,4 +273,32 @@ fn a_page_that_cant_be_made_is_an_empty_line_and_only_a_changed_file_ends_the_jo
     for error in [distillpdf::Error::StaleStats("moved".into()), distillpdf::Error::Cancelled] {
         assert!(matches!(said_of(1, Err(error)), Err(Failure::Changed)));
     }
+}
+
+/// Failure: whether a block goes on is judged against the block's own `page` field, which distillPDF fills as it likes, instead of the page the line is for: a block whose field says another page, with a continuation to the next page, is read as not continuing (or a block on the last page as continuing).
+#[test]
+fn a_block_continues_by_the_page_the_line_is_for_not_by_its_own_field() {
+    let mut odd = block("para", "x", json!({}));
+    odd.page = 9;
+    let on_to_three = [BlockContinuation { block: 0, page: 3, bbox: None }];
+    assert!(
+        out_of(&odd, 2, 0, &on_to_three).unwrap().continues,
+        "page 2 goes on to page 3 whatever the block says it is on"
+    );
+    assert!(!out_of(&odd, 3, 0, &on_to_three).unwrap().continues, "page 3 doesn't go on to page 3");
+}
+
+/// Failure: when the helper can't read its own footprint the end line says `"helper_peak_bytes":null`, and the session, which reads only numbers and bools from it, refuses the whole answer for a number that was only for measuring. The key is left out, for the blocks job and the headings one alike.
+#[test]
+fn an_end_line_without_a_peak_has_no_peak() {
+    let blocks: Value = serde_json::from_str(&end_line(3, 0, 5, 0, 40, None)).unwrap();
+    assert!(blocks.get("helper_peak_bytes").is_none(), "{blocks}");
+    assert_eq!(blocks["pages"], 3);
+    let headings = recto_index::generated::visible::Headings {
+        pages: 6,
+        ..Default::default()
+    };
+    let said: Value = serde_json::from_str(&recto_headings::answer::end_line(&headings, 0, false, 40, None)).unwrap();
+    assert!(said.get("helper_peak_bytes").is_none(), "{said}");
+    assert_eq!(said["pages"], 6);
 }
