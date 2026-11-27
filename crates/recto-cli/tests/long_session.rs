@@ -5,7 +5,7 @@ mod client;
 mod common;
 
 use common::State;
-use common::app::{Run, app_path};
+use common::app::{Run, app_path, settle_guard_arg};
 use recto_agent::Level;
 use recto_testpdf::{Page, pages, text_lines};
 use serde_json::{Value, json};
@@ -74,7 +74,7 @@ fn a_long_session_stays_flat() {
         )
         .unwrap();
         ok(&["open", file.to_str().unwrap()]);
-        ok(&["qa", "wait-settled", "--timeout", "30s"]);
+        ok(&["qa", "wait-settled", "--timeout", &settle_guard_arg()]);
     }
     for tab in ok(&["qa", "state"])["session"]["tabs"].as_array().unwrap() {
         ids.push(tab["id"].as_u64().unwrap());
@@ -102,7 +102,7 @@ fn a_long_session_stays_flat() {
                 .map_or_else(|| format!("wake start: {}", workload.load()), |load| format!("round {round} start: {load}"));
             let began = std::time::Instant::now();
             ok(&["qa", "click-row", &format!("{at}")]);
-            ok(&["qa", "wait-settled", "--timeout", "30s"]);
+            ok(&["qa", "wait-settled", "--timeout", &settle_guard_arg()]);
             let seen = ok(&["qa", "state"]);
             let wall_ms = began.elapsed().as_millis();
             let woken = seen["reader"]["last_wake"].clone();
@@ -164,7 +164,7 @@ fn a_long_session_stays_flat() {
                 ok(&["qa", "owner-edit", &format!("rotate:{}", at % 40 + 1)]);
                 edits += 1;
             }
-            ok(&["qa", "wait-settled", "--timeout", "30s"]);
+            ok(&["qa", "wait-settled", "--timeout", &settle_guard_arg()]);
             let memory = ok(&["qa", "state"])["memory"].clone();
             peak_workers = peak_workers.max(memory["workers"].as_u64().unwrap_or(0));
             peak_worker_bytes = peak_worker_bytes.max(memory["worker_bytes"].as_u64().unwrap_or(0));

@@ -821,3 +821,12 @@ fn cleanup_never_waits_past_the_harness_limit_on_a_test() {
     }
     assert_eq!(copy_cleanup::exit_wait(limit * 2), copy_cleanup::MIN_EXIT_WAIT, "late or not, it still looks");
 }
+
+/// Failure: a test's settle gets a wall clock the app's own default (30 s) already runs out on a starved machine, or one past the run's limit so the run, not the test, ends mid-wait (3 of 30 lifecycle runs, 2026-11-27).
+#[test]
+fn the_settle_guard_is_a_hang_guard_between_the_apps_default_and_the_test_limit() {
+    const APP_DEFAULT_SECONDS: u64 = 30;
+    assert!(lifetime::SETTLE_GUARD.as_secs() >= 4 * APP_DEFAULT_SECONDS, "{:?}", lifetime::SETTLE_GUARD);
+    assert!(lifetime::SETTLE_GUARD < lifetime::TEST_LIMIT, "{:?}", lifetime::SETTLE_GUARD);
+    assert_eq!(lifetime::settle_guard_arg(), "120s");
+}

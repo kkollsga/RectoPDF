@@ -20,7 +20,8 @@ mod lifetime;
 #[path = "../../src/qa_launch.rs"]
 mod qa_launch;
 use lifetime::Lifetime;
-pub use lifetime::TEST_LIMIT;
+#[allow(unused_imports)]
+pub use lifetime::{SETTLE_GUARD, TEST_LIMIT, settle_guard_arg};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -301,7 +302,7 @@ impl<'a> Run<'a> {
     }
 
     pub fn settled(&self) {
-        self.ok(&["qa", "wait-settled", "--timeout", "30s"]);
+        self.ok(&["qa", "wait-settled", "--timeout", &settle_guard_arg()]);
     }
 
     pub fn report(&self) -> Value {
