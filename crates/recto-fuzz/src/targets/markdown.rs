@@ -83,7 +83,7 @@ fn hidden_words(piece: &Piece<'_>) -> String {
     }
     let mut out = String::new();
     let mut run = String::new();
-    let mut flush = |run: &mut String, out: &mut String| {
+    let flush = |run: &mut String, out: &mut String| {
         out.push_str(run.trim_end());
         run.clear();
     };
