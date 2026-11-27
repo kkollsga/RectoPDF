@@ -19,7 +19,12 @@ use recto_core::removal::{ConfirmRefusal, Refusal, Store};
 pub struct Names {
     pub document: Option<String>,
     pub folder: Option<String>,
+    /// Whose the unfinished saves are, by the documents' cleaned names, sorted, none twice ([`super::saves_of`]). Only the person's confirmation lists them.
+    pub saves: Vec<String>,
 }
+
+/// How many names the confirmation lists before it says how many more there are.
+pub const MAX_LISTED: usize = 10;
 
 /// What a check found, as counts. Every count is of artifacts or of leftovers the clear leaves, never of names.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,8 +112,24 @@ pub fn check(names: &Names, found: &Found) -> String {
             n(found.copies, "copy", "copies"),
         ));
     }
+    lines.extend(whose_saves(names));
     lines.extend(left_alone(found));
     lines.join("\n")
+}
+
+/// The line that says whose the unfinished saves are, for the person: the documents by name, at most [`MAX_LISTED`], then how many more. Nothing without names.
+fn whose_saves(names: &Names) -> Option<String> {
+    let listed: Vec<String> = names.saves.iter().take(MAX_LISTED).map(|name| format!("“{name}”")).collect();
+    if listed.is_empty() {
+        return None;
+    }
+    let more = names.saves.len().saturating_sub(MAX_LISTED);
+    let list = match (listed.as_slice(), more) {
+        ([only], 0) => only.clone(),
+        (all, 0) => format!("{} and {}", all[..all.len() - 1].join(", "), all[all.len() - 1]),
+        (all, more) => format!("{} and {more} more", all.join(", ")),
+    };
+    Some(format!("The unfinished saves are of {list}."))
 }
 
 /// The lines for what a clear leaves where it is.

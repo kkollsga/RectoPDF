@@ -21,6 +21,7 @@ fn names_are_the_persons_and_an_agent_reads_the_same_words_without_them() {
         &Names {
             document: Some("report.pdf".into()),
             folder: Some("Documents".into()),
+            saves: Vec::new(),
         },
         &found(),
     );
@@ -164,4 +165,28 @@ fn the_sheets_words_are_set_and_a_person_reads_no_code_marks() {
     distinct.dedup();
     assert_eq!(distinct.len(), titles.len(), "{titles:?}");
     assert!(!busy(Busy::Windowless).contains('`'), "{}", busy(Busy::Windowless));
+}
+
+/// Failure: the confirmation lists nothing of whose the saves are (the owner's rule: other documents' crashed saves are "listed by name"), lists a long list
+/// whole (a sheet too tall to read), or an agent's words carry names. The person's has one line more, with at most ten, then how many more; an agent's the same
+/// sentences as before.
+#[test]
+fn the_persons_confirmation_names_whose_saves_they_are_up_to_ten_and_an_agents_names_none() {
+    let names = |saves: Vec<String>| Names {
+        document: Some("report.pdf".into()),
+        folder: Some("Documents".into()),
+        saves,
+    };
+    let none = check(&names(Vec::new()), &found());
+    assert!(!none.contains("The unfinished saves are"), "{none}");
+    let one = check(&names(vec!["a.pdf".into()]), &found());
+    assert!(one.contains("The unfinished saves are of “a.pdf”."), "{one}");
+    let two = check(&names(vec!["a.pdf".into(), "b.pdf".into()]), &found());
+    assert!(two.contains("are of “a.pdf” and “b.pdf”."), "{two}");
+    let many: Vec<String> = (0..13).map(|n| format!("d{n:02}.pdf")).collect();
+    let long = check(&names(many), &found());
+    assert!(long.contains("“d09.pdf” and 3 more.") && !long.contains("d10.pdf"), "{long}");
+    let agent = check(&Names::default(), &found());
+    assert_eq!(agent.lines().count() + 1, long.lines().count(), "one line more for the person");
+    assert!(!agent.contains("unfinished saves are of"), "{agent}");
 }
