@@ -114,6 +114,12 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
 /// [`spawn`], and the helper is given `document` as its descriptor 3 ([`DOCUMENT_FD`]), still the one open file, at the offset it has now. The helper reads it with
 /// [`inherited_document`]. Nothing else of this process's reaches it.
 pub fn spawn_with_document(exe: &Path, env: &[(&str, &OsStr)], priority: Priority, document: &File) -> io::Result<Spawned> {
+    // Read-only, or refused: a helper given a descriptor it could write through could cut the person's file to nothing with `ftruncate`, which `RLIMIT_FSIZE` doesn't stop.
+    // SAFETY: only reads a descriptor's flags.
+    let flags = check(unsafe { libc::fcntl(document.as_raw_fd(), libc::F_GETFL) })?;
+    if flags & libc::O_ACCMODE != libc::O_RDONLY {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the document must be open for reading only"));
+    }
     spawn_with(exe, env, priority, Some(document))
 }
 
@@ -617,6 +623,25 @@ mod tests {
         let document = unsafe { File::from_raw_fd(high) };
         assert!(!is_open(3) && !is_open(4), "3 and 4 weren't free here, so this proves nothing");
         assert_eq!(what_a_shell_is_given(&document), (vec![0, 1, 2, 3], "the document's bytes".to_string()));
+    }
+
+    /// Failure: a document the host can write to (opened read-write or write-only) is handed to a helper, which, if it's hostile, can `ftruncate` the person's PDF to nothing: `RLIMIT_FSIZE`
+    /// at 0 doesn't stop that. A descriptor that isn't read-only is refused as `InvalidInput`, and starts nothing; a read-only one is given.
+    #[test]
+    fn only_a_read_only_document_is_given_to_a_helper() {
+        let dir = recto_testpdf::TempDir::new("recto-helper-doc-");
+        let path = dir.join("doc.txt");
+        std::fs::write(&path, "bytes").unwrap();
+        let open = |read: bool, write: bool| std::fs::OpenOptions::new().read(read).write(write).open(&path).unwrap();
+        for (name, file) in [("read-write", open(true, true)), ("write-only", open(false, true))] {
+            let refused = spawn_with_document(Path::new("/bin/sh"), &[], Priority::Inherited, &file);
+            assert_eq!(
+                refused.err().map(|error| error.kind()),
+                Some(io::ErrorKind::InvalidInput),
+                "{name} was given to a helper"
+            );
+        }
+        assert_eq!(what_a_shell_is_given(&open(true, false)).1, "bytes");
     }
 
     /// Failure: a descriptor 3 in the helper isn't taken once, or is a document when it's a pipe or socket, or when there is nothing there, or stays open in what the helper starts.
