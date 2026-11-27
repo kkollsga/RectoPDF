@@ -799,6 +799,7 @@ pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, s
         "steps": steps,
         "spawns": doc.stats().spawns,
         "retirements": doc.stats().retirements,
+        "out_of_resources_in_a_row": recto_render_service::out_of_resources_in_a_row(),
         "host_footprint_bytes": recto_platform::footprint_bytes(),
     }))
 }
