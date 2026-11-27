@@ -19,13 +19,13 @@ pub struct Place {
 }
 
 impl Place {
-    /// Where a block starts: its top edge, on a page `page_height` points high (the box is in the page's own coordinates, from the bottom). A height that
+    /// Where a block is: the middle of its box (a box is whole points and a contents entry's place is a thousandth of the page, so an edge can fall half a point off an entry's own place and a heading into the section before it), on a page `page_height` points high (the box is in the page's own coordinates, from the bottom). A height that
     /// isn't a positive number puts the block at the page's top.
     #[must_use]
     pub fn of_block(block: &Block, page_height: f32) -> Self {
-        let top_edge = f32::from(block.bbox[3]);
+        let middle = (f32::from(block.bbox[1]) + f32::from(block.bbox[3])) / 2.0;
         let down = if page_height.is_finite() && page_height > 0.0 {
-            (page_height - top_edge) / page_height
+            (page_height - middle) / page_height
         } else {
             0.0
         };

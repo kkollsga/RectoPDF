@@ -428,7 +428,11 @@ fn text_before_any_entry_is_in_no_section() {
     let mut high = block(Kind::Paragraph, 0, 5);
     high.page = 2;
     high.bbox = [0, 0, 100, 700];
-    assert_eq!(Place::of_block(&high, 800.0), at(2, 125));
+    assert_eq!(
+        Place::of_block(&high, 800.0),
+        at(2, 563),
+        "the middle of its box: 450 of 800 points down, 562.5 thousandths"
+    );
     assert_eq!(Place::of_block(&high, f32::NAN), at(2, 0));
 }
 
@@ -590,4 +594,18 @@ fn a_record_for_another_length_of_page_is_stale_not_damaged() {
     let mut bad = chunk.clone();
     bad[20] ^= 1;
     assert_eq!(codec::open_page(&seal, 3, CHARS + 1, &mut bad), Err(OpenError::Damaged));
+}
+
+/// Failure: a heading falls into the section before its own. The contents entry says where the heading is to a thousandth of the page; the block's box is whole points, so its top edge can be half a point
+/// above the entry's, and a place read from the edge is then before the entry that starts at the heading.
+#[test]
+fn a_heading_block_is_in_the_section_it_starts() {
+    let toc = toc(&[(0, 0, 0), (0, 0, 126)]);
+    let sections = Sections::new(toc.entries());
+    let mut heading = block(Kind::Heading, 0, 5);
+    heading.page = 0;
+    // The heading's top is really 699.2 points on an 800-point page (thousandths: 126), and the box says 700 once rounded.
+    heading.bbox = [50, 690, 200, 700];
+    let place = Place::of_block(&heading, 800.0);
+    assert_eq!(sections.section_of(place), Some(1), "{place:?}");
 }
