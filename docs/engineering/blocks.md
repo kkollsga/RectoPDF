@@ -1,0 +1,37 @@
+# Blocks: the helper's `blocks` job and the session's `BlocksAnswer`
+
+> Part of the engineering notes: [`README.md`](README.md). The design is `docs/design/blocks.md`; this is what S3 built (2026-11-27, `build/blocks-s3`). **No UI, no store:** the store that writes to the corpus folder is S4's, and nothing calls this yet.
+
+**The route.** The structure helper (`recto-headings`, only ever as the walled `RectoStructure.app`, [`generated-contents.md`](generated-contents.md)) takes a third job beside `count` and `headings`: `{"kind":"blocks","memory_limit":…,"scan":"typography"}` (`structure::blocks::job()`). It opens the document on descriptor 3 as `LazyStrict` with images off, scans (typography unless the job says `"scan":"full"`), and says one line a page. The session reads each line with `recto_index::blocks::map::PageLines::read`, maps it with `map_line` against that page's text from a `PageStore`, and hands the store each page's `PageBlocks`, once, in page order (`structure::blocks::BlocksAnswer`). The helper never sees the page's characters, and the session never sees distillPDF's markup.
+
+**What the helper says** (`recto_headings::blocks`, pure parts tested without a process):
+
+- A page line: `{"page":N,"blocks":[{"kind","level","box":[l,b,r,t]|null,"text","continues"}]}`, `page` zero-based, for every page of the document, including those with no blocks (`"blocks":[]`) and those distillPDF couldn't make.
+- `kind` is `para`, `heading`, `list_item`, `caption`, `code`, `footnote`, `table` or `figure`. The page-chrome carriers (`header`, `dest_anchors`) are never sent. `level` is a heading's, at most 9, and 0 for any other kind. `box` is null unless all four sides are finite. `text` has distillPDF's inline markup taken out as a heading's title does (`plain`), and is `""` for a table or a figure: never their cells or markup. `continues` is true when a continuation of that block starts on a later page.
+- A block whose own JSON is over half the line cap (256 KiB) is left out, and the later ones still go. Otherwise blocks go in order while the line, with its closing `]}`, stays within 512 KiB (`recto_index::blocks::map::MAX_LINE_BYTES`) and 4,096 blocks; the first that doesn't fit and the rest of the page are cut. Every cut block is counted.
+- A page distillPDF can't make is a line with no blocks and a count in the end line: **a page never ends the job** (a document whose page 5 fails still has pages 1 to 4 and 6 onward). Stale statistics or a cancelled walk, a file changed under the read, is `{"state":"changed"}`.
+- The end line is `{"state":"ready","pages","pages_failed","blocks","cut","distilled_ms","helper_peak_bytes"}`, numbers only. `blocks` is how many went out in page lines.
+- It holds one page's output at a time. A write that fails (the session killed it) ends it quietly.
+
+**What the session believes** (`structure/blocks.rs`; the runner's rules are [`generated-contents.md`](generated-contents.md)'s):
+
+- A page line is every page once, in order: a gap, a repeat or a page out of order is `bad_answer`; a page at or past the index's page count is `pages_differ`. A line that isn't a page line is parsed as an object and is the end line, or a `refused`/`changed`/`failed` that is believed **only as the first line** (`structure::instead`, shared with `headings`: a refusal's code is one of three known ones, and a failure's own words are never repeated).
+- The end line must say `pages` equal to the lines taken **and** the index's own count (else `pages_differ`), `pages_failed` no more than that, `blocks` equal to the sum over lines of readable candidates plus unreadable blocks, a number for `cut`, at most 32 entries all numbers or bools but `state`, and none of the session's own names (`walled`, `elapsed_ms`, `helper_peak_watched_bytes`).
+- A [`PageStore`] gives a page's characters as the index keeps them (`recto text`'s numbering; false means no text: the page maps nothing and is counted in `pages_without_text`) and takes the mapped blocks. It may stop the job with a code of its own (`put` is `Err(code)`), and **that code reaches the caller as it is**: the runner reports `answer.stopped_for()`, then a limit's code, then `bad_answer`, so a store's `too_large` isn't read as a hostile helper. The helper is killed at once.
+- **The runner's caps are the answer's own** (`Answer::max_line_bytes`, `max_answer_bytes`, defaults the headings job's 64 KiB and 4 MiB): a blocks line is at most 512 KiB, and the answer at most 4 MiB plus 64 KiB a page, up to 2 GiB. The reader thread's 256 KiB stack holds a 512 KiB line of `[` (serde_json refuses past 128 deep).
+- `numbers()` (measuring only): the helper's end-line numbers, then `pages`, `pages_without_text`, `candidates`, `stored`, `dropped` (unreadable included, so `stored + dropped = candidates + unreadable`), `stored_<kind>` and `dropped_<kind>` for the eight kinds, each reason of `Drops`, `unreadable`, `map_ms` (reading the page's text, mapping, storing) and `answer_bytes`. `into_parts()` gives the store and a `BlocksTally` for S4 to keep.
+
+**Held by tests.** Helper (`crates/recto-headings/tests/blocks.rs`, with `helper.rs` and `sandbox.rs`): every kind reads back as the session reads it; the line cap at the limit and one byte more; the real helper on `recto_testpdf::blocks::blocks_document`, form bomb, all 15 hidden headings and the hidden-text page; the walled and bare helpers say the same lines; a job that names a file is refused; typography is the default. Session (`structure/blocks/tests.rs`): the nine in-process cases, one with a stand-in helper. Integration (`recto-control/tests/structure.rs`): the real walled helper on the blocks document, and `blocks_measure`, a measurement. Fuzz (`distill_line`): the same hostile lines, wrapped as a helper says them, through `blocks::read_all` with a store in memory.
+
+**Measured,** 2026-11-27, release builds, the walled helper in `target/Helpers`, `MallocLargeCache=0`, a store with no text (so `map_ms` is not the mapping's cost: S4 measures that), this Mac with other agents building (load 3 to 8): `blocks_measure` (`RECTO_BLOCKS_FILES=… RECTO_BLOCKS_NORMAL=1`, `--release -- --ignored`), one run each, from bench100. S0's helper-only figure for NASA at Typography was 6.5 s and 34.6 MiB.
+
+| | Pages | Priority | Wall | Helper peak (watched) | Answer bytes a page | Candidates | Cut, failed |
+|---|---:|---|---:|---:|---:|---:|---|
+| NASA `ntrs20240002628` | 383 | utility | 15.0 s | 33.9 MiB | 2,631 | 5,036 (13 a page) | 0, 0 |
+| NASA | 383 | normal | 5.0 s | 34.0 MiB | 2,631 | 5,036 | 0, 0 |
+| GDPR (EN) | 88 | utility | 0.50 s | 7.4 MiB | 5,414 | 1,232 (14 a page) | 0, 0 |
+| GDPR (EN) | 88 | normal | 0.36 s | 7.6 MiB | 5,414 | 1,232 | 0, 0 |
+| `un_sdg2024` | 51 | utility | 2.5 s | 39.0 MiB | 6,996 | 1,563 (31 a page) | 0, 0 |
+| `un_sdg2024` | 51 | normal | 0.99 s | 42.6 MiB | 6,996 | 1,563 | 0, 0 |
+
+NASA's candidates: paragraph 3,045, heading 1,119, list item 83, caption 13, footnote 139, table 137, figure 500. The utility wall is 3 times the normal one on NASA: the job runs at QoS utility, which yields to the builds on this Mac (all of the time is the helper's distilling, `distilled_ms` 14,984 against `wall` 15,030), so it is a figure for a busy Mac; at normal priority NASA is under S0's 6.5 s. Answer size is small: the largest, the UN report, is 7 KiB a page, 14 times under the 64 KiB a page the answer's ceiling allows. Pass rate and bytes on disk are S4's.
