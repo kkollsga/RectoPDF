@@ -765,6 +765,87 @@ fn a_draw_the_mac_was_too_busy_for_is_tried_again() {
     );
 }
 
+/// One draw of page 1 with its worker stopped (no processor at all) and 250 ms to live, as `a_draw_the_mac_was_too_busy_for_is_tried_again` makes it, said to be on a Mac that is `loaded` or idle.
+fn starved_draw(doc: &mut DocRenderer, loaded: bool) -> Result<TileResult, RenderFailure> {
+    // The last kill left no worker: page 0's draw starts one (and ends only page 0's run of busy draws).
+    draws(doc, 0);
+    stop_worker(doc);
+    let surface = tile_surface();
+    recto_render_service::under_load_for_test(loaded, || {
+        recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(250), |doc| doc.render_tile(&tile_request(1, 0), &surface))
+    })
+}
+
+/// Failure (main's full check, 2026-11-27, load 44-50): three starved deadlines in a row on a Mac that was loaded remembered the page as `page_too_slow` ("took too long to draw", 15.7 s), though the Mac was too busy to run the worker and the page was fine. On a loaded Mac a page gets a second run of `MAX_BUSY` before it's given up, and a draw that then lands ends the run. (Seeded: the loaded bound taken out, the third kill is remembered.)
+#[test]
+fn a_loaded_mac_gets_a_page_a_second_run_of_busy_draws() {
+    let file = TempPdf::new("loaded-draw.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    for ask in 1..=recto_render_service::MAX_BUSY {
+        let stopped = starved_draw(&mut doc, true);
+        assert!(matches!(stopped, Err(RenderFailure::TooBusy { page: 1 })), "ask {ask}: {stopped:?}");
+    }
+    assert_eq!(
+        doc.stats().too_busy_loaded,
+        u32::from(recto_render_service::MAX_BUSY),
+        "the load is on the stats: {:?}",
+        doc.stats()
+    );
+    assert_eq!(doc.page_draw_state_at(1, 2.0), PageDrawState::Sharp, "nothing was remembered");
+    assert!(
+        matches!(draws(&mut doc, 1), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
+        "drawn when the Mac has the time"
+    );
+}
+
+/// Failure: a worker that hangs on a loaded Mac is asked again for ever. At twice `MAX_BUSY` starved deadlines in all, the page is given up as too slow, as on an idle Mac at `MAX_BUSY`.
+#[test]
+fn a_loaded_mac_gives_a_page_up_at_twice_the_bound() {
+    let file = TempPdf::new("loaded-giveup.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    for ask in 1..2 * recto_render_service::MAX_BUSY {
+        let stopped = starved_draw(&mut doc, true);
+        assert!(matches!(stopped, Err(RenderFailure::TooBusy { page: 1 })), "ask {ask}: {stopped:?}");
+    }
+    let last = starved_draw(&mut doc, true);
+    assert!(
+        matches!(
+            last,
+            Err(RenderFailure::PageFailed {
+                page: 1,
+                reason: KillReason::Deadline
+            })
+        ),
+        "{last:?}"
+    );
+}
+
+/// Failure: the loaded bound applied on an idle Mac, so a hostile page that hangs costs six deadlines where three are the rule. Idle, the `MAX_BUSY`-th starved deadline gives the page up.
+#[test]
+fn an_idle_mac_gives_a_page_up_at_the_bound() {
+    let file = TempPdf::new("idle-giveup.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    for ask in 1..recto_render_service::MAX_BUSY {
+        let stopped = starved_draw(&mut doc, false);
+        assert!(matches!(stopped, Err(RenderFailure::TooBusy { page: 1 })), "ask {ask}: {stopped:?}");
+    }
+    let last = starved_draw(&mut doc, false);
+    assert!(
+        matches!(
+            last,
+            Err(RenderFailure::PageFailed {
+                page: 1,
+                reason: KillReason::Deadline
+            })
+        ),
+        "{last:?}"
+    );
+    assert_eq!(doc.stats().too_busy_loaded, 0, "{:?}", doc.stats());
+}
+
 /// A page with one picture on it, for the asks about where images are.
 fn picture_page_file(name: &str) -> TempPdf {
     let mut list = vec![Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec())];
@@ -882,6 +963,11 @@ fn an_unstartable_worker_is_not_now_for_a_dark_check_never_an_answer() {
 /// Failure: a page whose worker hangs every time looks just like a busy Mac, so busy draws that aren't remembered cost a deadline for every ask for ever, or busy draws count towards stopping the document and a busy Mac stops it drawing. Three busy draws of a page in a row remember it as failed after all, as three busy reads do, and none of them counts towards the kills that stop a document.
 #[test]
 fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {
+    // The rule of an idle Mac, whatever the one this runs on is doing (a loaded Mac's is `a_loaded_mac_gives_a_page_up_at_twice_the_bound`).
+    recto_render_service::under_load_for_test(false, three_busy_draws_on_an_idle_mac);
+}
+
+fn three_busy_draws_on_an_idle_mac() {
     let list: Vec<Page> = (0..6).map(|at| Page::new(text_lines(&[&format!("page {at}")]))).collect();
     let file = TempPdf::new("busy-draws.pdf", &pages(&list));
     let mut doc = renderer(

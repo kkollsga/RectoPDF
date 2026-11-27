@@ -79,3 +79,21 @@ pub fn under_job_deadline_for_test<R>(nth: u32, deadline: Duration, as_it_starts
     ONE_JOB.with(|one| one.borrow_mut().take());
     done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
+
+thread_local! {
+    /// What a test said the Mac's load is on this thread.
+    static LOAD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn load_said() -> Option<bool> {
+    LOAD.with(std::cell::Cell::get)
+}
+
+/// **For tests: runs `job` with the Mac said to be `loaded` (or idle) on this thread,** so what a starved deadline kill does on a loaded Mac is tested with no real load, and a test of the idle rule isn't changed by the machine it runs on. Taken back after `job`.
+#[doc(hidden)]
+pub fn under_load_for_test<R>(loaded: bool, job: impl FnOnce() -> R) -> R {
+    let own = LOAD.with(|load| load.replace(Some(loaded)));
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+    LOAD.with(|load| load.set(own));
+    done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
