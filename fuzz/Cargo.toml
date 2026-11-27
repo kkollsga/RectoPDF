@@ -158,6 +158,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "removal_caches"
+path = "fuzz_targets/removal_caches.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "removal_leftovers"
 path = "fuzz_targets/removal_leftovers.rs"
 test = false

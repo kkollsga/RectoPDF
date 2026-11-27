@@ -121,6 +121,13 @@ fn hostile_removal_ledgers_do_no_harm() {
     smoke("removal_ledger", seed(), rounds(1500), 4 * 1024);
 }
 
+/// Failure: a hostile cache folder (a note of any bytes, a name that isn't text, a link or a hard link in its place) panics the survey, is read as the app's own
+/// format when it isn't one, or has something placed as another document's.
+#[test]
+fn hostile_cache_folders_do_no_harm() {
+    smoke("removal_caches", seed(), rounds(300), 256);
+}
+
 /// Failure: a hostile survey makes the leftovers plan name a store outside its three or an artifact nobody could place, change with the order it
 /// was listed in, keep its digest when a file is another file, or say "nothing changed" after a save went to the Trash or a copy was deleted.
 #[test]

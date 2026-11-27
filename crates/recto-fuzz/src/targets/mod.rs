@@ -17,6 +17,7 @@ pub mod pdf;
 pub mod proto;
 pub mod record;
 pub mod removal_barrier;
+pub mod removal_caches;
 pub mod removal_ledger;
 pub mod removal_leftovers;
 pub mod select;

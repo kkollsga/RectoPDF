@@ -6,22 +6,28 @@ mod backups;
 /// The record store writes in place by descriptor, which only the Mac's folder helper gives (it is a stand-in elsewhere).
 #[cfg(target_os = "macos")]
 pub mod barrier;
+mod caches;
 #[cfg(test)]
 mod copy_fixtures;
+#[cfg(test)]
+mod coverage_tests;
 #[cfg(test)]
 mod destinations_tests;
 mod journals;
 pub mod ledger;
 pub mod leftovers;
 mod legacy_session;
+mod library;
 mod placing;
 mod record;
 mod update_copy;
 mod writer_temps;
 
 pub use backups::survey_backups;
+pub use caches::{CacheTarget, survey_caches};
 pub use journals::survey_journals;
 pub use legacy_session::survey_legacy_sessions;
+pub use library::survey_library;
 pub use record::survey_record;
 pub use update_copy::survey_update_copy;
 pub use writer_temps::survey_writer_temps;
