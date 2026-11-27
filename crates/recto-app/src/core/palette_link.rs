@@ -13,8 +13,8 @@ use recto_agent::commands::tabs::Open;
 use recto_core::locator::{AddressError, read_address};
 
 const PREFIX: &str = "link:";
-/// The id of the row that can't be chosen: nothing of the link.
-const REFUSED: &str = "link:refused";
+/// What the id of the row that can't be chosen starts with, then the refusal's code: nothing of the link.
+const REFUSED: &str = "link:refused:";
 /// The most of a file's name the row shows.
 const NAME_CHARS: usize = 60;
 
@@ -51,7 +51,7 @@ pub fn offer(query: &str, rows: &mut Vec<PaletteRow>) {
             link_row(format!("{PREFIX}{}", query.trim()), title, true)
         }
         Err(AddressError::NotALink) => return,
-        Err(why) => link_row(REFUSED.into(), why.message().into(), false),
+        Err(why) => link_row(format!("{REFUSED}{}", why.code()), why.message().into(), false),
     };
     rows.insert(0, row);
 }
@@ -68,9 +68,22 @@ pub fn as_command(id: &str) -> Option<Command> {
     )
 }
 
+/// An agent's run of the row that can't be chosen: the link's own refusal, its code and Rust's words, as `open --link` gives it.
+pub fn refusal(id: &str) -> Option<recto_agent::AgentError> {
+    let code = id.strip_prefix(REFUSED)?;
+    let why = [AddressError::NotALink, AddressError::Path, AddressError::Page]
+        .into_iter()
+        .find(|why| why.code() == code)?;
+    Some(recto_agent::AgentError::new(
+        recto_agent::Code::lower(why.code()),
+        why.message(),
+        recto_agent::exit::USAGE,
+    ))
+}
+
 /// The person's run of a row: `None` when it isn't a link's. The refused row does nothing, and leaves the palette as it is.
 pub fn run(palette: &crate::palette::Palette, life: &Lifecycle, core: &CoreQueue, id: &str) -> Option<HostAction> {
-    if id == REFUSED {
+    if id.starts_with(REFUSED) {
         return Some(HostAction::None);
     }
     let address = read_address(id.strip_prefix(PREFIX)?).ok()?;

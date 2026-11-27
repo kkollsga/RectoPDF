@@ -64,6 +64,11 @@ pub fn as_command(id: &str, recent: &[RecentFile]) -> Option<recto_agent::Comman
     super::palette_link::as_command(id).or_else(|| app::as_command(id, &recent))
 }
 
+/// An agent's run of the row of a link that can't be read: that link's refusal.
+pub fn refusal(id: &str) -> Option<recto_agent::AgentError> {
+    super::palette_link::refusal(id)
+}
+
 /// **The palette's menu id** ([`super::menu_rows`]): ⌘K opens it, in the sidebar, so the sidebar's shown first, and its field takes the keyboard.
 pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     if asked.action != Some(crate::menus::Action::PaletteOpen) {

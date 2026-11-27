@@ -131,7 +131,26 @@ fn a_failed_agent_run_leaves_the_persons_palette_open() {
     let link = link_to(&missing, 2);
     rows_for(&app, &link);
     let query = serde_json::to_string(&link).unwrap();
-    app.agent(Level::Control, &format!(r#"{{"cmd":"palette","query":{query},"run":true}}"#)).expect_err("the open fails");
+    app.agent(Level::Control, &format!(r#"{{"cmd":"palette","query":{query},"run":true}}"#))
+        .expect_err("the open fails");
     assert!(app.core().tools.palette().is_open(), "the person's palette is still open");
     assert_eq!(crate::core::palette::view(app.core()).text, link);
+}
+
+/// Failure: an agent running the row of a link that can't be read gets a generic "unknown id", or words that hold part of the link. It gets the link's own
+/// refusal, as `open --link` would give it: the code and Rust's constant words, none of the link.
+#[test]
+fn an_agent_running_a_refused_link_gets_the_links_own_refusal() {
+    let (app, _file) = start_with("r.pdf", 2);
+    for (bad, code) in [("rectopdf:///a/%2E%2E/MARKERb.pdf", "bad_path"), ("rectopdf:///MARKERx.pdf#page=0", "bad_page")] {
+        let query = serde_json::to_string(bad).unwrap();
+        let error = app
+            .agent(Level::Control, &format!(r#"{{"cmd":"palette","query":{query},"run":true}}"#))
+            .expect_err("refused");
+        assert_eq!(error.code.to_string(), code, "{error:?}");
+        let words = recto_core::locator::read_address(bad).expect_err("unreadable").message();
+        assert_eq!(error.message, words);
+        assert!(!error.message.contains("MARKER"));
+    }
+    assert_eq!(tab_count(&app), 0);
 }

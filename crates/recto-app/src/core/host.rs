@@ -334,6 +334,9 @@ impl AppHost {
             })?;
             // A tab's or a recent file's row is the agent's own command; a menu id's is the one table's (`menu_rows`).
             let id = first.id.as_str();
+            if let Some(refused) = palette::refusal(id) {
+                return Err(refused);
+            }
             let host = match palette::as_command(id, &inner.recent_files()) {
                 Some(direct) => {
                     self.run_counted(actor, &direct, events)?;
