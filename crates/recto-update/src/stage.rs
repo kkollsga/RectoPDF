@@ -15,6 +15,7 @@ use std::time::Duration;
 const CODESIGN: &str = "/usr/bin/codesign";
 /// The renderer helper, inside the app.
 const HELPER_BUNDLE: &str = "Contents/Helpers/RectoRender.app";
+const STRUCTURE_BUNDLE: &str = "Contents/Helpers/RectoStructure.app";
 const SPCTL: &str = "/usr/sbin/spctl";
 const PLIST_BUDDY: &str = "/usr/libexec/PlistBuddy";
 
@@ -212,6 +213,11 @@ pub fn has_identifiers(app: &Path, identifier: &str, helper_required: bool) -> b
             .is_some_and(|path| tool(CODESIGN, &["--verify", "--strict", "-R", &requirement, path], QUICK_LIMIT, 64 * 1024).is_ok_and(|(fine, _, _)| fine))
     };
     if !names(app, identifier) {
+        return false;
+    }
+    // The structure helper can't run unwalled, so one that is there must be this app's own; one that isn't (a kept copy from before it) passes, whatever `helper_required` says.
+    let structure = app.join(STRUCTURE_BUNDLE);
+    if structure.is_dir() && !(names(&structure, crate::STRUCTURE_ADHOC_ID) || names(&structure, &format!("{}.Structure", crate::BUNDLE_ID))) {
         return false;
     }
     let helper = app.join(HELPER_BUNDLE);
@@ -443,6 +449,34 @@ pub(crate) mod tests {
                 .success()
         );
         app
+    }
+
+    /// Puts a tiny ad hoc structure helper under this identifier in a fake app, and signs the app again so its seal covers it.
+    fn add_structure_helper(app: &Path, identifier: &str) {
+        let helper = app.join(STRUCTURE_BUNDLE);
+        std::fs::create_dir_all(helper.join("Contents/MacOS")).unwrap();
+        std::fs::write(helper.join("Contents/Info.plist"), format!(r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{identifier}</string><key>CFBundleExecutable</key><string>recto-headings</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>"#)).unwrap();
+        std::fs::copy("/usr/bin/true", helper.join("Contents/MacOS/recto-headings")).unwrap();
+        for path in [&helper, &app.to_path_buf()] {
+            assert!(Command::new(CODESIGN).args(["--force", "--sign", "-"]).arg(path).status().unwrap().success());
+        }
+    }
+
+    /// Fails if a copy whose structure helper is another program's is taken for this app's own (a kept copy that is gone back to by itself), or if a copy with the right one, or from before there was one, is refused.
+    #[test]
+    fn the_structure_helper_must_be_this_apps_own_when_there_is_one() {
+        let dir = temp_dir("structure-id");
+        let before = fake_app(&dir.path().join("before"), "1.0.0");
+        assert!(has_identifiers(&before, BUNDLE_ID, false), "a copy with no structure helper (from before it) must pass");
+        let wrong = fake_app(&dir.path().join("wrong"), "1.0.0");
+        add_structure_helper(&wrong, "com.example.Other");
+        assert!(!has_identifiers(&wrong, BUNDLE_ID, false), "a structure helper under another identifier is taken for this app's");
+        let adhoc = fake_app(&dir.path().join("adhoc"), "1.0.0");
+        add_structure_helper(&adhoc, crate::STRUCTURE_ADHOC_ID);
+        assert!(has_identifiers(&adhoc, BUNDLE_ID, false), "the ad hoc structure helper must pass");
+        let release = fake_app(&dir.path().join("release"), "1.0.0");
+        add_structure_helper(&release, &format!("{BUNDLE_ID}.Structure"));
+        assert!(has_identifiers(&release, BUNDLE_ID, false), "the release's structure identifier must pass");
     }
 
     pub(crate) fn zip_of(app: &Path, to: &Path) -> (Vec<u8>, String) {

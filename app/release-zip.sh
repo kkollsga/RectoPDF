@@ -99,7 +99,7 @@ check_built() {
     codesign --verify --deep --strict "$APP"
     # The renderer is sandboxed, signed as it should be, and nothing could run in its place outside the sandbox.
     "$APP_DIR/render-helper.sh" --check "$APP"
-    for f in "$APP/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/Frameworks/"*; do
+    for f in "$APP/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/Frameworks/"* "$APP/Contents/Helpers/RectoStructure.app/Contents/MacOS/"*; do
         lipo -archs "$f" | grep -qx arm64 || { echo "unexpected architectures in $f: $(lipo -archs "$f")" >&2; exit 1; }
     done
     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ] \
@@ -175,6 +175,10 @@ assert state["reader"]["tiles"].get("attached", 0) > 0, "no surface tile arrived
 assert state["memory"].get("workers_walled", 0) >= 1, "no live worker said it was sandboxed: %r" % state["memory"]
 assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
 ' || { echo "the signed app didn't draw" >&2; exit 1; }
+# The structure helper, behind its walls under this signature and the hardened runtime. Every build refuses an unwalled helper, so a zero exit here shows it started walled.
+"$APP/Contents/MacOS/recto" contents --generated >/dev/null \
+    && "$APP/Contents/MacOS/recto" wait contents-generated --timeout 60s >/dev/null \
+    || { echo "the release couldn't make generated contents behind its walls" >&2; exit 1; }
 # While that worker is alive: it was started with its allocator setting, on this signature (the team's in the preflight and the release).
 "$REPO/tools/release/worker-env.sh" "$APP"
 if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi
@@ -211,6 +215,7 @@ sign_team() {
     echo "==> Developer ID: team $(team_of "$APP")"
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
     [ "$(team_of "$APP/Contents/Helpers/RectoRender.app")" = "$TEAM_ID" ] || { echo "the renderer helper isn't signed by team $TEAM_ID" >&2; exit 1; }
+    [ "$(team_of "$APP/Contents/Helpers/RectoStructure.app")" = "$TEAM_ID" ] || { echo "the structure helper isn't signed by team $TEAM_ID" >&2; exit 1; }
 }
 notarize_it() {
     echo "==> Notarize and staple the app (waits for Apple)"

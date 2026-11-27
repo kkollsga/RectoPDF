@@ -12,7 +12,7 @@
 #   unpack    the previous release's own `recto-updater check-zip` takes the zip (the reader every copy of it will use) into an empty folder;
 #   bundle    on what it unpacked: the bundle id, CFBundleShortVersionString is the version, no development version, the licences' first
 #             line names it; codesign --verify --deep --strict; codesign -dv: Developer ID Application authority, TeamIdentifier, the
-#             hardened runtime flag and a secure Timestamp, for the app and for its renderer helper; the helper's sandbox
+#             hardened runtime flag and a secure Timestamp, for the app and for its renderer helper (and from 0.1.4 its structure helper); the helper's sandbox
 #             (app/render-helper.sh --check); stapler validate; spctl: accepted, source=Notarized Developer ID; from 0.1.1, the embedded
 #             provisioning profile and the entitlements on the main executable alone (tools/release/app-entitlements.sh --check);
 #   release   no override and no QA hook: `recto-updater source` with every override set says release, the real repo, developer_id and
@@ -118,6 +118,8 @@ signed_by() { # what, path
 }
 signed_by "the app" "$APP"
 signed_by "the renderer helper" "$APP/Contents/Helpers/RectoRender.app"
+# From 0.1.4 the structure helper is in the bundle too (S6b), signed by the same team.
+if [ "$(printf '%s\n' 0.1.4 "$version" | sort -V | head -1)" = 0.1.4 ]; then signed_by "the structure helper" "$APP/Contents/Helpers/RectoStructure.app"; fi
 # From 0.1.1, the Find key lives in the data-protection keychain in the app's own group (the owner's decision, 2026-11-15): the bundle embeds its
 # provisioning profile and its main executable alone claims the App ID, the team and the group. 0.1.0 had neither.
 if [ "$(printf '%s\n' 0.1.1 "$version" | sort -V | head -1)" = 0.1.1 ]; then
