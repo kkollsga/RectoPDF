@@ -60,6 +60,7 @@ mod record_threads;
 mod removal_clear;
 mod removal_ledger;
 mod selection;
+mod sheets;
 mod sidebar;
 mod sleep_counts;
 mod sleeping;
