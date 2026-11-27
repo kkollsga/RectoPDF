@@ -5,15 +5,26 @@ use recto_platform::isolate::SharedMemory;
 use std::io;
 
 /// Whether `error` is the Mac being out of descriptors or memory. `enospc` is for the shared memory's errors only: for a file's open it says the disk is full, which isn't this.
-#[cfg(unix)]
+/// macOS's errno values, named here so this crate takes no dependency for them (the app only runs there).
+#[cfg(target_os = "macos")]
+mod errno {
+    pub const ENOMEM: i32 = 12;
+    pub const EACCES: i32 = 13;
+    pub const ENFILE: i32 = 23;
+    pub const EMFILE: i32 = 24;
+    pub const ENOSPC: i32 = 28;
+    pub const EAGAIN: i32 = 35;
+}
+
+#[cfg(target_os = "macos")]
 fn is_out_of_resources(error: &io::Error, enospc: bool) -> bool {
     match error.raw_os_error() {
-        Some(code) => code == libc::EMFILE || code == libc::ENFILE || code == libc::EAGAIN || code == libc::ENOMEM || (enospc && code == libc::ENOSPC),
+        Some(code) => code == errno::EMFILE || code == errno::ENFILE || code == errno::EAGAIN || code == errno::ENOMEM || (enospc && code == errno::ENOSPC),
         None => false,
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 fn is_out_of_resources(_error: &io::Error, _enospc: bool) -> bool {
     false
 }
@@ -92,7 +103,7 @@ pub(super) fn create_shared_memory(len: usize) -> Result<SharedMemory, RenderFai
     SharedMemory::create(len).map_err(|error| of_shared_memory(&error))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::host::{DocRenderer, Policy, ServiceConfig};
@@ -101,16 +112,16 @@ mod tests {
     /// Failure: an open that ran out of descriptors failed the whole document ("The page renderer couldn't be started") for a Mac that was only short for a moment. It's `OutOfResources`, which counts as busy, and an error that is about the file (a refusal) stays `Unavailable` and is not busy.
     #[test]
     fn running_out_of_descriptors_is_busy_and_a_refusal_is_not() {
-        for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+        for errno in [errno::EMFILE, errno::ENFILE, errno::EAGAIN, errno::ENOMEM] {
             fail_next_open_with(errno);
             let failure = DocRenderer::open_file(Path::new("/dev/null/anything")).unwrap_err();
             assert_eq!(failure, RenderFailure::OutOfResources, "errno {errno}");
             assert!(failure.is_busy());
         }
         // A disk that is full is not this for a file's open.
-        fail_next_open_with(libc::ENOSPC);
+        fail_next_open_with(errno::ENOSPC);
         assert_eq!(DocRenderer::open_file(Path::new("/dev/null/anything")).unwrap_err(), RenderFailure::Unavailable);
-        fail_next_open_with(libc::EACCES);
+        fail_next_open_with(errno::EACCES);
         let failure = DocRenderer::open_file(Path::new("/dev/null/anything")).unwrap_err();
         assert_eq!(failure, RenderFailure::Unavailable);
         assert!(!failure.is_busy());
@@ -137,10 +148,10 @@ mod tests {
             )
             .err()
         };
-        for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM, libc::ENOSPC] {
+        for errno in [errno::EMFILE, errno::ENFILE, errno::EAGAIN, errno::ENOMEM, errno::ENOSPC] {
             assert_eq!(attempt(errno), Some(RenderFailure::OutOfResources), "errno {errno}");
         }
-        let failure = attempt(libc::EACCES).unwrap();
+        let failure = attempt(errno::EACCES).unwrap();
         assert_eq!(failure, RenderFailure::Unavailable);
         assert!(!failure.is_busy());
     }

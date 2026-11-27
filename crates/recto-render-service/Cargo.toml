@@ -30,10 +30,6 @@ recto-platform.workspace = true
 recto-proto.workspace = true
 recto-render.workspace = true
 
-# The errno names `host::resources` tells an Out of resources by.
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
 [dev-dependencies]
 # Test-only: `find_key::audit`, the look at a built program for the Keychain's code.
 recto-platform = { workspace = true, features = ["test-seams"] }
