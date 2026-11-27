@@ -341,6 +341,8 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
 const O_NONBLOCK: i32 = 0x0004;
 #[cfg(not(target_os = "macos"))]
 const O_NONBLOCK: i32 = 0o4000;
+/// "Device not configured": a FIFO opened for writing with no reader yet.
+const ENXIO: i32 = 6;
 
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
 #[test]
@@ -424,12 +426,7 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     // Its open is still under way, and the engine says so.
     assert_eq!(engine.report().0["opens_waiting"], 1, "{}", engine.report().0);
     // Lets its thread go. Not a blocking open: with no reader that would wait for ever (CI run 45789292698); no reader is an error here.
-    use std::os::unix::fs::OpenOptionsExt;
-    let writer = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(O_NONBLOCK)
-        .open(&dead)
-        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    let writer = open_fifo_writer(&engine, &dead);
     let deadline = Instant::now() + HANG;
     while engine.report().0["opens_waiting"] != 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
@@ -474,12 +471,7 @@ fn going_back_to_a_file_that_doesnt_answer_opens_it_once() {
         watch(Duration::from_millis(200));
     }
     assert!(most <= 1, "{most} opens of one file at once: {}", engine.report().0);
-    use std::os::unix::fs::OpenOptionsExt;
-    let writer = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(O_NONBLOCK)
-        .open(&dead)
-        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    let writer = open_fifo_writer(&engine, &dead);
     wait_no_opens(&engine);
     drop(writer);
 }
@@ -500,19 +492,53 @@ fn a_count_of_one_files_opens_isnt_another_files_open() {
     assert_eq!(engine.report().0["opens_waiting"], 2, "{}", engine.report().0);
     assert_eq!(opens_of(&engine, &dead), 1, "{}", engine.report().0);
     assert_eq!(opens_of(&engine, &other), 1, "{}", engine.report().0);
-    use std::os::unix::fs::OpenOptionsExt;
-    let writers: Vec<_> = [&dead, &other]
-        .iter()
-        .map(|fifo| {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .custom_flags(O_NONBLOCK)
-                .open(fifo)
-                .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0))
-        })
-        .collect();
+    let writers: Vec<_> = [&dead, &other].iter().map(|fifo| open_fifo_writer(&engine, fifo)).collect();
     wait_no_opens(&engine);
     drop(writers);
+}
+
+/// Opens a FIFO's write end without blocking, once the engine's `recto-open` thread is reading it.
+/// Failure: the engine lists a path as opening before its thread reaches the blocking `File::open`, so one try can find no reader yet (ENXIO) and fail a test whose engine is fine. Retries on ENXIO, bounded by `HANG`, and says the engine's report if no reader came. Not a blocking open: with no reader that would wait for ever (CI run 45789292698).
+fn open_fifo_writer(engine: &Engine, path: &std::path::Path) -> std::fs::File {
+    use std::os::unix::fs::OpenOptionsExt;
+    let deadline = Instant::now() + HANG;
+    loop {
+        match std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(path) {
+            Ok(file) => return file,
+            Err(error) if error.raw_os_error() == Some(ENXIO) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+            }
+            Err(error) => panic!("nothing is reading the fifo ({error}): {}", engine.report().0),
+        }
+    }
+}
+
+/// Failure: the fifo helper tried once, so a reader that starts a moment after the engine lists its open (the `recto-open` thread isn't at `File::open` yet) gave ENXIO and failed `a_count_of_one_files_opens_isnt_another_files_open` on CI. A reader that comes late, here by 150 ms, is found by the helper, where one plain attempt gets ENXIO.
+#[test]
+fn the_fifo_helper_finds_a_reader_that_comes_late() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let folder = recto_testpdf::TempDir::new("recto-fifo-late-");
+    std::fs::create_dir_all(&folder).unwrap();
+    let fifo = fifo_in(&folder, "late.pdf");
+    let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    let plain = std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(&fifo);
+    assert_eq!(
+        plain.err().and_then(|error| error.raw_os_error()),
+        Some(ENXIO),
+        "a single try with no reader yet"
+    );
+    let reader = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            // The reader the test makes comes late: nothing is ever sent, so this waits out its 150 ms.
+            let (keep_open, never) = std::sync::mpsc::channel::<()>();
+            let _ = never.recv_timeout(Duration::from_millis(150));
+            drop(keep_open);
+            std::fs::File::open(fifo).map(drop)
+        })
+    };
+    drop(open_fifo_writer(&engine, &fifo));
+    reader.join().unwrap().unwrap();
 }
 
 /// The opens of this one file that haven't returned (`reader.opening`), not all files' (`opens_waiting`).
@@ -612,12 +638,7 @@ fn reopening_a_file_that_doesnt_answer_never_passes_the_cap_on_opens() {
         "{most} opens at once, the cap is {MAX_OPENS}: {}",
         engine.report().0
     );
-    use std::os::unix::fs::OpenOptionsExt;
-    let writer = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(O_NONBLOCK)
-        .open(&dead)
-        .unwrap_or_else(|error| panic!("nothing is reading the fifo ({error}): {}", engine.report().0));
+    let writer = open_fifo_writer(&engine, &dead);
     drop(writer);
 }
 
@@ -650,9 +671,8 @@ fn a_healthy_file_held_up_by_others_that_dont_answer_isnt_blamed() {
     assert!(note.contains("Too many files"), "{note:?}");
     assert!(!note.contains("This file isn't answering"), "{note:?}");
     // Lets their threads go.
-    use std::os::unix::fs::OpenOptionsExt;
     for dead in &dead_ones {
-        drop(std::fs::OpenOptions::new().write(true).custom_flags(O_NONBLOCK).open(dead));
+        drop(open_fifo_writer(&engine, dead));
     }
 }
 
