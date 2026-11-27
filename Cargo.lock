@@ -805,6 +805,7 @@ dependencies = [
  "recto-testpdf",
  "recto-update",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

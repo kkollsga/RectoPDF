@@ -24,6 +24,8 @@ recto-platform.workspace = true
 recto-render-service.workspace = true
 recto-session.workspace = true
 serde_json.workspace = true
+# The names the app's own cache writers hash (`removal_store/caches/names.rs`). Already in the tree through recto-core.
+sha2.workspace = true
 
 [dev-dependencies]
 # Its own test seams, for the integration tests (`tests/ledger_cost.rs`): in a test build only, never the app's.
