@@ -3,6 +3,8 @@
 //! content, and nothing is wired to a command yet.
 
 mod backups;
+/// The record store writes in place by descriptor, which only the Mac has (the folder helper is a stand-in elsewhere).
+#[cfg(unix)]
 pub mod barrier;
 #[cfg(test)]
 mod copy_fixtures;
