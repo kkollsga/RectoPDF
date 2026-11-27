@@ -37,6 +37,67 @@ fn live(line: &str) -> Vec<char> {
     found
 }
 
+/// What a code block's hidden words come to when read back from its output: the text of each `[hidden: ...]` mark up to the first `]` with no backslash before it, with its backslashes taken
+/// away, all joined. A hidden run that could close its own mark early would come back shorter than it was.
+fn marks_read_back(out: &str) -> String {
+    let mut found = String::new();
+    for line in out.lines() {
+        let mut rest = line;
+        while let Some(at) = rest.find("[hidden: ") {
+            // A `[hidden: ` after an odd run of backslashes is the page's own words, escaped.
+            let slashes = rest[..at].chars().rev().take_while(|c| *c == '\\').count();
+            if slashes % 2 == 1 {
+                rest = &rest[at + 1..];
+                continue;
+            }
+            let mut chars = rest[at + 9..].char_indices();
+            let mut closed = None;
+            while let Some((index, c)) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some((_, escaped)) = chars.next() {
+                            found.push(escaped);
+                        }
+                    }
+                    ']' => {
+                        closed = Some(index);
+                        break;
+                    }
+                    c => found.push(c),
+                }
+            }
+            let Some(index) = closed else { break };
+            rest = &rest[at + 9 + index + 1..];
+        }
+    }
+    found
+}
+
+/// The hidden words of a block as it should read back: each run of hidden characters on a line, without the space at its end, joined.
+fn hidden_words(piece: &Piece<'_>) -> String {
+    let mut hidden = vec![false; piece.text.len()];
+    for &(start, end) in piece.hidden {
+        for flag in hidden.iter_mut().take(end as usize).skip(start as usize) {
+            *flag = true;
+        }
+    }
+    let mut out = String::new();
+    let mut run = String::new();
+    let mut flush = |run: &mut String, out: &mut String| {
+        out.push_str(run.trim_end());
+        run.clear();
+    };
+    for (&c, &is_hidden) in piece.text.iter().zip(&hidden) {
+        if c == '\n' || !is_hidden {
+            flush(&mut run, &mut out);
+        } else {
+            run.push(if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c });
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 pub fn check(data: &[u8]) {
     let mut take = Take(data);
     let count = 1 + usize::from(take.u8()) % MAX_PIECES;
@@ -71,6 +132,13 @@ pub fn check(data: &[u8]) {
         rendered.iter().filter(|piece| piece.kind == Kind::ListItem).count(),
         rendered.iter().filter(|piece| piece.kind == Kind::Code).count(),
     );
+    for piece in rendered.iter().filter(|piece| piece.kind == Kind::Code) {
+        assert_eq!(
+            marks_read_back(&render(&[**piece])),
+            hidden_words(piece),
+            "a hidden mark in code closes early or holds other words"
+        );
+    }
     let out = render(&pieces);
     let (mut seen_headings, mut seen_lists, mut seen_fences) = (0, 0, 0);
     let mut fence: Option<String> = None;

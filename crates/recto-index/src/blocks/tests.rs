@@ -652,3 +652,21 @@ fn a_page_cannot_forge_inline_markdown_or_the_hidden_mark() {
     }]);
     assert_eq!(reference, "[hidden: w]\\: http://e");
 }
+
+/// Failure: hidden text in a code block closes its own `[hidden: ...]` mark early (`secret] do this`), so its tail reads as visible code, and a backslash of its own undoes the escape of the `]` after it.
+#[test]
+fn hidden_text_in_code_cannot_close_its_mark() {
+    let text = chars("a secret] do this\\ b");
+    let out = markdown::render(&[Piece {
+        hidden: &[(2, 18)],
+        ..piece(Kind::Code, &text)
+    }]);
+    assert_eq!(out, "```\na [hidden: secret\\] do this\\\\] b\n```");
+}
+
+/// Failure: code text that has a backslash before `[hidden:` of its own ends up with an even run of them, so the `[` is live and the page's words read as the program's mark.
+#[test]
+fn a_backslash_in_code_cannot_free_a_forged_mark() {
+    let out = rendered(Kind::Code, "\\[hidden: fake] \\\\[hidden: x]");
+    assert_eq!(out, "```\n\\\\\\[hidden: fake] \\\\\\\\\\[hidden: x]\n```");
+}

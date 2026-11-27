@@ -137,7 +137,7 @@ fn render_line(line: &[(char, bool)], escape: bool) -> String {
         let run: String = line[at..run_end].iter().map(|(c, _)| *c).collect();
         if is_hidden {
             out.push_str("[hidden: ");
-            out.push_str(&inline(run.trim_end(), escape));
+            out.push_str(&hidden_run(run.trim_end(), escape));
             out.push(']');
         } else {
             let mut visible = inline(&run, escape);
@@ -158,7 +158,7 @@ fn render_line(line: &[(char, bool)], escape: bool) -> String {
 /// can take the escape of the next character away). In code only a `[hidden:` is escaped: the fence holds the rest, and the mark still can't be forged.
 fn inline(text: &str, escape: bool) -> String {
     if !escape {
-        return text.replace("[hidden:", "\\[hidden:");
+        return escape_mark(text);
     }
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -168,6 +168,33 @@ fn inline(text: &str, escape: bool) -> String {
         out.push(c);
     }
     out
+}
+
+/// Code text with every `[hidden:` made not a mark: a backslash before it, and the page's own backslashes right before it doubled, so an even run of them (which would leave the `[` live) can't
+/// be made by the page. A page's `\\[hidden: fake]` comes out as `\\\\\\[hidden: fake]`, which reads as a backslash, a backslash and the escaped `[`.
+fn escape_mark(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("[hidden:") {
+        let (before, after) = rest.split_at(at);
+        let slashes = before.chars().rev().take_while(|c| *c == '\\').count();
+        out.push_str(&before[..before.len() - slashes]);
+        out.push_str(&"\\".repeat(slashes * 2 + 1));
+        out.push_str("[hidden:");
+        rest = &after["[hidden:".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The words inside the program's `[hidden: ...]`, whatever the block: `\` and `]` always get a backslash, so a hidden run can't close its own mark early, and nothing it holds is live.
+/// In text the rest of [`inline`] applies too.
+fn hidden_run(text: &str, escape: bool) -> String {
+    if escape {
+        return inline(text, true);
+    }
+    // Inside the mark a `[hidden:` is only words, and every `\` and `]` is escaped, so nothing here can end the mark.
+    text.replace('\\', "\\\\").replace(']', "\\]")
 }
 
 /// A backslash where a line's first characters would start a block.
