@@ -251,10 +251,10 @@ fn a_page_stores_at_most_512_blocks() {
     );
 }
 
-/// Failure: a hostile page (two million of one letter) and a block that nearly matches everywhere makes the search take minutes: the comparisons are bounded and the block is dropped as unplaced.
+/// Failure: a hostile page (a million of one letter) and a block that nearly matches everywhere makes the search take minutes: the comparisons are bounded and the block is dropped as unplaced.
 #[test]
 fn a_page_built_to_make_the_search_slow_is_cut_short() {
-    let page = vec!['a'; 2_000_000];
+    let page = vec!['a'; 1_000_000];
     let mut text = "a".repeat(239);
     text.push('b');
     let mapped = map_page(0, &page, &[para(&text)]);
@@ -466,13 +466,13 @@ fn a_block_keeps_the_marks_next_to_its_letters() {
     assert_eq!((span(&mapped, 0), span(&mapped, 1)), ((3, 8), (0, 3)));
 }
 
-/// Failure: the check that a run overlaps no mapped block isn't counted, so a page of 2M one letters under 500 mapped blocks, asked for one letter again and again, costs billions of
+/// Failure: the check that a run overlaps no mapped block isn't counted, so a page of a million one letters under 500 mapped blocks, asked for one letter again and again, costs billions of
 /// steps where the search's bound says 20 million. Counts the steps taken, not the time.
 #[test]
 fn looking_at_the_mapped_blocks_is_part_of_the_bound() {
-    // 500 blocks of 4,000 `a`s fill the page's first 2M characters; then one-letter blocks have only places that are taken.
-    let page = vec!['a'; 2_000_000];
-    let mut candidates: Vec<Candidate> = (0..500).map(|_| para(&"a".repeat(4000))).collect();
+    // 500 blocks of 2,000 `a`s fill the page's first million characters; then one-letter blocks have only places that are taken.
+    let page = vec!['a'; 1_000_000];
+    let mut candidates: Vec<Candidate> = (0..500).map(|_| para(&"a".repeat(2000))).collect();
     candidates.extend((0..20).map(|_| para("a")));
     let mapped = map_page(0, &page, &candidates);
     assert_eq!(mapped.blocks.blocks.len(), 500, "{:?}", mapped.counts);
@@ -487,4 +487,23 @@ fn looking_at_the_mapped_blocks_is_part_of_the_bound() {
         "the later one-letter blocks run out of budget: {:?}",
         mapped.counts
     );
+}
+
+/// Failure: a page with more characters than a record can point into is searched anyway, its text copied twice into buffers (a ligature page of 2M characters took ~48 MB), or cut and the blocks
+/// that stand past the cut mapped wrongly. At the cap it maps; one past it nothing is looked for and every candidate is counted.
+#[test]
+fn a_page_past_the_character_cap_maps_nothing_and_says_so() {
+    let at_cap = vec!['a'; super::MAX_PAGE_CHARS as usize];
+    let mapped = map_page(0, &at_cap, &[para("aaaa")]);
+    assert_eq!(mapped.counts.stored_total(), 1, "{:?}", mapped.counts);
+    let mut over = at_cap;
+    over.push('a');
+    let mapped = map_page(0, &over, &[para("aaaa"), para("bbb"), para("")]);
+    assert_eq!(
+        (mapped.counts.stored_total(), mapped.counts.dropped_total(), mapped.counts.why.page_too_long),
+        (0, 3, 3),
+        "{:?}",
+        mapped.counts
+    );
+    assert_eq!(mapped.work, 0);
 }

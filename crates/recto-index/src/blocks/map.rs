@@ -162,6 +162,8 @@ pub struct Drops {
     pub ambiguous: u32,
     /// Past [`MAX_BLOCKS`] for the page.
     pub over_cap: u32,
+    /// The page's text is past [`MAX_PAGE_CHARS`], so nothing on it is looked for.
+    pub page_too_long: u32,
     /// The page's comparisons ran out ([`MAX_COMPARISONS`]).
     pub out_of_budget: u32,
 }
@@ -283,10 +285,19 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
         counts: Counts::default(),
         work: 0,
     };
-    // Only what a record can point into is looked at.
-    let page = &page[..page.len().min(MAX_PAGE_CHARS as usize)];
-    let mut key: Vec<char> = Vec::new();
-    let mut origin: Vec<u32> = Vec::new();
+    // A page a record can't point into is not read at all: nothing is copied, nothing is found, and every candidate says why.
+    if page.len() > MAX_PAGE_CHARS as usize {
+        for candidate in candidates {
+            out.counts.dropped[candidate.shape.index()] += 1;
+            out.counts.why.page_too_long += 1;
+        }
+        return out;
+    }
+    // Counted first so the two buffers are the size they need and never grow by doubling.
+    let mut letter_count = 0;
+    letters(page.iter().copied(), |_, _| letter_count += 1);
+    let mut key: Vec<char> = Vec::with_capacity(letter_count);
+    let mut origin: Vec<u32> = Vec::with_capacity(letter_count);
     letters(page.iter().copied(), |letter, at| {
         key.push(letter);
         origin.push(at as u32);

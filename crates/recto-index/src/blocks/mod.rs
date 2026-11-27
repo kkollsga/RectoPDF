@@ -20,8 +20,8 @@ mod tests;
 
 /// Most blocks stored for one page. Past it the rest of the page's candidates are dropped and counted.
 pub const MAX_BLOCKS: usize = 512;
-/// Most characters of a page's text a block may point into: the corpus's own cap on a page is 2,000,000, so this is past any real page.
-pub const MAX_PAGE_CHARS: u32 = 1 << 22;
+/// Most characters of a page's text a block may point into, and most a mapping reads: 1,048,576, fifty times the busiest page measured (under 20,000). A page past it maps nothing, so the mapping's buffers (8 bytes a letter, up to 3 letters a ligature) stay inside 25 MB (measured, release: 8.4 MB for a page of plain letters and 25.2 MB for a page of `ffi` ligatures, the worst).
+pub const MAX_PAGE_CHARS: u32 = 1 << 20;
 /// The deepest level kept for a block. Past it the level is this.
 pub const MAX_LEVEL: u8 = 9;
 
