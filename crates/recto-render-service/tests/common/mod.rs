@@ -1,7 +1,7 @@
 //! Shared by this crate's test binaries.
 #![allow(dead_code)]
 
-use recto_render_service::{DocRenderer, HeavySlot, Policy, ServiceConfig, Surface};
+use recto_render_service::{DocRenderer, HeavySlot, MAX_BUSY, Policy, RenderFailure, ServiceConfig, Surface};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -15,8 +15,22 @@ pub fn real_config() -> ServiceConfig {
     config
 }
 
+/// A renderer of the file with the real worker. `DocRenderer::new` starts no worker: it opens the file and makes the control block's shared memory, and on a Mac loaded with other tests either can answer `Unavailable` once (2026-11-26/27, `tests/common/mod.rs` `.unwrap()` in a `like-ci` run, no reason kept). The product asks again at `open_retry_pause`, and so does this: at most [`MAX_BUSY`] tries (the one bound the service has for asking again), then it panics with the last answer, so a file that really can't be opened still fails the test.
 pub fn renderer(path: &Path, policy: Policy) -> DocRenderer {
-    DocRenderer::new(path, None, real_config(), policy).unwrap()
+    opened_again(|| DocRenderer::new(path, None, real_config(), policy.clone()))
+}
+
+/// Asks `open` again while it says [`RenderFailure::Unavailable`] (a try that couldn't start, which remembers nothing), up to [`MAX_BUSY`] tries.
+pub fn opened_again(mut open: impl FnMut() -> Result<DocRenderer, RenderFailure>) -> DocRenderer {
+    let mut last = RenderFailure::Unavailable;
+    for _ in 0..MAX_BUSY {
+        match open() {
+            Ok(doc) => return doc,
+            Err(RenderFailure::Unavailable) => last = RenderFailure::Unavailable,
+            Err(other) => panic!("the renderer wasn't opened: {other:?}"),
+        }
+    }
+    panic!("the renderer wasn't opened in {MAX_BUSY} tries: {last:?}");
 }
 
 pub fn tile_surface() -> Surface {

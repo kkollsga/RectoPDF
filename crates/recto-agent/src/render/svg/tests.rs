@@ -6,6 +6,7 @@
 use super::*;
 use crate::commands::Cmd as _;
 use crate::commands::export::ExportSvg;
+use recto_render_service::MAX_BUSY;
 use recto_svg::verify::{Embedded, check_document, embedded_images, read_png};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, form_bomb, pages, pages_with, text_lines};
 use std::path::PathBuf;
@@ -51,8 +52,18 @@ fn export(file: &TempPdf, extra: &[&str]) -> (Value, i32, PathBuf) {
 }
 
 /// Exports and hands back the file's text and the answer, with the file gone, having checked the file is what it should be: well formed, and with nothing in it that can run or lead out.
+///
+/// Asks again, as a person is told to, while the answer is `page_mac_busy` (the export itself asked up to its own bound and the Mac still had no processor for the worker: it says nothing of the page, and a failed export leaves nothing): at most [`MAX_BUSY`] more exports, then the last answer fails the test. A page that is really too heavy ends as its own failure, which isn't asked again (2026-11-27: `huge_paths_and_deep_clips_end_in_a_sound_file` at load 45-53).
 fn svg_of(file: &TempPdf, extra: &[&str]) -> (String, Value) {
-    let (reply, code, out) = export(file, extra);
+    let mut asks = 0u8;
+    let (reply, code, out) = loop {
+        let answer = export(file, extra);
+        asks += 1;
+        if answer.1 != 0 && answer.0["error"]["code"] == "page_mac_busy" && asks < MAX_BUSY {
+            continue;
+        }
+        break answer;
+    };
     assert_eq!(code, 0, "{reply}");
     let bytes = std::fs::read(&out).unwrap();
     check_document(&bytes);

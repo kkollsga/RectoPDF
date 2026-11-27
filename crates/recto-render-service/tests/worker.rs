@@ -1054,6 +1054,32 @@ fn only_the_file_changing_says_the_file_changed() {
     assert!(!doc.take_file_changed(), "once");
 }
 
+/// Failure: a renderer that could not be made once on a loaded Mac (`Unavailable`, which remembers nothing) fails a test that asked once; or the helper asks for ever and a file that really can't be opened never fails. It asks again, and stops at `MAX_BUSY` tries.
+#[test]
+fn the_test_kits_open_asks_again_after_an_unavailable_and_stops() {
+    let file = TempPdf::new("open-again.pdf", &pages(&[Page::new(text_lines(&["Only"]))]));
+    let mut tries = 0;
+    let mut doc = common::opened_again(|| {
+        tries += 1;
+        if tries == 1 {
+            Err(recto_render_service::RenderFailure::Unavailable)
+        } else {
+            DocRenderer::new(&file.0, None, common::real_config(), Policy::default())
+        }
+    });
+    assert_eq!(tries, 2);
+    assert!(doc.page_size(0).is_ok());
+    let mut asks = 0u8;
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        common::opened_again(|| {
+            asks += 1;
+            Err(recto_render_service::RenderFailure::Unavailable)
+        })
+    }));
+    assert!(stopped.is_err());
+    assert_eq!(asks, recto_render_service::MAX_BUSY);
+}
+
 /// Failure (the second review of `build/image-select`): a click's ask for where a crowded page's pictures are changes what dark paper is told of that page,
 /// so dark paper judges it by a click's superset where it judged it whole; or a click is refused on such a page, so every click there costs a private
 /// worker. Through the real worker: 70 pictures apart are too many for dark paper, before and after a click's ask, and 65 boxes for a click, which every
