@@ -24,6 +24,15 @@ const ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const RECEIPT_CAP: u64 = 4096;
 
+/// Fixture cleanup and launch waits poll for a condition and return the moment it holds, so this is only the limit for one that never holds (the escape
+/// app ends itself after 6 s, `lsregister` and the registration query always end). A fixed 1 s or 5 s bound failed `owned fixture cleanup failed` on a loaded Mac
+/// with nothing wrong.
+const CLEANUP_GUARD: Duration = Duration::from_secs(60);
+
+/// How long to look for a launch that must not happen. Waiting out the guard on every pass would cost a minute; a loaded Mac only makes the launch later,
+/// so a longer window can only find more, never less.
+const ABSENCE_WINDOW: Duration = Duration::from_secs(5);
+
 /// A script step (`--layout`, `--sign`, `--check`, `--key`) must end, and the tests assert that it succeeds. The product holds no time bound on these (`codesign`, python3 and PlistBuddy run untimed in the build), so a limit here is only a guard against a hang, below nextest's terminate: a busy Mac that takes 16 s fails nothing, and a step that never ends fails naming itself.
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
@@ -181,10 +190,10 @@ impl Fixture {
         self.attempt_list().into_iter().flat_map(|(args, _)| args).collect()
     }
 
-    /// The same five-second limit covers both the complete atomic receipt and the exact private executable exiting.
-    fn marker_after_launch(&self) -> Option<String> {
+    /// `window` covers both the complete atomic receipt and the exact private executable exiting.
+    fn marker_after_launch(&self, window: Duration) -> Option<String> {
         let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(5) {
+        while started.elapsed() < window {
             if let Ok(text) = capped_text(&self.marker())
                 && self.own_processes().is_empty()
             {
@@ -230,7 +239,7 @@ impl Drop for Fixture {
         let mut cleanup = format!("exact executable: {}\nowned processes: {:?}\n", executable.display(), self.own_processes());
         // A path lookup cannot keep a numeric PID from being recycled. The Escape process owns its exit timer; cleanup only waits or retains its bundle.
         let began = Instant::now();
-        while !self.own_processes().is_empty() && began.elapsed() < Duration::from_secs(1) {
+        while !self.own_processes().is_empty() && began.elapsed() < CLEANUP_GUARD {
             std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
         }
         let remaining = self.own_processes();
@@ -242,7 +251,7 @@ impl Drop for Fixture {
             (self.helper(), ADHOC_ID.into()),
         ] {
             if app.exists() {
-                match command::output(Command::new(LSREGISTER).arg("-u").arg(&app), Duration::from_secs(5)) {
+                match command::output(Command::new(LSREGISTER).arg("-u").arg(&app), CLEANUP_GUARD) {
                     Ok((exceeded, output)) => {
                         let mut absent = !exceeded && output.status.success();
                         cleanup.push_str(&format!(
@@ -254,7 +263,7 @@ impl Drop for Fixture {
                         if !absent {
                             match command::output(
                                 Command::new(PROBE).args(["--registered-app", &format!("{identifier}|{}", app.display())]),
-                                Duration::from_secs(5),
+                                CLEANUP_GUARD,
                             ) {
                                 Ok((exceeded, query)) => {
                                     let said = String::from_utf8_lossy(&query.stdout);
@@ -335,9 +344,9 @@ fn probe_text(executable: &Path, args: &[String]) -> String {
     said
 }
 
-/// Runs the probe and returns how it ended, `None` if it hung and was killed at 30 s, and what it had said by then.
+/// Runs the probe and returns how it ended, `None` if it hung and was killed at the hang guard, and what it had said by then.
 fn probe_run(executable: &Path, args: &[String]) -> (Option<std::process::ExitStatus>, String) {
-    let (exceeded, output) = command::output(Command::new(executable).args(args), Duration::from_secs(30)).unwrap();
+    let (exceeded, output) = command::output(Command::new(executable).args(args), HANG_GUARD).unwrap();
     if !output.stderr.is_empty() {
         eprintln!("probe stderr:\n{}", String::from_utf8_lossy(&output.stderr));
     }
@@ -456,7 +465,7 @@ fn the_helpers_walls_hold() {
         );
     }
     assert_eq!(results.get("launchservices:open"), Some(&false), "LaunchServices took the request: {results:?}");
-    assert_eq!(fixture.marker_after_launch(), None, "something was launched outside the sandbox");
+    assert_eq!(fixture.marker_after_launch(ABSENCE_WINDOW), None, "something was launched outside the sandbox");
 }
 
 /// Failure: the App Sandbox stops letting a process launch an app, and nobody notices that the Mach drop no longer carries its own weight. Or this stays true and the drop is taken out
@@ -472,7 +481,7 @@ fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
     std::fs::write(fixture.scratch().join("probe.txt"), &said).unwrap();
     let results = parse(&said);
     assert_eq!(results.get("launchservices:open"), Some(&true), "{results:?}");
-    let marker = fixture.marker_after_launch().expect("the launched app left no marker");
+    let marker = fixture.marker_after_launch(CLEANUP_GUARD).expect("the launched app left no marker");
     fixture.assert_receipt(&marker);
 }
 

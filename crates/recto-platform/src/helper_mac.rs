@@ -422,9 +422,15 @@ mod tests {
                 "{who} used no CPU time at utility: outside it {:?}; threads {threads:?}",
                 outside_utility(time)
             );
+            // Not a zero tolerance, and not a share of the utility time: 53 ns was the noise seen (most likely the exec before the clamp is seen), and a
+            // share would let a clamp applied late hide, a shell's start-up at default under 5 % of its work. The regressions this guards charge
+            // milliseconds elsewhere, so an absolute bound of 50 microseconds separates them.
+            const OUTSIDE_NOISE_NS: u64 = 50_000;
+            let outside: u64 = outside_utility(time).iter().map(|&(_, ns)| ns).sum();
             assert!(
-                outside_utility(time).is_empty(),
-                "{who} ran outside utility, by bucket in ns: {:?}; threads {threads:?}",
+                outside <= OUTSIDE_NOISE_NS,
+                "{who} ran outside utility for {outside} ns (over {OUTSIDE_NOISE_NS}; {} ns at utility), by bucket in ns: {:?}; threads {threads:?}",
+                time.ri_cpu_time_qos_utility,
                 outside_utility(time)
             );
         }
