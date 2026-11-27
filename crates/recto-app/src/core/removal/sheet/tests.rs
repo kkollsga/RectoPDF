@@ -181,3 +181,32 @@ fn ids_grow_and_never_repeat() {
     assert_eq!(seen[0], 1);
     assert!(seen.windows(2).all(|pair| pair[0] < pair[1]), "{seen:?}");
 }
+
+/// Failure: a clear that failed in a way no sentence is made for says "Nothing was cleared" though it began and may have moved a save, or is titled as a
+/// refusal; a look's unknown failure may say nothing was cleared, as a look clears nothing. Neither shows the failure's own text.
+#[test]
+fn an_unknown_failure_of_a_clear_does_not_claim_nothing_was_done() {
+    let sheet = Leftovers::default();
+    sheet.answered(&clear(2), &error(Code::INTERNAL, "a path /Users/x/secret and Full access"));
+    let model = sheet.showing().expect("said");
+    assert_eq!((model.title.as_str(), model.message.as_str()), (words::STOPPED_TITLE, words::COULDNT_CLEAR));
+    assert_eq!(model.buttons, [words::LOOK_AGAIN, words::OK]);
+    assert!(!model.message.contains("Nothing was cleared"), "{}", model.message);
+    let look = Leftovers::default();
+    look.answered(&check(2), &error(Code::INTERNAL, "a path"));
+    assert_eq!(look.showing().expect("said").message, words::COULDNT);
+}
+
+/// Failure: a command dropped from the person's lane (answered `CANCELLED`, which no feature has words for) opens a "couldn't clear" sheet, or takes away the
+/// sheet that was showing.
+#[test]
+fn a_cancelled_command_changes_nothing() {
+    let (sheet, id) = with_an_offer();
+    for family in [check(3), clear(3)] {
+        assert_eq!(sheet.answered(&family, &error(Code::CANCELLED, "dropped")), None);
+        assert_eq!(sheet.showing().map(|model| model.id), Some(id), "the offer is as it was");
+    }
+    let none = Leftovers::default();
+    none.answered(&check(1), &error(Code::CANCELLED, "dropped"));
+    assert!(none.showing().is_none());
+}

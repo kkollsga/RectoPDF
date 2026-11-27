@@ -65,7 +65,9 @@ pub const REFUSED_TITLE: &str = "Leftovers weren't cleared";
 pub const CANCEL: &str = "Cancel";
 pub const OK: &str = "OK";
 pub const LOOK_AGAIN: &str = "Look Again";
-/// What a sheet says of a failure it has no sentence of its own for: never the failure's text, which may carry a path or a document's words.
+/// What a sheet says of a clear that failed in a way it has no sentence for: it can't claim nothing was cleared, as a clear that began may have done part.
+pub const COULDNT_CLEAR: &str = "RectoPDF couldn't finish clearing leftovers. Choose Clear Leftovers again to see what's left.";
+/// What a sheet says of a look that failed in a way it has no sentence for: never the failure's text, which may carry a path or a document's words.
 pub const COULDNT: &str = "RectoPDF couldn't clear leftovers just now. Nothing was cleared.";
 
 fn n(count: u32, one: &str, many: &str) -> String {

@@ -208,3 +208,17 @@ fn an_agent_never_opens_a_sheet_and_only_full_is_given_a_plan() {
         assert!(sheet(&bed.app).is_none(), "{level:?}'s palette run opened a sheet: {ran:?}");
     }
 }
+
+/// Failure: a check or clear dropped from the person's lane (answered `CANCELLED`, which no feature says words for) opens a "couldn't clear" sheet over the
+/// window, or announces a change when nothing changed.
+#[test]
+fn a_command_dropped_from_the_lane_opens_no_sheet_and_announces_nothing() {
+    let bed = bed();
+    let inner = std::sync::Arc::clone(bed.app.core());
+    assert!(inner.core.flush(std::time::Duration::from_secs(10)), "at rest");
+    let asked = inner.core.reconciles_asked();
+    let dropped = recto_agent::parse(r#"{"cmd":"removal_check"}"#).expect("a command");
+    crate::core::person::not_run(&crate::core::answer_parts::AnswerParts::of(&inner), &dropped, "dropped");
+    assert!(sheet(&bed.app).is_none());
+    assert_eq!(inner.core.reconciles_asked(), asked, "nothing changed, so nothing was announced");
+}

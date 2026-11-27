@@ -86,6 +86,11 @@ fn is_the_persons_words(code: Code) -> bool {
     )
 }
 
+/// A command dropped from the person's lane is answered `CANCELLED`, which no feature has words for ([`crate::core::person`]).
+fn is_cancelled(result: &Result<Value, AgentError>) -> bool {
+    result.as_ref().is_err_and(|error| error.code == Code::CANCELLED)
+}
+
 impl Leftovers {
     fn show(&self, tab: u32, what: What, words: String) {
         let mut slot = lock(&self.0);
@@ -94,19 +99,21 @@ impl Leftovers {
         slot.shown = Some(Box::new(Shown { id, tab, what, words }));
     }
 
-    /// A failed check or clear, as a sheet in the person's words, decided by the code alone.
-    fn told(&self, tab: u32, error: &AgentError) {
-        let words = if is_the_persons_words(error.code) {
-            error.message.clone()
-        } else {
-            words::COULDNT.to_owned()
+    /// A failed check or clear, as a sheet in the person's words, decided by the code alone. A clear that failed in a way with no sentence says it didn't
+    /// finish, never that nothing was cleared: it began and may have done part.
+    fn told(&self, tab: u32, error: &AgentError, clearing: bool) {
+        let known = is_the_persons_words(error.code);
+        let words = match (known, clearing) {
+            (true, _) => error.message.clone(),
+            (false, true) => words::COULDNT_CLEAR.to_owned(),
+            (false, false) => words::COULDNT.to_owned(),
         };
         let gone = matches!(error.code, Code::NO_SUCH_TAB | Code::FILE_MISSING);
         self.show(
             tab,
             What::Told {
                 again: !gone,
-                stopped: error.code == Code::REMOVAL_STOPPED,
+                stopped: error.code == Code::REMOVAL_STOPPED || (clearing && !known),
             },
             words,
         );
@@ -114,6 +121,9 @@ impl Leftovers {
 
     /// The person's `removal check` or `removal clear` was answered. A clear that finished leaves no sheet, and gives its words to be said by the page.
     pub fn answered(&self, family: &Family, result: &Result<Value, AgentError>) -> Option<String> {
+        if is_cancelled(result) {
+            return None;
+        }
         match (family, result) {
             // A tab named any other way than by number can't be asked about again by a sheet; the menu and the palette always name it by number.
             (Family::RemovalCheck(RemovalCheck { tab: TabRef::Id(TabId(tab)) }), result) => {
@@ -126,7 +136,7 @@ impl Leftovers {
                         };
                         self.show(*tab, what, words);
                     }
-                    Err(error) => self.told(*tab, error),
+                    Err(error) => self.told(*tab, error, false),
                 }
                 None
             }
@@ -141,7 +151,7 @@ impl Leftovers {
                     data["words"].as_str().map(str::to_owned)
                 }
                 Err(error) => {
-                    self.told(*tab, error);
+                    self.told(*tab, error, true);
                     None
                 }
             },
@@ -215,7 +225,7 @@ pub fn row<'a>(parts: &RowParts<'a>, asked: &Asked<'_>) -> Option<Row<'a>> {
 pub fn answered(parts: &AnswerParts<'_>, ran: &Ran<'_>) {
     let Command::Removal(family) = ran.command else { return };
     // A read still to come is no answer.
-    if ran.result.is_err() && ran.refused().is_none() {
+    if (ran.result.is_err() && ran.refused().is_none()) || is_cancelled(ran.result) {
         return;
     }
     parts.leftovers_answered(|leftovers| leftovers.answered(family, ran.result));
