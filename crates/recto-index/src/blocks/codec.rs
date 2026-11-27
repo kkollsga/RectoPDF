@@ -86,7 +86,7 @@ pub fn open_page(seal: &CorpusSeal, page: u32, chunk: &mut [u8]) -> Result<PageB
         return Err(OpenError::Damaged);
     }
     let mut blocks = Vec::with_capacity(count);
-    for bytes in body.chunks_exact(BLOCK) {
+    for bytes in body.as_chunks::<BLOCK>().0 {
         let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
         let side = |at: usize| i16::from_le_bytes([bytes[at], bytes[at + 1]]);
         if bytes[2] > 1 {
