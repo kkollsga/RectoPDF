@@ -6,7 +6,7 @@
 //! ```
 //!
 //! **Refused:** a record that doesn't open (the wrong key, a changed byte, another page's), longer than [`MAX_RECORD_BYTES`], with more than
-//! [`MAX_BLOCKS`](super::MAX_BLOCKS), a length that isn't its count, a kind, level, flag or place that no build writes, blocks that are empty, run past
+//! [`MAX_BLOCKS`](super::MAX_BLOCKS), a length that isn't its count, a kind, level, flag or place that no build writes, a box with its left past its right or its bottom past its top, blocks that are empty, run past
 //! [`MAX_PAGE_CHARS`](super::MAX_PAGE_CHARS) or overlap, or another page's number inside. A record of another format is [`OpenError::Foreign`]: not damage,
 //! so a reader keeps what it has and builds again.
 
@@ -110,7 +110,13 @@ pub fn open_page(seal: &CorpusSeal, page: u32, chunk: &mut [u8]) -> Result<PageB
 fn holds(page: &PageBlocks) -> bool {
     let mut spans: Vec<(u32, u32)> = Vec::with_capacity(page.blocks.len());
     for block in &page.blocks {
-        if block.level > MAX_LEVEL || block.page != page.page || block.start >= block.end || block.end > MAX_PAGE_CHARS {
+        if block.level > MAX_LEVEL
+            || block.page != page.page
+            || block.start >= block.end
+            || block.end > MAX_PAGE_CHARS
+            || block.bbox[0] > block.bbox[2]
+            || block.bbox[1] > block.bbox[3]
+        {
             return false;
         }
         spans.push((block.start, block.end));

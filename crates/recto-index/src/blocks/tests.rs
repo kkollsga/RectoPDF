@@ -147,6 +147,13 @@ fn what_no_build_writes_is_refused_after_the_seal() {
     );
     refused(plain_of(2, 3, &[one_block(1, 1, 0, 0, 10), one_block(1, 1, 0, 9, 20)]), "overlapping blocks");
     refused(plain_of(2, 3, &[one_block(1, 1, 0, 0, 10), one_block(1, 1, 0, 0, 10)]), "the same block twice");
+    for (what, sides) in [("left past right", [5i16, 0, 4, 0]), ("bottom past top", [0, 5, 0, 4])] {
+        let mut inverted = one_block(1, 1, 0, 0, 10);
+        for (at, side) in sides.iter().enumerate() {
+            inverted[11 + at * 2..13 + at * 2].copy_from_slice(&side.to_le_bytes());
+        }
+        refused(plain_of(1, 3, &[inverted]), what);
+    }
     let mut long = raw(&seal, &plain_of(0, 3, &[]));
     long.resize(MAX_RECORD_BYTES + 1, 0);
     assert_eq!(
