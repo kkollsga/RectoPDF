@@ -26,6 +26,10 @@ pub enum UiAction {
     Chevron { first: u32 },
     /// A file to open: the Open panel's, a drop, the Finder's, by its path.
     Open { path: String },
+    /// A file the system handed over, with what came after `#` in its link (empty for none): the Finder's, another app's.
+    OpenAt { path: String, fragment: String },
+    /// A `rectopdf:` link the system handed over from another app or a web page, as it was sent: the person's open.
+    OpenLink { link: String },
     /// File > Open Recent's file, by its key.
     OpenRecent { key: String },
     /// What's in the Find field now, as it's typed.
@@ -90,6 +94,8 @@ impl UiAction {
             Self::PaneRead { .. } => "PaneRead",
             Self::Chevron { .. } => "Chevron",
             Self::Open { .. } => "Open",
+            Self::OpenAt { .. } => "OpenAt",
+            Self::OpenLink { .. } => "OpenLink",
             Self::OpenRecent { .. } => "OpenRecent",
             Self::FindTyped { .. } => "FindTyped",
             Self::FindOpen => "FindOpen",
@@ -158,7 +164,15 @@ impl Inner {
             UiAction::PaneRead { tab } => Some(super::comparison::reading(TabId(tab))),
             UiAction::Chevron { first } => super::contents::chevron(&lock(&self.published).contents, first),
             UiAction::Open { path } => {
-                super::opening::open_for_person(&self.life, &self.core, PathBuf::from(path));
+                super::opening::open_for_person(&self.life, &self.core, PathBuf::from(path), None);
+                return Acted::DONE;
+            }
+            UiAction::OpenAt { path, fragment } => {
+                super::link_open::open_at(self, PathBuf::from(path), &fragment);
+                return Acted::DONE;
+            }
+            UiAction::OpenLink { link } => {
+                super::link_open::from_outside(self, link);
                 return Acted::DONE;
             }
             UiAction::OpenRecent { key } => {

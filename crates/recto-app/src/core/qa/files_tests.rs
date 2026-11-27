@@ -22,6 +22,7 @@ use std::time::SystemTime;
 /// as-person`'s command by its own wall and then the session's.
 const FILE_IN_A_VALUE: &[(&str, &str, &str)] = &[
     ("qa as-person", "value", "open {}"),
+    ("qa as-person", "value", "open --link rectopdf://{}"),
     ("qa compare-budget", "files", "{}"),
     ("qa print-to-pdf", "value", "{}"),
     ("qa print-to-pdf", "value", "{}|1|1"),

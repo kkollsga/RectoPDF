@@ -35,6 +35,8 @@ pub struct Window {
     panel_open: AtomicBool,
     /// What it says by the page: a notice that goes by itself, and why an open failed.
     notices: Notices,
+    /// When links from outside arrived, which the cap on them is counted from ([`super::link_open`]).
+    pub(in crate::core) links: Box<super::link_open::Arrivals>,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
     notice_tab: AtomicU32,
 }
@@ -65,6 +67,7 @@ impl Window {
             contents_follow: Mutex::new(ContentsFollow::default()),
             watchdog,
             notices: Notices::new(),
+            links: Box::default(),
             notice_tab: AtomicU32::new(0),
         }
     }

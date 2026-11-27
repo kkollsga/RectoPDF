@@ -36,8 +36,10 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::Pasted { .. } => 23,
         UiAction::CopyLink { .. } => 24,
         UiAction::SheetAnswered { .. } => 25,
+        UiAction::OpenAt { .. } => 26,
+        UiAction::OpenLink { .. } => 27,
     };
-    (place, 26)
+    (place, 28)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -134,6 +136,14 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
             path: not_open.display().to_string(),
         },
         UiAction::OpenRecent { key: recent_key },
+        // A file the Finder hands over with a page, and a link a click hands over: the person's `open` (8.4).
+        UiAction::OpenAt {
+            path: not_open.display().to_string(),
+            fragment: "page=1".into(),
+        },
+        UiAction::OpenLink {
+            link: format!("rectopdf://{}#page=1", not_open.display()),
+        },
         UiAction::CloseAnswered {
             tab,
             choice: CloseChoice::Cancel,

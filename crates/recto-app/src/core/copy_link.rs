@@ -1,11 +1,13 @@
-//! **The window's Copy Link** (PLAN 8.4, owner 2026-11-26): Edit > Copy Link, the page's right-click menu and a contents row's right-click, which put the
-//! file's whole address with the page (`file:///…/manual.pdf#page=N`) on the clipboard as plain text, for the person alone. Each sends the person's
-//! `recto link <page> --to-clipboard`, the command an agent's `recto link` is, run by the one executor; the address is made in `recto_core::locator`, and
-//! handed to the window's clipboard by `recto_agent`'s sink. An agent is never given it, at any level, and the answer holds no address and no path.
+//! **The window's Copy Link** (PLAN 8.4, owner 2026-11-26 and 27): Edit > Copy Link, the page's right-click menu and a contents row's right-click put RectoPDF's
+//! own link to the page (`rectopdf:///…/manual.pdf#page=N`) on the clipboard, for the person alone. Each sends the person's `recto link <page> --to-clipboard`,
+//! the command an agent's `recto link` is, run by the one executor; the link is made in `recto_core::locator`, and handed to the window's clipboard by
+//! `recto_agent`'s sink. An agent is never given it, at any level, and the answer holds no address and no path.
 //!
-//! **What Copy Link doesn't promise:** Preview may open the file at its first page. Nothing here opens a file; the page is in the address for a reader that
-//! takes it. So it's said when the link is copied ([`answered`]), in one sentence after the confirmation (owner, 2026-11-26: "Build it, say so").
+//! **Where it opens:** a click on it, in Notes, Mail, Finder or a web page, opens RectoPDF at that page ([`super::link_open`]); on a Mac without RectoPDF it
+//! does nothing. That's said when the link is copied ([`answered`]). It is on the clipboard as text and as a URL ([`offer`]): the URL type is why Notes and
+//! Mail paste a link you can click. A `rectopdf:` URL makes no app attach a file, which is why a `file:` URL type was kept out.
 
+use super::snapshot_tool::Offered;
 use crate::core::answer_parts::AnswerParts;
 use crate::core::menu_rows::{Agents, Asked, Row};
 use crate::core::person;
@@ -13,6 +15,7 @@ use crate::core::row_parts::RowParts;
 use crate::menus::HostAction;
 use recto_agent::commands::Read;
 use recto_agent::commands::page_link::Link;
+use recto_agent::extract::{ClipItem, UTI_TEXT};
 use recto_agent::{Code, Command, TabRef};
 use recto_session::TabId;
 use std::collections::VecDeque;
@@ -22,8 +25,24 @@ pub const COPY_LINK_ID: &str = "edit.copy_link";
 
 /// What the menu item says.
 pub const TITLE: &str = "Copy Link";
-/// Said after the confirmation: the page is in the address, and Preview may not take it.
-const PREVIEW: &str = "Preview may open it at the first page.";
+/// Said after the confirmation: where the link opens.
+const OPENS: &str = "It opens in RectoPDF; on a Mac without RectoPDF it does nothing.";
+/// The pasteboard's URL type, which the link is also offered as.
+pub const UTI_URL: &str = "public.url";
+
+/// The link as the clipboard is offered it: the same bytes as text and as a URL, the text first.
+pub(super) fn offer(text: String) -> Offered {
+    let bytes = text.into_bytes();
+    let mut offered = Offered::default();
+    offered.items.extend([
+        ClipItem::Ready {
+            uti: UTI_TEXT,
+            bytes: bytes.clone(),
+        },
+        ClipItem::Ready { uti: UTI_URL, bytes },
+    ]);
+    offered
+}
 
 /// **The Copy Links asked and not yet landed, in the order they were sent** (the person's `Link` runs on the session thread in that order): each one's place
 /// among what's asked of the clipboard ([`super::snapshot_tool::Tool::link_asked`]), taken off the front as its address lands or it's refused; and whether
@@ -140,7 +159,7 @@ pub fn answered(parts: &AnswerParts<'_>, ran: &person::Ran<'_>) {
         }
         let file_page = answer["file_page"].as_u64().unwrap_or(0);
         let of = if file_page == u64::from(*page) { "" } else { " of the saved file" };
-        parts.say(format!("Copied a link to page {file_page}{of}. {PREVIEW}"));
+        parts.say(format!("Copied a link to page {file_page}{of}. {OPENS}"));
         return;
     }
     let Some(error) = ran.refused() else { return };

@@ -7,7 +7,7 @@ impl Inner {
     pub fn ready(&self, open: &[PathBuf]) {
         recto_platform::slow::window_up();
         for path in open {
-            super::opening::open(&self.core, path.clone());
+            super::opening::open(&self.core, path.clone(), None);
         }
         self.core.push(CoreCall::Reconcile);
     }

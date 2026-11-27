@@ -231,6 +231,13 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             path: app.disk().files().join("c.pdf").display().to_string(),
         },
         UiAction::OpenRecent { key: recent_key(app) },
+        UiAction::OpenAt {
+            path: app.disk().files().join("c.pdf").display().to_string(),
+            fragment: "page=2".into(),
+        },
+        UiAction::OpenLink {
+            link: format!("rectopdf://{}#page=2", app.disk().files().join("c.pdf").display()),
+        },
         UiAction::FindTyped { text: "page".into() },
         UiAction::FindOpen,
         UiAction::FindClose,

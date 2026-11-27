@@ -149,7 +149,7 @@ impl<'a> RowParts<'a> {
 
     /// A file the person opens ([`super::opening::open_for_person`]).
     pub fn open(&self, path: PathBuf) {
-        super::opening::open_for_person(self.life, self.core, path);
+        super::opening::open_for_person(self.life, self.core, path, None);
     }
 
     /// ⌘K's palette opened.
