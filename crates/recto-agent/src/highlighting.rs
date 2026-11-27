@@ -770,7 +770,7 @@ mod tests {
         ("recto-agent/src/render/svg.rs", 1, 1, "`recto export svg`"),
         ("recto-agent/src/search.rs", 1, 0, "the text searched"),
         ("recto-agent/src/selecting.rs", 1, 0, "the characters a pick takes"),
-        ("recto-app/src/core/updates.rs", 1, 0, "a new version's own test page, no tab's"),
+        ("recto-app/src/core/proof_draw.rs", 1, 0, "a new version's own test page, no tab's"),
         (
             "recto-reader/src/engine/run.rs",
             1,
