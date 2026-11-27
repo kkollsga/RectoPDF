@@ -1,6 +1,7 @@
 //! **A start or an open the Mac had no descriptors or memory for, for a moment.** `EMFILE`, `ENFILE`, `EAGAIN` and `ENOMEM` from opening the file, and those or `ENOSPC` from the shared memory a renderer needs (`shm_open`, `ftruncate`, `mmap`), say nothing of the file: the Mac was out of something and will have it again. They are [`RenderFailure::OutOfResources`], which [`RenderFailure::is_busy`] counts, so whoever asked asks again by the rule it has for a busy Mac, and the document isn't failed. Any other error stays [`RenderFailure::Unavailable`].
 
 use super::RenderFailure;
+use recto_platform::isolate::SharedMemory;
 use std::io;
 
 /// Whether `error` is the Mac being out of descriptors or memory. `enospc` is for the shared memory's errors only: for a file's open it says the disk is full, which isn't this.
@@ -54,28 +55,41 @@ pub fn fail_next_shared_memory_with(errno: i32) {
     FAIL_SHARED_MEMORY.with(|cell| cell.set(errno));
 }
 
-/// The injected error for an open, if one is set.
-pub(super) fn injected_open() -> Option<io::Error> {
+/// Opens the document's file through the wall: what the open said, as the failure it is.
+pub(super) fn open_document(path: &std::path::Path) -> Result<std::fs::File, RenderFailure> {
+    use recto_platform::document_file::{self, Refused};
+    if let Some(failure) = injected_open() {
+        return Err(failure);
+    }
+    document_file::open(path).map_err(|refused| match refused {
+        Refused::Look(error) | Refused::Open(error) if error.kind() == io::ErrorKind::NotFound => RenderFailure::NotFound,
+        Refused::NotADocument => RenderFailure::NotPdf,
+        Refused::Look(error) | Refused::Open(error) => of_open(&error),
+    })
+}
+
+/// The injected failure for an open, if one is set.
+pub(super) fn injected_open() -> Option<RenderFailure> {
     #[cfg(any(test, feature = "test-seams"))]
     {
         let code = FAIL_OPEN.with(|cell| cell.replace(0));
         if code != 0 {
-            return Some(io::Error::from_raw_os_error(code));
+            return Some(of_open(&io::Error::from_raw_os_error(code)));
         }
     }
     None
 }
 
-/// The injected error for the shared memory, if one is set.
-pub(super) fn injected_shared_memory() -> Option<io::Error> {
+/// The renderer's shared memory, or why it couldn't be had.
+pub(super) fn create_shared_memory(len: usize) -> Result<SharedMemory, RenderFailure> {
     #[cfg(any(test, feature = "test-seams"))]
     {
         let code = FAIL_SHARED_MEMORY.with(|cell| cell.replace(0));
         if code != 0 {
-            return Some(io::Error::from_raw_os_error(code));
+            return Err(of_shared_memory(&io::Error::from_raw_os_error(code)));
         }
     }
-    None
+    SharedMemory::create(len).map_err(|error| of_shared_memory(&error))
 }
 
 #[cfg(all(test, unix))]

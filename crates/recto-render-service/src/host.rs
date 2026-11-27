@@ -313,7 +313,7 @@ pub enum RenderFailure {
     TooBusy {
         page: u32,
     },
-    /// The Mac had no descriptors or memory for opening the file or the renderer's shared memory, for a moment (`EMFILE`, `ENFILE`, `EAGAIN`, `ENOMEM`, or `ENOSPC` on the shared memory). Says nothing of the file: it counts as busy ([`Self::is_busy`]) and asking again tries again.
+    /// Out of descriptors or memory for a moment ([`resources`]): counts as busy ([`Self::is_busy`]), asking again tries again.
     OutOfResources,
     /// The worker, in starting or in opening the file, had no processor to answer with: nothing is remembered and asking again tries again. [`busy::MAX_BUSY`] in a row end as [`Self::Unavailable`] (start) or [`Self::OpenFailed`] (open).
     TooBusyToStart,
@@ -815,15 +815,7 @@ impl DocRenderer {
     /// ([`recto_platform::document_file`]), as every open of a document by its path is: a path into `/dev`, a file that isn't a regular one and a file with
     /// no name are [`RenderFailure::NotPdf`], so a descriptor the app holds on the person's print can't be opened again by a path.
     pub fn open_file(path: &Path) -> Result<File, RenderFailure> {
-        use recto_platform::document_file::{self, Refused};
-        if let Some(error) = resources::injected_open() {
-            return Err(resources::of_open(&error));
-        }
-        document_file::open(path).map_err(|refused| match refused {
-            Refused::Look(error) | Refused::Open(error) if error.kind() == io::ErrorKind::NotFound => RenderFailure::NotFound,
-            Refused::NotADocument => RenderFailure::NotPdf,
-            Refused::Look(error) | Refused::Open(error) => resources::of_open(&error),
-        })
+        resources::open_document(path)
     }
 
     /// The rest of [`Self::new`], with the file open.
@@ -834,11 +826,7 @@ impl DocRenderer {
         config: ServiceConfig,
         policy: Policy,
     ) -> Result<Self, RenderFailure> {
-        let shared = match resources::injected_shared_memory() {
-            Some(error) => Err(error),
-            None => SharedMemory::create(control::LEN),
-        }
-        .map_err(|error| resources::of_shared_memory(&error))?;
+        let shared = resources::create_shared_memory(control::LEN)?;
         let slot = config.heavy_slot.clone();
         Ok(Self {
             config,
@@ -1689,10 +1677,8 @@ impl DocRenderer {
         self.open_in(worker, generation).inspect_err(|failure| {
             // `Unavailable` here means it never got to ask, which trying again may mend. What the worker itself said was noted where it was heard.
             if let JobFailure::Failed(failure) = failure
-                && !matches!(
-                    failure,
-                    RenderFailure::Unavailable | RenderFailure::TooBusyToStart | RenderFailure::OutOfResources
-                )
+                && !failure.is_busy()
+                && !matches!(failure, RenderFailure::Unavailable)
             {
                 self.note_open_failure(*failure);
             }
