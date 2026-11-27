@@ -213,7 +213,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          for each listing (`entries`, `openat` of `.`), a file in it that already exists (`open_checked`, one `openat` for both `open_private_in` and `open_private_rw_in`, \
          `O_NOFOLLOW | O_NONBLOCK`, read only or read and write, refused unless a plain file of this user's that others can't write), and a new file in it (`create_private_in`, `openat`, \
          `O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0600, which fails if anything is at the name and so never reaches an existing file or a link). A name that is empty, `.`, `..` or holds \
-         a `/` is refused by all of them, so no name can leave the folder. Used by removal's six surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, \
+         a `/` is refused by every open of a name in the folder (`open_in`, `open_checked`, `create_private_in`), so no name can leave the folder. Used by removal's six surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, \
          `legacy_session.rs` and `update_copy.rs`), by Clear leftovers (`leftovers/pin.rs` opens the folders below a copy by `open_in`, `leftovers/act.rs` opens the pinned folders by \
          `Folder::open` and `open_in`, and `folder_mac/remove.rs` opens each folder it takes away by `open_in`) and by the transaction record's store (`removal_store/barrier.rs`: \
          `Folder::open`, `open_private_rw_in` and `create_private_in`); a new caller is counted where it calls",
