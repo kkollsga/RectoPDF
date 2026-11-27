@@ -1147,6 +1147,37 @@ fn said_by(error: &crate::AgentError) -> String {
     format!("{} | {} | {} | {:?}", error.code, error.message, error.next, error.ask)
 }
 
+/// The owner's highlight of a line on page `page`, as one step in the history the way `highlight` makes it ([`crate::highlighting::add`]) but without
+/// reading the page's text for the line first: a text read through the page renderer cost 30 ms in each of the walk's cases, and which line it takes is
+/// no part of what the walk holds, that an agent leaves the owner's steps alone. (The pick itself is held by `highlighting`'s own tests.)
+fn owner_highlights(access: &Mutex<Session<crate::DrawableLoader>>, id: recto_session::TabId, page: u32) {
+    use recto_session::edit::marks::{MarkChange, MarkPage, MarkRect};
+    crate::edit(
+        access,
+        Actor::Person,
+        &crate::TabRef::Id(id),
+        &mut Vec::new(),
+        String::from("Highlighted 1 line."),
+        |edits| {
+            let (source, at) = edits.page_at(page - 1).ok_or(recto_session::edit::EditError::OutOfRange)?;
+            let rect = MarkRect {
+                x: 10.0,
+                y: 10.0,
+                width: 60.0,
+                height: 12.0,
+            };
+            edits.mark(MarkChange::Add {
+                pages: vec![MarkPage {
+                    source,
+                    page: at,
+                    rects: vec![rect],
+                }],
+            })
+        },
+    )
+    .expect("the owner's highlight");
+}
+
 /// The owner's steps [`no_command_below_full_loses_the_owners_edits`] starts with.
 const OWNERS: usize = 5;
 
@@ -1189,21 +1220,12 @@ fn no_command_below_full_loses_the_owners_edits() {
                     degrees: 90,
                 })
             };
-            let highlight = |page: u32| {
-                Command::from(commands::highlight::Highlight {
-                    tab: "#1".into(),
-                    page: Some(page),
-                    to_page: None,
-                    chars: Some("0-3".into()),
-                    at: None,
-                    to: None,
-                    unit: None,
-                    reference: None,
-                })
-            };
-            for step in [turn("1"), turn("2"), highlight(4), turn("3"), highlight(1)] {
-                execute(&access, Actor::Person, &step, &mut Vec::new()).expect("the owner's step");
-            }
+            let by_the_owner = |step: Command| drop(execute(&access, Actor::Person, &step, &mut Vec::new()).expect("the owner's step"));
+            by_the_owner(turn("1"));
+            by_the_owner(turn("2"));
+            owner_highlights(&access, id, 4);
+            by_the_owner(turn("3"));
+            owner_highlights(&access, id, 1);
             for _ in 0..2 {
                 let undo = Command::from(commands::editing::Undo { tab: "#1".into() });
                 execute(&access, Actor::Person, &undo, &mut Vec::new()).expect("the owner's undo");
