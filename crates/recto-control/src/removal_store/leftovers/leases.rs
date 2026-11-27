@@ -198,6 +198,21 @@ mod tests {
         assert_eq!(leases.look_again().unwrap_err(), Busy::Installer);
     }
 
+    /// Failure (D3b): a clear's own moves and deletes run while an unfinished removal's record is in the state folder, in whatever shape (one that can't be
+    /// read as much as a good one), against files the removal's plan has pinned. No lease is given, and a state folder with none gives it as before.
+    #[test]
+    fn an_unfinished_removal_stops_the_clear() {
+        use crate::removal_store::barrier::fixture::{Kind, seed};
+        for kind in [Kind::Pending(1), Kind::Garbage, Kind::TooNew, Kind::FolderIsFile] {
+            let root = root();
+            seed(root.path(), kind);
+            assert_eq!(Leases::take(&root, READY).unwrap_err(), Busy::RemovalPending, "{kind:?}");
+        }
+        let root = root();
+        seed(root.path(), Kind::LedgerOnly);
+        assert!(Leases::take(&root, READY).is_ok(), "the ledger alone is no record");
+    }
+
     /// Failure: a clear runs while the app is still starting, beside a newer record, or without keeping its own.
     #[test]
     fn what_only_the_app_knows_is_asked() {
