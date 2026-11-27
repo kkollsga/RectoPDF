@@ -1,8 +1,8 @@
-//! Generated contents through the real commands, the way an agent uses them: a session, the real headings helper, a real render worker for the check for hidden text, on temp state. `tools/check.sh` builds the helper beside `recto`.
+//! Generated contents through the real commands, the way an agent uses them: a session, the real headings helper, a real render worker for the check for hidden text, on temp state. `tools/check.sh` lays the helper out as `RectoStructure.app` where `recto` finds it.
 
 mod common;
 
-use common::State;
+use common::{Raw, State};
 use recto_agent::Level;
 use recto_index::corpus::CorpusKey;
 use recto_testpdf::TempPdf;
@@ -46,6 +46,10 @@ fn an_agent_gets_generated_contents_without_hidden_headings() {
     let (facts, _) = state.json(&["facts"]);
     assert_eq!(facts["data"]["contents_verdict"], "missing");
 
+    // Listening before the ask: the job's end says whether the helper was shown walled before it was given the document.
+    let mut events = Raw::connect(&state);
+    events.send(&json!({ "cmd": "watch", "events": ["contents"], "count": 2, "timeout_ms": 600_000 }).to_string());
+    assert_eq!(events.read().unwrap()["data"]["watching"], true);
     let started = std::time::Instant::now();
     let (first, code) = state.json(&["contents", "--generated"]);
     assert_eq!(code, 0, "{first}");
@@ -58,6 +62,18 @@ fn an_agent_gets_generated_contents_without_hidden_headings() {
 
     let (made, code) = wait_made(&state);
     assert_eq!(code, 0, "{made}");
+    let started_event = events.read().unwrap();
+    assert_eq!(started_event["data"]["event"], "contents_generating", "{started_event}");
+    let finished = events.read().unwrap();
+    assert_eq!(
+        (finished["data"]["event"].as_str(), finished["data"]["state"].as_str()),
+        (Some("contents_generated"), Some("ready")),
+        "{finished}"
+    );
+    assert_eq!(
+        finished["data"]["walled"], true,
+        "the helper wasn't shown walled before it was given the document: {finished}"
+    );
     assert_eq!(made["data"]["generated"], true);
     assert!(made["data"]["note"].as_str().unwrap().contains("aren't part of the file"), "{made}");
     let found = titles(&made);

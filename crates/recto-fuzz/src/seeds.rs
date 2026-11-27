@@ -410,16 +410,22 @@ fn record_seeds() -> Vec<Vec<u8>> {
     ]
 }
 
-/// Generated contents as they're kept, and as the helper says them.
+/// Generated contents as they're kept, and as the structure helper says them: a hello, a line a page and an end.
 fn generated_seeds() -> Vec<Vec<u8>> {
     let kept = br#"{"format":"recto-generated-contents","version":1,"key":"abababababababababababababababababababababababababababababababab","pages":12,"truncated":false,"hidden_dropped":1,"pages_not_checked":0,"pages_failed":0,"entries":[[0,0,80,"1 Introduction"],[1,2,400,"1.1 Background"],[0,11,0,"References"]]}"#.to_vec();
-    let mut answer = br#"{"state":"ready","found":4,"kept":3,"elapsed_ms":120}"#.to_vec();
-    answer.push(b'\n');
-    answer.extend_from_slice(&kept);
+    let answer = br#"{"state":"hello","walled":true}
+{"page":0,"found":[{"level":1,"bbox":[70.5,700,190,712],"title":"1 Introduction"},{"level":2,"bbox":null,"title":"1.1 Background"}]}
+{"page":11,"found":[{"level":1,"bbox":[72,300,150,312],"title":"References"}]}
+{"state":"ready","pages":12,"pages_failed":0,"truncated":false,"found":3,"distilled_ms":120}
+"#
+    .to_vec();
     vec![
         kept,
         answer,
-        br#"{"state":"refused","code":"couldnt_read"}"#.to_vec(),
+        br#"{"state":"hello","walled":true}
+{"state":"refused","code":"couldnt_read"}
+"#
+        .to_vec(),
         (0..=255u8).collect(),
         br#"{"state":"ready","pages":12,"pages_built":3,"pages_resumed":9,"elapsed_ms":40,"corpus_bytes":900,"pack_bytes":300}"#.to_vec(),
         br#"{"state":"paused","code":"too_busy"}"#.to_vec(),
