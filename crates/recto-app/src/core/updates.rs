@@ -447,11 +447,6 @@ pub fn note_asked_to_open(paths: &[PathBuf]) {
 
 /// **Back from a version that kept ending,** the record's as it left it, as that holds whatever was done since. If this version can't read it, damaged or of a newer kind, the record from before the update is put back, where this version reads, and read instead. Only at that one launch.
 pub fn fall_back_if_unreadable(updates: &recto_update::updater::Updater, store: &recto_control::record_store::RecordStore, loaded: Loaded) -> Loaded {
-    // Before the one-time copy is even taken: an unfinished removal's record means `update/before` may hold the very history being purged, and the one
-    // fall-back must be there for the launch that can use it (`docs/design/removal.md` §6).
-    if matches!(loaded, Loaded::Withheld(_)) {
-        return loaded;
-    }
     let Some(before) = updates.take_record_to_fall_back_on() else {
         return loaded;
     };
@@ -461,6 +456,9 @@ pub fn fall_back_if_unreadable(updates: &recto_update::updater::Updater, store: 
         Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => store.main_folder(),
         // A newer kind is never written over: this version's own folder beside it is where it reads.
         Loaded::Newer => store.own_folder(),
+        // An unfinished removal's record: `update/before` may hold the very history being purged, so it is never put back (`docs/design/removal.md` §6). The
+        // copy to fall back on lives in memory and is set once by the settling at launch, so it is not offered again, and no later launch sees it.
+        withheld @ Loaded::Withheld(_) => return withheld,
         other => return other,
     };
     recto_update::install::restore_record(&before, &into);
