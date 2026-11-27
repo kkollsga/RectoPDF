@@ -6,7 +6,7 @@ app.update | sent [{"cmd":"update_check"}] | host None understood true | heard n
 compare.separate | sent [{"cmd":"compare","tabs":null,"sync":"off","off":false,"toggle":null,"reading":null}] | host None understood true | heard nothing
 compare.synced | sent [{"cmd":"compare","tabs":null,"sync":"on","off":false,"toggle":null,"reading":null}] | host None understood true | heard nothing
 edit.clear_history | sent [{"cmd":"clear_history","tab":"active"}] | host None understood true | heard nothing
-edit.clear_leftovers | sent [{"cmd":"removal_check","tab":"#3"}] | host None understood true | heard model_changed*2
+edit.clear_leftovers | sent [{"cmd":"removal_check","tab":"#3"}] | host None understood true | heard model_changed
 edit.copy | sent [] | host None understood true | heard nothing
 edit.copy_anyway | sent [] | host None understood true | heard nothing
 edit.copy_link | sent [] | host None understood true | heard nothing
@@ -56,7 +56,7 @@ palette app.quit | sent [] | host Quit understood true | heard nothing
 palette app.settings | sent [] | host ShowSettings understood true | heard nothing
 palette app.update | sent [{"cmd":"update_check"}] | host None understood true | heard nothing
 palette edit.clear_history | sent [{"cmd":"clear_history","tab":"active"}] | host None understood true | heard nothing
-palette edit.clear_leftovers | sent [{"cmd":"removal_check","tab":"#3"}] | host None understood true | heard model_changed*2
+palette edit.clear_leftovers | sent [{"cmd":"removal_check","tab":"#3"}] | host None understood true | heard model_changed
 palette edit.copy | sent [] | host None understood true | heard nothing
 palette edit.copy_link | sent [] | host None understood true | heard nothing
 palette edit.redo | sent [{"cmd":"redo","tab":"active"}] | host None understood true | heard nothing
