@@ -76,3 +76,13 @@ A: yes, wall the helper off first. B: blocks made when an agent first asks. C: a
 - **Tables and figures** have no text to map, so they aren't stored in 8.3 (a page that is a table answers as the page); footnotes and map pages mostly fail and fall back to the page, as the owner chose.
 - **A page whose text the renderer refuses** (`MemoryLimit`, as `form_bomb`) maps nothing: it's a page with no blocks, never a failure of the job.
 - **Record size** measured at about 15 bytes a mapped block plus 8 a page (76-259 bytes a page), well under the estimate.
+
+## For S6b, from S6a's security review (2026-11-27)
+
+- Spawn only `structure_helper(canonicalize(current_exe).parent())`; remove `Contents/MacOS/recto-headings` from build.sh and the bare fallback in `helper_exe`, and add it to `--check`'s stray list. The structure helper is required in `--check <app>`.
+- `in_structure_helper` gains `RELEASE_BUILD ⇒ walled`, as the renderer's rule has.
+- Don't trust the hello: read it, then check from outside before writing the job — `sandbox_check(pid, NULL) == 1` and the document path not readable by name (`pid_may_read == 1`, denied); a release build refuses `walled:false` or a failed check. The child is unreaped, so its pid can't be reused. (The Mach drop can't be seen from outside; it rests on the helper's own exit 79.)
+- Keep the helper's environment explicit; never pass `APP_SANDBOX_CONTAINER_ID` (`sandbox_in_force` trusts it).
+- A fresh read-only `File` per spawn (the fd shares its offset with the host's open file).
+- The headings job by descriptor stays off paths (fonts, CMaps); its render-worker ink check moves to the session (the walled helper can't spawn).
+- Sign the app after both helpers.
