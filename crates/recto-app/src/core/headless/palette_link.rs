@@ -121,3 +121,17 @@ fn an_agents_run_of_the_link_row_is_its_own_open_refused_below_control() {
     app.settle();
     assert_eq!((tab_count(&app), page(&app)), (1, 4));
 }
+
+/// Failure: an agent's `palette --run` that fails closes the person's open palette (the close ran before the command did), losing what they typed. With the
+/// palette open on a typed query, an agent at Control runs a link row to a file that isn't there: the open fails, and the palette is still open with its query.
+#[test]
+fn a_failed_agent_run_leaves_the_persons_palette_open() {
+    let (app, _file) = start_with("kept.pdf", 3);
+    let missing = app.disk().files().join("gone.pdf");
+    let link = link_to(&missing, 2);
+    rows_for(&app, &link);
+    let query = serde_json::to_string(&link).unwrap();
+    app.agent(Level::Control, &format!(r#"{{"cmd":"palette","query":{query},"run":true}}"#)).expect_err("the open fails");
+    assert!(app.core().tools.palette().is_open(), "the person's palette is still open");
+    assert_eq!(crate::core::palette::view(app.core()).text, link);
+}
