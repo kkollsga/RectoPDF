@@ -125,7 +125,9 @@ if [ "$(printf '%s\n' 0.1.4 "$version" | sort -V | head -1)" = 0.1.4 ]; then sig
 if [ "$(printf '%s\n' 0.1.1 "$version" | sort -V | head -1)" = 0.1.1 ]; then
   out=$("$REPO/tools/release/app-entitlements.sh" --check "$APP" 2>&1) && pass "bundle: $(printf '%s' "$out" | tail -1)" || fail bundle "$(printf '%s' "$out" | tr '\n' ' ')"
 fi
-out=$("$REPO/app/render-helper.sh" --check "$APP" 2>&1) && pass "bundle: the renderer helper is sandboxed as it should be" || fail bundle "render-helper.sh --check: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+# The whole app's check requires the structure helper, which a release before 0.1.4 doesn't have: those get only the renderer's.
+if [ "$(printf '%s\n' 0.1.4 "$version" | sort -V | head -1)" = 0.1.4 ]; then check_target="$APP"; else check_target="$APP/Contents/Helpers/RectoRender.app"; fi
+out=$("$REPO/app/render-helper.sh" --check "$check_target" 2>&1) && pass "bundle: the renderer helper is sandboxed as it should be" || fail bundle "render-helper.sh --check: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
 out=$(xcrun stapler validate "$APP" 2>&1) && pass "bundle: notarization ticket stapled" || fail bundle "stapler validate: $(printf '%s' "$out" | tail -1)"
 out=$(spctl --assess --type execute -vv "$APP" 2>&1)
 case "$out" in *": accepted"*"source=Notarized Developer ID"*) pass "bundle: Gatekeeper accepts it, source=Notarized Developer ID" ;; *) fail bundle "Gatekeeper: $(printf '%s' "$out" | tr '\n' ' ')" ;; esac
