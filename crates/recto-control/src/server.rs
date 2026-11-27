@@ -215,9 +215,10 @@ impl Server {
             stopping: None,
         };
         let result = state.run(&self.listener, &self.wake_rx);
+        // However the loop ended, an error included, the name goes before the connections close with `state`. A kill skips this, and the next start clears up.
+        state.remove_socket();
+        drop(state);
         host.shut_down();
-        // Tidy on the way out. A kill skips this, and the next start clears up.
-        let _ = std::fs::remove_file(&self.paths.socket);
         result
     }
 }
@@ -1079,11 +1080,20 @@ impl<H: Host> Loop<H> {
         self.outlet.0.set_listening(self.listens());
     }
 
+    /// Takes the socket's name away, if it is still this session's own socket. Idempotent. Never touches anything else that's there.
+    fn remove_socket(&self) {
+        if matches!(local::socket_file(&self.paths.socket), Ok(SocketFile::OwnSocket)) {
+            let _ = std::fs::remove_file(&self.paths.socket);
+        }
+    }
+
     fn begin_stop(&mut self) {
         if self.stopping.is_some() {
             return;
         }
         self.stopping = Some(Instant::now() + self.limits.stop_grace);
+        // The socket's name goes before any client's connection closes, so a client that finds its connection closed and connects again finds nobody there, and says the session ended.
+        self.remove_socket();
         // An edit still waiting its turn would answer ok and then be lost.
         let queued: Vec<u64> = self.queue.iter().map(Job::conn).collect();
         self.queue.clear();
