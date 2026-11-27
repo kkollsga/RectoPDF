@@ -495,6 +495,9 @@ pub(crate) fn every_command() -> Vec<Command> {
     ]
 }
 
+/// A session and the two files it has open, which go when they're dropped.
+type Made = (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf);
+
 const LEVELS: [Level; 4] = [Level::Off, Level::ReadOnly, Level::Control, Level::Full];
 
 /// A PDF that stands for one read with its password: `secret`'s own length and words, each page with an `x` on it for Find to find.
@@ -547,21 +550,45 @@ fn naming_the_plain_tab(command: &Command) -> Command {
 /// said alike.
 fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> String {
     let (access, locked, plain) = arranged_session(secret, arranged);
+    told_on(&access, (&locked, &plain), level, command, arranged)
+}
+
+/// [`told`] on a session already made.
+fn told_on(
+    access: &Mutex<Session<crate::DrawableLoader>>,
+    (locked, plain): (&TempPdf, &TempPdf),
+    level: Level,
+    command: &Command,
+    arranged: Arrangement,
+) -> String {
     let command = if arranged.naming_locked {
         command.clone()
     } else {
         naming_the_plain_tab(command)
     };
     let mut events = Vec::new();
-    let result = execute(&access, Actor::Agent(level), &command, &mut events);
+    let result = execute(access, Actor::Agent(level), &command, &mut events);
     format!("{} {events:?}", said(result))
         .replace(locked.folder().to_str().unwrap(), "<locked>")
         .replace(plain.folder().to_str().unwrap(), "<plain>")
 }
 
+/// Whether `told`'s words are a refusal for permission (exit 5): `permission_denied`, or a command no agent may send at any level says it in its own
+/// words (`sign_refused`), as `walking_every_command_at_every_level` takes it.
+fn refused_for_permission(told: &str) -> bool {
+    told.contains(&format!("exit: {}", crate::exit::PERMISSION))
+}
+
+/// The arrangements worth running `command` in: all of them, except that a command naming no tab says the same naming the plain one, so the arrangement
+/// that only differs by that is the first again.
+fn arrangements_for(command: &Command) -> Vec<Arrangement> {
+    let names_a_tab = fields(command) != fields(&naming_the_plain_tab(command));
+    ARRANGEMENTS.into_iter().filter(|arranged| names_a_tab || arranged.naming_locked).collect()
+}
+
 /// `locked.pdf` (`#1`, `secret`'s) opened with its password beside a plain tab (`#2`), the one `arranged` says being read; with the two files, which go
 /// when they're dropped.
-fn arranged_session(secret: u32, arranged: Arrangement) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+fn arranged_session(secret: u32, arranged: Arrangement) -> Made {
     let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
     let plain = TempPdf::new("plain.pdf", &pdf(3));
     let mut session = Session::new(crate::DrawableLoader);
@@ -622,9 +649,35 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
         }),
         Command::from(commands::compare::Compare::Sync(commands::words::OnOff::On)),
     ];
+    // An agent at Off is refused at the gate, except the commands `walking_every_command_at_every_level` pins as open at Off: those get a fresh session, as
+    // at every other level. The rest share one session for each twin and arrangement, and are asserted refused there, so the sharing leans on nothing but that.
+    let at_off = |secret: u32| ARRANGEMENTS.map(|arranged| (arranged, arranged_session(secret, arranged)));
+    let (off_one, off_two) = (at_off(1), at_off(2));
     for command in every_command().into_iter().chain(synced) {
-        for level in LEVELS {
-            for arranged in ARRANGEMENTS {
+        for arranged in arrangements_for(&command) {
+            let again = |off: &[(Arrangement, Made)]| {
+                let (_, (access, locked, plain)) = off
+                    .iter()
+                    .find(|(made, _)| made.reading_locked == arranged.reading_locked && made.naming_locked == arranged.naming_locked)
+                    .expect("made");
+                told_on(access, (locked, plain), Level::Off, &command, arranged)
+            };
+            let open_at_off = crate::actor::allowed(Level::Off, command.access());
+            let (one, two) = if open_at_off {
+                (told(1, Level::Off, &command, arranged), told(2, Level::Off, &command, arranged))
+            } else {
+                let (one, two) = (again(&off_one), again(&off_two));
+                assert!(
+                    refused_for_permission(&one) && refused_for_permission(&two),
+                    "{} at Off isn't refused, so a shared session isn't safe:\n  {one}\n  {two}",
+                    command.tag()
+                );
+                (one, two)
+            };
+            if one != two {
+                differs.push(format!("{} at Off, {arranged:?}:\n  {one}\n  {two}", command.tag()));
+            }
+            for level in LEVELS.into_iter().filter(|level| *level != Level::Off) {
                 let (one, two) = (told(1, level, &command, arranged), told(2, level, &command, arranged));
                 if one != two {
                     differs.push(format!("{} at {level:?}, {arranged:?}:\n  {one}\n  {two}", command.tag()));
@@ -652,7 +705,7 @@ fn no_persons_command_is_heard_with_anything_of_a_protected_document() {
         pages: "10".into(),
     });
     for command in every_command().into_iter().chain([past_one_end]) {
-        for arranged in ARRANGEMENTS {
+        for arranged in arrangements_for(&command) {
             let (one, two) = (heard(1, &command, arranged), heard(2, &command, arranged));
             if one != two {
                 differs.push(format!("{} as the person, {arranged:?}:\n  {one}\n  {two}", command.tag()));
@@ -720,7 +773,7 @@ const FOLLOWED: [Followed; 9] = [
 /// `locked.pdf` (`#1`, `secret`'s) opened with its password, and a plain 30-page `plain.pdf` (`#2`) being read beside it in a comparison, placed as
 /// `followed` says: where following took it is the protected document's last page, so the twins differ in where the plain tab is, and in nothing else
 /// about it. With the two files, which go when they're dropped.
-fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+fn following_session(secret: u32, followed: Followed) -> Made {
     let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
     let plain = TempPdf::new("plain.pdf", &pdf(30));
     let mut session = Session::new(crate::DrawableLoader);
@@ -875,18 +928,41 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
                 let commands = &commands;
                 scope.spawn(move || {
                     let mut differs = Vec::new();
+                    let run = |session: &Made, level: Level, command: &Command| {
+                        let (access, locked, plain) = session;
+                        let mut events = Vec::new();
+                        let result = execute(access, Actor::Agent(level), command, &mut events);
+                        crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+                        format!("{} {events:?}", said(result))
+                            .replace(locked.folder().to_str().unwrap(), "<locked>")
+                            .replace(plain.folder().to_str().unwrap(), "<plain>")
+                    };
+                    // At Off the gate refuses, except the commands `walking_every_command_at_every_level` pins as open at Off: those get a fresh session, as at
+                    // every other level. The rest share one session for each twin, and are asserted refused there, so the sharing leans on nothing but that.
+                    let off = [following_session(1, followed), following_session(2, followed)];
                     for command in commands {
-                        for level in LEVELS {
-                            let told = |secret: u32| {
-                                let (access, locked, plain) = following_session(secret, followed);
-                                let mut events = Vec::new();
-                                let result = execute(&access, Actor::Agent(level), command, &mut events);
-                                crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
-                                format!("{} {events:?}", said(result))
-                                    .replace(locked.folder().to_str().unwrap(), "<locked>")
-                                    .replace(plain.folder().to_str().unwrap(), "<plain>")
-                            };
-                            let (one, two) = (told(1), told(2));
+                        let (one, two) = if crate::actor::allowed(Level::Off, command.access()) {
+                            (
+                                run(&following_session(1, followed), Level::Off, command),
+                                run(&following_session(2, followed), Level::Off, command),
+                            )
+                        } else {
+                            let (one, two) = (run(&off[0], Level::Off, command), run(&off[1], Level::Off, command));
+                            assert!(
+                                refused_for_permission(&one) && refused_for_permission(&two),
+                                "{} at Off isn't refused, so a shared session isn't safe:\n  {one}\n  {two}",
+                                command.tag()
+                            );
+                            (one, two)
+                        };
+                        if one != two {
+                            differs.push(format!("{} at Off, {followed:?}:\n  {one}\n  {two}", command.tag()));
+                        }
+                        for level in LEVELS.into_iter().filter(|level| *level != Level::Off) {
+                            let (one, two) = (
+                                run(&following_session(1, followed), level, command),
+                                run(&following_session(2, followed), level, command),
+                            );
                             if one != two {
                                 differs.push(format!("{} at {level:?}, {followed:?}:\n  {one}\n  {two}", command.tag()));
                             }
@@ -1147,6 +1223,37 @@ fn said_by(error: &crate::AgentError) -> String {
     format!("{} | {} | {} | {:?}", error.code, error.message, error.next, error.ask)
 }
 
+/// The owner's highlight of a line on page `page`, as one step in the history the way `highlight` makes it ([`crate::highlighting::add`]) but without
+/// reading the page's text for the line first: a text read through the page renderer cost 30 ms in each of the walk's cases, and which line it takes is
+/// no part of what the walk holds, that an agent leaves the owner's steps alone. (The pick itself is held by `highlighting`'s own tests.)
+fn owner_highlights(access: &Mutex<Session<crate::DrawableLoader>>, id: recto_session::TabId, page: u32) {
+    use recto_session::edit::marks::{MarkChange, MarkPage, MarkRect};
+    crate::edit(
+        access,
+        Actor::Person,
+        &crate::TabRef::Id(id),
+        &mut Vec::new(),
+        String::from("Highlighted 1 line."),
+        |edits| {
+            let (source, at) = edits.page_at(page - 1).ok_or(recto_session::edit::EditError::OutOfRange)?;
+            let rect = MarkRect {
+                x: 10.0,
+                y: 10.0,
+                width: 60.0,
+                height: 12.0,
+            };
+            edits.mark(MarkChange::Add {
+                pages: vec![MarkPage {
+                    source,
+                    page: at,
+                    rects: vec![rect],
+                }],
+            })
+        },
+    )
+    .expect("the owner's highlight");
+}
+
 /// The owner's steps [`no_command_below_full_loses_the_owners_edits`] starts with.
 const OWNERS: usize = 5;
 
@@ -1189,21 +1296,12 @@ fn no_command_below_full_loses_the_owners_edits() {
                     degrees: 90,
                 })
             };
-            let highlight = |page: u32| {
-                Command::from(commands::highlight::Highlight {
-                    tab: "#1".into(),
-                    page: Some(page),
-                    to_page: None,
-                    chars: Some("0-3".into()),
-                    at: None,
-                    to: None,
-                    unit: None,
-                    reference: None,
-                })
-            };
-            for step in [turn("1"), turn("2"), highlight(4), turn("3"), highlight(1)] {
-                execute(&access, Actor::Person, &step, &mut Vec::new()).expect("the owner's step");
-            }
+            let by_the_owner = |step: Command| drop(execute(&access, Actor::Person, &step, &mut Vec::new()).expect("the owner's step"));
+            by_the_owner(turn("1"));
+            by_the_owner(turn("2"));
+            owner_highlights(&access, id, 4);
+            by_the_owner(turn("3"));
+            owner_highlights(&access, id, 1);
             for _ in 0..2 {
                 let undo = Command::from(commands::editing::Undo { tab: "#1".into() });
                 execute(&access, Actor::Person, &undo, &mut Vec::new()).expect("the owner's undo");

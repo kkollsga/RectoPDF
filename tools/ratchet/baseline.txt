@@ -1,4 +1,4 @@
-apptest crates/recto-cli/tests 198
+apptest crates/recto-cli/tests 197
 ffi crates/recto-ffi/src 2035
 file crates/recto-render-service/src/host.rs 2096
 file crates/recto-render/src/pdfium/contents.rs 2776
