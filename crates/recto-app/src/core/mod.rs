@@ -324,6 +324,10 @@ impl Inner {
     pub fn set_frozen(&self, frozen: bool) {
         self.host.handing_off.store(frozen, Ordering::SeqCst);
         self.core.frozen.store(frozen, Ordering::SeqCst);
+        // A freeze that lifts (the hand-off didn't go ahead) lets Find try the step it kept: its news may have come while frozen.
+        if !frozen {
+            self.core.push(CoreCall::Find(crate::find::FindCall::News));
+        }
     }
 
     /// Quits now, if a hand-off has really got this far. Says whether the host's been told to: the first ask tells it, and one after says yes and tells it nothing

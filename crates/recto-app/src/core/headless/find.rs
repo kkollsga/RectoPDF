@@ -156,6 +156,48 @@ fn a_step_kept_for_its_hit_is_forgotten_when_a_new_query_is_typed() {
     );
 }
 
+/// Failure (review 2026-11-27): the person's ⌘G with Find closed is kept for its hit while the query runs, and when the query's last news came during a
+/// hand-off's freeze nothing tried the step once the freeze lifted, so Find ended open with no hit gone to. A hand-off that didn't go ahead steps it.
+#[test]
+fn a_step_kept_for_its_hit_is_made_when_a_freeze_that_held_its_news_lifts() {
+    let app = kept_step_under_a_freeze();
+    let finder = app.core().host.session.finder().clone();
+    app.wait_until("the query finished", || finder.looking().is_none() && !finder.is_running());
+    app.settle();
+    assert_eq!(find::view(app.core()).current_row, None, "nothing steps while frozen");
+    app.core().set_frozen(false);
+    app.settle();
+    let view = find::view(app.core());
+    assert!(view.open && !view.running, "{view:?}");
+    assert_eq!(view.current_row, Some(1), "the kept step made once the freeze lifted: {view:?}");
+}
+
+/// Failure: a freeze that ends in the hand-off going ahead (never lifted) must not step the kept step: nothing is moved after what comes back was written.
+#[test]
+fn a_step_kept_for_its_hit_is_not_made_while_the_freeze_stays() {
+    let app = kept_step_under_a_freeze();
+    let finder = app.core().host.session.finder().clone();
+    app.wait_until("the query finished", || finder.looking().is_none() && !finder.is_running());
+    app.settle();
+    assert_eq!(find::view(app.core()).current_row, None, "{:?}", find::view(app.core()));
+}
+
+/// ⌘G with Find closed, held at the worker, frozen, then the query let finish.
+fn kept_step_under_a_freeze() -> HeadlessApp {
+    let app = findable_for_kept_step();
+    let finder = app.core().host.session.finder().clone();
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.settle();
+    app.act(UiAction::FindClose);
+    app.settle();
+    recto_platform::slow::gate::hold(&[Seam::Worker]);
+    app.act(UiAction::Menu { id: "find.next".into() });
+    app.wait_until("Find started again for the step", || finder.looking().is_some());
+    app.core().set_frozen(true);
+    recto_platform::slow::gate::open(Seam::Worker);
+    app
+}
+
 fn findable_for_kept_step() -> HeadlessApp {
     let disk = Disk::new();
     let doc = disk.pdf("findable.pdf", 30);
