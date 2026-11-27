@@ -455,6 +455,37 @@ const WALLS: [&str; 12] = [
     "mach:com.apple.pasteboard.1",
 ];
 
+/// What a compromised structure helper might do with its document, which is open for reading only on descriptor 3, and must fail under the walls. `ftruncate` fails even with no sandbox,
+/// because the descriptor isn't open for writing; the other three succeed with no sandbox (the control that they are real calls here) and are stopped by the sandbox. `fd3:flock` is not in
+/// the list: the sandbox allows it, measured on macOS 27 (2026-11-27). It's advisory and only holds back a process that asks for the same lock, until the helper ends.
+const FD3: [&str; 4] = ["fd3:ftruncate", "fd3:fchmod", "fd3:fsetxattr", "fd3:reopen_write"];
+
+/// Runs the probe with `document` on its descriptor 3.
+fn probe_with_document(executable: &Path, args: &[String], document: &std::fs::File) -> BTreeMap<String, bool> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let source = document.as_raw_fd();
+    let mut command = Command::new(executable);
+    command.args(args);
+    // SAFETY: only `dup2` and `fcntl` on descriptors the child has, between the fork and the exec; nothing allocates.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(source, 3) != 3 || libc::fcntl(3, libc::F_SETFD, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let (exceeded, output) = command::output(&mut command, HANG_GUARD).unwrap();
+    assert!(
+        !exceeded && output.status.success(),
+        "the probe failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Failure: an attempt is broken in a way that makes it fail anywhere, so the tests below pass whatever the sandbox does.
 #[test]
 fn with_no_sandbox_every_attempt_gets_through() {
@@ -486,6 +517,39 @@ fn the_structure_helpers_walls_hold() {
     let executable = fixture.sandboxed_probe();
     walls_hold_in(&fixture, &executable);
     container_is_writable_only_without_the_file_size_limit(&fixture, &executable);
+    the_document_on_3_cannot_be_altered(&fixture, &executable);
+}
+
+/// Failure: a compromised structure helper changes the person's file through the descriptor it was given to read: cuts it short, changes its mode or attributes, locks it, or opens it
+/// again for writing by the path `F_GETPATH` gives. Run first with no sandbox (the probe as it is), which shows which of these the descriptor's own read-only mode already stops and that the
+/// others are real calls here; then with the walls, where every one must fail.
+fn the_document_on_3_cannot_be_altered(fixture: &Fixture, executable: &Path) {
+    let path = fixture.scratch().join("document.pdf");
+    std::fs::write(&path, b"%PDF-1.7 the person's file").unwrap();
+    let document = std::fs::File::open(&path).unwrap();
+    let args = vec!["--fd3".to_string()];
+    let bare = probe_with_document(Path::new(PROBE), &args, &document);
+    println!("fd 3 with no sandbox: {bare:?}");
+    let walled = probe_with_document(executable, &with_walls(args), &document);
+    println!("fd 3 with the walls: {walled:?}");
+    assert_eq!(walled.get("walls"), Some(&true), "the walls didn't go up: {walled:?}");
+    for name in FD3 {
+        assert_eq!(walled.get(name), Some(&false), "{name} wasn't stopped, or wasn't tried: {walled:?}");
+    }
+    assert_eq!(
+        bare.get("fd3:ftruncate"),
+        Some(&false),
+        "a read-only descriptor was truncated even with no sandbox: {bare:?}"
+    );
+    for name in ["fd3:fchmod", "fd3:fsetxattr", "fd3:reopen_write", "fd3:flock"] {
+        assert_eq!(
+            bare.get(name),
+            Some(&true),
+            "{name} failed with no sandbox, so stopping it proves nothing: {bare:?}"
+        );
+    }
+    assert_eq!(walled.get("fd3:flock"), Some(&true), "the sandbox now stops flock: say so in FD3 and this test");
+    assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-1.7 the person's file", "the document changed");
 }
 
 fn walls_hold(fixture: &Fixture) {
