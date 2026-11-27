@@ -53,7 +53,8 @@ pub fn draws_a_page(folder: &Path) -> bool {
         return false;
     }
     // A renderer of its own for each try: what a busy run left remembered in the last one isn't carried into the next.
-    let drew = prove(Instant::now(), PATIENCE, || one_try(&file), || std::thread::sleep(Duration::from_millis(250)));
+    let pause = || std::thread::sleep(Duration::from_millis(250)); // ratchet: poll
+    let drew = prove(Instant::now(), PATIENCE, || one_try(&file), pause);
     let _ = std::fs::remove_file(&file);
     drew
 }
