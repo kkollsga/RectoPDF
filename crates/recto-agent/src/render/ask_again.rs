@@ -20,10 +20,27 @@ pub(crate) fn asked_again<S, T>(
     }
 }
 
-/// **Opens a document for a command that has no loop of its own** (a print's pages, a copy's text): asks again while the answer is busy (a Mac out of descriptors or memory for a moment says so), up to `2 * MAX_BUSY` times, so "it will be tried again" is true. The service ends a run of such answers as `Unavailable` itself, so this ends at once on a Mac that stays out.
-pub(crate) fn opened_again<T>(mut open: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    asked_again(deadline, &mut (), |(), _| open(), |()| Ok(()))
+/// The pause before the first ask again of [`opened_again`]; it doubles each time.
+const FIRST_PAUSE: Duration = Duration::from_millis(100);
+
+/// **Opens a document for a command that has no loop of its own** (a print's pages, a copy's text): asks again while the answer is busy (a Mac out of descriptors or memory for a moment says so), up to `2 * MAX_BUSY` times, so "it will be tried again" is true. Between asks it waits [`FIRST_PAUSE`], doubling, never past the command's deadline (10 s from now), so descriptors have a chance to be freed and the asks don't use up the service's shared run of such answers in microseconds. The service ends a run of such answers as `Unavailable` itself.
+pub(crate) fn opened_again<T>(open: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
+    opened_again_by(Instant::now() + Duration::from_secs(10), std::thread::sleep, open)
+}
+
+/// [`opened_again`] with its deadline and the way it waits given, so a test sees the pauses without waiting them.
+fn opened_again_by<T>(deadline: Instant, mut wait: impl FnMut(Duration), mut open: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
+    let mut pause = FIRST_PAUSE;
+    asked_again(
+        deadline,
+        &mut (),
+        |(), _| open(),
+        |()| {
+            wait(pause.min(deadline.saturating_duration_since(Instant::now())));
+            pause *= 2;
+            Ok(())
+        },
+    )
 }
 
 #[cfg(test)]
@@ -166,5 +183,21 @@ mod tests {
             Err(RenderFailure::OutOfResources)
         });
         assert_eq!((stays, asks), (Err(RenderFailure::OutOfResources), 2 * MAX_BUSY));
+    }
+
+    /// Failure: asks again with no pause took microseconds, rarely found descriptors freed, and used up the service's shared run of busy answers, so a print could push the reader's held page to `Unavailable`. There's a pause before each ask again, doubling from 100 ms, and none is longer than the time left to the deadline.
+    #[test]
+    fn the_asks_again_of_an_open_wait_doubling_and_within_the_deadline() {
+        let mut pauses = Vec::new();
+        let _: Result<u8, _> = opened_again_by(far(), |pause| pauses.push(pause), || Err(RenderFailure::OutOfResources));
+        let first = FIRST_PAUSE;
+        assert_eq!(pauses, [first, first * 2, first * 4, first * 8, first * 16]);
+        let mut short = Vec::new();
+        let _: Result<u8, _> = opened_again_by(
+            Instant::now() + Duration::from_millis(150),
+            |pause| short.push(pause),
+            || Err(RenderFailure::OutOfResources),
+        );
+        assert!(!short.is_empty() && short.iter().all(|pause| *pause <= Duration::from_millis(150)), "{short:?}");
     }
 }
