@@ -83,6 +83,8 @@ ZIP="RectoPDF-$VERSION.zip"
 WORK="$(mktemp -d)"
 cleanup() {
     if [ -n "${SMOKE:-}" ]; then RECTO_STATE_DIR="$SMOKE/s" "$APP/Contents/MacOS/recto" qa quit now >/dev/null 2>&1 || true; fi
+    # A local run leaves no second app claiming `rectopdf:` links.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -99,6 +101,8 @@ check_built() {
     done
     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ] \
         || { echo "the app's version isn't $VERSION" >&2; exit 1; }
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$APP/Contents/Info.plist" 2>/dev/null)" = "rectopdf" ] \
+        || { echo "the app doesn't claim rectopdf: links" >&2; exit 1; }
     cmp -s "$REPO/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses.txt" || { echo "the app's Licenses.txt isn't THIRD-PARTY-NOTICES.txt" >&2; exit 1; }
     # The real binaries, with every override set. Owner's bar: a test's way in can never reach a release.
     echo "==> Check a release reads no override"

@@ -39,6 +39,7 @@ package() {
   [[ "$dev" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.[1-9][0-9]{0,8}$ ]] || fail "$dev isn't X.Y.Z.N with N from 1"
   [ -x "$built/Contents/MacOS/RectoPDF" ] || fail "no app at $built"
   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")" = "$release" ] || fail "the app at $built isn't $release"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$built/Contents/Info.plist" 2>/dev/null)" = "rectopdf" ] || fail "the build doesn't claim rectopdf: links"
   # A folder of its own, so the app it's made from can be anywhere, the folder it's zipped into included.
   local staging="$out/.packaging"
   rm -rf "$staging"

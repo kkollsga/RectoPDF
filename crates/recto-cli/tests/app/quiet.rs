@@ -218,6 +218,37 @@ fn a_copy_the_system_opens_is_never_a_regular_app() {
     assert!(valid.success(), "the copy's own signature has to hold, or it won't start");
 }
 
+/// Failure: a test's app registered with Launch Services takes a click on the owner's Mac: a `rectopdf:` link opens a test copy, or goes to a quiet run that ignores
+/// it. Only a release build (the shipped app, the owner's dev copy) claims the scheme (`app/build.sh`), so neither the test build nor a copy of it carries
+/// `CFBundleURLTypes`. If this build is a release build, rebuild with `app/build.sh`.
+#[test]
+fn a_tests_build_claims_no_link_scheme() {
+    let Some(binary) = app_path() else { return };
+    let url_types = |plist: &std::path::Path| {
+        std::process::Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Print :CFBundleURLTypes"])
+            .arg(plist)
+            .output()
+            .unwrap()
+    };
+    let built = binary
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the bundle's Contents")
+        .join("Info.plist");
+    let output = url_types(&built);
+    assert!(
+        !output.status.success(),
+        "the test build claims links, so a click on this Mac can go to it (rebuild with app/build.sh, without RECTO_RELEASE): {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let Some(copy) = OwnCopy::new() else { return };
+    assert!(
+        !url_types(&copy.bundle.join("Contents/Info.plist")).status.success(),
+        "a copy of the build claims links"
+    );
+}
+
 /// Failure: a test's own copy of the app is left registered with Launch Services after it's dropped, a second RectoPDF in Open With
 /// (`no_copy_but_the_one_install_is_left_registered` on CI, run 43101058944, found `app/build.noindex/own-34946-0/RectoPDF.app`). The system
 /// registers a copy it launches as that launch goes on, so a copy forgotten while it was still starting, or before its run had quit, was
