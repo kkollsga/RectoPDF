@@ -68,3 +68,11 @@
 ## The owner's answers (2026-11-27)
 
 A: yes, wall the helper off first. B: blocks made when an agent first asks. C: a paragraph only where it checks against the page's text, else the page, said. F: about 16,000 characters an answer. D and E settled on the recommendation (tables as plain lines; text and Markdown now, PDF/PNG/SVG later). See `docs/OWNER-RULES.md`.
+
+## After S0's measurements (2026-11-27, coordinator, from `docs/reports/blocks-s0-2026-11-27.md`)
+
+- **Typography scan is the default** (maps as well as Full or better, 2-10x faster to scan).
+- **The mapping rule (settled for S1):** a block's letters are looked for first after the previous mapped block's end; if not found there, the block is accepted at its one occurrence anywhere on the page that overlaps no block already mapped; if the letters occur more than once in the unmapped text, or not at all, the block isn't stored. Reading order stays distillPDF's. Why: strict "after the previous" costs most on multi-column pages (NASA 42% strict vs 73% anywhere), and "exactly one unmapped occurrence" keeps a repeated running head or a short phrase from mapping to the wrong place.
+- **Tables and figures** have no text to map, so they aren't stored in 8.3 (a page that is a table answers as the page); footnotes and map pages mostly fail and fall back to the page, as the owner chose.
+- **A page whose text the renderer refuses** (`MemoryLimit`, as `form_bomb`) maps nothing: it's a page with no blocks, never a failure of the job.
+- **Record size** measured at about 15 bytes a mapped block plus 8 a page (76-259 bytes a page), well under the estimate.
