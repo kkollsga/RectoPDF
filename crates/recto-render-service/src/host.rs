@@ -5,6 +5,7 @@ pub mod contents;
 pub mod hidden;
 pub mod images;
 mod job_cpu;
+pub(crate) mod resources;
 mod rest;
 mod slot;
 pub use rest::HeavyRest;
@@ -312,6 +313,8 @@ pub enum RenderFailure {
     TooBusy {
         page: u32,
     },
+    /// The Mac had no descriptors or memory for opening the file or the renderer's shared memory, for a moment (`EMFILE`, `ENFILE`, `EAGAIN`, `ENOMEM`, or `ENOSPC` on the shared memory). Says nothing of the file: it counts as busy ([`Self::is_busy`]) and asking again tries again.
+    OutOfResources,
     /// The worker, in starting or in opening the file, had no processor to answer with: nothing is remembered and asking again tries again. [`busy::MAX_BUSY`] in a row end as [`Self::Unavailable`] (start) or [`Self::OpenFailed`] (open).
     TooBusyToStart,
 }
@@ -454,6 +457,7 @@ impl RenderFailure {
             Self::TookTooLong => "render_took_too_long",
             Self::TooBusy { .. } => "page_mac_busy",
             Self::TooBusyToStart => "renderer_mac_busy",
+            Self::OutOfResources => "renderer_mac_busy",
         }
     }
 
@@ -513,7 +517,7 @@ impl RenderFailure {
             Self::DocumentStopped => "This document has used too much memory too many times, so RectoPDF has stopped drawing it. It may be malicious.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
             Self::TooBusy { page } => format!("This Mac was too busy to draw page {}. It will be tried again.", page + 1),
-            Self::TooBusyToStart => "This Mac was too busy to start the page renderer. It will be tried again.".into(),
+            Self::TooBusyToStart | Self::OutOfResources => "This Mac was too busy to start the page renderer. It will be tried again.".into(),
         }
     }
 }
@@ -812,10 +816,13 @@ impl DocRenderer {
     /// no name are [`RenderFailure::NotPdf`], so a descriptor the app holds on the person's print can't be opened again by a path.
     pub fn open_file(path: &Path) -> Result<File, RenderFailure> {
         use recto_platform::document_file::{self, Refused};
+        if let Some(error) = resources::injected_open() {
+            return Err(resources::of_open(&error));
+        }
         document_file::open(path).map_err(|refused| match refused {
             Refused::Look(error) | Refused::Open(error) if error.kind() == io::ErrorKind::NotFound => RenderFailure::NotFound,
             Refused::NotADocument => RenderFailure::NotPdf,
-            Refused::Look(_) | Refused::Open(_) => RenderFailure::Unavailable,
+            Refused::Look(error) | Refused::Open(error) => resources::of_open(&error),
         })
     }
 
@@ -827,7 +834,11 @@ impl DocRenderer {
         config: ServiceConfig,
         policy: Policy,
     ) -> Result<Self, RenderFailure> {
-        let shared = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
+        let shared = match resources::injected_shared_memory() {
+            Some(error) => Err(error),
+            None => SharedMemory::create(control::LEN),
+        }
+        .map_err(|error| resources::of_shared_memory(&error))?;
         let slot = config.heavy_slot.clone();
         Ok(Self {
             config,
@@ -1678,7 +1689,10 @@ impl DocRenderer {
         self.open_in(worker, generation).inspect_err(|failure| {
             // `Unavailable` here means it never got to ask, which trying again may mend. What the worker itself said was noted where it was heard.
             if let JobFailure::Failed(failure) = failure
-                && !matches!(failure, RenderFailure::Unavailable | RenderFailure::TooBusyToStart)
+                && !matches!(
+                    failure,
+                    RenderFailure::Unavailable | RenderFailure::TooBusyToStart | RenderFailure::OutOfResources
+                )
             {
                 self.note_open_failure(*failure);
             }

@@ -41,6 +41,8 @@ mod test_deadline;
 mod worker_env;
 #[doc(hidden)]
 pub use host::busy::MAX_BUSY;
+#[cfg(feature = "test-seams")]
+pub use host::resources::{fail_next_open_with, fail_next_shared_memory_with};
 pub use host::{
     CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavyRest, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy,
     RenderFailure, RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,

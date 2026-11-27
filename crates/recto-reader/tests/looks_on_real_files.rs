@@ -217,7 +217,7 @@ fn asked_again<T: std::fmt::Debug>(doc: &mut DocRenderer, what: &str, mut ask: i
     let mut last = None;
     for _ in 0..MAX_BUSY {
         match ask(doc) {
-            Err(busy @ (RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart)) => last = Some(format!("{busy:?}")),
+            Err(busy @ (RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart | RenderFailure::OutOfResources)) => last = Some(format!("{busy:?}")),
             Ok(done) => return done,
             Err(other) => panic!("{what}: {other:?}, {:?}", doc.stats()),
         }

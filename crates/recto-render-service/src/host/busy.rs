@@ -36,7 +36,7 @@ fn starved(doc: &mut DocRenderer, page: u32, reason: KillReason, before: Before)
 /// Whether a walk over a page's images (dark paper's or a click's) failed because the Mac was too busy to run its worker: a start it couldn't make in time, or a kill at the deadline with the processor not given ([`starved`]). Such a walk is not an answer: nothing's remembered, so whoever asked asks again, until [`MAX_BUSY`] in a row, after which it's the failure it looked like.
 pub(super) fn walk_stopped<T>(doc: &mut DocRenderer, page: u32, reply: &Result<T, JobFailure>, before: Before) -> bool {
     match reply {
-        Err(JobFailure::Failed(RenderFailure::TooBusyToStart)) => true,
+        Err(JobFailure::Failed(RenderFailure::TooBusyToStart | RenderFailure::OutOfResources)) => true,
         Err(JobFailure::Stopped(reason)) => starved(doc, page, *reason, before),
         _ => false,
     }
@@ -45,7 +45,7 @@ pub(super) fn walk_stopped<T>(doc: &mut DocRenderer, page: u32, reply: &Result<T
 /// Whether a walk over a page's images for dark paper failed because the Mac was too busy to run its worker: a start it couldn't make in time (or gave up on as `Unavailable`), or a kill at the deadline with the processor not given. Unlike [`walk_stopped`] it counts nothing, in the page's busy draws or any run: a draw landing in between must not be what keeps the count from filling, and a re-ask at rest mustn't fill it, so the engine's own clock is the only bound ([`Places::NotNow`](super::images::Places::NotNow)).
 pub(super) fn walk_was_starved<T>(reply: &Result<T, JobFailure>, before: Before, doc: &DocRenderer) -> bool {
     match reply {
-        Err(JobFailure::Failed(RenderFailure::TooBusyToStart | RenderFailure::Unavailable)) => true,
+        Err(JobFailure::Failed(RenderFailure::TooBusyToStart | RenderFailure::OutOfResources | RenderFailure::Unavailable)) => true,
         Err(JobFailure::Stopped(KillReason::Deadline)) => before.moved(doc),
         _ => false,
     }
@@ -165,8 +165,8 @@ pub(super) fn open_stopped(doc: &mut DocRenderer, failed: RenderFailure, starved
 }
 
 impl RenderFailure {
-    /// The Mac was too busy to give the worker the processor ([`Self::TooBusy`], [`Self::TooBusyToStart`]): it says nothing of the file, nothing is remembered, and asking again tries again.
+    /// The Mac was too busy to give the worker the processor ([`Self::TooBusy`], [`Self::TooBusyToStart`]), or out of descriptors or memory for a moment ([`Self::OutOfResources`]): it says nothing of the file, nothing is remembered, and asking again tries again.
     pub fn is_busy(self) -> bool {
-        matches!(self, Self::TooBusy { .. } | Self::TooBusyToStart)
+        matches!(self, Self::TooBusy { .. } | Self::TooBusyToStart | Self::OutOfResources)
     }
 }
