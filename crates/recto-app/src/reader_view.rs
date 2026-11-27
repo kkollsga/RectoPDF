@@ -51,7 +51,7 @@ pub struct ReaderView {
     /// What the Save icon beside the window's controls says, and the step a long save is at.
     pub save_tooltip: String,
     /// A save that didn't happen, for an alert over the window until it's answered.
-    pub save_problem: Option<crate::saving::SaveProblem>,
+    pub sheet: Option<crate::core::sheets::SheetModel>,
     /// What Save As's sheet says about this document, as for a signed one.
     pub save_as_note: Option<String>,
     /// The tab showing, which an action from the window is about. 0 with none.
@@ -103,7 +103,7 @@ impl ReaderView {
             selection_notice: None,
             saving: false,
             save_tooltip: String::new(),
-            save_problem: None,
+            sheet: None,
             save_as_note: None,
             shown_tab: 0,
             document_name: String::new(),
@@ -146,7 +146,7 @@ impl From<ReaderModel> for ReaderView {
             selection_notice: model.selection_notice,
             saving: model.save.saving,
             save_tooltip: model.save.tooltip,
-            save_problem: None,
+            sheet: None,
             save_as_note: model.save.as_note,
             shown_tab: model.document.shown_tab,
             document_name: model.document.name,

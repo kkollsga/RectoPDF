@@ -21,6 +21,7 @@ fn names_are_the_persons_and_an_agent_reads_the_same_words_without_them() {
         &Names {
             document: Some("report.pdf".into()),
             folder: Some("Documents".into()),
+            ..Names::default()
         },
         &found(),
     );
@@ -140,4 +141,108 @@ fn a_waiting_save_is_said_to_be_in_this_folder_only_when_it_is() {
         ..Found::default()
     });
     assert!(both.contains("in this folder") && both.contains("in 1 other folder."), "{both}");
+}
+
+/// Failure: a word the window's sheet shows is empty or a button's title repeats another's (two buttons that read the same), or a sentence a person reads
+/// shows the command's name in code marks, which a person doesn't read.
+#[test]
+fn the_sheets_words_are_set_and_a_person_reads_no_code_marks() {
+    let titles = [
+        MENU_TITLE,
+        OFFER_TITLE,
+        LOOKED_TITLE,
+        STOPPED_TITLE,
+        REFUSED_TITLE,
+        CANCEL,
+        OK,
+        LOOK_AGAIN,
+        COULDNT,
+        BUTTON,
+    ];
+    assert!(titles.iter().all(|word| !word.trim().is_empty()), "{titles:?}");
+    let mut distinct = titles.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), titles.len(), "{titles:?}");
+    assert!(!busy(Busy::Windowless).contains('`'), "{}", busy(Busy::Windowless));
+}
+
+fn with(others: &[&str], missing: u32, more: bool) -> Names {
+    Names {
+        document: Some("report.pdf".into()),
+        folder: Some("Documents".into()),
+        others: others.iter().map(|name| (*name).to_owned()).collect(),
+        missing,
+        more,
+    }
+}
+
+fn whose(words: &str) -> Option<&str> {
+    words.lines().find(|line| line.starts_with("Among them"))
+}
+
+/// Failure: the confirmation says nothing of other documents' crashed saves (the owner's rule: they're "listed by name"), says it of the document's own saves
+/// (where there is nothing to say), lists a long list whole, shows a raw temporary's name for a document that isn't there, claims a count it didn't make (past
+/// the cap), or an agent's words carry names. The person's has one line more, only when another document has a save.
+#[test]
+fn the_persons_confirmation_names_other_documents_saves_and_an_agents_names_none() {
+    assert_eq!(whose(&check(&with(&[], 0, false), &found())), None, "only its own saves: nothing to add");
+    assert_eq!(
+        whose(&check(&with(&["other.pdf"], 0, false), &found())),
+        Some("Among them is an unfinished save of “other.pdf”.")
+    );
+    assert_eq!(
+        whose(&check(&with(&["a.pdf", "b.pdf"], 0, false), &found())),
+        Some("Among them are unfinished saves of “a.pdf” and “b.pdf”.")
+    );
+    assert_eq!(
+        whose(&check(&with(&["a.pdf", "b.pdf", "c.pdf"], 0, false), &found())),
+        Some("Among them are unfinished saves of “a.pdf”, “b.pdf” and “c.pdf”.")
+    );
+    let many: Vec<String> = (0..15).map(|n| format!("d{n:02}.pdf")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let long = check(&with(&many, 0, false), &found());
+    assert!(
+        whose(&long)
+            .unwrap()
+            .ends_with("“d00.pdf”, “d01.pdf”, “d02.pdf”, “d03.pdf”, “d04.pdf”, “d05.pdf”, “d06.pdf”, “d07.pdf”, “d08.pdf”, “d09.pdf” and 5 more."),
+        "{long}"
+    );
+    // Past the cap the count isn't known: "and more", never a number that undercounts.
+    let cut = check(&with(&many, 0, true), &found());
+    assert!(whose(&cut).unwrap().ends_with("“d09.pdf” and more."), "{cut}");
+    let missing = check(&with(&["other.pdf"], 1, false), &found());
+    assert_eq!(
+        whose(&missing),
+        Some("Among them are unfinished saves of “other.pdf” and of 1 document that isn't there.")
+    );
+    let only_missing = check(&with(&[], 2, false), &found());
+    assert_eq!(whose(&only_missing), Some("Among them are unfinished saves of 2 documents that aren't there."));
+    let agent = check(&Names::default(), &found());
+    assert_eq!(whose(&agent), None, "{agent}");
+    assert_eq!(agent.lines().count() + 1, long.lines().count(), "one line more for the person");
+}
+
+/// Failure: the first line is the full removal's ("Before RectoPDF can remove anything…") though nothing is being removed; or it differs for an agent.
+#[test]
+fn the_opening_line_says_what_was_left_behind_for_the_person_and_an_agent_alike() {
+    for names in [with(&[], 0, false), Names::default()] {
+        let said = check(&names, &found());
+        assert_eq!(said.lines().next(), Some("RectoPDF left these behind:"), "{said}");
+        assert!(!said.contains("Before RectoPDF can remove"), "{said}");
+    }
+}
+
+/// Failure: a file name forges the sheet: a curly quote inside it ends the quoted name early and what follows reads as RectoPDF's words, or a very long
+/// name fills the sheet.
+#[test]
+fn a_name_cannot_close_its_quotes_and_a_long_one_is_cut() {
+    let said = check(&with(&["x” and RectoPDF says all is well “y.pdf"], 0, false), &found());
+    let line = whose(&said).expect("a line");
+    assert_eq!(line.matches('“').count(), 1, "{line}");
+    assert_eq!(line.matches('”').count(), 1, "{line}");
+    let long = "n".repeat(200);
+    let said = check(&with(&[long.as_str()], 0, false), &found());
+    let line = whose(&said).expect("a line");
+    assert!(line.chars().count() < 120 && line.contains("…”"), "{line}");
 }

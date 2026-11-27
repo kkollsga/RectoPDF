@@ -105,6 +105,11 @@ for look in light dark; do
     r qa menu file.close; until_state "a['sheet'].get('kind') == 'close_prompt'"; settle; shot close-prompt
     r qa sheet-answer second; until_state "not a['sheet']"; r qa as-person "undo"
 
+    # Edit > Clear Leftovers…, with a crashed save of a dead process beside the article (named as the writer names it: .append-, 16 hex of the file name's SHA-256, then the process and a counter), cancelled.
+    hash=$(printf 'article.pdf' | shasum -a 256 | cut -c1-16); crashed="$root/in/.append-$hash-4000001-1.tmp"; printf 'a crashed save' > "$crashed"
+    r qa menu edit.clear_leftovers; until_state "a['sheet'].get('kind') == 'clear_leftovers'"; settle; shot clear-leftovers
+    r qa sheet-answer second; until_state "not a['sheet']"; rm -f "$crashed"
+
     # The snapshot tool, a box dragged.
     r qa menu tools.snapshot; r goto 3; settle
     r qa mouse-down "3:60,60"; r qa mouse-drag "3:400,260"; settle; shot snapshot-box; r qa mouse-up; settle; r qa menu tools.snapshot

@@ -12,7 +12,7 @@ use std::path::Path;
 
 const PREFIX: &[u8] = b".append-";
 
-/// **Used by tests only** (a survey reads shape alone; the tests of the survey and of the pinned writer name a temp by it). The start of every temporary name for `real`: `.append-<16 hex>-`, the hash being of its file name alone (`document` if the path has none), as lopdf's
+/// **Used by the person's confirmation** (`leftovers::saves_of` finds a temp's document by it) **and by tests** (a survey reads shape alone; the tests of the survey and of the pinned writer name a temp by it). The start of every temporary name for `real`: `.append-<16 hex>-`, the hash being of its file name alone (`document` if the path has none), as lopdf's
 /// `temporary_prefix` makes it.
 pub fn writer_temp_prefix(real: &Path) -> String {
     let name = real.file_name().map_or(&b"document"[..], std::ffi::OsStr::as_encoded_bytes);

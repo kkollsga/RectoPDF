@@ -45,6 +45,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | The app: memory, many tabs, measurements | [`app-memory.md`](app-memory.md) |
 | The QA channel | [`qa.md`](qa.md) |
 | Saving | [`saving.md`](saving.md) |
+| Clear Leftovers and the sheet over the window | [`clear-leftovers.md`](clear-leftovers.md) |
 | The state record | [`state-record.md`](state-record.md) |
 | Deep sleep | [`sleep.md`](sleep.md) |
 | Updates | [`updates.md`](updates.md) |

@@ -63,6 +63,9 @@ mod privacy;
 #[path = "app/slow.rs"]
 mod slow;
 
+#[path = "app/leftovers.rs"]
+mod leftovers;
+
 /// Failure: a QA run takes the screen, the focus or the Dock from the person using this Mac, or shows anything on a display. Every claim a quiet run makes, as the app itself reports it.
 #[test]
 fn a_quiet_run_stays_out_of_the_way() {
@@ -2511,6 +2514,8 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
     };
     assert!(at("saved") < at("tab_closed"), "saved, then closed: {events:?}");
     let _ = std::fs::remove_file(copy);
+    // Edit > Clear Leftovers…: Rust's sheet over the window, shot light and dark, and its yes moves a crashed save to the Trash.
+    leftovers::offers_and_clears(&run);
 }
 
 /// Failure (the owner's bench file, 2026-11-08): a save changes the view. After turning page 1 and saving, the zoom shown went from 128% to 97% and every page shrank, as the saved file's page 1 is landscape and the reopened layout fitted that. The owner's standard is "perfect" state recovery: the zoom, the place down and across, the layout and the selection are exactly as they were, as `qa state` reports them, with the save written.

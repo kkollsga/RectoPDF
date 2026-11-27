@@ -23,6 +23,7 @@ pub mod updates;
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 pub use recto_app::core::WindowPlacement;
 use recto_app::core::controls::UiAction;
+pub use recto_app::core::sheets::SheetModel;
 use recto_app::core::*;
 pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffReport};
 pub use recto_app::listener::QuitAnswer;
@@ -61,6 +62,17 @@ pub trait AppListener: Send + Sync {
     fn quit_answer(&self, answer: QuitAnswer);
     /// A hand-off has written and read back the state, so the app quits now, with no prompt of any kind.
     fn hand_off_quit(&self);
+}
+
+/// A sheet over the window: Rust's words, the buttons in order and which one destroys.
+#[uniffi::remote(Record)]
+pub struct SheetModel {
+    pub kind: String,
+    pub id: u64,
+    pub title: String,
+    pub message: String,
+    pub buttons: Vec<String>,
+    pub destructive: Option<u32>,
 }
 
 /// What comes of asking to quit.
@@ -326,8 +338,8 @@ pub struct ReaderView {
     pub saving: bool,
     /// What the Save icon beside the window's controls says, and the step a long save is at.
     pub save_tooltip: String,
-    /// A save that didn't happen, for an alert over the window until it's answered.
-    pub save_problem: Option<saving::SaveProblem>,
+    /// The sheet over the window, in Rust's words, until it's answered.
+    pub sheet: Option<SheetModel>,
     /// What Save As's sheet says about this document, as for a signed one.
     pub save_as_note: Option<String>,
     /// The tab showing, which an action from the window is about. 0 with none.
@@ -894,11 +906,6 @@ impl AppCore {
     /// What closing the document showing asks.
     pub fn close_prompt(&self) -> saving::ClosePrompt {
         self.inner.close_prompt()
-    }
-
-    /// A save's problem was answered: with Save As, its sheet opens.
-    pub fn save_problem_answered(&self, save_as: bool) -> HostAction {
-        self.inner.save_problem_answered(save_as)
     }
 
     /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.

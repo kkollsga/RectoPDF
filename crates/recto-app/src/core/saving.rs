@@ -231,11 +231,27 @@ impl super::Inner {
             self.tools.save_ui().disagreement_now().as_deref(),
         )
     }
+}
 
-    /// A save's problem was answered: with Save As, its sheet opens.
-    pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction {
-        self.tools.save_ui().set_problem(None);
-        self.core.push(super::CoreCall::Reconcile);
-        if save_as { super::HostAction::ShowSavePanel } else { super::HostAction::None }
-    }
+/// The kind of the save problem's sheet.
+pub const SHEET_KIND: &str = "save_problem";
+
+/// A save's problem as a sheet: OK, and Save As where a copy is the way on. Id 0: one problem shows at a time and the answer clears it.
+pub fn sheet(save_ui: &SaveUi) -> Option<super::sheets::SheetModel> {
+    let problem = save_ui.problem()?;
+    Some(super::sheets::SheetModel {
+        kind: SHEET_KIND.into(),
+        id: 0,
+        title: problem.title,
+        message: problem.message,
+        buttons: std::iter::once(problem.ok_title).chain(problem.save_as_title).collect(),
+        destructive: None,
+    })
+}
+
+/// A save's problem was answered: with Save As (button 1, when it was offered), its sheet opens.
+pub fn sheet_answered(save_ui: &SaveUi, button: u32) -> super::HostAction {
+    let save_as = button == 1 && save_ui.problem().is_some_and(|problem| problem.save_as_title.is_some());
+    save_ui.set_problem(None);
+    if save_as { super::HostAction::ShowSavePanel } else { super::HostAction::None }
 }

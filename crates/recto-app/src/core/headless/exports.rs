@@ -172,11 +172,6 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
         &[],
     ),
     (
-        "save_problem_answered",
-        HostOnly("a sheet's answer that only closes it or opens Save As's, whose answer is `UiAction::SaveAs`"),
-        &[],
-    ),
-    (
         "quit_requested",
         HostOnly("quitting is the person's and the system's: an agent's `stop` is refused in the app (`only_the_user_quits`)"),
         &[],

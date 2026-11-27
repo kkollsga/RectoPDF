@@ -19,7 +19,17 @@ use recto_core::removal::{ConfirmRefusal, Refusal, Store};
 pub struct Names {
     pub document: Option<String>,
     pub folder: Option<String>,
+    /// The documents other than this one that have an unfinished save in a folder listed: cleaned names, sorted, none twice ([`super::saves_of`]). Only the
+    /// person's confirmation lists them.
+    pub others: Vec<String>,
+    /// How many unfinished saves are of a document that isn't there.
+    pub missing: u32,
+    /// There were more saves than were looked into, so the lists above are not the whole.
+    pub more: bool,
 }
+
+/// How many names the confirmation lists before it says how many more there are.
+pub const MAX_LISTED: usize = 10;
 
 /// What a check found, as counts. Every count is of artifacts or of leftovers the clear leaves, never of names.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,8 +58,22 @@ impl Found {
     }
 }
 
-/// The button the window's sheet would have, and the one `recto` names in its answer.
+/// The button the window's sheet has, and the one `recto` names in its answer.
 pub const BUTTON: &str = "Move to Trash and Delete";
+
+/// The window's side of the same words: the Edit menu's row and the sheet over the window, every word Rust's.
+pub const MENU_TITLE: &str = "Clear Leftovers…";
+pub const OFFER_TITLE: &str = "Clear leftovers?";
+pub const LOOKED_TITLE: &str = "Clear Leftovers";
+pub const STOPPED_TITLE: &str = "Clear Leftovers didn't finish";
+pub const REFUSED_TITLE: &str = "Leftovers weren't cleared";
+pub const CANCEL: &str = "Cancel";
+pub const OK: &str = "OK";
+pub const LOOK_AGAIN: &str = "Look Again";
+/// What a sheet says of a clear that failed in a way it has no sentence for: it can't claim nothing was cleared, as a clear that began may have done part.
+pub const COULDNT_CLEAR: &str = "RectoPDF couldn't finish clearing leftovers. Choose Clear Leftovers again to see what's left.";
+/// What a sheet says of a look that failed in a way it has no sentence for: never the failure's text, which may carry a path or a document's words.
+pub const COULDNT: &str = "RectoPDF couldn't clear leftovers just now. Nothing was cleared.";
 
 fn n(count: u32, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
@@ -64,10 +88,7 @@ pub fn check(names: &Names, found: &Found) -> String {
     if found.is_empty() {
         return nothing(found);
     }
-    let mut lines = vec![format!(
-        "Before RectoPDF can remove anything from {}, it has to clear what it left behind:",
-        quoted(&names.document, "this document")
-    )];
+    let mut lines = vec!["RectoPDF left these behind:".to_owned()];
     if found.saves_here > 0 {
         let one = found.saves_here == 1;
         lines.push(format!(
@@ -95,8 +116,52 @@ pub fn check(names: &Names, found: &Found) -> String {
             n(found.copies, "copy", "copies"),
         ));
     }
+    lines.extend(whose_saves(names));
     lines.extend(left_alone(found));
     lines.join("\n")
+}
+
+/// The longest a document's name is shown, in characters: a longer one is cut with an ellipsis.
+const MAX_NAME: usize = 60;
+
+/// A name as the sheet shows it: its curly quotes made plain, so it can't close the quotes it is shown in and go on in RectoPDF's voice, and cut if long.
+fn shown(name: &str) -> String {
+    let plain: String = name.chars().map(|c| if matches!(c, '“' | '”') { '"' } else { c }).collect();
+    if plain.chars().count() <= MAX_NAME {
+        return format!("“{plain}”");
+    }
+    format!("“{}…”", plain.chars().take(MAX_NAME).collect::<String>())
+}
+
+/// The line that says whose some of the unfinished saves are, for the person, when a save belongs to another document: those documents by name (at most
+/// [`MAX_LISTED`], then how many more, or just "more" where the count isn't known), and a count of those whose document isn't there, never the name of a
+/// temporary. Nothing for an agent, or when every save is the document's own.
+fn whose_saves(names: &Names) -> Option<String> {
+    if names.others.is_empty() && names.missing == 0 {
+        return None;
+    }
+    let listed: Vec<String> = names.others.iter().take(MAX_LISTED).map(|name| shown(name)).collect();
+    let beyond = names.others.len().saturating_sub(MAX_LISTED);
+    let list = match (listed.as_slice(), beyond, names.more) {
+        ([], ..) => String::new(),
+        (all, 0, false) if all.len() > 1 => format!("{} and {}", all[..all.len() - 1].join(", "), all[all.len() - 1]),
+        (all, 0, false) => all.join(", "),
+        (all, _, true) => format!("{} and more", all.join(", ")),
+        (all, beyond, false) => format!("{} and {beyond} more", all.join(", ")),
+    };
+    let gone = match names.missing {
+        0 => String::new(),
+        1 => "1 document that isn't there".to_owned(),
+        count => format!("{count} documents that aren't there"),
+    };
+    let of = match (list.is_empty(), gone.is_empty()) {
+        (false, true) => list,
+        (false, false) => format!("{list} and of {gone}"),
+        _ => gone,
+    };
+    let several = names.others.len() + names.missing as usize > 1 || names.more;
+    let (verb, saves) = if several { ("are", "unfinished saves") } else { ("is", "an unfinished save") };
+    Some(format!("Among them {verb} {saves} of {of}."))
 }
 
 /// The lines for what a clear leaves where it is.
@@ -163,7 +228,7 @@ pub fn confirm_refusal(why: ConfirmRefusal) -> &'static str {
 pub fn busy(why: Busy) -> &'static str {
     match why {
         Busy::Installer => "An update is being installed. Try again in a moment. Nothing was cleared.",
-        Busy::Windowless => "A `recto session` is running. Try again in a moment. Nothing was cleared.",
+        Busy::Windowless => "A recto session is running. Try again in a moment. Nothing was cleared.",
         Busy::Starting => "RectoPDF is still tidying up after starting. Try again in a moment. Nothing was cleared.",
         Busy::BesideNewer => "A newer version of RectoPDF has been used on this Mac. Clear leftovers from that version. Nothing was cleared.",
     }

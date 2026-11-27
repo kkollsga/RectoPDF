@@ -61,15 +61,17 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// channel's sender and a descriptor of its own, and the waiting server holds that reference in place of its sender. One of each per app, not per tab or
 /// page view. And what a menu row and a person's answer are given in place of the app (`build/registries`): `RowParts`, 104 (twelve references, the
 /// listener's two words), `AnswerParts`, 88 (ten), and the `Person` they carry, 8 (one): made on the stack for one menu id or one answered command, never
-/// kept.
+/// kept. And D6's sheet (2026-11-27): Published 808 to 824 (one `SheetModel` of 112 bytes in the reader's view where the save problem's 96 sat: its kind, id
+/// and destructive index, so every feature's sheet is one record), and Inner 4,480 to 4,488 (Clear Leftovers' sheet slot, a mutex and a box that holds nothing
+/// at rest). One of each per app.
 const BUDGETS: [(&str, usize); 14] = [
-    ("Inner", 4480),
+    ("Inner", 4488),
     ("Lifecycle", 344),
     ("Serving", 1040),
     ("Window", 464),
     ("Notices", 80),
     ("Tools", 1448),
-    ("Published", 808),
+    ("Published", 824),
     ("AppState", 248),
     ("Sleeper", 608),
     ("OnDisk", 16),
@@ -127,6 +129,7 @@ AnswerParts::pub fn ask_password(&self, path: &Path)
 AnswerParts::pub fn fail_open(&self, words: String)
 AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
 AnswerParts::pub fn image_looked(&self, said: impl FnOnce(&super::snapshot_tool::Tool, &[Engine]))
+AnswerParts::pub fn leftovers_answered(&self, said: impl FnOnce(&super::removal::sheet::Leftovers) -> Option<String>)
 AnswerParts::pub fn notice(&self, words: String)
 AnswerParts::pub fn person(&self) -> Person<'a>
 AnswerParts::pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing))
@@ -196,7 +199,6 @@ Inner::pub fn record_report(&self) -> Value
 Inner::pub fn restore_patience_over(&self)
 Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
-Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)

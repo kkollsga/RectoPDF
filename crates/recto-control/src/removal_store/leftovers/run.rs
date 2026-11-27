@@ -179,11 +179,20 @@ impl Looked {
         }
     }
 
-    /// The names the words may use, for the person.
-    pub fn names(&self) -> Names {
+    /// The names the words may use, for the person. `with_saves` lists whose the unfinished saves are, which reads the folders they're in: only for the
+    /// person's words, which are the only ones that carry it.
+    pub fn names(&self, with_saves: bool) -> Names {
+        let others = if with_saves {
+            super::saves_of::saves_of(self.pins.temps(), &self.canonical)
+        } else {
+            Default::default()
+        };
         Names {
             document: label(&self.canonical),
             folder: self.canonical.parent().and_then(label),
+            others: others.names,
+            missing: others.missing,
+            more: others.more,
         }
     }
 
@@ -254,7 +263,7 @@ pub fn check<A: Copy + Eq>(
         }
     };
     let found = looked.found();
-    let names = looked.names();
+    let names = looked.names(asked.names);
     let words = words::check(&if asked.names { names.clone() } else { Names::default() }, &found);
     let mut id = None;
     if !found.is_empty() && may_confirm {

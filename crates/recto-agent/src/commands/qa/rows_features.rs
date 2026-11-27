@@ -273,7 +273,7 @@ pub(crate) const ROWS: &[Spec] = &[
         tag: "qa_drive",
         group: GROUP_QA,
         access: Access::At(Level::Control),
-        summary: "Says what Clear leftovers holds: how many plans wait for a yes, whether a clear is running and whether it is held.",
+        summary: "Says what Clear leftovers holds: how many plans wait for a yes, whether a clear is running, whether it is held, which sheet the window has over it (`none`, `offer`, `looked` or `told`, never the plan) and whether a clear may begin (`ready`).",
         args: &[Arg {
             key: "value",
             flag: None,
@@ -282,7 +282,7 @@ pub(crate) const ROWS: &[Spec] = &[
             help: "`show`.",
         }],
         fixed: &[("verb", "removal_state")],
-        data: "`{ pending, clearing, held }`.",
+        data: "`{ pending, clearing, held, sheet, ready }`.",
         examples: &["recto qa removal-state show"],
         client_wait_s: 35,
         ..BASE

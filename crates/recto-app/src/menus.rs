@@ -239,6 +239,7 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         "edit.copy" | "edit.copy_anyway" | "edit.copy_link" => Enable::Selection,
         "edit.select_all"
         | "edit.clear_history"
+        | "edit.clear_leftovers"
         | "go.page"
         | "find.open"
         | "find.next"
@@ -360,7 +361,11 @@ pub fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &s
                 .chain(edit_entries())
                 .chain([line()])
                 .chain(find_entries())
-                .chain([line(), entry("edit.clear_history", "Clear Edit History", "")])
+                .chain([
+                    line(),
+                    entry("edit.clear_history", "Clear Edit History", ""),
+                    entry("edit.clear_leftovers", recto_control::removal_store::leftovers::words::MENU_TITLE, ""),
+                ])
                 .collect(),
         },
         MenuModel {
@@ -504,6 +509,8 @@ pub fn action(id: &str) -> Option<Action> {
         // Its row sends the person's `recto link` ([`crate::core::copy_link`]); nothing here is left for the host.
         "edit.copy_link" => Action::Host(HostAction::None),
         "edit.clear_history" => Action::ClearEditHistory,
+        // Its row sends the person's `removal check`, whose answer is the sheet ([`crate::core::removal::sheet`]); nothing here is left for the host.
+        "edit.clear_leftovers" => Action::Host(HostAction::None),
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
         "file.close_window" => Action::Host(HostAction::CloseWindow),
