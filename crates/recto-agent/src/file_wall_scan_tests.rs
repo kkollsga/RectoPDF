@@ -208,12 +208,15 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-platform/src/folder_mac.rs",
         8,
-        "the four opens of `Folder` (eight are counted: the scan also counts the definitions of `open_private_in`, `open_private_rw_in` and `create_private_in`, the last of which is a fifth open: a new file made by a name in the folder, `O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0600, which never reaches an existing file or a link; `open_private_rw_in` shares `open_private_in`'s one `openat`, with read and write), which is `pub` and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), \
-         a child folder of it (`open_in`, `openat`), the folder again for each listing (`entries`, `openat` of `.`), and a file in it (`open_private_in`, \
-         `openat`, `O_NOFOLLOW | O_NONBLOCK`; a name that is empty, `.`, `..` or holds a `/` is refused, so no name can leave the folder). Used by removal's six \
-         surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, `legacy_session.rs` and `update_copy.rs`) and by Clear leftovers (`leftovers/pin.rs` \
-         opens the folders below a copy by `open_in`, `leftovers/act.rs` opens the pinned folders by `Folder::open` and `open_in`, and `folder_mac/remove.rs` opens \
-         each folder it takes away by `open_in`); a new caller is counted where it calls",
+        "five opens of `Folder`, eight counted (the scan also counts the definitions of `open_private_in`, `open_private_rw_in` and `create_private_in`), and `Folder` is `pub` \
+         and opens any path its caller names: the folder by that path (`OpenOptions`, `O_DIRECTORY | O_NOFOLLOW`), a child folder of it (`open_in`, `openat`), the folder again \
+         for each listing (`entries`, `openat` of `.`), a file in it that already exists (`open_checked`, one `openat` for both `open_private_in` and `open_private_rw_in`, \
+         `O_NOFOLLOW | O_NONBLOCK`, read only or read and write, refused unless a plain file of this user's that others can't write), and a new file in it (`create_private_in`, `openat`, \
+         `O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0600, which fails if anything is at the name and so never reaches an existing file or a link). A name that is empty, `.`, `..` or holds \
+         a `/` is refused by all of them, so no name can leave the folder. Used by removal's six surveys (`journals.rs`, `backups.rs`, `record.rs`, `writer_temps.rs`, \
+         `legacy_session.rs` and `update_copy.rs`), by Clear leftovers (`leftovers/pin.rs` opens the folders below a copy by `open_in`, `leftovers/act.rs` opens the pinned folders by \
+         `Folder::open` and `open_in`, and `folder_mac/remove.rs` opens each folder it takes away by `open_in`) and by the transaction record's store (`removal_store/barrier.rs`: \
+         `Folder::open`, `open_private_rw_in` and `create_private_in`); a new caller is counted where it calls",
     ),
     (
         "recto-platform/src/folder_stub.rs",
