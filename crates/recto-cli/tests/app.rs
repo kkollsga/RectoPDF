@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::app::{Run, app_path, chaptered, numbered, still_running, wait_for};
+use common::app::{Run, app_path, chaptered, numbered, settle_guard_arg, still_running, wait_for};
 use common::{State, bin};
 use recto_agent::{Level, exit};
 use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
@@ -1693,7 +1693,7 @@ fn wait_settled_waits_for_the_sidebars_animations() {
     let mut waited = 0;
     for chapter in [1, 2, 3, 10, 9, 30, 0] {
         run.ok(&["goto", &(chapter * (sections + 1) + 1).to_string()]);
-        let settled = run.ok(&["qa", "wait-settled", "--timeout", "30s"]);
+        let settled = run.ok(&["qa", "wait-settled", "--timeout", &settle_guard_arg()]);
         let state = run.report();
         // The page number's fade starts on a timer 3 s after the last change of place, so on a slow machine it can begin between
         // settling and this report (seen at load 25, 2026-11-11). Settling waits for a fade that's running; one that starts later
