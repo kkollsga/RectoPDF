@@ -1058,7 +1058,7 @@ fn only_the_file_changing_says_the_file_changed() {
 #[test]
 fn the_test_kits_renderer_fails_naming_its_step() {
     let missing = std::env::temp_dir().join(format!("no-such-{}.pdf", std::process::id()));
-    let said = std::panic::catch_unwind(|| renderer(&missing, Policy::default())).unwrap_err();
+    let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| renderer(&missing, Policy::default()))).unwrap_err();
     let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(said.contains("step 1, opening"), "{said}");
 }
