@@ -1184,6 +1184,35 @@ fn an_app_opened_again_in_the_gap_is_left_alone() {
     second.wait().unwrap();
 }
 
+/// Failure (D3b review): an install that stops because the app is running again takes `update/before` away, though an unfinished removal's record is there
+/// and the copy is the one a going back (or the removal) may need. It stops as before, and the copy stays.
+#[test]
+fn an_app_opened_again_in_the_gap_leaves_update_before_while_a_removal_is_pending() {
+    let mut bed = Bed::new("reopened-removal", "ok");
+    leave_a_removal_record(&bed);
+    std::fs::create_dir_all(bed.files.before()).unwrap();
+    std::fs::write(bed.files.before().join("older.txt"), "an older copy").unwrap();
+    let mut second = Command::new(bed.plan.executable())
+        .args([
+            "test-app",
+            "0.1.0",
+            "hangs",
+            bed.files.work.to_str().unwrap(),
+            bed.dir.join("nowhere").to_str().unwrap(),
+        ])
+        .spawn()
+        .unwrap();
+    wait_until("the second app", Duration::from_secs(5), || {
+        !local::processes_running(&bed.plan.executable()).is_empty()
+    });
+    let ended = bed.run(None);
+    assert!(!ended.success());
+    assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "app_reopened");
+    assert_eq!(std::fs::read_to_string(bed.files.before().join("older.txt")).unwrap(), "an older copy");
+    second.kill().unwrap();
+    second.wait().unwrap();
+}
+
 /// Failure: an app opened after the installer's first look and before the swap (the record's copy and the signature check take over a second) is replaced while it runs. Held at `still_verified`, a second app comes up; the last look under the record's lock sees it and nothing's swapped.
 #[test]
 fn an_app_opened_after_the_first_look_is_not_replaced() {

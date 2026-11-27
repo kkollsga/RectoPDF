@@ -217,7 +217,10 @@ impl Run<'_> {
     fn absence_unproven(&self, why: &str, detail: &str) -> Ended {
         self.say(&format!("installer: app absence isn't established ({why}: {detail}), so nothing was replaced"));
         self.finish_with(OutcomeKind::NotInstalled, why);
-        let _ = std::fs::remove_dir_all(self.files.before());
+        // Not while an unfinished removal's record is there: the copy may be the one a going back needs, and the removal decides what becomes of it.
+        if !crate::removal_record::anything_there(&self.plan.root) {
+            let _ = std::fs::remove_dir_all(self.files.before());
+        }
         Ended::NotInstalled
     }
 

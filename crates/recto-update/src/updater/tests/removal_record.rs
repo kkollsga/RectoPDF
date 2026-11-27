@@ -81,29 +81,45 @@ fn going_back_with_a_removal_pending_starts_only_for_a_build_that_reads_it() {
     }
 }
 
-/// Failure (D3b): the launch that settles an install the installer refused for an unfinished removal (or a going back it refused) clears `update/before`, the
-/// older copy of the session that a going back may still need, as it does after any other refused install. It stays, and the person is told in words.
+/// Failure (D3b): the launch that settles an install the installer refused (for an unfinished removal, or for any other reason) clears `update/before`, the
+/// older copy of the session that a going back may still need, while a removal's record is there; or, with none there, keeps what it always cleared. And
+/// the person is told in the words, exactly.
 #[test]
-fn settling_a_refusal_for_a_removal_keeps_the_copy_and_says_why() {
-    for (kind, why_said) in [(OutcomeKind::NotInstalled, "unfinished"), (OutcomeKind::CouldntGoBack, "unfinished")] {
+fn settling_a_refusal_keeps_the_copy_while_a_removal_is_pending_and_says_why() {
+    let notice_of = |kind: OutcomeKind, why: &str, record: bool| {
         let bed = Bed::new("settle-removal");
         let root = bed.dir.join("state");
         let files = Files::in_state(&root);
         local::ensure_private_dir(&files.work).unwrap();
+        if record {
+            std::fs::create_dir_all(root.join("removal")).unwrap();
+            std::fs::write(root.join("removal").join("pending.v1"), b"anything").unwrap();
+        }
         std::fs::create_dir_all(files.before()).unwrap();
         std::fs::write(files.before().join(".whole"), "").unwrap();
-        Outcome::new(kind, "0.1.0", "0.2.0", "removal_pending").write(&files.outcome()).unwrap();
+        Outcome::new(kind, "0.1.0", "0.2.0", why).write(&files.outcome()).unwrap();
         let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
         updater.launched(Facts {
             version: "0.1.0".into(),
             app: bed.app.clone(),
             system: "15.0".into(),
         });
-        assert!(files.before().join(".whole").exists(), "{kind:?}: the copy was removed");
-        let notice = updater.notice().expect("said").text;
-        assert!(
-            notice.contains("removal") && !notice.contains(why_said) || notice.contains(why_said),
-            "{kind:?}: {notice}"
-        );
-    }
+        (files.before().join(".whole").exists(), updater.notice().expect("said").text)
+    };
+    let (kept, said) = notice_of(OutcomeKind::NotInstalled, "removal_pending", true);
+    assert!(kept);
+    assert_eq!(
+        said,
+        "Couldn't update to 0.2.0: a removal of data from a document was left unfinished, and is finished first. RectoPDF is unchanged."
+    );
+    let (kept, said) = notice_of(OutcomeKind::CouldntGoBack, "removal_pending", true);
+    assert!(kept);
+    assert_eq!(
+        said,
+        "RectoPDF 0.2.0 is what's installed, and a removal of data from a document was left unfinished, so the earlier version was not put back."
+    );
+    let (kept, _) = notice_of(OutcomeKind::NotInstalled, "swap_failed", true);
+    assert!(kept, "another reason, a record there: the copy stays");
+    let (kept, _) = notice_of(OutcomeKind::NotInstalled, "swap_failed", false);
+    assert!(!kept, "another reason, no record: cleared as it always was");
 }

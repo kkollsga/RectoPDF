@@ -30,8 +30,9 @@ impl Updater {
             let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
             if kept_ending {
                 settled.fall_back = self.files.before().join(".whole").exists().then(|| self.files.before());
-            } else if outcome.kind != OutcomeKind::CouldntGoBack && outcome.why != "removal_pending" {
-                // Not for a removal's refusal: the copy may be the only one a going back can use, and an unfinished removal decides what happens to it.
+            } else if outcome.kind != OutcomeKind::CouldntGoBack && !crate::removal_record::anything_there(&self.files.root) {
+                // Not while an unfinished removal's record is there, whatever the reason: the copy may be the only one a going back can use, and the removal
+                // decides what happens to it.
                 let _ = std::fs::remove_dir_all(self.files.before());
             }
             settled.reopened = match outcome.kind {
