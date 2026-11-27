@@ -422,9 +422,14 @@ mod tests {
                 "{who} used no CPU time at utility: outside it {:?}; threads {threads:?}",
                 outside_utility(time)
             );
+            // Not a zero tolerance: the kernel can charge a few nanoseconds (53 ns, seen once under load) to the default bucket, most likely around the
+            // exec before the clamp is seen; the work itself took milliseconds. The regressions this guards charge the work itself elsewhere: all of it at default
+            // priority, or at Darwin background. So the bulk must be at utility, with at most 1 in 20 of it anywhere else.
+            let outside: u64 = outside_utility(time).iter().map(|&(_, ns)| ns).sum();
             assert!(
-                outside_utility(time).is_empty(),
-                "{who} ran outside utility, by bucket in ns: {:?}; threads {threads:?}",
+                outside <= time.ri_cpu_time_qos_utility / 20,
+                "{who} ran mostly outside utility ({} ns at utility), by bucket in ns: {:?}; threads {threads:?}",
+                time.ri_cpu_time_qos_utility,
                 outside_utility(time)
             );
         }

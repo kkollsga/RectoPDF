@@ -15,6 +15,10 @@ use std::time::{Duration, Instant};
 
 const LIMIT: Duration = Duration::from_secs(5);
 
+/// The probe's own timer is 50 ms, and the property is that it ends by its own signal, not how soon. This only ends a probe that never would (an
+/// ignored or blocked SIGALRM kept), so it is far above what a starved Mac takes to start a process (2.2 s was seen at load, 0.3 s alone).
+const HANG_GUARD: Duration = Duration::from_secs(60);
+
 /// Failure: fixture cleanup checks an executable path, then signals a borrowed numeric PID which can be recycled before the signal.
 #[test]
 fn borrowed_fixture_pids_are_never_signalled() {
@@ -45,8 +49,8 @@ fn the_probe_deadline_exits_with_its_own_unblocked_signal() {
             Ok(())
         });
     }
-    let (bounded, output) = command::output(&mut probe, Duration::from_secs(2)).unwrap();
-    assert!(!bounded, "the collector, not the probe's own timer, ended it: {output:?}");
+    let (bounded, output) = command::output(&mut probe, HANG_GUARD).unwrap();
+    assert!(!bounded, "the collector's {HANG_GUARD:?} guard, not the probe's own timer, ended it: {output:?}");
     assert_eq!(
         output.status.signal(),
         Some(libc::SIGALRM),
