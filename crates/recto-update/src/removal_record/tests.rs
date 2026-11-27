@@ -49,7 +49,7 @@ fn anything_at_the_records_name_is_a_record_and_nothing_else_is() {
     std::fs::write(root.join(DIR), b"x").unwrap();
     assert!(anything_there(&root), "removal is a file");
     std::fs::remove_file(root.join(DIR)).unwrap();
-    std::os::unix::fs::symlink(&dir.path(), root.join(DIR)).unwrap();
+    std::os::unix::fs::symlink(dir.path(), root.join(DIR)).unwrap();
     assert!(anything_there(&root), "removal is a link");
 }
 
