@@ -339,6 +339,128 @@ fn coverage_counts(p: &Progress) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// A Find whose query ends at a chosen look: its results are of a query still running with no hit, and from the `ends_at`th look at them on, the query
+    /// has finished with one hit. A look is every `with_results`, so the end falls between any two of a command's reads.
+    struct EndsAt {
+        results: Mutex<(Results, u32)>,
+        ends_at: u32,
+        hit: Hit,
+    }
+
+    impl Finding for EndsAt {
+        fn start(&self, _plan: FindPlan, _query: &str, _needle: String) -> u64 {
+            0
+        }
+        fn clear(&self) {}
+        fn with_results(&self, step: &mut dyn FnMut(&mut Results)) {
+            let mut guard = self.results.lock().unwrap();
+            guard.1 += 1;
+            if guard.1 == self.ends_at {
+                let generation = guard.0.generation;
+                let progress = Progress {
+                    pages_done: 10,
+                    pages: 10,
+                    pages_with_hits: 1,
+                    total: 1,
+                    ..Progress::default()
+                };
+                guard.0.add(generation, vec![self.hit.clone()], &progress);
+                guard.0.finish(generation, End::Finished, progress);
+            }
+            step(&mut guard.0);
+        }
+        fn wait(&self, _generation: u64, _limit: Duration) -> bool {
+            true
+        }
+        fn wait_past(&self, _version: u64, _limit: Duration) -> bool {
+            true
+        }
+    }
+
+    #[derive(Clone)]
+    struct TenPages;
+
+    impl DocLoader for TenPages {
+        fn load(&self, _path: &std::path::Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
+            Ok(recto_core::DocFacts {
+                page_count: 10,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: recto_core::Toc::default(),
+                renderer_only: false,
+            })
+        }
+    }
+
+    /// The person's session access with a Find of the test's and a record of the effects it was asked for.
+    struct Window<'a> {
+        session: Mutex<Session<TenPages>>,
+        finding: &'a EndsAt,
+        effects: Mutex<Vec<Effect>>,
+    }
+
+    impl crate::SessionAccess for Window<'_> {
+        type Loader = TenPages;
+        fn with<R>(&self, step: impl FnOnce(&mut Session<TenPages>) -> R) -> R {
+            step(&mut self.session.lock().unwrap())
+        }
+        fn finding(&self) -> Option<&dyn Finding> {
+            Some(self.finding)
+        }
+        fn effect(&self, effect: Effect) {
+            self.effects.lock().unwrap().push(effect);
+        }
+    }
+
+    /// Failure (a `--like-ci` run under load, 2026-11-27: Find open with no hit selected after ⌘G): the person's ⌘G asked while the query runs, and the query
+    /// ends between the step's look at the hits and the command's look at whether it still runs, so the step isn't kept for its hit and the command says there's
+    /// no hit to go to. Whichever look the query ends at, the person's step either goes to the hit or is kept for it, and never says nothing was found.
+    #[test]
+    fn the_persons_step_is_made_or_kept_whenever_the_query_ends() {
+        for ends_at in 1..=8 {
+            let mut session = Session::new(TenPages);
+            let tab = session.open(std::path::Path::new("/d/ten.pdf")).unwrap();
+            session.viewing_mut().set_find(true, "word", "word");
+            let mut results = Results::default();
+            results.begin(tab.0, "word", 10);
+            results.basis = Some(basis(&session, tab));
+            let hit = Hit {
+                page: 5,
+                start: 0,
+                end: 4,
+                before: "".into(),
+                matched: "word".into(),
+                after: "".into(),
+                hidden: false,
+            };
+            let finding = EndsAt {
+                results: Mutex::new((results, 0)),
+                ends_at,
+                hit,
+            };
+            let window = Window {
+                session: Mutex::new(session),
+                finding: &finding,
+                effects: Mutex::default(),
+            };
+            let mut events = Vec::new();
+            let asked = FindAsk::Step { forward: true, jump: false };
+            let answer = command(&window, Actor::Person, &asked, None, &mut events);
+            let kept = window
+                .effects
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|effect| matches!(effect, Effect::FindStepPending { .. }));
+            let went = window.session.lock().unwrap().tabs().tab(tab).unwrap().page == 5;
+            assert!(answer.is_ok(), "the query ending at look {ends_at}: {answer:?}");
+            assert!(kept || went, "the query ending at look {ends_at}: the step was neither made nor kept");
+        }
+    }
 
     /// Failure: `recto find` reported only `failed_pages`, so an agent was told a page was fine, or couldn't tell a busy Mac from a page that failed, while the line in the window said so.
     #[test]
