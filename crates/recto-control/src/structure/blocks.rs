@@ -136,9 +136,12 @@ impl<S: PageStore> BlocksAnswer<S> {
     fn end_line(&mut self, line: &Map<String, Value>) -> Result<Said, &'static str> {
         let number = |name: &str| line.get(name).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok());
         let pages = number("pages").ok_or(BAD)?;
-        // The helper's count of pages, the lines it sent and the index's own must be the same number.
-        if pages != self.next || pages != self.pages {
+        // The helper's count of pages, the lines it sent and the index's own must be the same number. The index's count first: a helper that disagrees with it is `pages_differ`; one that agrees but sent fewer lines (it skipped its last page) is a bad answer, and doesn't get to choose the code.
+        if pages != self.pages {
             return self.stop("pages_differ");
+        }
+        if pages != self.next {
+            return Err(BAD);
         }
         let failed = number("pages_failed").filter(|failed| *failed <= pages).ok_or(BAD)?;
         let counted = line.get("blocks").and_then(Value::as_u64).ok_or(BAD)?;

@@ -144,6 +144,14 @@ fn a_gap_a_repeat_or_a_page_out_of_order_is_refused() {
     }
 }
 
+/// Failure: a helper that skips its last page (two lines, then an end that says the index's own three) chooses the code: the end's page count is checked against the lines first, so it reads as `pages_differ`, which a hostile helper could use to look like a document that changed. The index's count is checked first, and a helper that agrees with it but sent fewer lines is a bad answer.
+#[test]
+fn a_helper_that_skips_its_last_page_is_a_bad_answer_not_pages_differ() {
+    let (store, lines) = blocks_document();
+    let skipped = said(&[lines[0].clone(), lines[1].clone(), end(3, 5)]);
+    assert_eq!(read_all(&skipped, 3, store).map(|_| ()), Err("bad_answer"));
+}
+
 /// Failure: a helper that read more pages than the index has is believed, so blocks are stored for pages the document doesn't have, or the end's count is taken for the document's. Both the line form (a page past the count) and the end form (an end that claims another number) end as `pages_differ`.
 #[test]
 fn more_pages_than_the_index_has_is_pages_differ() {
