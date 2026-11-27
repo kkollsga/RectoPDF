@@ -86,11 +86,6 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          through the folder helper (no link followed) and only listed: a backup's name is read, never its bytes",
     ),
     (
-        "recto-control/src/removal_store/caches.rs",
-        4,
-        "the corpus root, the parent of a corpus root named `corpus.noindex` (only to look at the older build's `corpus` entry by `fstatat`), and the generated-contents root the caller of `survey_caches` names (`pub`, with no production caller yet; the design names the state's caches), opened through the folder helper (no link followed, this user's only) and listed; below the corpus root every folder is opened by descriptor (`open_in`), and a version note in `by-file` is read at most 2,080 bytes + 1 through that folder's descriptor (`open_private_in`, a plain private file only). A corpus's `app/` and `agent/` and a contents file are placed by name and never opened: never a document",
-    ),
-    (
         "recto-control/src/removal_store/barrier.rs",
         5,
         "the removal transaction record's own file, `<state root>/removal/pending.v1` (D3a; nothing calls it yet): the state root's `removal` folder opened twice, by \
@@ -98,6 +93,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          `create_private_in` (`O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0600, under a random temporary name) and opened again by `open_private_rw_in` (no link followed, no wait for a pipe), \
          twice in the code (reading it with a cap of 2 MiB and a byte, and the read-back after it is made). A file that is not a plain private file of this user's with one name is \
          refused. Paths and numbers are written, never a document, and the state root is the app's own, never one a command names",
+    ),
+    (
+        "recto-control/src/removal_store/caches.rs",
+        4,
+        "the corpus root, the parent of a corpus root named `corpus.noindex` (only to look at the older build's `corpus` entry by `fstatat`), and the generated-contents root the caller of `survey_caches` names (`pub`, with no production caller yet; the design names the state's caches), opened through the folder helper (no link followed, this user's only) and listed; below the corpus root every folder is opened by descriptor (`open_in`), and a version note in `by-file` is read at most 2,080 bytes + 1 through that folder's descriptor (`open_private_in`, a plain private file only). A corpus's `app/` and `agent/` and a contents file are placed by name and never opened: never a document",
     ),
     (
         "recto-control/src/removal_store/journals.rs",
