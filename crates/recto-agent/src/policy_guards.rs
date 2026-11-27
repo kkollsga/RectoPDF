@@ -495,6 +495,9 @@ pub(crate) fn every_command() -> Vec<Command> {
     ]
 }
 
+/// A session and the two files it has open, which go when they're dropped.
+type Made = (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf);
+
 const LEVELS: [Level; 4] = [Level::Off, Level::ReadOnly, Level::Control, Level::Full];
 
 /// A PDF that stands for one read with its password: `secret`'s own length and words, each page with an `x` on it for Find to find.
@@ -579,7 +582,7 @@ fn arrangements_for(command: &Command) -> Vec<Arrangement> {
 
 /// `locked.pdf` (`#1`, `secret`'s) opened with its password beside a plain tab (`#2`), the one `arranged` says being read; with the two files, which go
 /// when they're dropped.
-fn arranged_session(secret: u32, arranged: Arrangement) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+fn arranged_session(secret: u32, arranged: Arrangement) -> Made {
     let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
     let plain = TempPdf::new("plain.pdf", &pdf(3));
     let mut session = Session::new(crate::DrawableLoader);
@@ -646,7 +649,7 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
     let (off_one, off_two) = (at_off(1), at_off(2));
     for command in every_command().into_iter().chain(synced) {
         for arranged in arrangements_for(&command) {
-            let again = |off: &[(Arrangement, (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf))]| {
+            let again = |off: &[(Arrangement, Made)]| {
                 let (_, (access, locked, plain)) = off
                     .iter()
                     .find(|(made, _)| made.reading_locked == arranged.reading_locked && made.naming_locked == arranged.naming_locked)
@@ -753,7 +756,7 @@ const FOLLOWED: [Followed; 9] = [
 /// `locked.pdf` (`#1`, `secret`'s) opened with its password, and a plain 30-page `plain.pdf` (`#2`) being read beside it in a comparison, placed as
 /// `followed` says: where following took it is the protected document's last page, so the twins differ in where the plain tab is, and in nothing else
 /// about it. With the two files, which go when they're dropped.
-fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+fn following_session(secret: u32, followed: Followed) -> Made {
     let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
     let plain = TempPdf::new("plain.pdf", &pdf(30));
     let mut session = Session::new(crate::DrawableLoader);
@@ -908,7 +911,7 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
                 let commands = &commands;
                 scope.spawn(move || {
                     let mut differs = Vec::new();
-                    let run = |session: &(Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf), level: Level, command: &Command| {
+                    let run = |session: &Made, level: Level, command: &Command| {
                         let (access, locked, plain) = session;
                         let mut events = Vec::new();
                         let result = execute(access, Actor::Agent(level), command, &mut events);
