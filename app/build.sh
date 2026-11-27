@@ -132,6 +132,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     $ICON_NAME
     $URL_TYPES
     <key>CFBundleVersion</key><string>1</string>
+    <!-- This build reads an unfinished removal's record before it restores anything (recto-update: removal_record::GATE_KEY). An update's going back goes only to a build with this. -->
+    <key>RectoRemovalGate</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>

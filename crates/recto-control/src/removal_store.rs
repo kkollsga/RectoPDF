@@ -10,6 +10,7 @@ pub mod barrier;
 mod copy_fixtures;
 #[cfg(test)]
 mod destinations_tests;
+pub mod gate;
 mod journals;
 pub mod ledger;
 pub mod leftovers;

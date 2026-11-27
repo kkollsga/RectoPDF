@@ -169,6 +169,40 @@ mod tests {
         assert_eq!(refused.code, "permission_denied");
     }
 
+    /// Failure (D3b): a session with no window (`recto serve`) restores a saved session or saves its own over it while an unfinished removal's record is in the
+    /// state folder, and so brings back, or writes over, what the removal is purging. `session restore` answers that it restored nothing and says why (the
+    /// words, and no file name), `session save` is refused as `removal_pending`, and the state folder is as the crash left it.
+    #[test]
+    fn a_pending_removal_stops_the_windowless_sessions_restore_and_save() {
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().expect("temp"), "own-pending");
+        let paths = StatePaths::overridden(&root).expect("paths");
+        paths.prepare().expect("prepared");
+        // A saved session first, by a session of the same kind, so there is something a restore would bring back.
+        {
+            let (host, _) = (SessionHost::new(Fake).with_own_record(&paths), ());
+            run(&host, Level::Full, r#"{"cmd":"open","path":"/d/a.pdf"}"#).expect("opened");
+            run(&host, Level::Control, r#"{"cmd":"session_save"}"#).expect("saved");
+        }
+        crate::removal_store::barrier::fixture::pending_at(&paths.root, 1);
+        let host = SessionHost::new(Fake).with_own_record(&paths);
+        // Not `run/`: opening the record writes its pid into its lock, which is the lock's, not the session's.
+        let tree = || {
+            let mut found = crate::removal_store::barrier::fixture::tree(&paths.root);
+            found.retain(|path, _| !path.starts_with("run"));
+            found
+        };
+        let before = tree();
+        let restored = run(&host, Level::Control, r#"{"cmd":"session_restore"}"#).expect("a restore that restored nothing");
+        assert_eq!(restored["restored"], false, "{restored}");
+        let words = restored["notice"].as_str().expect("the words");
+        assert_eq!(Some(words), recto_session::record::notices::words("removal_pending"), "{restored}");
+        assert!(!words.contains(root.to_str().unwrap()) && !words.contains("pending.v1"), "{words}");
+        run(&host, Level::Full, r#"{"cmd":"open","path":"/d/b.pdf"}"#).expect("opened");
+        let refused = run(&host, Level::Control, r#"{"cmd":"session_save"}"#).expect_err("a save while a removal is pending");
+        assert_eq!(refused.code, "removal_pending", "{refused:?}");
+        assert_eq!(tree(), before, "the state folder changed");
+    }
+
     /// **Failure (R3.5a): a windowless session's `session save` counts lists in memory as `edited_tabs`,** so a tab whose every step was undone, with
     /// nothing unsaved, is counted as edited. It's the tabs with unsaved changes, by the read the close and quit rules use, as the app counts them.
     #[test]

@@ -63,6 +63,7 @@ mod recent;
 mod record_threads;
 mod removal_clear;
 mod removal_ledger;
+mod removal_pending;
 mod selection;
 mod sheets;
 mod sidebar;

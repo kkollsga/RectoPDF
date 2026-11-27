@@ -29,7 +29,8 @@ impl Updater {
             let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
             if kept_ending {
                 settled.fall_back = self.files.before().join(".whole").exists().then(|| self.files.before());
-            } else if outcome.kind != OutcomeKind::CouldntGoBack {
+            } else if outcome.kind != OutcomeKind::CouldntGoBack && outcome.why != "removal_pending" {
+                // Not for a removal's refusal: the copy may be the only one a going back can use, and an unfinished removal decides what happens to it.
                 let _ = std::fs::remove_dir_all(self.files.before());
             }
             settled.reopened = match outcome.kind {
@@ -57,6 +58,8 @@ impl Updater {
                     saved.note_failed_version(&outcome.to);
                     let why = if exit_unproven {
                         "the new app may still be running, so the earlier version was not put back"
+                    } else if outcome.why == "removal_pending" {
+                        "a removal of data from a document was left unfinished, so the earlier version was not put back"
                     } else {
                         "it didn't come up, and there was no earlier version to go back to"
                     };

@@ -1,5 +1,9 @@
 //! **The transaction record's store** (`docs/design/removal.md` §6 and §10, D3a): the only code that opens `<state root>/removal/pending.v1`. The format and the rules
-//! for reading it are `recto_core::removal`'s (`barrier.rs`); this is what the app does with them. Nothing calls it yet (D3b wires startup and the carrier).
+//! for reading it are `recto_core::removal`'s (`barrier.rs`); this is what the app does with them. D3b's startup, restore and updater checks read it through
+//! [`super::gate`] (the only caller of [`look`] outside the tests); nothing writes it yet (the carrier is the command slice's).
+//!
+//! **One transaction in a process.** [`begin`], [`reopen`] and [`abandon`] take a process-wide token, try-only, and are `Busy` while a [`Held`] (or another of
+//! the three) has it: two walks of one process can't write one record, whatever a caller does. Another process is stopped by `RENAME_EXCL`, as before.
 //!
 //! **One file, one transaction.** [`begin`] makes it whole under a name of its own, gives it its name in one step that fails if a record is there already
 //! (`RENAME_EXCL`), hands it to the drive (a folder `fsync`, then `F_FULLFSYNC` of the file, which also flushes the drive's cache), reads it back through a
@@ -28,6 +32,10 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(any(test, feature = "test-seams"))]
+pub mod fixture;
 
 const DIR: &str = "removal";
 const NAME: &str = "pending.v1";
@@ -36,6 +44,29 @@ const TEMP_PREFIX: &str = "pending.v1.new-";
 const MAX_SWEEP: usize = 4_096;
 /// A random name that was taken is tried again this many times.
 const NAME_TRIES: usize = 8;
+
+/// Whether a [`Held`] (or a `begin`, `reopen` or `abandon` in the middle of its call) is alive in this process.
+static ONE_TRANSACTION: AtomicBool = AtomicBool::new(false);
+
+/// The right to write the record in this process, given back when it is dropped, however the call ended.
+#[derive(Debug)]
+struct Token(());
+
+impl Token {
+    /// Never waits: a second asker is told `Busy`.
+    fn take() -> Option<Self> {
+        ONE_TRANSACTION
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then(|| Self(()))
+    }
+}
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        ONE_TRANSACTION.store(false, Ordering::Release);
+    }
+}
 
 /// What `look` found at `<root>/removal/pending.v1`.
 #[derive(Debug)]
@@ -85,6 +116,9 @@ mod seams {
     pub struct Opts<'a> {
         pub cap: usize,
         pub at: &'a dyn Fn(Point) -> Flow,
+        /// Whether the process-wide one-transaction token is taken. The app's calls are alone; a test of two processes' race (two threads here) is not, so
+        /// that it can reach `RENAME_EXCL`, which is what stops a second process.
+        pub alone: bool,
     }
 
     fn go(_: Point) -> Flow {
@@ -96,6 +130,7 @@ mod seams {
             Self {
                 cap: MAX_BARRIER_BYTES,
                 at: &go,
+                alone: true,
             }
         }
     }
@@ -110,6 +145,8 @@ use self::seams::{Flow, Opts, Point};
 pub enum BeginError {
     /// A record is there already: one transaction at a time.
     Pending,
+    /// This process has another transaction in hand (a `Held`, or a call of `begin`, `reopen` or `abandon` in another thread): nothing was made.
+    Busy,
     /// `removal/` is not ours, or something shaped like a temporary of ours is not a plain file of ours.
     NotOurs,
     Refused(BarrierRefusal),
@@ -139,6 +176,8 @@ pub enum AckError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AbandonError {
+    /// This process has another transaction in hand: nothing was read or taken away.
+    Busy,
     /// A slot is written, so a step may have run: only going forward is safe.
     RecoveryRequired,
     NotOurs,
@@ -157,6 +196,8 @@ pub struct Held {
     layout: Layout,
     /// The plan this record is of: nothing is written or retired for another.
     digest: PlanDigest,
+    /// The process-wide token, given back when this is dropped. `None` only for a test that runs two walks on purpose ([`Opts::alone`]).
+    _token: Option<Token>,
 }
 
 fn dir_of(root: &Path) -> std::path::PathBuf {
@@ -215,6 +256,9 @@ fn read_record(folder: &Folder, cap: usize) -> Result<Option<(Decoded, File)>, i
 }
 
 /// What is at `<root>/removal/pending.v1`. Never makes anything, and never says `Nothing` for what is there.
+///
+/// `root` is always `StatePaths::root` and never a path that came from a command or a document. The file is opened read-write (so a descriptor can be held for
+/// the slots), which a valid record on a read-only volume can't be: it reads `Damaged`, which withholds, and is said in words.
 pub fn look(root: &Path) -> Looked {
     look_at(root, MAX_BARRIER_BYTES)
 }
@@ -337,6 +381,7 @@ fn begin_inner(
             }
         };
     }
+    let token = if opts.alone { Some(Token::take().ok_or(BeginError::Busy)?) } else { None };
     // Nothing is made before the record is known to fit.
     let encoded = encode_barrier_within(plan, surveyed, limits, progress, facts, opts.cap).map_err(BeginError::Refused)?;
     let barrier = encoded.layout.base();
@@ -398,6 +443,7 @@ fn begin_inner(
         ino: seen.ino(),
         layout: encoded.layout,
         digest: plan.digest(),
+        _token: token,
     };
     // Slot 0: the barrier itself. A failure leaves the record with no slot written or not known to be: resume or abandon it.
     let (offset, slot) = held.layout.slot(barrier + 1).ok_or(BeginError::NotDurable)?;
@@ -537,6 +583,7 @@ impl Held {
 
 /// Holds the record again after a restart, once it was decoded by [`look`]: the file at the name must still be the one decoded.
 pub fn reopen(root: &Path, recorded: &Recorded) -> Result<Held, AbandonError> {
+    let token = Token::take().ok_or(AbandonError::Busy)?;
     let folder = match open_dir(root) {
         Ok(Some(folder)) => folder,
         Ok(None) => return Err(AbandonError::Gone),
@@ -552,6 +599,7 @@ pub fn reopen(root: &Path, recorded: &Recorded) -> Result<Held, AbandonError> {
                 ino: meta.ino(),
                 layout: recorded.layout(),
                 digest: recorded.plan().digest(),
+                _token: Some(token),
             })
         }
         Ok(_) => Err(AbandonError::Gone),

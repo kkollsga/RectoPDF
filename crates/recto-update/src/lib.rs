@@ -15,6 +15,7 @@ pub mod handover;
 pub mod install;
 pub mod plan;
 mod process;
+pub mod removal_record;
 pub mod rules;
 pub mod saved;
 pub mod source;

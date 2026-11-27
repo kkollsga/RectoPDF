@@ -249,6 +249,16 @@ pub fn check<A: Copy + Eq>(
     ids: &mut dyn FnMut() -> u64,
     now: Instant,
 ) -> Result<Checked, CheckError> {
+    // An unfinished removal's record: nothing is offered that a clear would then refuse (`Leases::take` holds the same rule).
+    if crate::removal_store::gate::anything_there(asked.root) {
+        return Ok(Checked {
+            found: Found::default(),
+            names: Names::default(),
+            id: None,
+            words: words::busy(Busy::RemovalPending).to_owned(),
+            refused: None,
+        });
+    }
     let looked = match look(asked.root, asked.document, asked.stamp, world) {
         Ok(looked) => looked,
         Err(LookError::Changed) => return Err(CheckError::Changed),

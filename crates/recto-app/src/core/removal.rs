@@ -199,7 +199,13 @@ pub(crate) fn within_the_run(world: &World, paths: &[&std::path::Path]) -> Resul
 impl Removal {
     /// The QA verbs of Clear leftovers (`qa removal-hold`, `qa removal-state`): `None` for any other verb. A hold stops the next clear before the act of a step
     /// until released; the state is what is pending, whether a clear runs and whether it is held.
-    pub(crate) fn qa_verb(&self, verb: &str, value: &str, outside: impl FnOnce() -> Outside) -> Option<Result<Option<Value>, AgentError>> {
+    pub(crate) fn qa_verb(
+        &self,
+        verb: &str,
+        value: &str,
+        outside: impl FnOnce() -> Outside,
+        record: impl FnOnce() -> Value,
+    ) -> Option<Result<Option<Value>, AgentError>> {
         Some(match verb {
             "removal_hold" if value == "release" => {
                 self.release();
@@ -214,10 +220,15 @@ impl Removal {
             },
             "removal_state" => {
                 let outside = outside();
-                Ok(Some(json!({
+                let mut state = json!({
                     "pending": self.pending(), "clearing": self.clearing(), "held": self.held(), "sheet": self.sheet.kind(),
                     "ready": outside.keeps_record && !outside.beside_newer && outside.sleep_pass_done,
-                })))
+                });
+                // What an unfinished removal's record says (`record`) and what the store withholds because of it (`withheld`): no path, no name.
+                if let (Some(state), Some(record)) = (state.as_object_mut(), record().as_object()) {
+                    state.extend(record.clone());
+                }
+                Ok(Some(state))
             }
             _ => return None,
         })
@@ -283,6 +294,15 @@ pub(crate) fn outside(saver: &Saver, on_disk: &OnDisk, life: &super::Lifecycle) 
         beside_newer: saver.store.beside_newer(),
         sleep_pass_done: on_disk.sleeper().older_pass_done(),
     }
+}
+
+/// What `qa removal-state` says of an unfinished removal's record: what is there (`removal_store::gate::state`, which reads the disk once), and what the record
+/// store has withheld because of it.
+pub(crate) fn record_state(saver: &Saver) -> Value {
+    json!({
+        "record": recto_control::removal_store::gate::state(saver.store.state_root()),
+        "withheld": saver.store.withheld().map(recto_control::removal_store::gate::Withheld::code),
+    })
 }
 
 /// `removal check` and `removal clear`, for whoever asked: the level's been checked ([`AppHost::run_app`]). Everything else is the controller's.

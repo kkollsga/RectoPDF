@@ -1,139 +1,15 @@
 //! The record store on this Mac's disk, in process: each test names the failure it catches. A kill is a hook's `Stop`: nothing after it runs, nothing is cleaned.
 
+use super::fixture::{rig, rig_named};
 use super::*;
-use crate::removal_store::testing::{Restore, limits, mkfifo, mode, version};
-use recto_core::removal::{
-    Actor, ArtifactKey, Binding, CONFIRM_LIMITS, Class, Confirmations, Format, Found, Kinds, LEDGER_LIMITS, Owner, Pin, PinKind, PlanId, Request, Store,
-    Survey, TargetKey, TargetMode, Version, encode_header, lineage, plan, read_ledger,
-};
-use recto_core::save::Target;
+use crate::removal_store::testing::{Restore, mkfifo, mode};
 use recto_testpdf::{TempDir, returns_in_time};
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn temp() -> TempDir {
     TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-barrier-")
-}
-
-fn found(store: Store, name: &str, owner: Owner) -> Found {
-    Found {
-        store,
-        key: ArtifactKey::of(store, name.as_bytes()),
-        owner,
-        format: Format::Current,
-    }
-}
-
-struct Rig {
-    surveyed: Surveyed,
-    limits: Limits,
-    plan: Plan,
-    facts: BarrierFacts,
-}
-
-/// A removal of a journal, a writer's temporary and a session record, with another document's journal beside them.
-fn rig() -> Rig {
-    rig_named("")
-}
-
-/// The same shape of removal over other files: another plan.
-fn rig_named(suffix: &str) -> Rig {
-    let limits = limits(8);
-    let mut survey = Survey::new(&limits);
-    for store in Store::ALL.into_iter().filter(|s| s.enumerated()) {
-        survey.mark_complete(store);
-    }
-    let ledger = read_ledger(&encode_header(1_000), &LEDGER_LIMITS);
-    survey.history(&lineage(&ledger, version(5), Path::new("/d/a.pdf"), &LEDGER_LIMITS).unwrap());
-    for f in [
-        found(Store::Journal, &format!("j1{suffix}"), Owner::Target),
-        found(Store::WriterTemp, &format!("t1{suffix}"), Owner::Target),
-        found(Store::SessionRecord, &format!("s1{suffix}"), Owner::Target),
-        found(Store::Journal, "other", Owner::Unrelated),
-    ] {
-        survey.add(f).unwrap();
-    }
-    let surveyed = survey.finish().unwrap();
-    let request = Request::new(Kinds::from_bits(Kinds::METADATA).unwrap(), TargetMode::Save, false);
-    let plan = plan(&request, &surveyed.inventory(), &limits).unwrap();
-    let pins = surveyed
-        .inventory()
-        .artifacts()
-        .iter()
-        .map(|a| {
-            (a.owner == Owner::Target && matches!(a.store.class(), Class::Purge | Class::Rewrite | Class::Trash)).then_some(Pin {
-                root: 0,
-                inode: 100 + u64::from(a.id.0),
-                kind: PinKind::File,
-            })
-        })
-        .collect();
-    let facts = BarrierFacts {
-        target: "/d/a.pdf".into(),
-        source: version(5),
-        candidate_name: ".a.pdf.new-1".into(),
-        candidate: version(6),
-        candidate_sha: [9; 32],
-        roots: vec![[1; 16]],
-        actor: Actor::Person,
-        pins,
-    };
-    Rig { surveyed, limits, plan, facts }
-}
-
-impl Rig {
-    /// A new walk of the plan, confirmed and acknowledged up to the barrier.
-    fn progress(&self) -> Progress {
-        let mut confirmations = Confirmations::new(CONFIRM_LIMITS);
-        let binding = Binding {
-            actor: 0u8,
-            version: Version {
-                epoch: 1,
-                source: recto_platform::FileStamp {
-                    size: 1,
-                    mtime_ns: 2,
-                    device: 3,
-                    inode: 4,
-                },
-            },
-            target: TargetKey::new(Path::new("/doc.pdf"), Target::Same),
-        };
-        let now = Instant::now();
-        let id = confirmations.offer(binding, &self.plan, now, PlanId::from_raw(9).unwrap()).unwrap();
-        let confirmed = confirmations.take(id, &binding, &self.plan, now).unwrap();
-        let mut progress = Progress::start(&self.plan, confirmed).unwrap();
-        for i in 0..self.base() {
-            progress.acknowledge(&self.plan, i, Ack::Done).unwrap();
-        }
-        progress
-    }
-
-    fn base(&self) -> u32 {
-        self.plan.steps().iter().position(|s| s.effect() == Effect::PersistBarrier).unwrap() as u32
-    }
-
-    fn last(&self) -> u32 {
-        self.plan.steps().len() as u32 - 1
-    }
-
-    fn begin(&self, root: &Path, progress: &mut Progress, opts: &Opts<'_>) -> Result<Held, BeginError> {
-        begin_with(root, &self.plan, &self.surveyed, &self.limits, progress, &self.facts, opts)
-    }
-
-    fn begin_ok(&self, root: &Path) -> (Held, Progress) {
-        let mut progress = self.progress();
-        let held = self.begin(root, &mut progress, &Opts::standard()).unwrap();
-        (held, progress)
-    }
-
-    fn len(&self) -> usize {
-        let progress = self.progress();
-        encode_barrier_within(&self.plan, &self.surveyed, &self.limits, &progress, &self.facts, MAX_BARRIER_BYTES)
-            .unwrap()
-            .bytes
-            .len()
-    }
 }
 
 fn path(root: &Path) -> std::path::PathBuf {
@@ -185,6 +61,7 @@ fn a_kill_at_each_point_of_begin_leaves_a_state_that_can_be_gone_on_from() {
             &Opts {
                 cap: MAX_BARRIER_BYTES,
                 at: &stopper,
+                alone: true,
             },
         );
         assert_eq!(got.unwrap_err(), BeginError::Stopped, "{point:?}");
@@ -451,6 +328,7 @@ fn two_begins_at_once_make_one_record() {
                         &Opts {
                             cap: MAX_BARRIER_BYTES,
                             at: &at,
+                            alone: false,
                         },
                     )
                 })
@@ -489,6 +367,7 @@ fn a_sweep_racing_a_begin_never_makes_two_records_or_a_torn_one() {
                 &Opts {
                     cap: MAX_BARRIER_BYTES,
                     at: &at,
+                    alone: false,
                 },
             )
             .map(|_| ())
@@ -541,7 +420,8 @@ fn a_byte_changed_before_the_read_back_fails_the_begin_and_takes_the_file_away()
             &mut progress,
             &Opts {
                 cap: MAX_BARRIER_BYTES,
-                at: &at
+                at: &at,
+                alone: true,
             }
         )
         .unwrap_err(),
@@ -559,7 +439,16 @@ fn a_record_at_the_cap_is_made_and_one_over_makes_nothing() {
     let len = r.len();
     let (root, over) = (temp(), temp());
     let mut progress = r.progress();
-    r.begin(root.path(), &mut progress, &Opts { cap: len, at: &|_| Flow::Go }).unwrap();
+    r.begin(
+        root.path(),
+        &mut progress,
+        &Opts {
+            cap: len,
+            at: &|_| Flow::Go,
+            alone: true,
+        },
+    )
+    .unwrap();
     assert!(matches!(look_with(root.path(), len), Looked::Pending(_)));
     assert!(matches!(look_with(root.path(), len - 1), Looked::Damaged), "a record over the reader's cap");
     let mut progress = r.progress();
@@ -569,7 +458,8 @@ fn a_record_at_the_cap_is_made_and_one_over_makes_nothing() {
             &mut progress,
             &Opts {
                 cap: len - 1,
-                at: &|_| Flow::Go
+                at: &|_| Flow::Go,
+                alone: true,
             }
         )
         .unwrap_err(),
@@ -595,9 +485,15 @@ fn the_folder_is_private_and_out_of_backups_and_the_file_is_0600() {
 fn one_transaction_at_a_time_and_abandon_is_for_the_record_given() {
     let r = rig();
     let root = temp();
-    let (_held, _) = r.begin_ok(root.path());
+    let (held, _) = r.begin_ok(root.path());
     let mut progress = r.progress();
-    assert_eq!(r.begin(root.path(), &mut progress, &Opts::standard()).unwrap_err(), BeginError::Pending);
+    // Not alone, so that this reaches the file's own refusal (`RENAME_EXCL` is what stops a second process).
+    let not_alone = Opts {
+        alone: false,
+        ..Opts::standard()
+    };
+    assert_eq!(r.begin(root.path(), &mut progress, &not_alone).unwrap_err(), BeginError::Pending);
+    drop(held);
     let rec = pending(root.path());
     assert_eq!(abandon(root.path(), &rec).unwrap_err(), AbandonError::RecoveryRequired);
     assert!(path(root.path()).exists(), "an abandon that was refused took the file");
@@ -611,6 +507,7 @@ fn one_transaction_at_a_time_and_abandon_is_for_the_record_given() {
         &Opts {
             cap: MAX_BARRIER_BYTES,
             at: &stopper,
+            alone: true,
         },
     )
     .unwrap_err();
@@ -623,6 +520,7 @@ fn one_transaction_at_a_time_and_abandon_is_for_the_record_given() {
         &Opts {
             cap: MAX_BARRIER_BYTES,
             at: &stopper,
+            alone: true,
         },
     )
     .unwrap_err();
@@ -693,7 +591,8 @@ fn a_failed_begin_leaves_what_is_not_the_file_it_made() {
             &mut progress,
             &Opts {
                 cap: MAX_BARRIER_BYTES,
-                at: &at
+                at: &at,
+                alone: true,
             }
         )
         .is_err()
@@ -725,7 +624,8 @@ fn slot_0_needs_the_name_to_still_lead_to_the_file() {
                 &mut progress,
                 &Opts {
                     cap: MAX_BARRIER_BYTES,
-                    at: &at
+                    at: &at,
+                    alone: true,
                 }
             )
             .unwrap_err(),
@@ -767,6 +667,7 @@ fn a_kill_at_each_later_slot_and_at_the_retire_is_gone_on_from() {
                 &Opts {
                     cap: MAX_BARRIER_BYTES,
                     at: &stopper,
+                    alone: true,
                 },
             );
             assert_eq!(got.unwrap_err(), AckError::Stopped, "k {k}");
@@ -790,6 +691,7 @@ fn a_kill_at_each_later_slot_and_at_the_retire_is_gone_on_from() {
             &Opts {
                 cap: MAX_BARRIER_BYTES,
                 at: &stopper,
+                alone: true,
             },
         );
         assert_eq!(got.unwrap_err(), AckError::Stopped, "{point:?}");

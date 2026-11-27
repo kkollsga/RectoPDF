@@ -47,6 +47,9 @@ pub enum Busy {
     Starting,
     /// A newer app's record is beside this one: the clear is that version's.
     BesideNewer,
+    /// An unfinished removal's record is in the state folder (or something is where it would be that can't be read): a clear's own steps would move and delete
+    /// files the removal's plan has pinned, and the one thing that may do that is the removal finishing (`docs/design/removal.md` §6).
+    RemovalPending,
 }
 
 /// The leases, held until this is dropped.
@@ -101,6 +104,10 @@ impl Leases {
             Ok(None) | Err(_) => return Err(Busy::Windowless),
         };
         let installer = installer_lease(root)?;
+        // After the locks, so what is found is found with nothing else moving: a record that appears now is the removal's own, and still stops this.
+        if crate::removal_store::gate::anything_there(root) {
+            return Err(Busy::RemovalPending);
+        }
         Ok(Self {
             root: root.to_path_buf(),
             installer,
