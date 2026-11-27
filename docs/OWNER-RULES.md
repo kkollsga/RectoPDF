@@ -12,6 +12,7 @@ The owner's product rules and one-off decisions, in their words, with the date. 
 - **Clear Leftovers' menu item** (2026-11-27, asked with the recommendation): "Edit › Clear Leftovers… (Recommended)" — in the Edit menu, directly under Clear Edit History, enabled when a document is showing, and in the ⌘K palette.
 - **Copy Link copies RectoPDF's own link kind** (2026-11-27; asked with the recommendation to keep plain file links, the owner chose otherwise): "Switch to rectopdf:// links". So a clicked link (Notes, Mail, Finder, a web page) opens RectoPDF at its page; on a Mac without RectoPDF it does nothing. This replaces the 2026-11-26 choice of the full file address for what Copy Link copies. RectoPDF still opens a plain `file:///…#page=N` when one reaches it.
 - **Pasting a link into ⌘K** (2026-11-27, "Yes, next small slice (Recommended)"): pasting a link into the palette offers "Open link: <name>, page N"; built right after opening links merges.
+- **A link from outside opens straight away** (2026-11-27, "Open straight away (Recommended)"): a `rectopdf:` link from a web page or another app opens the PDF as a double-click does, even a file just downloaded; it may only open one local PDF read-only at a page (no edits, no commands), at most 8 links in 10 s, and nothing goes back to the sender.
 
 ## Decisions of 2026-11-25
 
