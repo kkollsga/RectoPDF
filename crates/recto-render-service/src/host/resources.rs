@@ -4,7 +4,6 @@ use super::RenderFailure;
 use recto_platform::isolate::SharedMemory;
 use std::io;
 
-/// Whether `error` is the Mac being out of descriptors or memory. `enospc` is for the shared memory's errors only: for a file's open it says the disk is full, which isn't this.
 /// macOS's errno values, named here so this crate takes no dependency for them (the app only runs there).
 #[cfg(target_os = "macos")]
 mod errno {
@@ -15,6 +14,7 @@ mod errno {
     pub const EAGAIN: i32 = 35;
 }
 
+/// Whether `error` is the Mac being out of descriptors or memory. `enospc` is for the shared memory's errors only: for a file's open it says the disk is full, which isn't this.
 #[cfg(target_os = "macos")]
 fn is_out_of_resources(error: &io::Error, enospc: bool) -> bool {
     match error.raw_os_error() {
@@ -47,7 +47,6 @@ fn of(error: &io::Error, enospc: bool, step: &str) -> RenderFailure {
     }
 }
 
-#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static FAIL_OPEN: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
     static FAIL_SHARED_MEMORY: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
@@ -65,41 +64,39 @@ pub fn fail_next_shared_memory_with(errno: i32) {
     FAIL_SHARED_MEMORY.with(|cell| cell.set(errno));
 }
 
-/// Opens the document's file through the wall: what the open said, as the failure it is.
+/// Opens the document's file through the wall: what the open said, as the failure it is. The test seam makes the open itself fail with an errno, so the same mapping runs.
 pub(super) fn open_document(path: &std::path::Path) -> Result<std::fs::File, RenderFailure> {
     use recto_platform::document_file::{self, Refused};
-    if let Some(failure) = injected_open() {
-        return Err(failure);
-    }
-    document_file::open(path).map_err(|refused| match refused {
+    let opened = match injected(&FAIL_OPEN) {
+        Some(error) => Err(Refused::Open(error)),
+        None => document_file::open(path),
+    };
+    opened.map_err(|refused| match refused {
         Refused::Look(error) | Refused::Open(error) if error.kind() == io::ErrorKind::NotFound => RenderFailure::NotFound,
         Refused::NotADocument => RenderFailure::NotPdf,
         Refused::Look(error) | Refused::Open(error) => of_open(&error),
     })
 }
 
-/// The injected failure for an open, if one is set.
-pub(super) fn injected_open() -> Option<RenderFailure> {
+/// The renderer's shared memory, or why it couldn't be had. The test seam makes the creation itself fail with an errno, so the same mapping runs.
+pub(super) fn create_shared_memory(len: usize) -> Result<SharedMemory, RenderFailure> {
+    let made = match injected(&FAIL_SHARED_MEMORY) {
+        Some(error) => Err(error),
+        None => SharedMemory::create(len),
+    };
+    made.map_err(|error| of_shared_memory(&error))
+}
+
+/// The error a seam asks for, once.
+fn injected(_seam: &'static std::thread::LocalKey<std::cell::Cell<i32>>) -> Option<io::Error> {
     #[cfg(any(test, feature = "test-seams"))]
     {
-        let code = FAIL_OPEN.with(|cell| cell.replace(0));
+        let code = _seam.with(|cell| cell.replace(0));
         if code != 0 {
-            return Some(of_open(&io::Error::from_raw_os_error(code)));
+            return Some(io::Error::from_raw_os_error(code));
         }
     }
     None
-}
-
-/// The renderer's shared memory, or why it couldn't be had.
-pub(super) fn create_shared_memory(len: usize) -> Result<SharedMemory, RenderFailure> {
-    #[cfg(any(test, feature = "test-seams"))]
-    {
-        let code = FAIL_SHARED_MEMORY.with(|cell| cell.replace(0));
-        if code != 0 {
-            return Err(of_shared_memory(&io::Error::from_raw_os_error(code)));
-        }
-    }
-    SharedMemory::create(len).map_err(|error| of_shared_memory(&error))
 }
 
 #[cfg(all(test, target_os = "macos"))]
