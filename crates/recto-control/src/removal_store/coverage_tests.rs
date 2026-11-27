@@ -125,8 +125,8 @@ fn each_survey_left_out_refuses_with_its_store() {
     }
 }
 
-/// Failure: the open owner question (a confirmed removal clears every document's index) is answered by accident. Today another document's Find text, which
-/// nothing can prove is another's, refuses the removal, and names the corpus. Change this test only when the owner has decided.
+/// Failure: the refusal changes by accident. Today another document's Find text, which nothing can prove is another's, refuses the removal, and names the
+/// corpus. Decided by the owner 2026-11-27 (a confirmed removal clears every document's index); this pin changes when D2e/D5 plan the clear-all.
 #[test]
 fn another_documents_find_text_refuses_the_removal() {
     let w = World::new();

@@ -97,7 +97,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     (
         "recto-control/src/removal_store/caches.rs",
         4,
-        "the corpus root, the parent of a corpus root named `corpus.noindex` (only to look at the older build's `corpus` entry by `fstatat`), and the generated-contents root the caller of `survey_caches` names (`pub`, with no production caller yet; the design names the state's caches), opened through the folder helper (no link followed, this user's only) and listed; below the corpus root every folder is opened by descriptor (`open_in`), and a version note in `by-file` is read at most 2,080 bytes + 1 through that folder's descriptor (`open_private_in`, a plain private file only). A corpus's `app/` and `agent/` and a contents file are placed by name and never opened: never a document",
+        "the corpus root and the generated-contents root the caller of `survey_caches` names (`pub`, with no production caller yet; the design names the state's caches), opened through the folder helper (no link followed, this user's only) and listed, and the parent of a corpus root named `corpus.noindex`, opened the same way and only looked at (`fstatat` on its `corpus` entry, never listed); below the corpus root every folder is opened by descriptor (`open_in`), and a version note in `by-file` is read at most 2,080 bytes + 1 through that folder's descriptor (`open_private_in`, a plain private file only). A corpus's `app/` and `agent/` and a contents file are placed by name and never opened: never a document",
     ),
     (
         "recto-control/src/removal_store/journals.rs",
