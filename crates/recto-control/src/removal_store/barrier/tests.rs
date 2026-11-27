@@ -412,7 +412,7 @@ fn a_temporary_shaped_thing_that_is_not_a_file_is_not_ours_and_is_left() {
         let mut progress = r.progress();
         assert_eq!(r.begin(root.path(), &mut progress, &Opts::standard()).unwrap_err(), BeginError::NotOurs);
         assert!(std::fs::symlink_metadata(root.join(DIR).join(&shaped)).is_ok(), "left alone");
-        assert_eq!(names(root.path()), [shaped.clone()], "nothing was begun");
+        assert_eq!(names(root.path()), std::slice::from_ref(&shaped), "nothing was begun");
         assert!(matches!(look(root.path()), Looked::Nothing), "a temporary is never pending");
     }
     // One that only starts like ours is no temporary of ours, and is not touched.
