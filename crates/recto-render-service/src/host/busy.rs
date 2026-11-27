@@ -9,18 +9,66 @@ pub const MAX_BUSY: u8 = 3;
 
 /// What `too_busy` was before a job was asked of the worker. Taken with [`before`], and the only thing [`draw_stopped`] and [`size_stopped`] take to know a kill was a starved one, so a caller can't leave it out: a stopped worker is told from a starved one by the count moving past it.
 #[derive(Clone, Copy)]
-pub(super) struct Before(u32);
+pub(super) struct Before {
+    busy: u32,
+    loaded: u32,
+}
 
 impl Before {
     /// Whether a worker was stopped for lack of the processor since this was taken.
     pub(super) fn moved(self, doc: &DocRenderer) -> bool {
-        doc.stats.too_busy > self.0
+        doc.stats.too_busy > self.busy
     }
+
+    /// Whether that stop was made while the Mac's load was high.
+    fn moved_loaded(self, doc: &DocRenderer) -> bool {
+        doc.stats.too_busy_loaded > self.loaded
+    }
+}
+
+/// A Mac whose one-minute load average is at least this many times its logical cores is loaded: a worker starved of the processor there is likelier the Mac's doing than the page's.
+const LOADED_PER_CORE: f64 = 1.5;
+
+/// Whether `load` (the one-minute load average) over `cores` is a loaded Mac.
+pub(super) fn is_loaded(load: f64, cores: usize) -> bool {
+    load >= LOADED_PER_CORE * cores.max(1) as f64
+}
+
+/// A job was killed at its deadline having used under half of it in processor time (`starved`): counted as the Mac being busy, left out of the kills that stop a document, and with the load it happened under.
+pub(super) fn count_starved(doc: &mut DocRenderer, reason: KillReason, starved: Option<bool>) {
+    if matches!(reason, KillReason::Deadline) && starved == Some(true) {
+        doc.stats.too_busy += 1;
+        doc.stats.too_busy_loaded += u32::from(loaded());
+        doc.left_out.busy = doc.left_out.busy.saturating_add(1);
+    }
+}
+
+/// Whether the Mac is loaded now, read when a starved deadline kill is counted. A test says so with [`under_load_for_test`](crate::under_load_for_test).
+pub(super) fn loaded() -> bool {
+    #[cfg(feature = "test-seams")]
+    if let Some(said) = crate::test_deadline::load_said() {
+        return said;
+    }
+    one_minute_load().is_some_and(|load| is_loaded(load, std::thread::available_parallelism().map_or(1, usize::from)))
+}
+
+/// The one-minute load average, from `sysctl -n vm.loadavg` (`{ 1.50 2.00 3.00 }`): this crate holds no `unsafe`, so not `getloadavg`. Run only when a starved deadline kill is counted, a rare moment, and it reads nothing from the document.
+fn one_minute_load() -> Option<f64> {
+    let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "vm.loadavg"]).output().ok()?;
+    parse_load(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The first number of `vm.loadavg`'s `{ a b c }`.
+fn parse_load(text: &str) -> Option<f64> {
+    text.trim().trim_start_matches('{').split_whitespace().next()?.parse().ok()
 }
 
 /// The count to hold before a job whose stop is to go through [`draw_stopped`] or [`size_stopped`].
 pub(super) fn before(doc: &DocRenderer) -> Before {
-    Before(doc.stats.too_busy)
+    Before {
+        busy: doc.stats.too_busy,
+        loaded: doc.stats.too_busy_loaded,
+    }
 }
 
 /// Whether a job's worker was stopped for lack of the processor rather than for anything of the page, and the page's run of such stops is still short of [`MAX_BUSY`]. Counts the stop. Not remembered, so whoever asked asks again; nothing's retried here, as that would hold this thread for another deadline while the one who asked can lose interest.
@@ -28,9 +76,12 @@ fn starved(doc: &mut DocRenderer, page: u32, reason: KillReason, before: Before)
     if !matches!(reason, KillReason::Deadline) || !before.moved(doc) {
         return false;
     }
+    let loaded = before.moved_loaded(doc);
     let memory = doc.remember(page);
     memory.busy_draws = memory.busy_draws.saturating_add(1);
-    memory.busy_draws < MAX_BUSY
+    // A stop made while the Mac was loaded has a second run of `MAX_BUSY` behind the first; an idle Mac's page is given up at the first.
+    let bound = if loaded { MAX_BUSY.saturating_mul(2) } else { MAX_BUSY };
+    memory.busy_draws < bound
 }
 
 /// Whether a walk over a page's images (dark paper's or a click's) failed because the Mac was too busy to run its worker: a start it couldn't make in time, or a kill at the deadline with the processor not given ([`starved`]). Such a walk is not an answer: nothing's remembered, so whoever asked asks again, until [`MAX_BUSY`] in a row, after which it's the failure it looked like.
@@ -168,5 +219,26 @@ impl RenderFailure {
     /// The Mac was too busy to give the worker the processor ([`Self::TooBusy`], [`Self::TooBusyToStart`]), or out of descriptors or memory for a moment ([`Self::OutOfResources`]): it says nothing of the file, nothing is remembered, and asking again tries again.
     pub fn is_busy(self) -> bool {
         matches!(self, Self::TooBusy { .. } | Self::TooBusyToStart | Self::OutOfResources)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_loaded, parse_load};
+
+    /// Failure: the load is read against the wrong number, so a Mac with every core busy once (load = cores) counts as loaded and a hostile page gets twice the deadlines, or one at 3x its cores counts as idle.
+    #[test]
+    fn loaded_is_one_and_a_half_times_the_cores() {
+        assert!(!is_loaded(10.0, 10));
+        assert!(!is_loaded(14.9, 10));
+        assert!(is_loaded(15.0, 10));
+        assert!(is_loaded(45.0, 10));
+    }
+
+    /// Failure: the load read from a Mac's own output is misread (the brace taken as the number), so every Mac reads as idle and the loaded rule never applies.
+    #[test]
+    fn the_first_load_is_the_one_minute_one() {
+        assert_eq!(parse_load("{ 45.50 30.25 12.00 }\n"), Some(45.5));
+        assert_eq!(parse_load(""), None);
     }
 }

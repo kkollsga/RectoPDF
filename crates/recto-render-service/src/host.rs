@@ -544,6 +544,8 @@ pub struct RenderStats {
     pub deadline_kills: u32,
     /// Times a worker ran out of time it hadn't been given: never ready, or too long opening its document with little processor time to show for it. That's the Mac being busy, and says nothing about the file.
     pub too_busy: u32,
+    /// Of `too_busy`'s stops at a deadline, those made while the Mac's load was high ([`busy::loaded`]): each gave its page one more try than an idle Mac would.
+    pub too_busy_loaded: u32,
     pub cancel_kills: u32,
     pub crashes: u32,
     pub rejections: u32,
@@ -1549,10 +1551,8 @@ impl DocRenderer {
                 Err(Stop::Killed(reason)) => {
                     let cpu_ns = self.bury_worker_noting_cpu();
                     // Only this exchange's CPU counts; earlier jobs cannot make a starved worker look busy.
-                    if matches!(reason, KillReason::Deadline) && job_cpu.starved(cpu_ns, self.policy.page_deadline) == Some(true) {
-                        self.stats.too_busy += 1;
-                        self.left_out.busy = self.left_out.busy.saturating_add(1);
-                    }
+                    let starved = job_cpu.starved(cpu_ns, self.policy.page_deadline);
+                    busy::count_starved(self, reason, starved);
                     match reason {
                         KillReason::MemoryLimit => self.stats.memory_kills += 1,
                         KillReason::Deadline => self.stats.deadline_kills += 1,

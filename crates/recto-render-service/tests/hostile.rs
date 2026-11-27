@@ -456,6 +456,11 @@ fn bad_text_is_rejected() {
 
 /// Asks for the page in `doc` as many times as a busy Mac is told of, and the one after: a worker that gets no processor time looks like a busy Mac to the host, so each of the first asks is told so and not remembered, and the ask that makes `MAX_BUSY` in a row is remembered as failed at the deadline. One more ask is answered from memory with no worker started. Returns the footprint before and after.
 fn asked_until_remembered(doc: &mut DocRenderer) -> (u64, u64) {
+    // The rule of an idle Mac, whatever the one this runs on is doing.
+    recto_render_service::under_load_for_test(false, || asked_until_remembered_idle(doc))
+}
+
+fn asked_until_remembered_idle(doc: &mut DocRenderer) -> (u64, u64) {
     let before = recto_platform::footprint_bytes().unwrap_or(0);
     for ask in 1..recto_render_service::MAX_BUSY {
         assert_eq!(
@@ -1109,8 +1114,10 @@ fn a_draw_that_uses_the_processor_is_told_from_a_mac_too_busy_to_run_it() {
             ..policy()
         },
     );
+    // Even on a loaded Mac, a page that used the processor is its own failure at once.
+    let failed = recto_render_service::under_load_for_test(true, || spins.render_tile(&request(), &surface()).unwrap_err());
     assert_eq!(
-        spins.render_tile(&request(), &surface()).unwrap_err(),
+        failed,
         RenderFailure::PageFailed {
             page: 0,
             reason: KillReason::Deadline
