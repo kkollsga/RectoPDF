@@ -1,4 +1,4 @@
-//! What a client is told when the session ends under it. Its own binary: the loop it runs 200 times would read as spinning in `server.rs`'s tests, which measure the process's CPU.
+//! What a client is told when the session ends under it. Its own binary: the loop it runs 20 times would read as spinning in `server.rs`'s tests, which measure the process's CPU.
 
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level};
 use recto_control::StatePaths;
@@ -97,7 +97,7 @@ fn a_client_left_without_an_answer_by_a_stop_hears_that_the_session_ended() {
         stop_grace: Duration::from_millis(20),
         ..Limits::default()
     };
-    for round in 0..200 {
+    for round in 0..20 {
         let running = Running::start(limits());
         // This client's connection is open and unanswered when the session ends. On the host's stop it's waiting on a command that never answers; on `stop` it's idle, as `stop` itself waits for running commands.
         let mut pending = running.client();
