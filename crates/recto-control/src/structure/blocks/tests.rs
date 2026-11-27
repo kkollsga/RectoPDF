@@ -314,9 +314,9 @@ fn each_answer_has_its_own_caps() {
     let last = (limit - used - 1) as usize;
     let at_the_limit: Vec<String> = first.iter().cloned().chain([page_of_len(9, last)]).collect();
     let over_the_limit: Vec<String> = first.iter().cloned().chain([page_of_len(9, last + 1)]).collect();
-    let (_, _, bad) = read_bytes(&said(&at_the_limit), BlocksAnswer::new(Store::default(), pages as u32));
+    let (_, _, bad) = read_bytes(&said(&at_the_limit), BlocksAnswer::new(Store::default(), pages));
     assert!(!bad, "the whole answer, at its limit, is read");
-    let (_, _, bad) = read_bytes(&said(&over_the_limit), BlocksAnswer::new(Store::default(), pages as u32));
+    let (_, _, bad) = read_bytes(&said(&over_the_limit), BlocksAnswer::new(Store::default(), pages));
     assert!(bad, "one byte over is refused");
 }
 
