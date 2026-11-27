@@ -95,7 +95,7 @@ fn turn_and_save(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Va
 
 /// Failure (D3b review, a blocker): in a window whose session is withheld the store keeps no journal, but the session still names one in memory for the
 /// tab, and a save looks for its note on disk, doesn't find it and fails ("the save's note didn't reach the journal"): a person can't save a PDF they edit
-/// in that window. The save goes through, the file is written, and the state folder is as it was.
+/// in that window. The save goes through and the file is written; no journal or record is written (a backup of the original may be: gating backups is the command slice's).
 #[test]
 fn a_pdf_edited_in_a_withheld_window_can_be_saved() {
     let disk = crate::testkit::headless::Disk::new();
