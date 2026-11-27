@@ -128,12 +128,18 @@ impl CorpusKey {
     pub fn of_file(path: &Path) -> io::Result<Self> {
         // Through the file wall, as every open of a document by its path is: a pipe, a device, `/dev` and a file with no name are refused.
         let file = recto_platform::document_file::open_regular(path).map_err(recto_platform::document_file::Refused::into_io)?;
-        let identity = recto_platform::file_identity(&file)?;
+        Self::of_open(&file)
+    }
+
+    /// The key of a file already open, as [`of_file`](Self::of_file) makes it from its path. Its two samples are positioned reads, so they move no offset: the structure helper is given
+    /// this very open file and the host asks its key before and after.
+    pub fn of_open(file: &std::fs::File) -> io::Result<Self> {
+        let identity = recto_platform::file_identity(file)?;
         let (head, tail) = sample_ranges(identity.size);
         let mut samples = vec![0; (head.end - head.start + tail.end - tail.start) as usize];
         let (first, last) = samples.split_at_mut((head.end - head.start) as usize);
-        recto_platform::read_exact_at(&file, first, head.start)?;
-        recto_platform::read_exact_at(&file, last, tail.start)?;
+        recto_platform::read_exact_at(file, first, head.start)?;
+        recto_platform::read_exact_at(file, last, tail.start)?;
         Ok(Self::from_parts(&identity, first, last))
     }
 

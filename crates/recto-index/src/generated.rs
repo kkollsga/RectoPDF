@@ -10,6 +10,8 @@
 //!
 //! **For the drive's sake** (SPEC §2's disk row): written once per version of a file, when someone asks, at most [`MAX_FILE_BYTES`], and never touched by reading. All of them together are held to [`MAX_FILES`] files, [`MAX_TOTAL_BYTES`] and [`MAX_AGE`], the oldest first, looked at whenever one's written.
 
+pub mod visible;
+
 use crate::corpus::{Cleared, CorpusKey};
 use recto_core::{NONE, Toc, TocLine, clean_line};
 use recto_platform::local;
