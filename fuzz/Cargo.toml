@@ -163,3 +163,17 @@ path = "fuzz_targets/removal_leftovers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "blocks"
+path = "fuzz_targets/blocks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "distill_line"
+path = "fuzz_targets/distill_line.rs"
+test = false
+doc = false
+bench = false

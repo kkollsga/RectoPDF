@@ -1,9 +1,11 @@
 //! One check per thing that takes hostile input. Each is a plain function on bytes, so libFuzzer, the seeded smoke run and a regression test all run the very same thing.
 
 pub mod agent;
+pub mod blocks;
 pub mod chrome;
 pub mod control;
 pub mod corpus;
+pub mod distill_line;
 pub mod edits;
 pub mod generated;
 pub mod index;

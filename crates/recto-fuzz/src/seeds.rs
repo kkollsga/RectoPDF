@@ -506,6 +506,8 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "locator" => targets::locator::seeds(),
         "page_decode" => page_decode_seeds(),
         "sidecar" => sidecar_seeds(),
+        "blocks" => targets::blocks::seeds(),
+        "distill_line" => targets::distill_line::seeds(),
         _ => Vec::new(),
     }
 }
@@ -632,6 +634,8 @@ pub const TARGET_NAMES: &[&str] = &[
     "svg",
     "kept",
     "locator",
+    "blocks",
+    "distill_line",
 ];
 
 /// The check a target runs, by name.
@@ -658,6 +662,8 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "locator" => targets::locator::check,
         "page_decode" => targets::page_id::check_stream,
         "sidecar" => targets::page_id::check_sidecar,
+        "blocks" => targets::blocks::check,
+        "distill_line" => targets::distill_line::check,
         _ => return None,
     })
 }
