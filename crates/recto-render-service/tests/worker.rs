@@ -1054,6 +1054,17 @@ fn only_the_file_changing_says_the_file_changed() {
     assert!(!doc.take_file_changed(), "once");
 }
 
+/// Failure: the kit's `renderer` asks again or swallows a failed open, so a fault a person could meet is hidden, or the panic doesn't say which step failed.
+#[test]
+fn the_test_kits_renderer_fails_naming_its_step() {
+    let missing = std::env::temp_dir().join(format!("no-such-{}.pdf", std::process::id()));
+    let Err(said) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| renderer(&missing, Policy::default()))) else {
+        panic!("a missing file opened");
+    };
+    let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(said.contains("step 1, opening"), "{said}");
+}
+
 /// Failure (the second review of `build/image-select`): a click's ask for where a crowded page's pictures are changes what dark paper is told of that page,
 /// so dark paper judges it by a click's superset where it judged it whole; or a click is refused on such a page, so every click there costs a private
 /// worker. Through the real worker: 70 pictures apart are too many for dark paper, before and after a click's ask, and 65 boxes for a click, which every

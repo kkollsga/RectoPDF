@@ -15,8 +15,17 @@ pub fn real_config() -> ServiceConfig {
     config
 }
 
+/// A renderer of the file with the real worker, opened in its two steps so a failure says which one it was. `DocRenderer::new` starts no worker: `open_file` opens the file and `with_file` makes the control block's shared memory, and both answer a bare `Unavailable` (the io error isn't in `RenderFailure`, which is `Copy`). It is not asked again: `Unavailable` isn't busy, and a person's file that can't be opened or a Mac that can't give shared memory is a fault to see. On a failed open the kit tries the file again itself to name the io error it gets now, which may not be the one the first open had.
 pub fn renderer(path: &Path, policy: Policy) -> DocRenderer {
-    DocRenderer::new(path, None, real_config(), policy).unwrap()
+    let file = DocRenderer::open_file(path).unwrap_or_else(|failure| {
+        panic!(
+            "step 1, opening {}: {failure:?}; a plain open now says {:?}",
+            path.display(),
+            std::fs::File::open(path).map(|_| ())
+        )
+    });
+    DocRenderer::with_file(file, path, None, real_config(), policy)
+        .unwrap_or_else(|failure| panic!("step 2, the control block's shared memory for {}: {failure:?}", path.display()))
 }
 
 pub fn tile_surface() -> Surface {

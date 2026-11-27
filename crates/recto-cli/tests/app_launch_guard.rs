@@ -282,6 +282,9 @@ fn explicit_lifecycle_commands_use_the_retained_instance_connection() {
     }
 }
 
+/// How long the observer child waits for its program to go: a hang guard, not a speed bound. The parent removes the program only after it has read the child's readiness line, so on a Mac that starves the parent for a few seconds a short wait ends `TimeUp` with the observer working (2026-11-27, `--quick` at load 14-60 against 0.02 s alone). A missed wake-up still ends in `TimeUp`, after this.
+const OBSERVER_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The guard binary doubles as a tiny native vnode observer; no app, timer thread or polling workload is started.
 #[cfg(unix)]
 #[test]
@@ -298,8 +301,8 @@ fn fixture_lease_watcher_child() {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();
     }
-    let gone = recto_platform::local::wait_until_gone(&[], &[&program], std::time::Duration::from_secs(5));
-    assert!(matches!(gone, recto_platform::local::Gone::Path(_)));
+    let gone = recto_platform::local::wait_until_gone(&[], &[&program], OBSERVER_HANG_GUARD);
+    assert!(matches!(gone, recto_platform::local::Gone::Path(_)), "{gone:?}");
 }
 
 /// Failure: removing the program lease fails to wake the existing native quiet watcher, or restoring it loses executable bytes.

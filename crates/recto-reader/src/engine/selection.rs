@@ -193,13 +193,16 @@ mod tests {
             &run[start..run[start..].find("\n}\n").map_or(run.len(), |end| start + end)]
         };
         let mut calls = Vec::new();
-        let mut folders = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine"))];
+        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine"));
+        let mut folders = vec![root.clone()];
         while let Some(folder) = folders.pop() {
             for entry in std::fs::read_dir(&folder).expect("the engine's folder") {
                 let path = entry.expect("an entry").path();
                 if path.is_dir() {
                     folders.push(path);
-                } else if path.extension().is_some_and(|ext| ext == "rs") && !path.to_string_lossy().contains("tests") {
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && !path.strip_prefix(&root).is_ok_and(|inside| inside.to_string_lossy().contains("tests"))
+                {
                     let source = std::fs::read_to_string(&path).expect("a source file");
                     let production = source.split("#[cfg(test)]\nmod ").next().unwrap_or(&source);
                     for line in production.lines() {

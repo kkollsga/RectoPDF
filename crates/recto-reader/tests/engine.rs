@@ -129,7 +129,23 @@ fn a_real_page_reaches_the_host_as_surfaces() {
     assert!(engine.workers().footprint().0 > 0, "a worker is running, and can be measured");
 }
 
-/// Failure: a document held in the page view spins or polls with nothing to do. Budget: idle CPU about 0%, and no more than 1 wake-up a second. Runs in its own process via nextest, and uses this process's own counters.
+/// The process's context switches over one 2 s look with nothing asked of the engine.
+fn switches_in_a_look(pid: u32) -> u64 {
+    let before = process_counters(pid).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    process_counters(pid).unwrap().context_switches.saturating_sub(before.context_switches)
+}
+
+/// Context switches in a 2 s look at or under this are rest: a poller or a spinning thread is far over it in every look.
+const REST: u64 = 40;
+/// No look after the first quiet one may pass this: a burst or something that wakes now and then isn't rest.
+const BURST: u64 = 400;
+/// The most processor time the process may use from "settled" to the end of its first quiet look. Unlike a look's context switches, processor time doesn't grow with load: a busy tail of work that is slow on a loaded Mac still costs what it costs. Measured 2026-11-27, 6 runs at load 9-15: 46-107 microseconds; this is 50 ms, so a thread that works for even a moment after settling fails, and a poller or a spin fails by seconds.
+const CPU_TO_REST_NS: u64 = 50_000_000;
+/// The most looks to wait for the first quiet one, a hang guard (60 s of looks), not a speed bound: on a loaded Mac the work that follows "settled" (the draw's last replies, the worker's own wind-down) is slowed, and one run's looks were [5442, 745, 23, 2] (2026-11-27, load 20-28), the first two the tail of work and the last two rest.
+const MOST_LOOKS: usize = 30;
+
+/// Failure: a document held in the page view spins or polls with nothing to do. Budget: idle CPU about 0%, and no more than 1 wake-up a second. Runs in its own process via nextest, and uses this process's own counters. The property is that the engine comes to rest and stays there: a first quiet look is waited for (a thread that polls never has one, whatever the machine is doing), then each of three more is under [`BURST`] and at least one is [`REST`] or less.
 #[test]
 fn the_engine_is_silent_at_rest() {
     let file = document(2);
@@ -137,17 +153,27 @@ fn the_engine_is_silent_at_rest() {
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let pid = std::process::id();
-    // A few goes: a thread that polls wakes it in all of them, and a busy machine only gets in the way of some. The noisiest has a bound too, so a burst or something that wakes now and then doesn't pass for rest.
-    let woke: Vec<u64> = (0..4)
-        .map(|_| {
-            let before = process_counters(pid).unwrap();
-            std::thread::sleep(Duration::from_secs(2));
-            let after = process_counters(pid).unwrap();
-            after.context_switches.saturating_sub(before.context_switches)
-        })
-        .collect();
-    assert!(woke.iter().min().unwrap() <= &40, "context switches in each 2 s, with nothing to do: {woke:?}");
-    assert!(woke.iter().max().unwrap() <= &400, "context switches in each 2 s, with nothing to do: {woke:?}");
+    let cpu_at_settle = process_counters(pid).unwrap().cpu_ns;
+    let mut looks = Vec::new();
+    while looks.last().is_none_or(|last| *last > REST) {
+        assert!(
+            looks.len() < MOST_LOOKS,
+            "never at rest: context switches in each 2 s, with nothing to do: {looks:?}, {}",
+            engine.report().0
+        );
+        looks.push(switches_in_a_look(pid));
+    }
+    let spent = process_counters(pid).unwrap().cpu_ns.saturating_sub(cpu_at_settle);
+    assert!(
+        spent <= CPU_TO_REST_NS,
+        "the engine used {spent} ns of processor time between settling and its first quiet look ({} looks): busy after it settled",
+        looks.len()
+    );
+    let after: Vec<u64> = (0..3).map(|_| switches_in_a_look(pid)).collect();
+    assert!(
+        after.iter().all(|woke| *woke <= BURST) && after.iter().min().is_some_and(|woke| *woke <= REST),
+        "woke again after rest: first looks {looks:?}, then {after:?}"
+    );
 }
 
 /// Failure: scrolling away from a page that's slow to draw leaves the worker drawing it, so the next page waits. `cancel_before` must end it, by return or kill, well inside the time it would have taken.
