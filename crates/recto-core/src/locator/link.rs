@@ -13,8 +13,13 @@ pub const MAX_LINK_BYTES: usize = 3 * MAX_NAME_BYTES + 12;
 
 /// Longest path, in bytes, [`address_of`] takes.
 pub const MAX_PATH_BYTES: usize = 1024;
-/// Longest address made: `file://`, every path byte as `%XX`, then `#page=` and the page's digits.
-pub const MAX_ADDRESS_BYTES: usize = 7 + 3 * MAX_PATH_BYTES + 12;
+/// The scheme of RectoPDF's own link, the one Copy Link makes and the app claims on a shipped build.
+pub const SCHEME: &str = "rectopdf";
+/// Longest address made: `rectopdf://`, every path byte as `%XX`, then `#page=` and the page's digits.
+pub const MAX_ADDRESS_BYTES: usize = 11 + 3 * MAX_PATH_BYTES + 12;
+/// The longest text [`read_address`](super::read_address) reads: the longest scheme and authority (`file://localhost`), every path byte as `%XX`, `#` and the
+/// longest fragment.
+pub const MAX_READ_BYTES: usize = 16 + 3 * MAX_PATH_BYTES + 1 + 1024;
 
 /// Why a link can't be made. Never holds or repeats the name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,7 +66,7 @@ fn push_page(out: &mut String, file_page: u32) {
     write!(out, "{file_page}").expect("a String takes a write");
 }
 
-/// The whole file address, `file:///folder/name.pdf#page=N` (RFC 8089 with RFC 8118's open parameter), for `path` (absolute) and `file_page` (from 1).
+/// RectoPDF's own link to a page, `rectopdf:///folder/name.pdf#page=N` (the path as RFC 8089 writes a file address, with RFC 8118's open parameter), for `path` (absolute) and `file_page` (from 1).
 /// Every component is encoded as [`page_link`] encodes a name, so a folder or file can't add a fragment, a query or a scheme. This is the person's
 /// clipboard's alone: no agent is given it. A relative path, a `..` or empty component, a NUL, a component past [`MAX_NAME_BYTES`], the root alone or a path
 /// past [`MAX_PATH_BYTES`] is [`LinkError::Name`].
@@ -74,7 +79,7 @@ pub fn address_of(path: &std::path::Path, file_page: u32) -> Result<String, Link
         return Err(LinkError::Name);
     }
     let mut address = String::with_capacity(MAX_ADDRESS_BYTES);
-    address.push_str("file://");
+    address.push_str("rectopdf://");
     let mut parts = 0;
     for component in path.components() {
         match component {
@@ -193,11 +198,11 @@ mod tests {
     #[test]
     fn the_address_encodes_every_component_and_keeps_one_hash() {
         let address = address_of(std::path::Path::new("/Users/a b/100%/é#?.pdf"), 3).expect("an address");
-        assert_eq!(address, "file:///Users/a%20b/100%25/%C3%A9%23%3F.pdf#page=3");
+        assert_eq!(address, "rectopdf:///Users/a%20b/100%25/%C3%A9%23%3F.pdf#page=3");
         assert_eq!(address.matches('#').count(), 1);
         let (path, page) = address.split_once('#').expect("a fragment");
         assert_eq!(page, "page=3");
-        let parts: Vec<Vec<u8>> = path.strip_prefix("file://").expect("scheme").split('/').skip(1).map(decoded).collect();
+        let parts: Vec<Vec<u8>> = path.strip_prefix("rectopdf://").expect("scheme").split('/').skip(1).map(decoded).collect();
         assert_eq!(parts, vec![b"Users".to_vec(), b"a b".to_vec(), b"100%".to_vec(), "é#?.pdf".as_bytes().to_vec()]);
     }
 
@@ -207,7 +212,7 @@ mod tests {
         let name = "a:b#c é.pdf";
         let link = page_link(name.as_bytes(), 2).expect("a link");
         let address = address_of(&std::path::Path::new("/x").join(name), 2).expect("an address");
-        assert_eq!(address, format!("file:///x/{link}"));
+        assert_eq!(address, format!("rectopdf:///x/{link}"));
     }
 
     /// Failure: a name that isn't UTF-8 is refused or lossy-converted (U+FFFD), or a decomposed name (`e` and U+0301, as the file system holds it) is
@@ -217,9 +222,9 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let raw = std::ffi::OsStr::from_bytes(b"a\xFFb.pdf");
         let address = address_of(&std::path::Path::new("/d").join(raw), 1).expect("an address");
-        assert_eq!(address, "file:///d/a%FFb.pdf#page=1");
+        assert_eq!(address, "rectopdf:///d/a%FFb.pdf#page=1");
         let address = address_of(std::path::Path::new("/d/cafe\u{301}.pdf"), 1).expect("an address");
-        assert_eq!(address, "file:///d/cafe%CC%81.pdf#page=1", "not composed to %C3%A9");
+        assert_eq!(address, "rectopdf:///d/cafe%CC%81.pdf#page=1", "not composed to %C3%A9");
     }
 
     /// Failure: a path that can't be an address gets one anyway (a relative path opens another file, `..` leaves the folder, a NUL ends a name early), or a

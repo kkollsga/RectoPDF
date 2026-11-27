@@ -98,9 +98,38 @@ fn characters_free(bytes: &[u8]) {
     }
 }
 
+/// A link read from any text: an `Ok` is an absolute path with no `..`, within its bound, a page in range, and what the maker makes from it reads back as it.
+fn address_read(text: &str) {
+    let Ok(read) = locator::read_address(text) else { return };
+    let path = &read.path;
+    assert!(
+        path.is_absolute() && path.as_os_str().len() <= locator::MAX_PATH_BYTES,
+        "an absolute path within its bound"
+    );
+    assert!(
+        path.components()
+            .all(|c| !matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)),
+        "no `..` or `.`"
+    );
+    if let Some(page) = read.file_page {
+        assert!((1..=locator::MAX_PAGE).contains(&page));
+    }
+    let made = locator::address_of(path, read.file_page.unwrap_or(1)).expect("a path read from a link can be made into one");
+    assert_eq!(
+        locator::read_address(&made).as_ref(),
+        Ok(&locator::Address {
+            path: path.clone(),
+            file_page: Some(read.file_page.unwrap_or(1))
+        })
+    );
+}
+
 /// Reads at most the parser bound plus one, even when a campaign hands it a much larger or invalid-UTF-8 input.
 pub fn check(bytes: &[u8]) {
     characters_free(bytes);
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        address_read(text);
+    }
     let bounded = &bytes[..bytes.len().min(locator::MAX_TOKEN_BYTES + 1)];
     let Ok(token) = std::str::from_utf8(bounded) else { return };
     if token.len() > locator::MAX_TOKEN_BYTES {
@@ -144,6 +173,16 @@ pub fn seeds() -> Vec<Vec<u8>> {
     seeds.push("r1.é".as_bytes().to_vec());
     seeds.push(b"r1..p1--.x-1,0".to_vec());
     seeds.extend(fixture_seeds());
+    for scheme in ["rectopdf", "file"] {
+        for tail in [
+            "///d/a.pdf#page=3",
+            "///d/%2E%2E/a.pdf",
+            "///d/a%20b.pdf#page=99999999999999999999&zoom=1",
+            "//localhost/a%FF.pdf#page=2",
+        ] {
+            seeds.push(format!("{scheme}:{tail}").into_bytes());
+        }
+    }
     seeds
 }
 
