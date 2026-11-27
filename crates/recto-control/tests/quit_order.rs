@@ -117,3 +117,40 @@ fn a_client_left_without_an_answer_by_a_stop_hears_that_the_session_ended() {
         assert_eq!(error.code, "session_ended", "round {round}: {}", error.message);
     }
 }
+
+/// Failure: a process that ends by an exit that doesn't go through the server's stop (an update's exit, the host's quit that returns before the server thread has run) closes
+/// a client's connection while the socket's name is still on disk, so the client says the session is "still running" while it ends. The name goes before the exit runs, and a
+/// client left waiting hears `session_ended`.
+#[test]
+fn an_exit_takes_the_sockets_name_before_it_runs_and_a_waiting_client_hears_the_session_ended() {
+    let running = Running::start(Limits {
+        stop_grace: Duration::from_millis(20),
+        ..Limits::default()
+    });
+    let mut pending = running.client();
+    pending.send("{\"cmd\":\"tabs\"}", Duration::from_secs(20)).unwrap();
+    let started = Instant::now();
+    while !running.host.ran.lock().unwrap().contains(&"tabs") {
+        assert!(started.elapsed() < Duration::from_secs(20), "the command never reached the host");
+        std::thread::sleep(Duration::from_micros(200)); // ratchet: poll
+    }
+    let socket = running.paths.socket.clone();
+    let name_at_exit = recto_control::server::exit_process_with(70, |code| {
+        assert_eq!(code, 70);
+        socket.exists()
+    });
+    assert!(!name_at_exit, "the socket's name was still on disk when the exit ran");
+    // The process would end here: the connection closes, and the client asks again.
+    running.stopper.stop();
+    let error = pending.read(Duration::from_secs(20)).unwrap_err();
+    assert_eq!(error.code, "session_ended", "{}", error.message);
+}
+
+/// Failure: the host's `stop` returned with the name still on disk, to be taken by a thread the process may end before.
+#[test]
+fn the_hosts_stop_takes_the_name_before_it_returns() {
+    let running = Running::start(Limits::default());
+    assert!(running.paths.socket.exists());
+    running.stopper.stop();
+    assert!(!running.paths.socket.exists(), "stop returned with the socket's name still there");
+}

@@ -87,7 +87,7 @@ impl Keeper {
         let misreads = self.life.update_facts.misreads();
         let keeps = self.store.wait_for_lock();
         if self.life.update_facts.hold_or_tell(keeps, &self.updates) == recto_update::updater::AtLaunch::Exit {
-            std::process::exit(0);
+            recto_control::server::exit_process(0);
         }
         recto_platform::slow::pause(recto_platform::slow::Seam::State);
         let loaded = if !keeps {
@@ -151,7 +151,7 @@ impl Keeper {
             return;
         }
         if self.life.update_facts.tell(&self.updates) == recto_update::updater::AtLaunch::Exit {
-            std::process::exit(0);
+            recto_control::server::exit_process(0);
         }
         let loaded = updates::fall_back_if_unreadable(&self.updates, &self.store, loaded);
         updates::note_tabs_read(&loaded);

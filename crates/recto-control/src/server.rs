@@ -26,8 +26,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+mod leaving;
 mod outlet;
 mod own_answers;
+pub use leaving::{exit_process, exit_process_with, release_socket_names};
 pub use outlet::Announcer;
 use outlet::{Cleared, Outlet};
 
@@ -156,6 +158,7 @@ impl Server {
             }
         }
         let listener = Listener::bind(&paths.socket).map_err(|_| failed("The session's socket couldn't be made."))?;
+        leaving::bound(&paths.socket);
         let (wake_tx, wake_rx) = Stream::pair().map_err(|_| failed("The session couldn't be started."))?;
         wake_tx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         wake_rx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
@@ -177,7 +180,7 @@ impl Server {
 
     /// Asks a running server to end, from another thread. For a host that started it on its own thread.
     pub fn stopper(&self) -> std::io::Result<Stopper> {
-        Ok(Stopper(self.wake_tx.try_clone()?))
+        Ok(Stopper(self.wake_tx.try_clone()?, self.paths.socket.clone()))
     }
 
     /// Tells watchers and waiters what the host's own user did, from another thread. Commands' events go by themselves: this is for a tap in the app's sidebar, which no command caused.
@@ -225,10 +228,12 @@ impl Server {
 
 /// Wakes a server and tells it to end.
 #[derive(Debug)]
-pub struct Stopper(Stream);
+pub struct Stopper(Stream, std::path::PathBuf);
 
 impl Stopper {
     pub fn stop(&self) {
+        // The stop is carried out on the server's thread, and a process that ends meanwhile would leave the name on disk with its connections closing: the name goes now.
+        leaving::release(&self.1);
         let _ = (&self.0).write(&[STOP_BYTE]);
     }
 }
@@ -1082,9 +1087,7 @@ impl<H: Host> Loop<H> {
 
     /// Takes the socket's name away, if it is still this session's own socket. Idempotent. Never touches anything else that's there.
     fn remove_socket(&self) {
-        if matches!(local::socket_file(&self.paths.socket), Ok(SocketFile::OwnSocket)) {
-            let _ = std::fs::remove_file(&self.paths.socket);
-        }
+        leaving::release(&self.paths.socket);
     }
 
     fn begin_stop(&mut self) {
