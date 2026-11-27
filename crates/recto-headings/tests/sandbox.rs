@@ -205,3 +205,37 @@ fn a_structure_helper_signed_without_the_sandbox_reads_nothing() {
         String::from_utf8_lossy(&check.stderr)
     );
 }
+
+/// Failure: the app's check (the release's, and `build.sh`'s) lets through an app with no structure helper, which then makes generated contents with nothing behind it, or one with a
+/// bare `MacOS/recto-headings` beside the app's own programs, which the app could start with no walls. The check passes the whole app, fails it without `RectoStructure.app`, and fails it
+/// with the bare program, naming it.
+#[test]
+fn the_apps_check_requires_the_structure_helper_and_refuses_a_bare_copy() {
+    let scratch = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-structure-app-");
+    let contents = scratch.join("Host.app/Contents");
+    // The renderer helper's library: the real PDFium when it's fetched, else this program again, which is all the check reads of it (that it is signed with the helper).
+    let pdfium = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pdfium/libpdfium.dylib");
+    let library = if pdfium.exists() { pdfium } else { scratch.join("libpdfium.dylib") };
+    if !library.exists() {
+        std::fs::copy(EXE, &library).unwrap();
+    }
+    std::fs::create_dir_all(&contents).unwrap();
+    script_ok(&["--layout".as_ref(), contents.as_os_str(), EXE.as_ref(), library.as_os_str()]);
+    script_ok(&["--layout-structure".as_ref(), contents.as_os_str(), EXE.as_ref()]);
+    let app = scratch.join("Host.app");
+    script_ok(&["--check".as_ref(), app.as_os_str()]);
+
+    let helper = contents.join("Helpers/RectoStructure.app");
+    let aside = scratch.join("aside.app");
+    std::fs::rename(&helper, &aside).unwrap();
+    let without = script(&["--check".as_ref(), app.as_os_str()]);
+    assert!(!without.status.success(), "the check passed an app with no structure helper");
+    std::fs::rename(&aside, &helper).unwrap();
+
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::copy(EXE, contents.join("MacOS/recto-headings")).unwrap();
+    let bare = script(&["--check".as_ref(), app.as_os_str()]);
+    assert!(!bare.status.success(), "the check passed an app with a bare structure program");
+    let said = String::from_utf8_lossy(&bare.stderr);
+    assert!(said.contains("MacOS/recto-headings") && said.contains("outside the sandbox"), "{said}");
+}

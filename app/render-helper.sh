@@ -17,7 +17,7 @@
 #       Info.plist                                 CFBundleIdentifier, which names the sandbox's container. LSBackgroundOnly.
 #       MacOS/recto-render-service                 Signed with RectoRender.entitlements, and the hardened runtime when signed by a team.
 #       Frameworks/libpdfium.dylib                 Signed by the same team, so library validation passes. It arrives signed ad hoc.
-#     Helpers/RectoStructure.app/Contents/       The structure helper (S6a), when there is one: recto-headings in the renderer's walls, signed with
+#     Helpers/RectoStructure.app/Contents/       The structure helper (S6a), required (S6b-2): recto-headings in the renderer's walls, signed with
 #       Info.plist, MacOS/recto-headings         RectoStructure.entitlements (the same one entitlement). No library: it reads its document from a descriptor.
 #
 # Signed from the inside out, never with --deep, which would sign the helper again without its entitlements.
@@ -168,14 +168,13 @@ check() {
         *) fail "--check takes RectoPDF.app, $HELPER_NAME or $STRUCTURE_NAME: $target" ;;
     esac
     check_helper "$app/Contents/Helpers/$HELPER_NAME" "$WORKER" "$RELEASE_ID" "$ADHOC_ID" "$LIBRARY"
-    if [ -e "$app/Contents/Helpers/$STRUCTURE_NAME" ]; then
-        check_helper "$app/Contents/Helpers/$STRUCTURE_NAME" "$STRUCTURE_EXE" "$STRUCTURE_RELEASE_ID" "$STRUCTURE_ADHOC_ID"
-    fi
+    check_helper "$app/Contents/Helpers/$STRUCTURE_NAME" "$STRUCTURE_EXE" "$STRUCTURE_RELEASE_ID" "$STRUCTURE_ADHOC_ID"
     # Nothing the app could start in a helper's place: a worker or PDFium found beside the app's own programs would run unsandboxed.
     local stray
     for stray in "$app/Contents/MacOS/$WORKER" "$app/Contents/MacOS/$LIBRARY"; do
         [ ! -e "$stray" ] || fail "$stray would run outside the sandbox: the worker and its library belong in the helper only"
     done
+    [ ! -e "$app/Contents/MacOS/$STRUCTURE_EXE" ] || fail "$app/Contents/MacOS/$STRUCTURE_EXE would run outside the sandbox: the structure helper belongs in Helpers/$STRUCTURE_NAME only"
     # The app itself isn't sandboxed, and neither is anything else of it.
     local program entitlements
     for program in "$app" "$app/Contents/MacOS/"*; do

@@ -92,6 +92,8 @@ impl HeadingsAnswer {
         let number = |name: &str| line.get(name).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok());
         let pages = number("pages").filter(|pages| (1..=MAX_PAGES).contains(pages)).ok_or(BAD)?;
         let pages_failed = number("pages_failed").filter(|failed| *failed <= pages).ok_or(BAD)?;
+        // What the helper claims is the document's pages is only believed up to the job's own count, which the session knows.
+        let (pages, pages_failed) = (pages.min(self.pages), pages_failed.min(pages.min(self.pages)));
         let truncated = line.get("truncated").and_then(Value::as_bool).ok_or(BAD)?;
         let counted = line.get("found").and_then(Value::as_u64).ok_or(BAD)?;
         let all_before = self.last_page.is_none_or(|last| last < pages);
