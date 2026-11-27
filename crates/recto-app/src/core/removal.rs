@@ -140,7 +140,8 @@ impl Removal {
         *lock(&self.world) = Some(world);
     }
 
-    /// QA and tests: a clear may take this long, not the design's 10 seconds.
+    /// Tests only (the compiler holds it): a clear may take this long, not the design's 10 seconds.
+    #[cfg(any(test, feature = "testkit"))]
     pub fn set_limit(&self, limit: Duration) {
         self.limit_ms
             .store(u64::try_from(limit.as_millis()).unwrap_or(u64::MAX).max(1), Ordering::SeqCst);
