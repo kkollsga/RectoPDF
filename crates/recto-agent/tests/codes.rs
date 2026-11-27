@@ -270,7 +270,7 @@ const NOT_A_CODE: &[(&str, &str)] = &[
         "recto-control/src/indexing.rs",
         "Some(state @ (\"ready\" | \"refused\" | \"failed\" | \"changed\" | \"paused\"))",
     ),
-    ("recto-control/src/structure/headings.rs", "Some(\"changed\") => Ok(Said::Changed)"),
+    ("recto-control/src/structure.rs", "Some(\"changed\") => Ok(Said::Changed)"),
 ];
 
 /// Failure (review of R2.3, and of R2.5, F4): the window routes a refusal by comparing its code's string (`error.code == "unsaved_changes"`), or its
