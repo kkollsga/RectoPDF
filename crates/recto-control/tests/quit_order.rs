@@ -106,7 +106,7 @@ fn a_client_left_without_an_answer_by_a_stop_hears_that_the_session_ended() {
             let started = Instant::now();
             while !running.host.ran.lock().unwrap().contains(&"tabs") {
                 assert!(started.elapsed() < Duration::from_secs(20), "the command never reached the host");
-                std::thread::sleep(Duration::from_micros(200));
+                std::thread::sleep(Duration::from_micros(200)); // ratchet: poll
             }
             running.stopper.stop();
         } else {
