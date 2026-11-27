@@ -124,7 +124,7 @@ fn the_headings_job_says_a_line_a_page_and_one_end() {
 }
 
 /// Failure: a bare helper, which has no walls to refuse a path with, opens a file by the name a job gives it, so a job that names one reads outside the document the host chose. It answers
-/// `unsupported_job` whatever the build, for the old shape (`file` and `key` alone) and for a `headings` job that also carries a `file`.
+/// `unsupported_job` whatever the build, for the old shape (`file` and `key` alone) and for a `headings` or `blocks` job that also carries a `file`.
 #[test]
 fn a_job_that_names_a_path_is_refused_by_a_bare_helper_too() {
     let pdf = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
@@ -132,6 +132,7 @@ fn a_job_that_names_a_path_is_refused_by_a_bare_helper_too() {
     for job in [
         json!({ "file": pdf.0, "key": key.hex(), "memory_limit": 512u64 << 20 }),
         json!({ "kind": "headings", "file": pdf.0, "key": key.hex() }),
+        json!({ "kind": "blocks", "file": pdf.0, "key": key.hex() }),
         json!({ "kind": "something else" }),
     ] {
         let (said, status) = converse(&job, Some(&std::fs::File::open(&pdf.0).unwrap()));

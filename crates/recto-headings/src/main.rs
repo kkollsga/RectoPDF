@@ -72,7 +72,7 @@ fn main() {
     let Some(job) = job() else { return failed("bad_job") };
     // Two jobs, both on the document the host put on descriptor 3. Anything else, a job that names a file included, is refused whether this helper is walled or not.
     let kind = match job["kind"].as_str() {
-        Some(kind @ ("count" | "headings")) if job.get("file").is_none() => kind,
+        Some(kind @ ("count" | "headings" | "blocks")) if job.get("file").is_none() => kind,
         _ => return failed("unsupported_job"),
     };
     let faults = hooks::apply(&job);
@@ -102,6 +102,8 @@ fn main() {
     };
     if kind == "count" {
         count();
+    } else if kind == "blocks" {
+        blocks(recto_headings::blocks::scan_of(&job));
     } else {
         let scan = if job["scan"] == "typography" { Scan::Typography } else { Scan::Full };
         headings(scan, Instant::now());
@@ -115,6 +117,16 @@ fn main() {
 fn count() {
     match recto_headings::open(Path::new(helper::DOCUMENT_PATH)) {
         Ok(opened) => say(&[&json!({ "state": "counted", "pages": opened.page_count(), "helper_peak_bytes": peak() }).to_string()]),
+        Err(failure) => say(&[&json!({ "state": "refused", "code": failure.code(), "helper_peak_bytes": peak() }).to_string()]),
+    }
+}
+
+/// The `blocks` job: a line a page and one end line (`recto_headings::blocks`). A page that couldn't be read is a line with no blocks, never the end of the job.
+fn blocks(scan: Scan) {
+    let done = recto_headings::blocks::run(Path::new(helper::DOCUMENT_PATH), scan, &mut std::io::stdout().lock(), Instant::now());
+    match done {
+        Ok(()) => {}
+        Err(Failure::Changed) => say(&[&json!({ "state": "changed" }).to_string()]),
         Err(failure) => say(&[&json!({ "state": "refused", "code": failure.code(), "helper_peak_bytes": peak() }).to_string()]),
     }
 }

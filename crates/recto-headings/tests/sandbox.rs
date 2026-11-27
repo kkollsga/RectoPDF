@@ -143,21 +143,26 @@ fn a_walled_helper_refuses_a_job_that_names_a_path() {
 
 /// Failure: the walls change what the helper finds, because something it needs is read by a name (an encoding, a CMap, a font table, a path distillPDF opens again) and the sandbox refuses it,
 /// so a document gets other contents, or none, behind the walls than in a test: and the session, which only ever starts the walled one, would never have been tested on what it gets. The
-/// headings job is run walled and bare on three documents (plain, in heavy type, and one with a hidden heading), and every line must be the same but for the two numbers that are a
-/// run's own.
+/// headings job is run walled and bare on three documents (plain, in heavy type, and one with a hidden heading), and the blocks job on the blocks document; every line must be the same but for
+/// the two numbers that are a run's own.
 #[test]
 fn the_walled_helper_finds_what_the_bare_one_does() {
     let bundle = Bundle::new("same");
     let hidden = recto_testpdf::HIDDEN_HEADINGS[0];
+    let headings = json!({ "kind": "headings", "memory_limit": 512u64 << 20 });
+    let blocks = json!({ "kind": "blocks", "memory_limit": 512u64 << 20, "scan": "typography" });
     let documents = [
-        TempPdf::new("plain.pdf", &recto_testpdf::headings_document()),
-        TempPdf::new("bold.pdf", &recto_testpdf::bold_headings_document()),
-        TempPdf::new("hidden.pdf", &recto_testpdf::headings_document_with(hidden.1, [0.0, 0.0, 612.0, 792.0], "")),
+        (&headings, TempPdf::new("plain.pdf", &recto_testpdf::headings_document())),
+        (&headings, TempPdf::new("bold.pdf", &recto_testpdf::bold_headings_document())),
+        (
+            &headings,
+            TempPdf::new("hidden.pdf", &recto_testpdf::headings_document_with(hidden.1, [0.0, 0.0, 612.0, 792.0], "")),
+        ),
+        (&blocks, TempPdf::new("blocks.pdf", &recto_testpdf::blocks::blocks_document())),
     ];
-    let job = json!({ "kind": "headings", "memory_limit": 512u64 << 20 });
-    for pdf in &documents {
-        let (walled, status) = start(&bundle.exe(), &pdf.0).job_to_the_end(&job);
-        let (bare, _) = start(Path::new(EXE), &pdf.0).job_to_the_end(&job);
+    for (job, pdf) in &documents {
+        let (walled, status) = start(&bundle.exe(), &pdf.0).job_to_the_end(job);
+        let (bare, _) = start(Path::new(EXE), &pdf.0).job_to_the_end(job);
         assert!(status.is_some_and(|status| status.success()), "{status:?}");
         assert_eq!((&walled[0]["walled"], &bare[0]["walled"]), (&json!(true), &json!(false)));
         let own = |lines: &[Value]| -> Vec<Value> {
