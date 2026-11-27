@@ -469,6 +469,10 @@ thread_local! {
     static LIVE_HERE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// A hang guard, not a timing: how long an app waits for another thread's app to end before it panics naming the cause, so a test that starts a second app
+/// on another thread while its first lives fails instead of waiting for ever.
+const TURN_HANG_GUARD: Duration = Duration::from_secs(60);
+
 static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl OneAtATime {
@@ -479,11 +483,33 @@ impl OneAtATime {
     }
 
     fn take() -> Self {
+        Self::take_within(TURN_HANG_GUARD)
+    }
+
+    /// Takes the turn, waiting at most `limit` for another thread's app to end, and panics past it.
+    fn take_within(limit: Duration) -> Self {
         let first = LIVE_HERE.with(|n| {
             n.set(n.get() + 1);
             n.get() == 1
         });
-        let held = first.then(|| TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let held = first.then(|| {
+            let began = Instant::now();
+            loop {
+                match TURN.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        LIVE_HERE.with(|n| n.set(n.get() - 1));
+                        assert!(
+                            began.elapsed() < limit,
+                            "a HeadlessApp is already alive on another thread of this process; one app a process at a time"
+                        );
+                        LIVE_HERE.with(|n| n.set(n.get() + 1));
+                        std::thread::sleep(LOOK_EVERY); // ratchet: poll
+                    }
+                }
+            }
+        });
         Self { _held: held }
     }
 }
@@ -1046,5 +1072,22 @@ mod one_at_a_time {
         let (_, disk) = app.quit();
         let again = disk.builder().start();
         drop(again);
+    }
+
+    /// Failure: a test that starts a second app on another thread while its first lives waited for ever, silently. Past the guard it panics, naming why.
+    #[test]
+    fn a_second_app_on_another_thread_panics_naming_why_past_the_guard() {
+        let app = Disk::new().start();
+        let failed = std::thread::scope(|scope| scope.spawn(|| drop(OneAtATime::take_within(Duration::from_millis(50)))).join().err());
+        let said = failed
+            .map(|e| {
+                e.downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        assert!(said.contains("already alive on another thread"), "{said:?}");
+        drop(app);
     }
 }
