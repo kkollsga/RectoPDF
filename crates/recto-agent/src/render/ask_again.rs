@@ -20,6 +20,12 @@ pub(crate) fn asked_again<S, T>(
     }
 }
 
+/// **Opens a document for a command that has no loop of its own** (a print's pages, a copy's text): asks again while the answer is busy (a Mac out of descriptors or memory for a moment says so), up to `2 * MAX_BUSY` times, so "it will be tried again" is true. The service ends a run of such answers as `Unavailable` itself, so this ends at once on a Mac that stays out.
+pub(crate) fn opened_again<T>(mut open: impl FnMut() -> Result<T, RenderFailure>) -> Result<T, RenderFailure> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    asked_again(deadline, &mut (), |(), _| open(), |()| Ok(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +146,25 @@ mod tests {
         );
         assert_eq!(got, Ok(()));
         assert!(given[0] - given[1] >= Duration::from_millis(3), "{given:?} after spending {spent:?}");
+    }
+
+    /// Failure: a document opened for a print or a copy failed with "It will be tried again" when the Mac was out of descriptors once, with nothing trying again. One busy open is asked again; a Mac that stays out ends the asking after `2 * MAX_BUSY`, with its answer.
+    #[test]
+    fn an_open_that_was_busy_once_is_asked_again_and_one_that_stays_busy_ends() {
+        let mut busy_left = 1;
+        let opened = opened_again(|| {
+            if std::mem::replace(&mut busy_left, 0) == 1 {
+                Err(RenderFailure::OutOfResources)
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(opened, Ok(7));
+        let mut asks = 0u8;
+        let stays: Result<u8, _> = opened_again(|| {
+            asks += 1;
+            Err(RenderFailure::OutOfResources)
+        });
+        assert_eq!((stays, asks), (Err(RenderFailure::OutOfResources), 2 * MAX_BUSY));
     }
 }

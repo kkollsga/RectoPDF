@@ -57,12 +57,12 @@ fn renderer_for<'a>(
             if open.len() >= MAX_OPEN_FILES {
                 open.remove(0);
             }
-            let file = DocRenderer::open_file(&page.path)?;
-            let key = key_for(&file, page, keys);
-            open.push((
-                page.path.clone(),
-                DocRenderer::with_file(file, &page.path, key, config.clone(), Policy::default())?,
-            ));
+            let doc = crate::render::ask_again::opened_again(|| {
+                let file = DocRenderer::open_file(&page.path)?;
+                let key = key_for(&file, page, keys);
+                DocRenderer::with_file(file, &page.path, key, config.clone(), Policy::default())
+            })?;
+            open.push((page.path.clone(), doc));
             open.len() - 1
         }
     };

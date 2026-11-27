@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
-mod ask_again;
+pub(crate) mod ask_again;
 #[cfg(test)]
 mod ask_again_wiring_tests;
 pub(crate) mod image;

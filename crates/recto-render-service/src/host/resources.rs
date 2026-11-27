@@ -58,9 +58,9 @@ static IN_A_ROW: AtomicU8 = AtomicU8::new(0);
 
 /// Counts a hit (saturating) and says how many there are in a row now.
 fn hit() -> u8 {
-    IN_A_ROW
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some(n.saturating_add(1)))
-        .map_or(u8::MAX, |before| before.saturating_add(1))
+    let n = IN_A_ROW.load(Ordering::Relaxed).saturating_add(1);
+    IN_A_ROW.store(n, Ordering::Relaxed);
+    n
 }
 
 /// An open or a shared memory worked: a run of hits ends.
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn a_run_of_out_of_resources_ends_as_unavailable_and_a_success_starts_it_again() {
         let file = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
-        let mut asked = || {
+        let asked = || {
             fail_next_shared_memory_with(errno::EMFILE);
             DocRenderer::with_file(file.try_clone().unwrap(), Path::new("/dev/null"), None, config(), Policy::default()).err()
         };
