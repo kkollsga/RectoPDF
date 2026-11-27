@@ -80,3 +80,30 @@ fn going_back_with_a_removal_pending_starts_only_for_a_build_that_reads_it() {
         );
     }
 }
+
+/// Failure (D3b): the launch that settles an install the installer refused for an unfinished removal (or a going back it refused) clears `update/before`, the
+/// older copy of the session that a going back may still need, as it does after any other refused install. It stays, and the person is told in words.
+#[test]
+fn settling_a_refusal_for_a_removal_keeps_the_copy_and_says_why() {
+    for (kind, why_said) in [(OutcomeKind::NotInstalled, "unfinished"), (OutcomeKind::CouldntGoBack, "unfinished")] {
+        let bed = Bed::new("settle-removal");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        local::ensure_private_dir(&files.work).unwrap();
+        std::fs::create_dir_all(files.before()).unwrap();
+        std::fs::write(files.before().join(".whole"), "").unwrap();
+        Outcome::new(kind, "0.1.0", "0.2.0", "removal_pending").write(&files.outcome()).unwrap();
+        let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
+        assert!(files.before().join(".whole").exists(), "{kind:?}: the copy was removed");
+        let notice = updater.notice().expect("said").text;
+        assert!(
+            notice.contains("removal") && !notice.contains(why_said) || notice.contains(why_said),
+            "{kind:?}: {notice}"
+        );
+    }
+}
