@@ -91,17 +91,20 @@ fn what_the_gate_costs() {
     assert_eq!(after, before, "live heap bytes held by the gate after it returned");
 
     println!("record: {size} bytes, {} artifacts", r.surveyed.inventory().artifacts().len());
-    println!("gate (anything_there), nothing there: {:?}", time(|| drop(gate::anything_there(empty.path()))));
+    println!(
+        "gate (anything_there), nothing there: {:?}",
+        time(|| std::hint::black_box(gate::anything_there(empty.path())))
+    );
     println!(
         "gate (anything_there), pending at the cap: {:?}",
-        time(|| drop(gate::anything_there(held.path())))
+        time(|| std::hint::black_box(gate::anything_there(held.path())))
     );
     println!(
         "anything_there (the updater's look), nothing there: {:?}",
-        time(|| drop(recto_update::removal_record::anything_there(empty.path())))
+        time(|| std::hint::black_box(recto_update::removal_record::anything_there(empty.path())))
     );
     println!(
         "anything_there (the updater's look), a record there: {:?}",
-        time(|| drop(recto_update::removal_record::anything_there(held.path())))
+        time(|| std::hint::black_box(recto_update::removal_record::anything_there(held.path())))
     );
 }
