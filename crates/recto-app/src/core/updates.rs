@@ -806,6 +806,16 @@ pub fn timer_for(next_wake: Option<u64>, now_ms: u64) -> Option<UpdateTimer> {
 mod tests {
     use super::*;
 
+    /// Failure (D3b): a launch that read nothing because an unfinished removal's record withheld the session is counted as having read no tabs, so the
+    /// installer takes the new version for one that misread the record and goes back over a removal. It's "not read", as for the lock.
+    #[test]
+    fn a_withheld_load_is_not_a_read_of_no_tabs() {
+        note_tabs_read(&Loaded::Withheld(recto_control::removal_store::gate::Withheld::Pending));
+        assert_eq!(TABS_READ.load(Ordering::SeqCst), NOT_READ);
+        note_tabs_read(&Loaded::Nothing);
+        assert_eq!(TABS_READ.load(Ordering::SeqCst), 0, "an empty record is read, with no tabs");
+    }
+
     /// Failure: a silent update puts a window over what the user's doing, or moves them to another Space by going into full screen. **Only as far as it can be tested with no screen:** that Rust says behind and not yet, for an update arriving in the background and nothing else. What AppKit then does stays unproven until a signed release on a real desktop.
     #[test]
     fn a_background_update_stays_behind_and_out_of_full_screen() {
