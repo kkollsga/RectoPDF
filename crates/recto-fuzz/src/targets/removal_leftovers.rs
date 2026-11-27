@@ -6,8 +6,8 @@
 //! format, name); the bytes after are the carrier's acknowledgments, one a step.
 
 use recto_core::removal::{
-    Ack, ArtifactKey, Binding, CONFIRM_LIMITS, Confirmations, DESIGN_LIMITS, Disposition, Effect, Format, Found, Kinds, Outcome, Owner, PlanId, Progress,
-    Refusal, Request, Scope, Store, Survey, Surveyed, TargetKey, TargetMode, Version, plan,
+    Ack, Actor, ArtifactKey, BarrierFacts, BarrierRefusal, Binding, CONFIRM_LIMITS, Confirmations, DESIGN_LIMITS, Disposition, Effect, FileVersion, Format,
+    Found, Kinds, Outcome, Owner, PlanId, Progress, Refusal, Request, Scope, Store, Survey, Surveyed, TargetKey, TargetMode, Version, encode_barrier, plan,
 };
 use recto_core::save::Target;
 use recto_platform::FileStamp;
@@ -212,7 +212,32 @@ pub fn check(data: &[u8]) {
             assert_ne!(outcome, Outcome::Unchanged, "nothing changed was said after a destructive step");
         }
         assert_eq!(outcome == Outcome::Complete, progress.succeeded(&p));
-        assert!(Progress::resume(&p, p.digest(), i as u32 + 1).is_err());
+        // Nothing a record could hold: whatever the walk has done, no record of it is made.
+        let facts = BarrierFacts {
+            target: "/doc.pdf".into(),
+            source: FileVersion {
+                volume: None,
+                inode: 1,
+                size: 1,
+                mtime_ns: 1,
+            },
+            candidate_name: "c".into(),
+            candidate: FileVersion {
+                volume: None,
+                inode: 2,
+                size: 1,
+                mtime_ns: 1,
+            },
+            candidate_sha: [0; 32],
+            roots: Vec::new(),
+            actor: Actor::Person,
+            pins: Vec::new(),
+        };
+        assert_eq!(
+            encode_barrier(&p, &surveyed, &DESIGN_LIMITS, &progress, &facts).err(),
+            Some(BarrierRefusal::Leftovers),
+            "a leftovers walk was recorded"
+        );
         if ack == Ack::Failed || (ack == Ack::DoneNotDurable && step.effect().needs_durable()) {
             assert!(progress.next(&p).is_none(), "a failure did not stop the walk");
             return;

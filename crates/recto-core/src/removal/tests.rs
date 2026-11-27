@@ -395,13 +395,16 @@ fn resume_only_after_barrier() {
     let p = ok(&[]);
     let barrier = position(&p, Effect::PersistBarrier) as u32;
     for acked in 0..=barrier {
-        assert_eq!(Progress::resume(&p, p.digest(), acked), Err(OrderError::NotResumable));
+        assert_eq!(Progress::resume(&p, &Checkpoint::new(p.digest(), acked)), Err(OrderError::NotResumable));
     }
-    let r = Progress::resume(&p, p.digest(), barrier + 1).unwrap();
+    let r = Progress::resume(&p, &Checkpoint::new(p.digest(), barrier + 1)).unwrap();
     assert_eq!(r.acked(), barrier + 1);
     assert_eq!(r.next(&p), Some(p.steps()[barrier as usize + 1]));
-    assert!(Progress::resume(&p, p.digest(), p.steps().len() as u32).is_ok());
-    assert_eq!(Progress::resume(&p, p.digest(), p.steps().len() as u32 + 1), Err(OrderError::NotResumable));
+    assert!(Progress::resume(&p, &Checkpoint::new(p.digest(), p.steps().len() as u32)).is_ok());
+    assert_eq!(
+        Progress::resume(&p, &Checkpoint::new(p.digest(), p.steps().len() as u32 + 1)),
+        Err(OrderError::NotResumable)
+    );
 }
 
 /// Catches a signed original being rewritten in place, or a Save As touching the source it keeps.
@@ -584,7 +587,7 @@ fn progress_starts_only_from_its_own_confirmation() {
 fn resume_refuses_another_plans_digest() {
     let (a, b) = same_length_plans();
     let barrier = position(&a, Effect::PersistBarrier) as u32;
-    assert_eq!(Progress::resume(&b, a.digest(), barrier + 1), Err(OrderError::WrongPlan));
-    assert_eq!(Progress::resume(&b, a.digest(), 0), Err(OrderError::WrongPlan));
-    assert!(Progress::resume(&b, b.digest(), barrier + 1).is_ok());
+    assert_eq!(Progress::resume(&b, &Checkpoint::new(a.digest(), barrier + 1)), Err(OrderError::WrongPlan));
+    assert_eq!(Progress::resume(&b, &Checkpoint::new(a.digest(), 0)), Err(OrderError::WrongPlan));
+    assert!(Progress::resume(&b, &Checkpoint::new(b.digest(), barrier + 1)).is_ok());
 }

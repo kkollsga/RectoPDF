@@ -219,7 +219,7 @@ fn checksum(kind: u8, body: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-fn put_version(out: &mut Vec<u8>, v: FileVersion) -> Option<()> {
+pub(super) fn put_version(out: &mut Vec<u8>, v: FileVersion) -> Option<()> {
     if v.volume == Some([0; 16]) {
         return None;
     }
@@ -231,7 +231,7 @@ fn put_version(out: &mut Vec<u8>, v: FileVersion) -> Option<()> {
     Some(())
 }
 
-fn put_path(out: &mut Vec<u8>, path: &Path) -> Option<()> {
+pub(super) fn put_path(out: &mut Vec<u8>, path: &Path) -> Option<()> {
     let bytes = path.as_os_str().as_encoded_bytes();
     if !valid_path(path) {
         return None;
@@ -241,26 +241,26 @@ fn put_path(out: &mut Vec<u8>, path: &Path) -> Option<()> {
     Some(())
 }
 
-fn valid_path(path: &Path) -> bool {
+pub(super) fn valid_path(path: &Path) -> bool {
     let bytes = path.as_os_str().as_encoded_bytes();
     (1..=MAX_PATH_BYTES).contains(&bytes.len()) && path.is_absolute() && !bytes.contains(&0)
 }
 
 /// A cursor over one frame's body that never reads past it.
-struct Body<'a>(&'a [u8]);
+pub(super) struct Body<'a>(pub(super) &'a [u8]);
 
 impl<'a> Body<'a> {
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+    pub(super) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let (head, rest) = self.0.split_at_checked(n)?;
         self.0 = rest;
         Some(head)
     }
 
-    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+    pub(super) fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
         self.take(N)?.try_into().ok()
     }
 
-    fn version(&mut self) -> Option<FileVersion> {
+    pub(super) fn version(&mut self) -> Option<FileVersion> {
         let flags = self.take(1)?[0];
         let uuid: [u8; 16] = self.array()?;
         let inode = u64::from_le_bytes(self.array()?);
@@ -275,7 +275,7 @@ impl<'a> Body<'a> {
     }
 
     /// A path no longer than `longest`.
-    fn path(&mut self, longest: usize) -> Option<PathBuf> {
+    pub(super) fn path(&mut self, longest: usize) -> Option<PathBuf> {
         let len = usize::from(u16::from_le_bytes(self.array()?));
         if len > longest {
             return None;
@@ -284,19 +284,19 @@ impl<'a> Body<'a> {
         valid_path(&path).then_some(path)
     }
 
-    fn done(&self) -> bool {
+    pub(super) fn done(&self) -> bool {
         self.0.is_empty()
     }
 }
 
 #[cfg(unix)]
-fn path_of(bytes: &[u8]) -> Option<PathBuf> {
+pub(super) fn path_of(bytes: &[u8]) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
 }
 
 #[cfg(not(unix))]
-fn path_of(bytes: &[u8]) -> Option<PathBuf> {
+pub(super) fn path_of(bytes: &[u8]) -> Option<PathBuf> {
     std::str::from_utf8(bytes).ok().map(PathBuf::from)
 }
 
