@@ -121,6 +121,7 @@ pub mod remove {
     pub struct Walk<'a> {
         pub rank: &'a dyn Fn(usize, &OsStr, Kind) -> u8,
         pub gate: &'a mut dyn FnMut(&OsStr) -> bool,
+        pub unlinked: &'a mut dyn FnMut(),
     }
 
     pub fn remove_tree_in(_parent: &Folder, name: &OsStr, _tree: &Tree, _walk: &mut Walk<'_>) -> Result<Removed, Failure> {
