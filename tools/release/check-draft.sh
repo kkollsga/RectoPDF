@@ -12,7 +12,7 @@
 #   unpack    the previous release's own `recto-updater check-zip` takes the zip (the reader every copy of it will use) into an empty folder;
 #   bundle    on what it unpacked: the bundle id, CFBundleShortVersionString is the version, no development version, the licences' first
 #             line names it; codesign --verify --deep --strict; codesign -dv: Developer ID Application authority, TeamIdentifier, the
-#             hardened runtime flag and a secure Timestamp, for the app and for its renderer helper; the helper's sandbox
+#             hardened runtime flag and a secure Timestamp, for the app and for its renderer helper (and from 0.1.4 its structure helper); the helper's sandbox
 #             (app/render-helper.sh --check); stapler validate; spctl: accepted, source=Notarized Developer ID; from 0.1.1, the embedded
 #             provisioning profile and the entitlements on the main executable alone (tools/release/app-entitlements.sh --check);
 #   release   no override and no QA hook: `recto-updater source` with every override set says release, the real repo, developer_id and
@@ -118,12 +118,16 @@ signed_by() { # what, path
 }
 signed_by "the app" "$APP"
 signed_by "the renderer helper" "$APP/Contents/Helpers/RectoRender.app"
+# From 0.1.4 the structure helper is in the bundle too (S6b), signed by the same team.
+if [ "$(printf '%s\n' 0.1.4 "$version" | sort -V | head -1)" = 0.1.4 ]; then signed_by "the structure helper" "$APP/Contents/Helpers/RectoStructure.app"; fi
 # From 0.1.1, the Find key lives in the data-protection keychain in the app's own group (the owner's decision, 2026-11-15): the bundle embeds its
 # provisioning profile and its main executable alone claims the App ID, the team and the group. 0.1.0 had neither.
 if [ "$(printf '%s\n' 0.1.1 "$version" | sort -V | head -1)" = 0.1.1 ]; then
   out=$("$REPO/tools/release/app-entitlements.sh" --check "$APP" 2>&1) && pass "bundle: $(printf '%s' "$out" | tail -1)" || fail bundle "$(printf '%s' "$out" | tr '\n' ' ')"
 fi
-out=$("$REPO/app/render-helper.sh" --check "$APP" 2>&1) && pass "bundle: the renderer helper is sandboxed as it should be" || fail bundle "render-helper.sh --check: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+# The whole app's check requires the structure helper, which a release before 0.1.4 doesn't have: those get only the renderer's.
+if [ "$(printf '%s\n' 0.1.4 "$version" | sort -V | head -1)" = 0.1.4 ]; then check_target="$APP"; else check_target="$APP/Contents/Helpers/RectoRender.app"; fi
+out=$("$REPO/app/render-helper.sh" --check "$check_target" 2>&1) && pass "bundle: the renderer helper is sandboxed as it should be" || fail bundle "render-helper.sh --check: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
 out=$(xcrun stapler validate "$APP" 2>&1) && pass "bundle: notarization ticket stapled" || fail bundle "stapler validate: $(printf '%s' "$out" | tail -1)"
 out=$(spctl --assess --type execute -vv "$APP" 2>&1)
 case "$out" in *": accepted"*"source=Notarized Developer ID"*) pass "bundle: Gatekeeper accepts it, source=Notarized Developer ID" ;; *) fail bundle "Gatekeeper: $(printf '%s' "$out" | tr '\n' ' ')" ;; esac

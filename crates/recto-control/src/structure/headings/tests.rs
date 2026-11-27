@@ -222,3 +222,14 @@ fn a_page_past_the_documents_own_pages_is_refused() {
     assert_eq!(last(5), Ok(()));
     assert_eq!(last(4), Err("bad_answer"));
 }
+
+/// Failure: a hostile helper's end line claims more pages than the job has, and the session stores that count as the document's (`Generated.pages`), which the sidebar and the
+/// agent then read as the page count. The count kept is the job's at most, and the failed pages never exceed it.
+#[test]
+fn the_end_lines_pages_are_capped_at_the_jobs() {
+    let inflated = r#"{"state":"ready","pages":50000,"pages_failed":40000,"truncated":false,"found":1}"#;
+    let (found, _) = read_all(&said(&[&page(0, &["A"]), inflated]), 10, 100).expect("believed");
+    assert_eq!((found.pages, found.pages_failed), (100, 100), "the job has 100 pages");
+    let (found, _) = read_all(&said(&[&page(0, &["A"]), &end(6, 1)]), 10, 100).expect("believed");
+    assert_eq!(found.pages, 6, "a smaller count is the helper's own to say");
+}

@@ -99,7 +99,7 @@ check_built() {
     codesign --verify --deep --strict "$APP"
     # The renderer is sandboxed, signed as it should be, and nothing could run in its place outside the sandbox.
     "$APP_DIR/render-helper.sh" --check "$APP"
-    for f in "$APP/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/Frameworks/"*; do
+    for f in "$APP/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/Frameworks/"* "$APP/Contents/Helpers/RectoStructure.app/Contents/MacOS/"*; do
         lipo -archs "$f" | grep -qx arm64 || { echo "unexpected architectures in $f: $(lipo -archs "$f")" >&2; exit 1; }
     done
     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ] \
@@ -175,6 +175,31 @@ assert state["reader"]["tiles"].get("attached", 0) > 0, "no surface tile arrived
 assert state["memory"].get("workers_walled", 0) >= 1, "no live worker said it was sandboxed: %r" % state["memory"]
 assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
 ' || { echo "the signed app didn't draw" >&2; exit 1; }
+# The structure helper, behind its walls under this signature and the hardened runtime, and the check for hidden text after it: a document with one heading (20 pt over 10 pt body text) must
+# come back with it, so the helper started walled, its answer was believed and the heading was seen drawn by the render worker. Every build refuses an unwalled helper.
+{
+    printf '%%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n'
+    printf '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /H1 5 0 R >> >> >>\nendobj\n'
+    printf '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'
+    content="BT /H1 20 Tf 72 720 Td (1 Introduction) Tj ET
+BT /F1 10 Tf 12 TL 72 690 Td
+"
+    for _ in $(seq 30); do content+="(This is ordinary body text on the page, written in a smaller size than any heading so that it reads as a paragraph.) Tj T*
+"; done
+    content+="ET
+"
+    printf '4 0 obj\n<< /Length %d >>\nstream\n%s' "${#content}" "$content"
+    printf 'endstream\nendobj\ntrailer\n<< /Size 6 /Root 1 0 R >>\n%%%%EOF\n'
+} > "$SMOKE/headed.pdf"
+"$APP/Contents/MacOS/recto" open "$SMOKE/headed.pdf" >/dev/null
+"$APP/Contents/MacOS/recto" contents --generated >/dev/null \
+    && "$APP/Contents/MacOS/recto" wait contents-generated --timeout 60s >/dev/null \
+    || { echo "the release couldn't make generated contents behind its walls" >&2; exit 1; }
+"$APP/Contents/MacOS/recto" contents --generated --json | python3 -I -c '
+import json, sys
+data = json.load(sys.stdin)["data"]
+assert len(data.get("entries", [])) >= 1, "no heading came back: %r" % data
+' || { echo "the release's generated contents have no heading: the walled helper or the check for hidden text failed" >&2; exit 1; }
 # While that worker is alive: it was started with its allocator setting, on this signature (the team's in the preflight and the release).
 "$REPO/tools/release/worker-env.sh" "$APP"
 if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi
@@ -211,6 +236,7 @@ sign_team() {
     echo "==> Developer ID: team $(team_of "$APP")"
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
     [ "$(team_of "$APP/Contents/Helpers/RectoRender.app")" = "$TEAM_ID" ] || { echo "the renderer helper isn't signed by team $TEAM_ID" >&2; exit 1; }
+    [ "$(team_of "$APP/Contents/Helpers/RectoStructure.app")" = "$TEAM_ID" ] || { echo "the structure helper isn't signed by team $TEAM_ID" >&2; exit 1; }
 }
 notarize_it() {
     echo "==> Notarize and staple the app (waits for Apple)"

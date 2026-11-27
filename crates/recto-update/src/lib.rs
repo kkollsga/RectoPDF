@@ -32,6 +32,8 @@ pub const TEAM_ID: &str = "6GND8Z2C7Z";
 pub const BUNDLE_ID: &str = "io.github.kkollsga.RectoPDF";
 /// The renderer helper's identifier when it's signed ad hoc, as every development build's is (`app/render-helper.sh`).
 pub const HELPER_ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
+/// The structure helper's identifier when it's signed ad hoc (`app/render-helper.sh`).
+pub const STRUCTURE_ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Structure.adhoc";
 
 /// The user's own state folder, where the real app keeps `updates.json`: what `recto-control`'s `StatePaths` uses with no override, and a test holds the two to each other. Never a folder a plan or a file names.
 #[must_use]

@@ -269,7 +269,7 @@ export CALLS
 logger() { # name, then the script's body after the line that writes the call down
   printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\n%s\n' "$1" "${2:-}" > "$3"; chmod +x "$3"
 }
-logger codesign 'case "$1" in -dv) echo "TeamIdentifier=TEAMID1" >&2 ;; esac' "$RB/codesign"
+logger codesign 'case "$1" in -dv) case "$*" in *RectoStructure.app*) echo "TeamIdentifier=${STUB_STRUCTURE_TEAM:-TEAMID1}" >&2 ;; *) echo "TeamIdentifier=TEAMID1" >&2 ;; esac ;; esac' "$RB/codesign"
 # In one write, as the real one's few lines are: release-zip.sh reads it with `grep -q` under pipefail, which a second write could meet closed.
 logger security 'printf "  1) ABCDEF \"Developer ID Application: Test (TEAMID1)\"\n     1 valid identities found\n"' "$RB/security"
 logger xcrun 'case "$1 $2" in "notarytool submit") echo "{\"status\":\"Accepted\",\"id\":\"made\"}" ;; esac' "$RB/xcrun"
@@ -292,6 +292,8 @@ printf '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersio
 # The app's `recto` answers a quiet run as a release that drew does, and refuses a test's verbs; its installer unpacks a zip.
 logger recto 'case "$1 $2" in
   "qa state") echo "{\"data\":{\"app\":{\"pages\":{\"tile_layers\":1}},\"reader\":{\"settled\":true,\"pages\":1,\"tiles\":{\"attached\":1}},\"memory\":{\"workers_walled\":1},\"update\":{\"build\":\"release\"}}}" ;;
+  "contents --generated") if [ -n "${STUB_NO_HEADINGS:-}" ]; then echo "{\"data\":{\"entries\":[]}}"; else echo "{\"data\":{\"entries\":[{\"title\":\"1 Introduction\"}]}}"; fi ;;
+  "wait contents-generated") [ -z "${STUB_WAIT_FAILS:-}" ] || exit 1 ;;
   "qa update-clock"|"qa as-person"|"qa owner-edit"|"qa save-as"|"qa save-from") exit 1 ;;
 esac' "$MA/Contents/MacOS/recto"
 logger recto-updater 'mkdir -p "$3" && ditto -x -k "$2" "$3"' "$MA/Contents/MacOS/recto-updater"
@@ -317,9 +319,14 @@ calls=$(cat "$CALLS")
 check "release-zip: the preflight's signing passes ($out)" 0 "$rc"
 has "release-zip: the preflight signs as the release does" "build.sh --sign-only" "$calls"
 has "release-zip: and checks the team" "codesign -dv --verbose=2 $MA/Contents/Helpers/RectoRender.app" "$calls"
+has "release-zip: and the structure helper's team" "codesign -dv --verbose=2 $MA/Contents/Helpers/RectoStructure.app" "$calls"
 hasnt "release-zip: the preflight doesn't notarize" "notarytool" "$calls"
 hasnt "release-zip: nor staple" "stapler" "$calls"
 check "release-zip: nor zip" "no" "$([ -e "$OUTDIR" ] && echo yes || echo no)"
+# Failure: a structure helper signed by another team (or none) passes the preflight, and the app then starts a helper its own team's walls don't cover.
+out=$(STUB_STRUCTURE_TEAM=OTHER signing --signed --already-built --no-notarize); rc=$?
+check "release-zip: another team's structure helper is refused" 1 "$rc"
+has "release-zip: and named" "the structure helper isn't signed by team" "$out"
 # Failure: the release's own signing, the same command without the flag, no longer notarizes, staples, checks Gatekeeper and zips.
 out=$(signing --signed --already-built); rc=$?
 calls=$(cat "$CALLS")
@@ -337,9 +344,18 @@ check "release-zip: the preflight's checks of the signed app pass ($out)" 0 "$rc
 has "release-zip: the preflight checks the entitlements" "app-entitlements.sh --check $MA" "$calls"
 has "release-zip: the preflight checks the helper" "render-helper.sh --check $MA" "$calls"
 has "release-zip: the preflight runs the signed app drawing a PDF" "recto qa state --json" "$calls"
+has "release-zip: and making generated contents behind the walls" "recto wait contents-generated" "$calls"
 has "release-zip: and reads its worker's allocator setting" "worker-env.sh $MA" "$calls"
 hasnt "release-zip: the preflight asks for no ticket" "stapler" "$calls"
 hasnt "release-zip: nor checks a zip" "check-zip" "$calls"
+# Failure: the quiet run can't make generated contents behind the structure helper's walls and the release goes on.
+out=$(STUB_WAIT_FAILS=1 signing --check-signed --no-notarize); rc=$?
+check "release-zip: a run that can't make generated contents is refused" 1 "$rc"
+has "release-zip: and says so" "couldn't make generated contents" "$out"
+# Failure: the generated contents come back with no heading (the helper's answer or the check for hidden text drops it) and the release goes on.
+out=$(STUB_NO_HEADINGS=1 signing --check-signed --no-notarize); rc=$?
+check "release-zip: contents with no heading are refused" 1 "$rc"
+has "release-zip: and says so" "have no heading" "$out"
 # Failure: the release's own run of the stapled app no longer validates its ticket or checks the zip as the updater will.
 out=$(signing --check-signed); rc=$?
 calls=$(cat "$CALLS")
