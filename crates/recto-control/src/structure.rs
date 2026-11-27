@@ -2,7 +2,7 @@
 //! as hostile. Generated contents is the first job ([`headings`]); a table of contents of tables would be the second, and use this as it is.
 //!
 //! **Never an unwalled one.** [`Structure::installed`] is the only finder, and it looks for the helper in its app, beside this program's own app and nowhere else: no fallback to a bare
-//! `recto-headings`, whatever is in the environment. A helper that says it isn't walled, or that the kernel doesn't show in a sandbox, or that may read the document by its name, is
+//! `recto-headings`, whatever is in the environment. A helper that says it isn't walled, or that the kernel doesn't show in a sandbox (`structure_not_sandboxed`), or can't be confirmed (`structure_unconfirmed`), or that may read the document by its name, is
 //! killed before it is given its job, so not a byte of a document or of a job reaches it: [`talk`] writes the job only after [`outside_check`] says yes.
 //!
 //! **The document is a descriptor, not a path.** It's opened here, read-only, by the file wall (`open_regular`), its key checked against the one asked for, and handed over as the helper's
@@ -62,6 +62,8 @@ pub enum WallsDown {
     WallsFailed,
     /// The system wouldn't start it.
     StartRefused,
+    /// Its walls couldn't be confirmed: a hello that isn't one, a probe that couldn't tell, or a document its sandbox lets it read by name. Not that the copy is signed wrong: ask again.
+    Unconfirmed,
 }
 
 impl WallsDown {
@@ -71,6 +73,7 @@ impl WallsDown {
             Self::InsideAnotherSandbox => "structure_inside_another_sandbox",
             Self::WallsFailed => "structure_walls_failed",
             Self::StartRefused => "structure_start_refused",
+            Self::Unconfirmed => "structure_unconfirmed",
         }
     }
 }
@@ -159,12 +162,15 @@ pub(crate) fn spawn(exe: &Path, priority: Priority, document: &std::fs::File) ->
 }
 
 /// Whether a helper that said hello may be given its job: only if it says it's walled, the kernel has it in a sandbox, and that sandbox refuses it the document by its name, both as
-/// given and as it really is. Anything else, a probe that couldn't tell included, is not.
+/// given and as it really is. Anything else is not. The kernel showing no sandbox at all is [`WallsDown::NotSandboxed`] (this copy is signed wrong); a hello that isn't a hello or says
+/// it isn't walled, a probe that couldn't tell, or a document the sandbox lets it read by name is [`WallsDown::Unconfirmed`]: not a reason to reinstall.
 fn admit(walled: Option<bool>, sandboxed: i32, may_read_by_name: &[i32]) -> Result<(), WallsDown> {
-    if walled == Some(true) && sandboxed == 1 && may_read_by_name.iter().all(|denied| *denied == 1) {
+    if sandboxed == 0 {
+        Err(WallsDown::NotSandboxed)
+    } else if walled == Some(true) && sandboxed == 1 && may_read_by_name.iter().all(|denied| *denied == 1) {
         Ok(())
     } else {
-        Err(WallsDown::NotSandboxed)
+        Err(WallsDown::Unconfirmed)
     }
 }
 

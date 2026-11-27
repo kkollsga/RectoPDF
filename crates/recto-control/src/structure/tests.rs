@@ -50,22 +50,30 @@ fn the_time_allowed_grows_with_pages_and_has_a_ceiling() {
 }
 
 /// Failure: the outside check lets a helper through on a word of its own (it says it's walled and the kernel disagrees), on a kernel that couldn't say (-1), or when the document is
-/// readable by one of its two names, so a compromised helper is given a document. Only all three together pass.
+/// readable by one of its two names, so a compromised helper is given a document. Only all three together pass. And a helper that can't be confirmed is told apart from one the kernel shows
+/// isn't in a sandbox: only the second says this copy is signed wrong, so a garbage hello or a probe that failed doesn't send a person to reinstall.
 #[test]
 fn only_a_helper_the_kernel_shows_walled_is_admitted() {
     assert_eq!(admit(Some(true), 1, &[1, 1]), Ok(()));
+    for (walled, sandboxed, by_name) in [(Some(true), 0, [1, 1]), (Some(false), 0, [1, 1]), (None, 0, [1, 1])] {
+        assert_eq!(
+            admit(walled, sandboxed, &by_name),
+            Err(WallsDown::NotSandboxed),
+            "the kernel shows no sandbox: {walled:?} {sandboxed} {by_name:?}"
+        );
+    }
     for (walled, sandboxed, by_name) in [
         (Some(false), 1, [1, 1]),
         (None, 1, [1, 1]),
-        (Some(true), 0, [1, 1]),
         (Some(true), -1, [1, 1]),
+        (None, -1, [1, 1]),
         (Some(true), 1, [0, 1]),
         (Some(true), 1, [1, 0]),
         (Some(true), 1, [1, -1]),
     ] {
         assert_eq!(
             admit(walled, sandboxed, &by_name),
-            Err(WallsDown::NotSandboxed),
+            Err(WallsDown::Unconfirmed),
             "{walled:?} {sandboxed} {by_name:?}"
         );
     }
@@ -92,9 +100,10 @@ fn each_way_the_walls_can_be_down_has_its_own_code() {
         WallsDown::InsideAnotherSandbox,
         WallsDown::WallsFailed,
         WallsDown::StartRefused,
+        WallsDown::Unconfirmed,
     ];
     let codes: std::collections::HashSet<_> = all.iter().map(|down| down.code()).collect();
-    assert_eq!(codes.len(), 4);
+    assert_eq!(codes.len(), 5);
     assert!(codes.iter().all(|code| code.starts_with("structure_")));
 }
 
@@ -221,7 +230,7 @@ impl Answer for Boasts {
 #[test]
 fn the_sessions_numbers_win_over_the_answers() {
     let folder = folder("numbers");
-    let exe = stand_in(&folder, "echo '{\"state\":\"hello\",\"walled\":true}'\necho end");
+    let exe = stand_in(&folder, "echo '{\"state\":\"hello\",\"walled\":true}'\nread job\necho end");
     let spawned = helper::spawn(&exe, &[], Priority::Inherited).unwrap();
     let (deadline, stop) = never();
     let (ended, numbers) = talk(spawned, &json!({ "kind": "x" }), Boasts, deadline, &stop, |_, _| Ok(()));

@@ -87,17 +87,22 @@ pub fn reason_words(code: &str) -> &'static str {
         "structure_inside_another_sandbox" => "the helper that reads headings can't start inside another sandbox",
         "structure_walls_failed" => "the helper that reads headings couldn't close itself off from the rest of macOS",
         "structure_start_refused" => "macOS refused to start the helper that reads headings",
+        "structure_unconfirmed" => "the helper that reads headings couldn't be confirmed walled off, so the file wasn't read",
         "couldnt_write" => "they couldn't be kept on disk",
         "changed" => "the file changed while they were being made",
         _ => "something went wrong making them",
     }
 }
 
-/// The code a failed job is told by: one of the four that say the structure helper couldn't be started walled, each with its own next step, and `generating_failed` for any other.
+/// The code a failed job is told by: one of the five that say the structure helper couldn't be started walled, each with its own next step, and `generating_failed` for any other.
 fn failed_code(code: &str) -> Code {
     match Code::listed(code) {
         Some(
-            listed @ (Code::STRUCTURE_INSIDE_ANOTHER_SANDBOX | Code::STRUCTURE_NOT_SANDBOXED | Code::STRUCTURE_START_REFUSED | Code::STRUCTURE_WALLS_FAILED),
+            listed @ (Code::STRUCTURE_INSIDE_ANOTHER_SANDBOX
+            | Code::STRUCTURE_NOT_SANDBOXED
+            | Code::STRUCTURE_START_REFUSED
+            | Code::STRUCTURE_UNCONFIRMED
+            | Code::STRUCTURE_WALLS_FAILED),
         ) => listed,
         _ => Code::GENERATING_FAILED,
     }
@@ -203,6 +208,7 @@ pub fn failure_words(code: &str) -> &'static str {
         "structure_inside_another_sandbox" => "RectoPDF can't read headings from inside another sandbox. Nothing is wrong with the install.",
         "structure_walls_failed" => "RectoPDF's heading reader couldn't close itself off on this version of macOS, so it won't read the file.",
         "structure_start_refused" => "macOS refused to start RectoPDF's heading reader. A security tool may be blocking it.",
+        "structure_unconfirmed" => "RectoPDF couldn't confirm its heading reader was walled off, so it didn't read this file.",
         _ => "Something went wrong finding the headings. Click to try again.",
     }
 }
@@ -273,7 +279,7 @@ mod tests {
     }
 
     /// Failure: a helper that couldn't start walled is told as any other failure, "ask again in a minute", so an agent asks again and again for something a minute won't change; or its own
-    /// next step (that the copy is signed wrong, that a sandbox is in the way) is lost. Each of the four gets its own code and the table's next step, any other failure stays `generating_failed`.
+    /// next step (that the copy is signed wrong, that a sandbox is in the way) is lost. Each of the five gets its own code and the table's next step, any other failure stays `generating_failed`.
     #[test]
     fn a_helper_that_could_not_start_walled_is_told_by_its_own_code() {
         use super::{Code, Keyed, not_ready};
@@ -285,6 +291,7 @@ mod tests {
             ("structure_inside_another_sandbox", Code::STRUCTURE_INSIDE_ANOTHER_SANDBOX),
             ("structure_walls_failed", Code::STRUCTURE_WALLS_FAILED),
             ("structure_start_refused", Code::STRUCTURE_START_REFUSED),
+            ("structure_unconfirmed", Code::STRUCTURE_UNCONFIRMED),
             ("over_memory", Code::GENERATING_FAILED),
             ("something the helper made up", Code::GENERATING_FAILED),
         ] {
@@ -315,6 +322,7 @@ mod tests {
             "structure_inside_another_sandbox",
             "structure_walls_failed",
             "structure_start_refused",
+            "structure_unconfirmed",
         ];
         for code in known {
             assert_ne!(failure_words(code), fallback, "{code}");
