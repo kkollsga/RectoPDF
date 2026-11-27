@@ -322,7 +322,7 @@ fn strips(
     let strip_rows = (piece / u64::from(stride)).clamp(1, u64::from(recto_proto::MAX_TILE_EDGE)) as u32;
     let strip_bytes = u64::from(stride) * u64::from(strip_rows.min(height));
     if surface.as_ref().is_none_or(|memory| (memory.len() as u64) < strip_bytes) {
-        *surface = Some(SharedMemory::create(strip_bytes as usize).map_err(|_| RenderFailure::Unavailable)?);
+        *surface = Some(crate::host::resources::create_shared_memory(strip_bytes as usize)?);
     }
     let Some(memory) = surface.as_ref() else {
         return Err(RenderFailure::Unavailable);
@@ -530,7 +530,7 @@ fn draw_tiles(doc: &mut DocRenderer, page: u32, scale: f32, surface: &mut Option
         };
         let bytes = u64::from(stride) * u64::from(rect.height.max(TILE_EDGE));
         if surface.as_ref().is_none_or(|memory| (memory.len() as u64) < bytes) {
-            *surface = Some(SharedMemory::create(bytes as usize).map_err(|_| RenderFailure::Unavailable)?);
+            *surface = Some(crate::host::resources::create_shared_memory(bytes as usize)?);
         }
         let Some(memory) = surface.as_ref() else {
             return Err(RenderFailure::Unavailable);

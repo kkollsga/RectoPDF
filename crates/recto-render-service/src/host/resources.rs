@@ -108,7 +108,7 @@ pub(super) fn open_document(path: &std::path::Path) -> Result<std::fs::File, Ren
 }
 
 /// The renderer's shared memory, or why it couldn't be had. The test seam makes the creation itself fail with an errno, so the same mapping runs.
-pub(super) fn create_shared_memory(len: usize) -> Result<SharedMemory, RenderFailure> {
+pub(crate) fn create_shared_memory(len: usize) -> Result<SharedMemory, RenderFailure> {
     let made = match injected(&FAIL_SHARED_MEMORY) {
         Some(error) => Err(error),
         None => SharedMemory::create(len),
@@ -139,6 +139,9 @@ mod tests {
 
     const EACCES: i32 = 13;
 
+    /// The run count is process-wide, so tests that count it take turns.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn config() -> ServiceConfig {
         ServiceConfig {
             worker_exe: "x".into(),
@@ -152,6 +155,7 @@ mod tests {
     /// Failure: an open that ran out of descriptors failed the whole document ("The page renderer couldn't be started") for a Mac that was only short for a moment. It's `OutOfResources`, which counts as busy, and an error that is about the file (a refusal) stays `Unavailable` and is not busy.
     #[test]
     fn running_out_of_descriptors_is_busy_and_a_refusal_is_not() {
+        let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         for errno in [errno::EMFILE, errno::ENFILE, errno::EAGAIN, errno::ENOMEM] {
             worked();
             fail_next_open_with(errno);
@@ -171,6 +175,7 @@ mod tests {
     /// Failure: the shared memory a renderer needs not being had (`shm_open`, `ftruncate` or `mmap` out of descriptors, memory or space) failed the document for good. It's `OutOfResources`; a refusal is `Unavailable`.
     #[test]
     fn shared_memory_out_of_space_is_busy_and_a_refusal_is_not() {
+        let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let file = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
         let attempt = |errno: i32| {
             fail_next_shared_memory_with(errno);
@@ -188,6 +193,8 @@ mod tests {
     /// Failure: an out-of-resources that goes on (our own descriptors leaked) was held and asked again for ever with no word, every page blank all session. From `MAX_BUSY` in a row it's `Unavailable`, which the person is told, and a success between them starts the count again.
     #[test]
     fn a_run_of_out_of_resources_ends_as_unavailable_and_a_success_starts_it_again() {
+        let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        worked();
         let file = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
         let asked = || {
             fail_next_shared_memory_with(errno::EMFILE);
@@ -209,6 +216,7 @@ mod tests {
     /// Failure: an open that works followed by a shared memory that doesn't (our own descriptors leaked, one below the limit) reset the count at the open, so it never passed one and the page was held with no word for ever. The run is of the whole renderer: `MAX_BUSY` of these in a row end as `Unavailable`.
     #[test]
     fn an_open_that_works_doesnt_end_a_run_of_shared_memory_failures() {
+        let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let path = std::env::temp_dir().join(format!("recto-oor-{}", std::process::id()));
         std::fs::write(&path, b"%PDF-1.4\n").unwrap();
         worked();
@@ -219,6 +227,37 @@ mod tests {
             last = DocRenderer::with_file(file, &path, None, config(), Policy::default()).err();
         }
         std::fs::remove_file(&path).unwrap();
+        assert_eq!(last, Some(RenderFailure::Unavailable));
+    }
+
+    /// Failure: the megabytes of shared memory a page's strips are drawn into (`draw_whole_page`, for a file, a print or a snapshot) not being had for a moment came out as `Unavailable`, which the reader counts as the whole file failing. It's `OutOfResources` (busy), through the same count as a renderer's own memory; a refusal stays `Unavailable`, and a run of them ends at `MAX_BUSY`.
+    #[test]
+    fn a_strip_surface_out_of_memory_is_busy_and_a_refusal_is_not() {
+        let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        use crate::{OutputCaps, draw_whole_page_sized};
+        let file = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
+        let attempt = |errno: i32| {
+            worked();
+            let mut doc = DocRenderer::with_file(file.try_clone().unwrap(), Path::new("/dev/null"), None, config(), Policy::default()).unwrap();
+            fail_next_shared_memory_with(errno);
+            draw_whole_page_sized(&mut doc, 0, (612.0, 792.0), 1.0, 0, &OutputCaps::default(), &mut None, |_| Ok(())).err()
+        };
+        for errno in [errno::EMFILE, errno::ENFILE, errno::EAGAIN, errno::ENOMEM, errno::ENOSPC] {
+            let failure = attempt(errno);
+            assert_eq!(failure, Some(RenderFailure::OutOfResources), "errno {errno}");
+            assert!(failure.unwrap().is_busy());
+        }
+        let failure = attempt(EACCES).unwrap();
+        assert_eq!(failure, RenderFailure::Unavailable);
+        assert!(!failure.is_busy());
+        // The run bound counts these too: MAX_BUSY in a row, with nothing had between, end as Unavailable.
+        worked();
+        let mut doc = DocRenderer::with_file(file.try_clone().unwrap(), Path::new("/dev/null"), None, config(), Policy::default()).unwrap();
+        let mut last = None;
+        for _ in 0..MAX_BUSY {
+            fail_next_shared_memory_with(errno::ENOMEM);
+            last = draw_whole_page_sized(&mut doc, 0, (612.0, 792.0), 1.0, 0, &OutputCaps::default(), &mut None, |_| Ok(())).err();
+        }
         assert_eq!(last, Some(RenderFailure::Unavailable));
     }
 }
