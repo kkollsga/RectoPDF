@@ -292,6 +292,7 @@ printf '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersio
 # The app's `recto` answers a quiet run as a release that drew does, and refuses a test's verbs; its installer unpacks a zip.
 logger recto 'case "$1 $2" in
   "qa state") echo "{\"data\":{\"app\":{\"pages\":{\"tile_layers\":1}},\"reader\":{\"settled\":true,\"pages\":1,\"tiles\":{\"attached\":1}},\"memory\":{\"workers_walled\":1},\"update\":{\"build\":\"release\"}}}" ;;
+  "contents --generated") if [ -n "${STUB_NO_HEADINGS:-}" ]; then echo "{\"data\":{\"entries\":[]}}"; else echo "{\"data\":{\"entries\":[{\"title\":\"1 Introduction\"}]}}"; fi ;;
   "wait contents-generated") [ -z "${STUB_WAIT_FAILS:-}" ] || exit 1 ;;
   "qa update-clock"|"qa as-person"|"qa owner-edit"|"qa save-as"|"qa save-from") exit 1 ;;
 esac' "$MA/Contents/MacOS/recto"
@@ -351,6 +352,10 @@ hasnt "release-zip: nor checks a zip" "check-zip" "$calls"
 out=$(STUB_WAIT_FAILS=1 signing --check-signed --no-notarize); rc=$?
 check "release-zip: a run that can't make generated contents is refused" 1 "$rc"
 has "release-zip: and says so" "couldn't make generated contents" "$out"
+# Failure: the generated contents come back with no heading (the helper's answer or the check for hidden text drops it) and the release goes on.
+out=$(STUB_NO_HEADINGS=1 signing --check-signed --no-notarize); rc=$?
+check "release-zip: contents with no heading are refused" 1 "$rc"
+has "release-zip: and says so" "have no heading" "$out"
 # Failure: the release's own run of the stapled app no longer validates its ticket or checks the zip as the updater will.
 out=$(signing --check-signed); rc=$?
 calls=$(cat "$CALLS")
