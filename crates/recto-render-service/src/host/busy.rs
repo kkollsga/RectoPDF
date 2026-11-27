@@ -49,18 +49,7 @@ pub(super) fn loaded() -> bool {
     if let Some(said) = crate::test_deadline::load_said() {
         return said;
     }
-    one_minute_load().is_some_and(|load| is_loaded(load, std::thread::available_parallelism().map_or(1, usize::from)))
-}
-
-/// The one-minute load average, from `sysctl -n vm.loadavg` (`{ 1.50 2.00 3.00 }`): this crate holds no `unsafe`, so not `getloadavg`. Run only when a starved deadline kill is counted, a rare moment, and it reads nothing from the document.
-fn one_minute_load() -> Option<f64> {
-    let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "vm.loadavg"]).output().ok()?;
-    parse_load(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// The first number of `vm.loadavg`'s `{ a b c }`.
-fn parse_load(text: &str) -> Option<f64> {
-    text.trim().trim_start_matches('{').split_whitespace().next()?.parse().ok()
+    recto_platform::load_average_1m().is_some_and(|load| is_loaded(load, std::thread::available_parallelism().map_or(1, usize::from)))
 }
 
 /// The count to hold before a job whose stop is to go through [`draw_stopped`] or [`size_stopped`].
@@ -224,7 +213,7 @@ impl RenderFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_loaded, parse_load};
+    use super::is_loaded;
 
     /// Failure: the load is read against the wrong number, so a Mac with every core busy once (load = cores) counts as loaded and a hostile page gets twice the deadlines, or one at 3x its cores counts as idle.
     #[test]
@@ -233,12 +222,5 @@ mod tests {
         assert!(!is_loaded(14.9, 10));
         assert!(is_loaded(15.0, 10));
         assert!(is_loaded(45.0, 10));
-    }
-
-    /// Failure: the load read from a Mac's own output is misread (the brace taken as the number), so every Mac reads as idle and the loaded rule never applies.
-    #[test]
-    fn the_first_load_is_the_one_minute_one() {
-        assert_eq!(parse_load("{ 45.50 30.25 12.00 }\n"), Some(45.5));
-        assert_eq!(parse_load(""), None);
     }
 }

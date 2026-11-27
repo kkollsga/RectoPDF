@@ -221,6 +221,12 @@ pub mod registry;
 #[cfg_attr(not(target_os = "macos"), path = "thread_stub.rs")]
 pub mod thread;
 
+/// The system's one-minute load average, for telling a Mac too busy to run a worker from a page too slow to draw.
+#[cfg_attr(target_os = "macos", path = "load_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "load_stub.rs")]
+mod load;
+pub use load::load_average_1m;
+
 /// Leaving a process at once from a thread, with no exit handler waiting.
 pub mod leave;
 
