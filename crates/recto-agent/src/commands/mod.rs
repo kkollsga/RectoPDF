@@ -22,6 +22,7 @@ pub mod edit_mode;
 pub mod editing;
 pub mod export;
 pub mod finding;
+pub mod getting;
 pub mod highlight;
 pub mod linking;
 pub mod locating;
@@ -356,6 +357,8 @@ family! {
         Search(text::Search),
         Ref(locating::Ref),
         Link(page_link::Link),
+        #[line(getting::line::Get)]
+        Get(getting::Get),
         #[line(locating::line::Resolve)]
         Resolve(locating::Resolve),
         Index(text::Index),

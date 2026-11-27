@@ -1750,6 +1750,46 @@
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"resolve","reference":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
+    ok get Get { reference: Locator { .. }, tab: "active", grain: Hit, form: Text, max_chars: 16000 }
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":"#2","grain":"page","as":"markdown","max_chars":4000}
+    ok get Get { reference: Locator { .. }, tab: "#2", grain: Page, form: Markdown, max_chars: 4000 }
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":"paragraph"}
+    ok get Get { reference: Locator { .. }, tab: "active", grain: Paragraph, form: Text, max_chars: 16000 }
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":"nonsense"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--grain` is `hit`, `paragraph`, `section`, `page` or `chapter`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","as":"pdf"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--as` is `text` or `markdown`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":0}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--max-chars` is a whole number from 1 to 65536.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":65537}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--max-chars` is a whole number from 1 to 65536.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","as":null}
+    ok get Get { reference: Locator { .. }, tab: "active", grain: Hit, form: Text, max_chars: 16000 }
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":"many"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"get","ref":"not-a-reference-secret-123"}
+    refused {"error":{"candidates":[],"code":"bad_reference","exit":2,"message":"That isn't a reference RectoPDF made.","next":"Use the `ref` that `recto ref` gave, whole and unchanged."},"ok":false,"v":1}
+["get"]
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["get","r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","#2"]
+    ok get Get { reference: Locator { .. }, tab: "#2", grain: Hit, form: Text, max_chars: 16000 }
+{"cmd":"Get"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"highlight"}
     ok highlight Highlight { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None, reference: None }
 {"cmd":"highlight","tab":"#2","page":3,"to_page":4,"chars":"0-5","at":"10,10","to":"20,20","unit":"word"}

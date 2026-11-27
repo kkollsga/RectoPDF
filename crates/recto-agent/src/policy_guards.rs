@@ -234,6 +234,13 @@ pub(crate) fn every_command() -> Vec<Command> {
             chars: None,
             tab: tab(),
         }),
+        Command::from(crate::commands::getting::Get {
+            reference: crate::commands::locating::made_up_locator(recto_core::locator::Target::Page),
+            tab: tab(),
+            grain: crate::commands::getting::Grain::Page,
+            form: crate::commands::getting::Form::Text,
+            max_chars: 100,
+        }),
         Command::from(crate::commands::page_link::Link {
             page: 1,
             tab: tab(),

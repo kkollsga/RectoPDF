@@ -1968,6 +1968,36 @@
   refused cmd=unknown code=bad_command
 {"cmd":"resolve","reference":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
   refused cmd=unknown code=bad_command
+{"cmd":"get"}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":"nonsense"}
+  refused cmd=get code=usage
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","as":"pdf"}
+  refused cmd=get code=usage
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":0}
+  refused cmd=get code=usage
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":65537}
+  refused cmd=get code=usage
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","extra":1}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":null}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":{}}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":"many"}
+  refused cmd=unknown code=bad_command
+{"cmd":"get","ref":"not-a-reference-secret-123"}
+  refused cmd=get code=bad_reference
+["get"]
+  refused cmd=unknown code=bad_command
+{"cmd":"Get"}
+  refused cmd=unknown code=bad_command
 {"cmd":"highlight","extra":1}
   refused cmd=unknown code=bad_command
 {"cmd":"highlight","tab":{}}
