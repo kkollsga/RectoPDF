@@ -800,6 +800,7 @@ dependencies = [
  "recto-index",
  "recto-platform",
  "recto-proto",
+ "recto-render-service",
  "recto-session",
  "recto-testpdf",
  "recto-update",

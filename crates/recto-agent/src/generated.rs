@@ -83,9 +83,23 @@ pub fn reason_words(code: &str) -> &'static str {
         "helper_missing" => "the helper that finds them isn't installed",
         "helper_stopped" => "the helper that finds them stopped without an answer",
         "bad_answer" => "the helper's answer didn't hold up",
+        "structure_not_sandboxed" => "the helper that reads headings isn't in its sandbox, as this copy is signed wrong",
+        "structure_inside_another_sandbox" => "the helper that reads headings can't start inside another sandbox",
+        "structure_walls_failed" => "the helper that reads headings couldn't close itself off from the rest of macOS",
+        "structure_start_refused" => "macOS refused to start the helper that reads headings",
         "couldnt_write" => "they couldn't be kept on disk",
         "changed" => "the file changed while they were being made",
         _ => "something went wrong making them",
+    }
+}
+
+/// The code a failed job is told by: one of the four that say the structure helper couldn't be started walled, each with its own next step, and `generating_failed` for any other.
+fn failed_code(code: &str) -> Code {
+    match Code::listed(code) {
+        Some(
+            listed @ (Code::STRUCTURE_INSIDE_ANOTHER_SANDBOX | Code::STRUCTURE_NOT_SANDBOXED | Code::STRUCTURE_START_REFUSED | Code::STRUCTURE_WALLS_FAILED),
+        ) => listed,
+        _ => Code::GENERATING_FAILED,
     }
 }
 
@@ -126,12 +140,16 @@ pub(crate) fn not_ready(generating: &dyn Generating, keyed: &Keyed, pages: u32, 
             if code == "needs_password" { exit::PROTECTED } else { exit::FAILED },
         )
         .then("`recto contents` gives the file's own, if it has any.")),
-        GenState::Failed(code) => Err(AgentError::new(
-            Code::GENERATING_FAILED,
-            format!("Generated contents couldn't be made: {}.", reason_words(&code)),
-            exit::FAILED,
-        )
-        .then("Ask again in a minute.")),
+        GenState::Failed(code) => {
+            let which = failed_code(&code);
+            let error = AgentError::new(which, format!("Generated contents couldn't be made: {}.", reason_words(&code)), exit::FAILED);
+            // The helper's start failing for a reason a minute won't change says what to do about it itself (its row in the table); only the others are asked for again.
+            Err(if which == Code::GENERATING_FAILED {
+                error.then("Ask again in a minute.")
+            } else {
+                error
+            })
+        }
         state => {
             if ask && state == GenState::Idle {
                 generating.want(&keyed.path, keyed.key, pages);
@@ -181,6 +199,10 @@ pub fn failure_words(code: &str) -> &'static str {
         "over_memory" => "Finding the headings took more memory than it's allowed.",
         "out_of_time" => "Finding the headings took longer than it's allowed.",
         "helper_missing" => "The helper that finds headings isn't installed.",
+        "structure_not_sandboxed" => "This copy of RectoPDF is signed wrong, so it won't read headings. Installing it again from a release fixes it.",
+        "structure_inside_another_sandbox" => "RectoPDF can't read headings from inside another sandbox. Nothing is wrong with the install.",
+        "structure_walls_failed" => "RectoPDF's heading reader couldn't close itself off on this version of macOS, so it won't read the file.",
+        "structure_start_refused" => "macOS refused to start RectoPDF's heading reader. A security tool may be blocking it.",
         _ => "Something went wrong finding the headings. Click to try again.",
     }
 }
@@ -229,12 +251,71 @@ mod tests {
         assert!(!not_open_yet(&AgentError::new(Code::FILE_CHANGED, "changed", exit::FAILED)));
     }
 
+    /// A session whose one file's job failed with `code`.
+    struct Failed(&'static str);
+
+    impl super::Generating for Failed {
+        fn root(&self) -> &std::path::Path {
+            std::path::Path::new("/nonexistent/recto-generated")
+        }
+        fn want(&self, _: &std::path::Path, _: super::CorpusKey, _: u32) {}
+        fn state(&self, _: super::CorpusKey) -> super::GenState {
+            super::GenState::Failed(self.0.into())
+        }
+        fn held(&self, _: super::CorpusKey) -> Option<std::sync::Arc<super::Generated>> {
+            None
+        }
+        fn cancel(&self, _: Option<super::CorpusKey>) {}
+        fn cancel_files(&self, _: Option<&[std::path::PathBuf]>) {}
+        fn making(&self, _: Option<&[std::path::PathBuf]>) -> bool {
+            false
+        }
+    }
+
+    /// Failure: a helper that couldn't start walled is told as any other failure, "ask again in a minute", so an agent asks again and again for something a minute won't change; or its own
+    /// next step (that the copy is signed wrong, that a sandbox is in the way) is lost. Each of the four gets its own code and the table's next step, any other failure stays `generating_failed`.
+    #[test]
+    fn a_helper_that_could_not_start_walled_is_told_by_its_own_code() {
+        use super::{Code, Keyed, not_ready};
+        use crate::code::Next;
+        let key = super::CorpusKey::from_hex(&"ab".repeat(32)).unwrap();
+        let keyed = Keyed { path: "/d/a.pdf".into(), key };
+        for (reason, code) in [
+            ("structure_not_sandboxed", Code::STRUCTURE_NOT_SANDBOXED),
+            ("structure_inside_another_sandbox", Code::STRUCTURE_INSIDE_ANOTHER_SANDBOX),
+            ("structure_walls_failed", Code::STRUCTURE_WALLS_FAILED),
+            ("structure_start_refused", Code::STRUCTURE_START_REFUSED),
+            ("over_memory", Code::GENERATING_FAILED),
+            ("something the helper made up", Code::GENERATING_FAILED),
+        ] {
+            let Some(Err(error)) = not_ready(&Failed(reason), &keyed, 3, false) else {
+                panic!("{reason} isn't a failure")
+            };
+            assert_eq!(error.code, code, "{reason}");
+            if code == Code::GENERATING_FAILED {
+                assert_eq!(error.next, "Ask again in a minute.");
+            } else {
+                assert!(matches!(code.next(), Next::Says(words) if words == error.next), "{reason}: {}", error.next);
+            }
+        }
+    }
+
     /// Failure: a refusal or failure the helper names says the same as one it doesn't, so the pointer on the note can't say a protected file is never read, or that the helper's missing; or an unknown code says nothing.
     #[test]
     fn each_known_failure_has_its_own_words() {
         let fallback = failure_words("something new");
         assert!(!fallback.is_empty());
-        let known = ["needs_password", "couldnt_read", "over_memory", "out_of_time", "helper_missing"];
+        let known = [
+            "needs_password",
+            "couldnt_read",
+            "over_memory",
+            "out_of_time",
+            "helper_missing",
+            "structure_not_sandboxed",
+            "structure_inside_another_sandbox",
+            "structure_walls_failed",
+            "structure_start_refused",
+        ];
         for code in known {
             assert_ne!(failure_words(code), fallback, "{code}");
         }

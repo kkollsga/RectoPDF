@@ -49,8 +49,8 @@ sleep crates/recto-cli/tests/restore.rs 17
 sleep crates/recto-cli/tests/restore/update.rs 18
 sleep crates/recto-cli/tests/socket.rs 3
 sleep crates/recto-control/src/client.rs 1
-sleep crates/recto-control/src/generating.rs 1
 sleep crates/recto-control/src/record_store.rs 1
+sleep crates/recto-control/src/structure.rs 1
 sleep crates/recto-control/tests/server.rs 14
 sleep crates/recto-core/src/save.rs 1
 sleep crates/recto-core/tests/save.rs 2
