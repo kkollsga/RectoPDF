@@ -28,6 +28,7 @@ mod file_wall_scan_tests;
 pub mod find;
 mod followed;
 pub mod generated;
+mod getting;
 pub mod human;
 pub mod index;
 pub mod keys;

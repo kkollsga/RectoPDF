@@ -14,6 +14,8 @@ const CHOICES: &[&[&str]] = &[
     super::view::LAYOUT_WORDS,
     PickUnit::WORDS,
     SvgText::WORDS,
+    super::getting::Grain::WORDS,
+    super::getting::Form::WORDS,
     crate::render::snapshot::Format::WORDS,
 ];
 

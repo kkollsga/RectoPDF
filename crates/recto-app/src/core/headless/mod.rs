@@ -20,6 +20,7 @@ mod find_announces;
 mod find_text_sealed;
 mod finding;
 mod first_show;
+mod getting;
 mod highlight;
 mod hit_links;
 mod idle_wakeups;

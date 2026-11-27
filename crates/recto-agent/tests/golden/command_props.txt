@@ -327,6 +327,11 @@ ref level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=tru
 resolve level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":1,"tab":"active"}
 resolve level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":1,"tab":"#2"}
 resolve level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":1,"tab":"#2"}
+get level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"grain":"hit","ref_page":1,"tab":"active"}
+get level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"grain":"page","ref_page":1,"tab":"#2"}
+get level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"grain":"paragraph","ref_page":1,"tab":"active"}
+get level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"grain":"hit","ref_page":1,"tab":"active"}
+get level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"grain":"hit","ref_page":1,"tab":"#2"}
 highlight level=control tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":null,"tab":"active","to_page":null}
 highlight level=control tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"#2","to_page":4}
 highlight level=control tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":null,"tab":"active","to_page":null}
