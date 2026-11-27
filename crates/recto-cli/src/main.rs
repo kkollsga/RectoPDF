@@ -5,6 +5,7 @@ mod handover;
 mod qa;
 mod qa_launch;
 mod qa_times;
+mod settle_wait;
 
 use recto_agent::Code;
 use recto_agent::commands::access::{Log, PermissionRequest};
@@ -170,6 +171,20 @@ fn through_session(invocation: &Invocation) -> i32 {
                 drop(client);
                 handover::install(&paths, invocation, zip, wait).map(Answer::Envelope)
             }
+            // `qa wait-settled --timeout T`: T bounds the app's no progress, not the wall clock (`settle_wait`).
+            (
+                Command::Qa(Qa::QaRead(QaRead {
+                    verb,
+                    timeout_ms: Some(timeout_ms),
+                    ..
+                })),
+                Ok(mut client),
+            ) if verb == "settled" => settle_wait::through(
+                &mut client,
+                Duration::from_millis(*timeout_ms),
+                Duration::from_secs(invocation.spec.client_wait_s),
+            )
+            .map(Answer::Envelope),
             (_, Ok(mut client)) => client.call(&invocation.wire(), wait).map(Answer::Envelope),
         }
     });
