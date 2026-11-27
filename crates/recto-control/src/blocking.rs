@@ -72,6 +72,9 @@ pub struct Walled {
     /// A helper to use in place of the installed one: the one laid out in `target/Helpers`, in a test.
     #[cfg(any(test, feature = "test-seams"))]
     exe: Option<PathBuf>,
+    /// Debug builds of the helper only: it spins this long before it reads, which is the time to change the file in.
+    #[cfg(any(test, feature = "test-seams"))]
+    busy_ms: Option<u64>,
 }
 
 impl Walled {
@@ -81,6 +84,8 @@ impl Walled {
             limits: BuildLimits::default(),
             #[cfg(any(test, feature = "test-seams"))]
             exe: None,
+            #[cfg(any(test, feature = "test-seams"))]
+            busy_ms: None,
         }
     }
 
@@ -91,7 +96,16 @@ impl Walled {
             priority: Priority::Inherited,
             limits: BuildLimits::default(),
             exe: Some(exe),
+            busy_ms: None,
         }
+    }
+
+    /// For a test: the helper spins this long before it reads, so a file can be changed under it.
+    #[cfg(any(test, feature = "test-seams"))]
+    #[must_use]
+    pub fn busy_for(mut self, ms: u64) -> Self {
+        self.busy_ms = Some(ms);
+        self
     }
 
     /// For a test: other limits, such as a document's size set small.
@@ -127,7 +141,13 @@ impl Runner for Walled {
         let pages = build.pages();
         let deadline = Instant::now() + time_limit(pages);
         let answer = BlocksAnswer::new(Store(build), pages);
-        let (ended, mut report) = structure.run(&job.path, job.key, &blocks::job(), answer, deadline, stop);
+        #[allow(unused_mut)]
+        let mut line = blocks::job();
+        #[cfg(any(test, feature = "test-seams"))]
+        if let Some(ms) = self.busy_ms {
+            line["test_busy_ms"] = ms.into();
+        }
+        let (ended, mut report) = structure.run(&job.path, job.key, &line, answer, deadline, stop);
         let outcome = outcome_of(ended, || CorpusKey::of_file(&job.path).is_ok_and(|now| now == job.key), stop, &mut report);
         (outcome, report)
     }

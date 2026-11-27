@@ -385,33 +385,29 @@ fn blocks_cancelled_part_way_nothing_is_written() {
 }
 
 /// Failure: a file swapped by a rename while its blocks are made gets blocks made of the old file's text (the helper holds the old file, so only a look at the path shows the swap): blocks are stored under the
-/// key of a file that is no longer there. The form bomb keeps the helper busy; the file is swapped once it's there, and whatever the job ends in, nothing is stored.
+/// key of a file that is no longer there. The helper is kept busy before it reads (debug builds), the file is swapped once it's there, and the job ends changed with nothing stored.
 #[test]
 fn a_file_rewritten_while_blocks_are_made_gets_none() {
-    let pdf = TempPdf::new("swap.pdf", &recto_testpdf::form_bomb());
+    let pdf = TempPdf::new("swap.pdf", &recto_testpdf::blocks::blocks_document());
     let key = CorpusKey::of_file(&pdf.0).unwrap();
-    let (root, find_key) = corpus_of(key, &[None]);
-    let generator = blocks_generator(&root);
+    let texts: Vec<Option<String>> = recto_testpdf::blocks::BLOCKS_TEXT.iter().map(|lines| Some(lines.join("\n"))).collect();
+    let (root, find_key) = corpus_of(key, &texts);
+    let generator = Generator::with_runners(
+        &root,
+        Box::new(Walled::at(walled_helper())),
+        Box::new(recto_control::blocking::Walled::at(walled_helper()).busy_for(1500)),
+    );
     agent_blocks::Blocking::want(&generator, blocks_ask(&pdf, key, &root, &find_key));
     helper_running(&generator, key);
     let other = pdf.0.with_extension("new");
     std::fs::write(&other, recto_testpdf::text_lines(&["a different file"])).unwrap();
     std::fs::rename(&other, &pdf.0).unwrap();
-    until_idle_or_over(&generator, key);
+    until_idle(&generator, key);
     assert!(
         StoredBlocks::open(&find_key, &root, key).unwrap().is_none(),
         "blocks were made for a file that was swapped"
     );
     assert!(!root.join(key.hex()).join("v4/app/blocks.bin").exists(), "a bin was left");
-}
-
-/// The job is over: no longer queued or running, whatever it was remembered as.
-fn until_idle_or_over(generator: &Generator, key: CorpusKey) {
-    let until = Instant::now() + Duration::from_secs(120);
-    while matches!(agent_blocks::Blocking::state(generator, key), GenState::Queued | GenState::Running) {
-        assert!(Instant::now() < until, "blocks never ended");
-        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
-    }
 }
 
 /// A store with no text for any page, that keeps the pages it was handed.

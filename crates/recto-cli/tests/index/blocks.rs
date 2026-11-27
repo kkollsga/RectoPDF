@@ -56,8 +56,15 @@ fn an_agent_gets_blocks_made_on_its_first_paragraph_ask() {
     let building = events.read().unwrap();
     assert_eq!(building["data"]["event"], "blocks_building", "{building}");
     let built = events.read().unwrap();
-    assert_eq!((built["data"]["event"].as_str(), built["data"]["state"].as_str()), (Some("blocks_built"), Some("ready")), "{built}");
-    assert_eq!(built["data"]["walled"], true, "the helper wasn't shown walled before it was given the document: {built}");
+    assert_eq!(
+        (built["data"]["event"].as_str(), built["data"]["state"].as_str()),
+        (Some("blocks_built"), Some("ready")),
+        "{built}"
+    );
+    assert_eq!(
+        built["data"]["walled"], true,
+        "the helper wasn't shown walled before it was given the document: {built}"
+    );
     assert!(built["data"]["stored"].as_u64().is_some_and(|stored| stored > 0), "{built}");
 
     let (cleared, code) = state.json(&["index", "clear"]);
@@ -91,6 +98,9 @@ fn blocks_measure() {
         let wall = asked.elapsed().as_secs_f64();
         events.read().unwrap();
         let built = events.read().unwrap();
-        println!("BLOCKS {file} code={code} index_s={index_seconds:.1} blocks_wall_s={wall:.1} ready={} built={}", ready["data"], built["data"]);
+        println!(
+            "BLOCKS {file} code={code} index_s={index_seconds:.1} blocks_wall_s={wall:.1} ready={} built={}",
+            ready["data"], built["data"]
+        );
     }
 }
