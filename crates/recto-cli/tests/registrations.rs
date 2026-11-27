@@ -467,3 +467,36 @@ fn a_stray_is_described_by_when_it_was_made_and_whose() {
     }
     assert!(describe(&copy, checkout, temp, 1_007_000, |_| true).contains("(alive)"));
 }
+
+/// Failure: a bed's folder is removed with one `remove_dir_all` while the installer or the new app is still writing into it, which leaves a file behind and so the folder, for this stage to find and fail on (2026-11-27, `recto-update-e2e-…-tree….noindex` left twice with its test passed). A writer that is still making files for a moment must not keep the folder; a folder that never goes says so, in a bounded time.
+#[test]
+fn a_bed_is_removed_though_something_is_still_writing_into_it() {
+    use std::time::Duration;
+    let folder = std::env::temp_dir().join(format!("recto-bed-removal-{}", std::process::id()));
+    std::fs::create_dir_all(folder.join("install")).unwrap();
+    let mut tries = 0;
+    let result = bed_folder::remove_when_quiet(&folder, Duration::from_secs(10), Duration::from_millis(5), |path| {
+        tries += 1;
+        match tries {
+            // The writer's late file keeps the folder: the call is refused, as `remove_dir_all` is when a file turns up under it.
+            1 => Err(std::io::Error::from_raw_os_error(66)),
+            // The call succeeds and the writer makes the folder again before anyone looks.
+            2 | 3 => {
+                std::fs::remove_dir_all(path)?;
+                std::fs::create_dir_all(path.join("install"))
+            }
+            _ => std::fs::remove_dir_all(path),
+        }
+    });
+    assert_eq!(result, Ok(()), "{tries} tries");
+    assert!(!folder.exists(), "gone, after {tries} tries");
+    assert_eq!(tries, 4, "tried again until the disk said it was gone");
+
+    // One that can't go says so, and in the time it was given.
+    let began = std::time::Instant::now();
+    let stuck = bed_folder::remove_when_quiet(Path::new("/"), Duration::from_millis(100), Duration::from_millis(10), |_| {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    });
+    assert!(stuck.is_err_and(|said| said.contains("was still there")));
+    assert!(began.elapsed() < Duration::from_secs(5));
+}

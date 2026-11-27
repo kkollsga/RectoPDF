@@ -51,3 +51,33 @@ pub fn parse_own(name: &str) -> Option<u32> {
     parts.next()?.parse::<u32>().ok()?;
     parts.next().is_none().then_some(pid)
 }
+
+/// Removes a bed's folder and does not stop at the first refusal. A process that is still writing into the folder (the installer after its swap, a new app's first files) makes one `remove_dir_all` leave a file or a folder behind (`ENOTEMPTY`), and a test that ignores that leaves a folder for the `registrations` stage to find (2026-11-27, twice). Tries again, in steps of `step`, until the folder is gone or `within` is up. Whether it is gone, and what the last refusal was if it isn't.
+pub fn remove_when_quiet(
+    folder: &Path,
+    within: std::time::Duration,
+    step: std::time::Duration,
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let began = std::time::Instant::now();
+    loop {
+        let last = match remove(folder) {
+            Ok(()) => None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => Some(error),
+        };
+        // Gone is what the disk says, not what the call said: a writer may have made it again.
+        if !folder.exists() {
+            return Ok(());
+        }
+        if began.elapsed() >= within {
+            return Err(format!(
+                "{} was still there {:.1} s after its test ended ({})",
+                folder.display(),
+                began.elapsed().as_secs_f64(),
+                last.map_or("removed, then made again by something still running".to_owned(), |error| error.to_string())
+            ));
+        }
+        std::thread::sleep(step); // ratchet: poll
+    }
+}

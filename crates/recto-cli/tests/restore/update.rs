@@ -553,6 +553,9 @@ impl Bed {
     }
 }
 
+/// How long a bed's folder is given to go: a hang guard, not a speed bound. Whatever still writes into it (an installer finishing its last step, a new app's first files) stops within a second or two; this is for a machine that is starved.
+const GONE_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl Drop for Bed {
     /// Every process of the bed's copies ended and the system told once to forget the folder's bundles (`end_cheaply`), before the folder goes. No look: an update's new app is started a moment before a test ends and can be registered after that, so the `registrations` stage, which runs last, settles every copy of this tree's together, once (2026-11-13: `install/RectoPDF.app` left registered; settling in each bed cost CI about a minute).
     fn drop(&mut self) {
@@ -562,7 +565,12 @@ impl Drop for Bed {
             .flat_map(|app| ["RectoPDF", "recto-updater"].map(|name| app.join("Contents/MacOS").join(name)))
             .collect();
         if crate::common::app::end_cheaply(&self.folder, &programs) {
-            let _ = std::fs::remove_dir_all(&self.folder);
+            // Not one try: the installer may still be writing into the folder after its swap (2026-11-27: a folder left twice).
+            if let Err(said) = crate::common::bed_folder::remove_when_quiet(&self.folder, GONE_WITHIN, Duration::from_millis(50), |path: &Path| {
+                std::fs::remove_dir_all(path)
+            }) {
+                eprintln!("bed not removed: {said}");
+            }
         }
     }
 }
