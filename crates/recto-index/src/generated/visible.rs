@@ -115,6 +115,9 @@ struct PageLetter {
     height: f32,
 }
 
+/// A page that could be checked: whether it's turned, and its letters.
+type CheckedPage = (bool, Vec<PageLetter>);
+
 /// A page's letters, made once for all its headings.
 fn page_letters(page: &PageInk) -> Vec<PageLetter> {
     let mut letters_in = Vec::new();
@@ -199,7 +202,7 @@ pub fn keep_visible(headings: Headings, ink: &mut dyn InkSource) -> Generated {
         ..Generated::default()
     };
     // The page being looked at, with its letters made once, or `None` for one that couldn't be checked.
-    let mut current: Option<(u32, Option<(bool, Vec<PageLetter>)>)> = None;
+    let mut current: Option<(u32, Option<CheckedPage>)> = None;
     for found in headings.found {
         // Between headings, not only between pages: a page of thousands of them is a long time.
         if ink.over() {
