@@ -61,15 +61,17 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// channel's sender and a descriptor of its own, and the waiting server holds that reference in place of its sender. One of each per app, not per tab or
 /// page view. And what a menu row and a person's answer are given in place of the app (`build/registries`): `RowParts`, 104 (twelve references, the
 /// listener's two words), `AnswerParts`, 88 (ten), and the `Person` they carry, 8 (one): made on the stack for one menu id or one answered command, never
-/// kept.
+/// kept. And D6's sheet (2026-11-27): Published 808 to 824 (one `SheetModel` of 112 bytes in the reader's view where the save problem's 96 sat: its kind, id
+/// and destructive index, so every feature's sheet is one record), and Inner 4,480 to 4,488 (Clear Leftovers' sheet slot, a mutex and a box that holds nothing
+/// at rest). One of each per app.
 const BUDGETS: [(&str, usize); 14] = [
-    ("Inner", 4480),
+    ("Inner", 4488),
     ("Lifecycle", 344),
     ("Serving", 1040),
     ("Window", 464),
     ("Notices", 80),
     ("Tools", 1448),
-    ("Published", 808),
+    ("Published", 824),
     ("AppState", 248),
     ("Sleeper", 608),
     ("OnDisk", 16),
