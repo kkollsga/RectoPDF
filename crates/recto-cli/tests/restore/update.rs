@@ -242,6 +242,9 @@ impl Bed {
             .args(["--version", version])
             .env("PATH", path)
             .env_remove("RECTO_SIGN_IDENTITY")
+            // This copy of the test build must not claim `rectopdf:` links (a click on this Mac would go to a test's app), so the script's check that a dev
+            // build claims them is skipped for it, and says so; the owner's dev builds are release builds, which carry it.
+            .env("RECTO_DEV_BUILD_UNCLAIMED", "1")
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));

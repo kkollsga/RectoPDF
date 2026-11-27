@@ -8,7 +8,7 @@
 # the prologue and carries state only inside itself: a segment's header says what it starts from, and a new case goes in the segment whose state it needs
 # (or a new one). Run with no argument, the script starts every segment as a process of its own, CHECK_TEST_JOBS at a time (default 3: CI's cores), keeps each one's
 # output in its own file, and prints them all, in order, whole. CHECK_TEST_SEGMENT=<name> runs one alone. The longest are first, so none starts last.
-SEGMENTS="N1 J2 D K1 C N2 N3 J1 F B A L M I K2 G O P1 P2 P3 P4 P5"
+SEGMENTS="N1 J2 D K1 C N2 N3 J1 F B A L M I K2 G O P1 P2 P3 P4 P5 Q"
 set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -z "${CHECK_TEST_SEGMENT:-}" ]; then
@@ -1738,6 +1738,25 @@ check "CHECK_APP_TIER=free: no wait, no lock taken or touched" "0 $before" "$rc 
 out=$(CI=1 CHECK_APP_TIER_WAIT=1 tfull); rc=$?
 check "on CI a lock is never waited on" "0 no" "$rc $(printf '%s' "$out" | grep -q 'waiting for the app tier' && echo yes || echo no)"
 drop_holder
+}
+
+seg_Q() {
+# Failure (8.4): a development package that doesn't claim `rectopdf:` links goes out as the owner's, so a click on a link does nothing; or the switch a test's
+# package uses to skip that check works in a release. A fake bundle with a version and no URL types: refused without the variable (before anything is signed);
+# with it, said plainly, and not refused for that; and release-zip.sh refuses the variable before it builds anything.
+version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$SOURCE/Cargo.toml" | head -1)
+app="$X/q/RectoPDF.app"
+mkdir -p "$app/Contents/MacOS" && printf '#!/bin/sh\n' > "$app/Contents/MacOS/RectoPDF" && chmod +x "$app/Contents/MacOS/RectoPDF"
+printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>' "$version" > "$app/Contents/Info.plist"
+out=$("$SOURCE/tools/dev-build.sh" --package "$app" --out "$X/q/out" --version "$version.1" 2>&1); rc=$?
+check "a dev package that doesn't claim rectopdf: links is refused" "1" "$rc"
+has "and says so" "the build doesn't claim rectopdf: links" "$out"
+out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/tools/dev-build.sh" --package "$app" --out "$X/q/out" --version "$version.1" 2>&1)
+has "with the test's variable it says plainly the package is for a test" "this package doesn't claim rectopdf: links, and is for a test" "$out"
+case "$out" in *"the build doesn't claim"*) echo "FAIL  with the variable it was still refused for the claim"; fails=$((fails + 1)) ;; *) echo "ok    and isn't refused for the claim" ;; esac
+out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/app/release-zip.sh" --allow-dirty 2>&1); rc=$?
+check "release-zip.sh refuses the variable" "1" "$rc"
+has "naming it" "RECTO_DEV_BUILD_UNCLAIMED is for a test's dev package" "$out"
 }
 
 seg_"$CHECK_TEST_SEGMENT"

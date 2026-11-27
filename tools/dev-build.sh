@@ -39,7 +39,13 @@ package() {
   [[ "$dev" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.[1-9][0-9]{0,8}$ ]] || fail "$dev isn't X.Y.Z.N with N from 1"
   [ -x "$built/Contents/MacOS/RectoPDF" ] || fail "no app at $built"
   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")" = "$release" ] || fail "the app at $built isn't $release"
-  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$built/Contents/Info.plist" 2>/dev/null)" = "rectopdf" ] || fail "the build doesn't claim rectopdf: links"
+  # Skipped only for a test's copy of a non-release build (RECTO_DEV_BUILD_UNCLAIMED, set by restore/update.rs, never by app/release-zip.sh, which refuses
+  # it), which must not claim the scheme. Said plainly, so a package made so is never taken for an owner's.
+  if [ -n "${RECTO_DEV_BUILD_UNCLAIMED:-}" ]; then
+    echo "this package doesn't claim rectopdf: links, and is for a test" >&2
+  else
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$built/Contents/Info.plist" 2>/dev/null)" = "rectopdf" ] || fail "the build doesn't claim rectopdf: links"
+  fi
   # A folder of its own, so the app it's made from can be anywhere, the folder it's zipped into included.
   local staging="$out/.packaging"
   rm -rf "$staging"

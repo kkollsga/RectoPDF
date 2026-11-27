@@ -76,6 +76,8 @@ VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}
 TAG="v$VERSION"
 
 # Compiled in: this is what makes it a release, and it can't be turned on or off afterwards.
+# A release claims `rectopdf:` links; the one switch that lets a package skip that is a test's (tools/dev-build.sh), and never a release's.
+[ -z "${RECTO_DEV_BUILD_UNCLAIMED:-}" ] || { echo "RECTO_DEV_BUILD_UNCLAIMED is for a test's dev package, not a release" >&2; exit 1; }
 export RECTO_RELEASE=1
 APP="$APP_DIR/build.noindex/RectoPDF.app"
 OUT="$APP_DIR/build.noindex/release"

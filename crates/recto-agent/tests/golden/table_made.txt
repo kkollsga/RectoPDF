@@ -550,8 +550,8 @@ row 137 qa pointer: 3bbcbbcda1d84f00 706 bytes
 help qa pointer: 007646d4d7627cde 471 bytes
 usage qa pointer: 71edfee630f273f6 24 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 138 qa copied: e0cd89bc336a13e7 768 bytes
-help qa copied: 8d25c30dab17d0ca 579 bytes
+row 138 qa copied: 2c2adefb691156c1 940 bytes
+help qa copied: 4963d14d0959edbc 751 bytes
 usage qa copied: 6712c3a049f4ada6 15 bytes
 by tag qa_read: 0f4d042b7914a736 8 bytes
 row 139 qa paste: 2065a79d85288a85 649 bytes
@@ -787,6 +787,6 @@ family removal: ef8f8cbb2bd6a405 516 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: a70f0b34c849e858 13427 bytes
-help --json: abaed88d30c28a8c 153660 bytes
+help --json: b5996f655b2ccc12 153832 bytes
 SKILL.md: 9c2e65c09a0dec48 28708 bytes
 REFERENCE.md: 72b53193f842be54 99755 bytes
