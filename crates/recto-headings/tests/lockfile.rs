@@ -40,7 +40,10 @@ fn the_helper_and_the_app_pin_the_same_lopdf() {
 fn blocks_rules_name_the_pinned_distillpdf() {
     let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest = std::fs::read_to_string(here.join("Cargo.toml")).unwrap();
-    let line = manifest.lines().find(|line| line.starts_with("distillpdf = ")).expect("a distillpdf dependency");
+    let line = manifest
+        .lines()
+        .find(|line| line.starts_with("distillpdf = "))
+        .expect("a distillpdf dependency");
     let rev = line.split("rev = \"").nth(1).and_then(|rest| rest.split('"').next()).expect("a pinned rev");
     let named = recto_index::corpus::BLOCKS_RULES.split(' ').nth(1).expect("a revision in BLOCKS_RULES");
     assert!(rev.starts_with(named) && named.len() >= 7, "BLOCKS_RULES names {named}, the pin is {rev}");

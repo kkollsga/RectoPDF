@@ -83,7 +83,11 @@ fn blocks_of(page: u32, chars: u32, extra: u32) -> PageBlocks {
     };
     if chars < 30 {
         // A page with no text maps nothing.
-        return PageBlocks { page, chars, blocks: Vec::new() };
+        return PageBlocks {
+            page,
+            chars,
+            blocks: Vec::new(),
+        };
     }
     let mut blocks = vec![block(Kind::Heading, 0, 4), block(Kind::Paragraph, 5, 20)];
     for item in 0..extra.min(3) {
@@ -102,7 +106,7 @@ fn tally(pages: u32) -> BlocksTally {
 
 fn building(root: &Path) -> BlocksBuild {
     match BlocksBuild::begin(tk(), root, KEY, &BuildLimits::default()) {
-        Begin::Building(build) => build,
+        Begin::Building(build) => *build,
         other => panic!("expected a build, got {other:?}"),
     }
 }
@@ -139,6 +143,8 @@ fn rewrite_header(root: &Path, change: impl FnOnce(&mut Vec<u8>)) {
     write_sealed(&seal, &header_path(&paths), Purpose::BlocksHeader, &plain, true).unwrap();
 }
 
+type Damage = Box<dyn Fn(&mut Vec<u8>)>;
+
 fn files(root: &Path) -> (bool, bool) {
     let paths = paths(root);
     (header_path(&paths).exists(), bin_path(&paths).exists())
@@ -163,7 +169,10 @@ fn stored_blocks_read_back_page_by_page_as_put() {
     let stored = stored(&temp.0);
     assert_eq!(*stored.made(), made);
     assert_eq!((made.pages, made.stored[Shape::Heading.index()], made.dropped[Shape::Table.index()]), (5, 5, 1));
-    assert_eq!(made.bytes, fs::metadata(bin_path(&paths(&temp.0))).unwrap().len() + fs::metadata(header_path(&paths(&temp.0))).unwrap().len());
+    assert_eq!(
+        made.bytes,
+        fs::metadata(bin_path(&paths(&temp.0))).unwrap().len() + fs::metadata(header_path(&paths(&temp.0))).unwrap().len()
+    );
     for (page, (blocks, chars)) in put.iter().enumerate() {
         assert_eq!(&stored.page(page as u32, *chars).unwrap(), blocks, "page {page}");
     }
@@ -234,7 +243,9 @@ fn blocks_count_against_max_doc_bytes_at_the_limit_and_one_over() {
         ..BuildLimits::default()
     };
     remove_blocks(&temp.0, KEY);
-    let Begin::Building(mut build) = BlocksBuild::begin(tk(), &temp.0, KEY, &at) else { panic!() };
+    let Begin::Building(mut build) = BlocksBuild::begin(tk(), &temp.0, KEY, &at) else {
+        panic!()
+    };
     put_pages(&mut build, 0..3);
     assert_eq!(build.finish(&tally(3)).unwrap().bytes, whole.bytes, "exactly at the limit is let through");
     remove_blocks(&temp.0, KEY);
@@ -242,7 +253,9 @@ fn blocks_count_against_max_doc_bytes_at_the_limit_and_one_over() {
         max_doc_bytes: at.max_doc_bytes - 1,
         ..at
     };
-    let Begin::Building(mut build) = BlocksBuild::begin(tk(), &temp.0, KEY, &over) else { panic!() };
+    let Begin::Building(mut build) = BlocksBuild::begin(tk(), &temp.0, KEY, &over) else {
+        panic!()
+    };
     let mut chars = Vec::new();
     for page in 0..2 {
         assert!(build.text(page, &mut chars));
@@ -279,11 +292,20 @@ fn another_rules_tag_is_not_damage_and_damage_is_refused() {
     let _ = made(&temp.0, 4);
     assert_eq!(*stored(&temp.0).made(), whole, "the next build made them again");
 
-    let damage: [(&str, Box<dyn Fn(&mut Vec<u8>)>); 6] = [
-        ("a gap in the table", Box::new(|plain| plain[HEADER_FIXED + ENTRY] = plain[HEADER_FIXED + ENTRY].wrapping_add(1))),
-        ("a length past what a record can be", Box::new(|plain| plain[HEADER_FIXED + 4..HEADER_FIXED + 6].copy_from_slice(&u16::MAX.to_le_bytes()))),
+    let damage: [(&str, Damage); 6] = [
+        (
+            "a gap in the table",
+            Box::new(|plain| plain[HEADER_FIXED + ENTRY] = plain[HEADER_FIXED + ENTRY].wrapping_add(1)),
+        ),
+        (
+            "a length past what a record can be",
+            Box::new(|plain| plain[HEADER_FIXED + 4..HEADER_FIXED + 6].copy_from_slice(&u16::MAX.to_le_bytes())),
+        ),
         ("more pages than the table has", Box::new(|plain| plain[16] += 1)),
-        ("more pages without text than pages", Box::new(|plain| plain[20..24].copy_from_slice(&99u32.to_le_bytes()))),
+        (
+            "more pages without text than pages",
+            Box::new(|plain| plain[20..24].copy_from_slice(&99u32.to_le_bytes())),
+        ),
         ("a table stored", Box::new(|plain| plain[28 + 6 * 4] = 1)),
         ("a bin length that isn't the table's", Box::new(|plain| plain[HEADER_FIXED - 8] ^= 1)),
     ];
@@ -316,7 +338,11 @@ fn another_rules_tag_is_not_damage_and_damage_is_refused() {
     fs::write(bin_path(&paths(&temp.0)), &bin).unwrap();
     let stored = stored(&temp.0);
     for page in 0..2 {
-        assert_eq!(stored.page(page, text_of(page).chars().count() as u32), Err(OpenError::Damaged), "page {page} opened as another's");
+        assert_eq!(
+            stored.page(page, text_of(page).chars().count() as u32),
+            Err(OpenError::Damaged),
+            "page {page} opened as another's"
+        );
     }
     assert!(stored.page(2, text_of(2).chars().count() as u32).is_ok(), "an untouched page");
 }
@@ -335,7 +361,10 @@ fn a_clear_or_sweep_skips_a_folder_being_built_and_takes_it_after() {
     };
     assert_eq!(evict(&temp.0, &sweep, None).unwrap().corpora, 0);
     assert!(temp.0.join(KEY.hex()).exists());
-    assert!(matches!(BlocksBuild::begin(tk(), &temp.0, KEY, &BuildLimits::default()), Begin::Busy), "a second build waits its turn");
+    assert!(
+        matches!(BlocksBuild::begin(tk(), &temp.0, KEY, &BuildLimits::default()), Begin::Busy),
+        "a second build waits its turn"
+    );
     drop(build);
     assert_eq!(evict(&temp.0, &sweep, None).unwrap().corpora, 1, "taken after the build");
     assert!(!temp.0.join(KEY.hex()).exists());
@@ -352,7 +381,9 @@ fn a_new_version_of_the_file_takes_the_old_versions_blocks() {
     let first = CorpusKey::of_file(&file).unwrap();
     let feed = || Feed { pages: 2, no_text: Vec::new() };
     build_for_file(tk(), &file, &root, first, &mut feed(), &DocMeta::default(), &BuildLimits::default()).unwrap();
-    let Begin::Building(mut build) = BlocksBuild::begin(tk(), &root, first, &BuildLimits::default()) else { panic!() };
+    let Begin::Building(mut build) = BlocksBuild::begin(tk(), &root, first, &BuildLimits::default()) else {
+        panic!()
+    };
     put_pages(&mut build, 0..2);
     build.finish(&tally(2)).unwrap();
     assert!(StoredBlocks::open(tk(), &root, first).unwrap().is_some());
@@ -380,7 +411,10 @@ fn begin_says_what_it_found_and_a_page_without_text_has_none() {
     .unwrap();
     assert!(matches!(outcome, BuildOutcome::Ready { .. }));
     let other = crate::seal::grant_for(tk(), CorpusKey([5; 32])).unwrap();
-    assert!(matches!(BlocksBuild::begin(&other, &temp.0, KEY, &BuildLimits::default()), Begin::NotIndexed), "a key bound to another corpus");
+    assert!(
+        matches!(BlocksBuild::begin(&other, &temp.0, KEY, &BuildLimits::default()), Begin::NotIndexed),
+        "a key bound to another corpus"
+    );
     let mut build = building(&temp.0);
     let mut chars = vec!['x'; 9];
     assert!(build.text(0, &mut chars));
@@ -390,7 +424,10 @@ fn begin_says_what_it_found_and_a_page_without_text_has_none() {
     assert!(!build.text(9, &mut chars), "a page the document doesn't have");
     drop(build);
     let grant = crate::seal::grant_for(tk(), KEY).unwrap();
-    assert!(matches!(BlocksBuild::begin(&grant, &temp.0, KEY, &BuildLimits::default()), Begin::Building(_)), "the grant for this corpus builds");
+    assert!(
+        matches!(BlocksBuild::begin(&grant, &temp.0, KEY, &BuildLimits::default()), Begin::Building(_)),
+        "the grant for this corpus builds"
+    );
     let _ = made(&temp.0, 3);
     assert!(matches!(BlocksBuild::begin(tk(), &temp.0, KEY, &BuildLimits::default()), Begin::Made(made) if made.pages == 3));
 }

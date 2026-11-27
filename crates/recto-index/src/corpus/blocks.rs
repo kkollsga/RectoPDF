@@ -98,7 +98,7 @@ pub enum PutError {
 /// What starting a build found.
 #[derive(Debug)]
 pub enum Begin {
-    Building(BlocksBuild),
+    Building(Box<BlocksBuild>),
     /// There are blocks, made under these rules, for this many pages. Nothing to do.
     Made(BlocksMade),
     /// No finished corpus for this key, or one this key may not touch.
@@ -130,7 +130,10 @@ pub struct BlocksBuild {
 
 impl std::fmt::Debug for BlocksBuild {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        out.debug_struct("BlocksBuild").field("next", &self.next).field("pages", &self.pages()).finish_non_exhaustive()
+        out.debug_struct("BlocksBuild")
+            .field("next", &self.next)
+            .field("pages", &self.pages())
+            .finish_non_exhaustive()
     }
 }
 
@@ -165,7 +168,9 @@ impl BlocksBuild {
             Folders::Absent => return Begin::NotIndexed,
             Folders::Unsafe => return Begin::Damaged,
         }
-        let Ok(lock) = local::append_private_file(&paths.lock) else { return Begin::Damaged };
+        let Ok(lock) = local::append_private_file(&paths.lock) else {
+            return Begin::Damaged;
+        };
         if lock.try_lock().is_err() {
             return Begin::Busy;
         }
@@ -181,8 +186,10 @@ impl BlocksBuild {
         }
         // Whatever is there isn't this build's, or is another's: the header goes first, so nothing is believed while the bin is being replaced.
         remove_files(&paths);
-        let Ok(bin) = local::append_private_file(&bin_path(&paths)) else { return Begin::Damaged };
-        Begin::Building(Self {
+        let Ok(bin) = local::append_private_file(&bin_path(&paths)) else {
+            return Begin::Damaged;
+        };
+        Begin::Building(Box::new(Self {
             table: Vec::with_capacity(ready.pages() as usize),
             ready,
             root: root.to_path_buf(),
@@ -195,7 +202,7 @@ impl BlocksBuild {
             page_buffer: seal::Plain::default(),
             chunk: Vec::new(),
             finished: false,
-        })
+        }))
     }
 
     /// The document's pages, as the corpus has them.
@@ -322,7 +329,7 @@ impl StoredBlocks {
         if !seal::may_key(find_key, key) {
             return Ok(None);
         }
-        if !matches!(fs::symlink_metadata(header_path(&paths)), Ok(_)) {
+        if fs::symlink_metadata(header_path(&paths)).is_err() {
             return Ok(None);
         }
         let seal = read_seal(find_key, &paths).ok_or(Damaged)?;
@@ -397,7 +404,7 @@ fn parse(seal: &CorpusSeal, paths: &CorpusPaths) -> Result<Option<Parsed>, Damag
     }
     let mut table = Vec::with_capacity(made.pages as usize);
     let mut at = 0u64;
-    for entry in plain[HEADER_FIXED..].chunks_exact(ENTRY) {
+    for entry in plain[HEADER_FIXED..].as_chunks::<ENTRY>().0 {
         let offset = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
         let len = u16::from_le_bytes([entry[4], entry[5]]);
         if u64::from(offset) != at || usize::from(len) < record_len(0) || usize::from(len) > MAX_RECORD_BYTES {
