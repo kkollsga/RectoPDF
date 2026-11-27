@@ -298,10 +298,10 @@ app_tier_stopped() {
   rm -f "$app_tier_dir.bound.$CHECK_TOP_PID"
   exit 5
 }
-# A --like-ci round of an app test launches the app, so it holds the tier for its rounds. tools/check-like-ci.sh's own function runs inside; the lock is
+# A --like-ci round of an app test launches the app, so it holds the tier for the round. tools/check-like-ci.sh's own function runs inside; the lock is
 # around it so that file stays as it is.
-eval "app_tier_like_inner() $(declare -f like_ci_rounds | tail -n +2)"
-like_ci_rounds() {
+eval "app_tier_like_inner() $(declare -f like_ci_round | tail -n +2)"
+like_ci_round() {
   local rc=0
   if [ "${LIKE_APP:-0}" = 1 ]; then
     trap app_tier_release EXIT
@@ -466,7 +466,7 @@ case "$mode" in
     esac
     ;;
   --like-ci)
-    export -f nt nt_jobs junit_failed args_without_filter rerun_failed rerun_table like_ci_rounds app_tier_like_inner like_ci_note app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_release
+    export -f nt nt_jobs junit_failed args_without_filter rerun_failed rerun_table like_ci_round like_ci_rounds like_ci_queue app_tier_like_inner like_ci_note app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_release
     status=0
     like_ci_main "${like_args[@]}" || status=$?
     app_tier_stopped
@@ -766,7 +766,8 @@ export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_
 export app_tier_dir CHECK_TOP_PID check_mark part runs_light runs_core mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
-tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
+# A --like-ci part takes the queue to itself for the tests only, not for the compile gate before them (coordinator, 2026-11-26).
+HEAVY_SOLO=${CHECK_LIKE_CI:+1} tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
 app_tier_stopped
 evidence_report "$status"
 [ "$mode" = --full ] || exit "$status"

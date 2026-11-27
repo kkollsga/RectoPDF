@@ -11,7 +11,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-pub const READY_WAIT: Duration = Duration::from_secs(30);
+/// How long an app that is starting may go with no progress (CPU time or pages read in) before it is called stuck, and how long in all it is given
+/// (coordinator, 2026-11-26: a start that is slow but working is waited for; the 30 s of wall clock killed those, and the hint it gave named a flag `qa start` hasn't).
+pub const READY_STALL: Duration = Duration::from_secs(10);
+pub const READY_CAP: Duration = Duration::from_secs(180);
 const MAX_READY_BYTES: usize = 64 * 1024;
 const MAX_STDERR_BYTES: usize = 4 * 1024;
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
@@ -71,6 +74,68 @@ pub struct Launch {
     pub time_limit: Option<Duration>,
     pub owner_pid: Option<u32>,
     pub open: Vec<PathBuf>,
+    pub patience: Patience,
+}
+
+/// How patient a launch is: the stall it tolerates and the most it waits in all. A test gives small ones to a stand-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Patience {
+    pub stall: Duration,
+    pub cap: Duration,
+}
+
+impl Default for Patience {
+    fn default() -> Self {
+        Self {
+            stall: READY_STALL,
+            cap: READY_CAP,
+        }
+    }
+}
+
+/// What to do about a start that has not said it is ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Wait,
+    Stalled,
+    Capped,
+}
+
+/// Wait or stop, from how long the start has run and how long since the process last made progress. The cap is checked first, so a busy start is still ended at it.
+#[must_use]
+pub fn ready_verdict(elapsed: Duration, since_progress: Duration, patience: Patience) -> Verdict {
+    if elapsed >= patience.cap {
+        Verdict::Capped
+    } else if since_progress >= patience.stall {
+        Verdict::Stalled
+    } else {
+        Verdict::Wait
+    }
+}
+
+/// What a process had used at a moment: CPU time, and pages read in (a start held up by swap reads pages and uses almost no CPU).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Marks {
+    pub cpu_ns: u64,
+    pub page_ins: u64,
+}
+
+fn marks_of(pid: u32) -> Option<Marks> {
+    recto_platform::local::process_counters(pid).map(|counters| Marks {
+        cpu_ns: counters.cpu_ns,
+        page_ins: counters.page_ins,
+    })
+}
+
+/// Whether the process has made progress since `mark`, which moves to `now` when it has. A page-in is progress. CPU is progress only at a hundredth of the stall
+/// since the mark (100 ms in 10 s): the app's own watchdog wakes every 250 ms while its UI thread is stuck, and those wake-ups are not a start working (review, 2026-11-26).
+pub fn progressed(mark: &mut Marks, now: Marks, patience: Patience) -> bool {
+    let enough = u64::try_from(patience.stall.as_nanos() / 100).unwrap_or(u64::MAX);
+    let worked = now.page_ins > mark.page_ins || now.cpu_ns.saturating_sub(mark.cpu_ns) >= enough;
+    if worked {
+        *mark = now;
+    }
+    worked
 }
 
 /// Starts the app and waits for its ready line.
@@ -122,7 +187,7 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
     let _ = std::thread::Builder::new().name("qa-ready".into()).spawn(move || {
         let _ = send.send(read_ready_line(BufReader::new(stdout), MAX_READY_BYTES));
     });
-    let said = receive.recv_timeout(READY_WAIT);
+    let said = wait_ready(&receive, child.id(), options.patience);
     let line = match said {
         Ok(Ok(line)) if !line.is_empty() => line,
         Ok(Err(error)) => {
@@ -141,8 +206,16 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
             );
             return Err(cleanup_error(&mut child, error, Duration::from_secs(1)));
         }
-        Err(_) => {
-            let error = AgentError::new(Code::TIMED_OUT, "The app wasn't ready in time, so it was stopped.", exit::TIMED_OUT);
+        Err(verdict) => {
+            let words = match verdict {
+                Verdict::Capped => format!("The app was still starting after {} s, so it was stopped.", options.patience.cap.as_secs()),
+                _ => format!(
+                    "The app made no progress for {} s while starting, so it was stopped.",
+                    options.patience.stall.as_secs()
+                ),
+            };
+            let error = AgentError::new(Code::TIMED_OUT, words, exit::TIMED_OUT)
+                .then("Try again when the Mac is less busy; `recto qa start` has no time option for this.");
             return Err(cleanup_error(&mut child, error, Duration::from_secs(1)));
         }
     };
@@ -158,6 +231,38 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
     };
     let ready = ready_value(&mut child, value, Duration::from_secs(1))?;
     Ok((child, ready))
+}
+
+/// The ready line, or why the wait ended without one. Progress is read about four times a stall, so a stuck start is called within a quarter of it past.
+fn wait_ready(receive: &mpsc::Receiver<std::io::Result<String>>, pid: u32, patience: Patience) -> Result<std::io::Result<String>, Verdict> {
+    let began = Instant::now();
+    let mut mark = marks_of(pid);
+    let mut last_progress = began;
+    let poll = (patience.stall / 4).clamp(Duration::from_millis(10), Duration::from_millis(500));
+    loop {
+        match receive.recv_timeout(poll) {
+            Ok(said) => return Ok(said),
+            // The reader ended without a line: the caller reads the app's end from its (empty) line.
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(Ok(String::new())),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // Counters that can't be read say nothing about progress, so only the cap ends such a wait.
+        match (mark.as_mut(), marks_of(pid)) {
+            (Some(mark), Some(now)) => {
+                if progressed(mark, now, patience) {
+                    last_progress = Instant::now();
+                }
+            }
+            (_, now) => {
+                mark = now;
+                last_progress = Instant::now();
+            }
+        }
+        match ready_verdict(began.elapsed(), last_progress.elapsed(), patience) {
+            Verdict::Wait => {}
+            stop => return Err(stop),
+        }
+    }
 }
 
 /// A readiness refusal or false process identity still owns the child until bounded cleanup.
@@ -212,6 +317,7 @@ pub fn start(
         time_limit: invocation.fields.get("time_limit_ms").and_then(Value::as_u64).map(Duration::from_millis),
         owner_pid: owner(invocation.fields.get("owner_pid").and_then(Value::as_u64), owner_from_env)?,
         open: Vec::new(),
+        patience: Patience::default(),
     };
     let (child, ready) = launch(&app, &paths, &options, environment)?;
     Ok((

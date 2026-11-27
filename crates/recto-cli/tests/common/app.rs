@@ -20,6 +20,7 @@ mod lifetime;
 #[path = "../../src/qa_launch.rs"]
 mod qa_launch;
 use lifetime::Lifetime;
+pub use lifetime::TEST_LIMIT;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -67,14 +68,14 @@ pub struct Run<'a> {
 }
 
 impl Run<'static> {
-    /// A run on a state folder of its own, for at most 2 minutes.
+    /// A run on a state folder of its own, for as long as a test may run.
     pub fn start() -> Option<Self> {
         Self::start_with(&[])
     }
 
     /// The same, with more of `qa start`'s flags.
     pub fn start_with(extra: &[&str]) -> Option<Self> {
-        Self::start_lasting(Duration::from_secs(120), extra)
+        Self::start_lasting(TEST_LIMIT, extra)
     }
 
     /// The same, for at most this long: for a test that waits on purpose for longer than a run's usual two minutes. A run's end at its limit is the app gone mid-test, as `session_ended`, so the limit has to outlast whatever the test is prepared to wait for.
@@ -183,9 +184,16 @@ impl Drop for OwnCopy {
     }
 }
 
+/// When this test's first run was started: the process is the test's, so cleanup can tell how much of the harness's limit is left.
+static TEST_BEGAN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn test_began() -> Instant {
+    *TEST_BEGAN.get_or_init(Instant::now)
+}
+
 /// Cancels private fixture program leases; scanned PIDs are observations only.
 fn end_runs(root: &Path, executables: &[PathBuf]) -> bool {
-    match copy_cleanup::end(root, executables, copy_cleanup::EXIT_CAP) {
+    match copy_cleanup::end(root, executables, copy_cleanup::exit_wait(test_began().elapsed())) {
         Ok(()) => true,
         Err(error) => {
             eprintln!("fixture cleanup retained {}: {error}", root.display());
@@ -231,7 +239,7 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
 }
 
 impl<'a> Run<'a> {
-    /// A run on a state folder that outlives it, for at most 3 minutes: quit, hand off or kill it, and start another on the same folder.
+    /// A run on a state folder that outlives it, for as long as a test may run: quit, hand off or kill it, and start another on the same folder.
     pub fn on(state: &'a State) -> Option<Self> {
         Self::on_with_env(state, &[])
     }
@@ -239,7 +247,7 @@ impl<'a> Run<'a> {
     /// [`Run::on`], with these in the app's environment, for a debug build's test seams such as `RECTO_TEST_SAVE_PAUSE`.
     #[allow(dead_code)] // Not every test binary uses a seam.
     pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
-        Some(Self::on_executable_with_env(state, &app_path()?, Duration::from_secs(3 * 60), env))
+        Some(Self::on_executable_with_env(state, &app_path()?, TEST_LIMIT, env))
     }
 
     /// A specific quiet fixture executable on existing state, retaining the Child returned by the one shared launcher.
@@ -353,6 +361,7 @@ impl<'a> Run<'a> {
 }
 
 fn launch(state: &State, args: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> (Child, u32) {
+    test_began();
     let launching = evidence::launching(state);
     let words = args.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
     let invocation = recto_agent::table::parse_cli(&words).expect("the public CLI parses launch options");

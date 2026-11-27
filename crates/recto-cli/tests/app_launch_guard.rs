@@ -503,22 +503,22 @@ fn long_session_keeps_its_owned_child_and_thirty_minute_limit() {
     assert!(launch.contains("Lifetime::Owned(child)"));
 }
 
-/// Failure: cleanup's wait for a copy's exit is a fixed 5 s, not the bound a quiet run has to arm its watcher (`READY_WAIT` plus the time to exit), and the
+/// Failure: cleanup's wait for a copy's exit is a fixed 5 s, not the bound a quiet run has to arm its watcher (`READY_CAP` plus the time to exit), and the
 /// watcher is armed after the ready line, so a run is up (and the start's cap spent) before it can notice its program go (CI: `a_copy_opened_and_dropped_at_once_is_forgotten`,
 /// 22.4 s under load 23, the app did exit).
 #[test]
 fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
     assert!(
-        copy_cleanup::EXIT_CAP >= qa_launch::READY_WAIT + copy_cleanup::EXIT_GRACE,
-        "EXIT_CAP {:?} is shorter than READY_WAIT {:?} plus the grace to exit",
+        copy_cleanup::EXIT_CAP >= qa_launch::READY_CAP + copy_cleanup::EXIT_GRACE,
+        "EXIT_CAP {:?} is shorter than READY_CAP {:?} plus the grace to exit",
         copy_cleanup::EXIT_CAP,
-        qa_launch::READY_WAIT
+        qa_launch::READY_CAP
     );
     let source = include_str!("common/app.rs");
     let end_runs = source.split("fn end_runs(").nth(1).expect("end_runs").split("\n}").next().unwrap();
     assert!(
-        end_runs.contains("copy_cleanup::EXIT_CAP"),
-        "end_runs gives cleanup a wait of its own, not EXIT_CAP"
+        end_runs.contains("copy_cleanup::exit_wait("),
+        "end_runs gives cleanup a wait of its own, not exit_wait (EXIT_CAP, cut to what the harness leaves)"
     );
     // The watch is armed by the end of the app's start, and the ready line is written by `ready`, which the host calls after `start` returned.
     let start = include_str!("../../recto-app/src/core/start.rs");
@@ -645,4 +645,179 @@ fn a_reused_pid_is_not_waited_for_as_the_copy() {
     };
     copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::from_secs(30), reused).unwrap();
     assert_eq!(std::fs::read(&program).unwrap(), b"original");
+}
+
+/// Failure: the start's wait is wall clock again, so a start that is slow but working (CPU or page-ins still rising) is stopped as a hung one is (CI lifecycle, 5 of 30 runs: "wasn't ready in time"),
+/// or one that has stopped is waited for to the cap, or the cap is not kept.
+#[test]
+fn a_start_is_waited_for_while_it_makes_progress_and_stopped_when_it_does_not() {
+    use qa_launch::{Patience, Verdict, ready_verdict};
+    use std::time::Duration;
+    let patience = Patience {
+        stall: Duration::from_secs(10),
+        cap: Duration::from_secs(180),
+    };
+    let at = |elapsed: u64, quiet: u64| ready_verdict(Duration::from_secs(elapsed), Duration::from_secs(quiet), patience);
+    assert_eq!(at(100, 0), Verdict::Wait, "far past the old 30 s, and still working");
+    assert_eq!(at(100, 9), Verdict::Wait);
+    assert_eq!(at(100, 10), Verdict::Stalled);
+    assert_eq!(at(11, 10), Verdict::Stalled, "a hang is stopped at the stall, not the cap");
+    assert_eq!(at(180, 0), Verdict::Capped, "working to the end is still ended at the cap");
+    assert_eq!(at(180, 50), Verdict::Capped);
+    assert!(qa_launch::READY_CAP > std::time::Duration::from_secs(30) && qa_launch::READY_STALL < qa_launch::READY_CAP);
+}
+
+/// Failure: a quiet run's own limit is shorter than the harness's, so the app ends mid-test while the test is still allowed to run (2026-11-26, a closed-window test),
+/// or a test still names a limit of its own.
+#[test]
+fn a_quiet_runs_limit_covers_what_the_harness_allows_a_test() {
+    let nextest = include_str!("../../../.config/nextest.toml");
+    let line = nextest
+        .lines()
+        .find(|line| line.trim_start().starts_with("slow-timeout"))
+        .expect("nextest's slow-timeout");
+    let number_after = |key: &str| -> u64 {
+        let rest = line.split(key).nth(1).unwrap_or_else(|| panic!("{key} in {line}"));
+        rest.trim_start_matches(|c: char| !c.is_ascii_digit())
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    };
+    let allowed = number_after("period") * number_after("terminate-after");
+    assert!(
+        lifetime::TEST_LIMIT.as_secs() >= allowed,
+        "TEST_LIMIT {:?} is under nextest's {allowed} s",
+        lifetime::TEST_LIMIT
+    );
+    for (name, source) in [("common/app.rs", include_str!("common/app.rs")), ("app/quiet.rs", include_str!("app/quiet.rs"))] {
+        assert!(
+            !source.contains("Duration::from_secs(120), &[]") && !source.contains("Duration::from_secs(120), extra"),
+            "{name} names a run limit of its own"
+        );
+    }
+}
+
+/// A shell script standing in for the app: it takes the app's arguments and ignores them.
+#[cfg(target_os = "macos")]
+fn stand_in(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("stand-in");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(target_os = "macos")]
+fn started(body: &str, stall_ms: u64, cap_ms: u64) -> (std::time::Duration, recto_agent::AgentError) {
+    let dir = std::env::temp_dir().join(format!("recto-ready-patience-{}-{}", std::process::id(), body.len() + stall_ms as usize));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = stand_in(&dir, body);
+    let paths = recto_control::StatePaths::overridden(&dir.join("state")).expect("a state folder in the temp folder");
+    let options = qa_launch::Launch {
+        patience: qa_launch::Patience {
+            stall: std::time::Duration::from_millis(stall_ms),
+            cap: std::time::Duration::from_millis(cap_ms),
+        },
+        ..Default::default()
+    };
+    let began = std::time::Instant::now();
+    let error = qa_launch::launch(&app, &paths, &options, &[]).expect_err("a stand-in that never says ready is stopped");
+    let took = began.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    (took, error)
+}
+
+/// Failure (the verdict, wired to the real counters): a start doing nothing runs to the cap as wall clock would, or one burning CPU is stopped at the stall.
+/// Stand-ins, not the app: about 2.6 s together.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_start_that_does_nothing_is_stopped_at_the_stall_and_one_that_works_runs_to_the_cap() {
+    // A cap far past the test: the "made no progress" words are the proof it was stopped at the stall, with no timing to pin.
+    let (_, error) = started("exec sleep 30", 300, 30_000);
+    assert!(error.message.contains("made no progress"), "{}", error.message);
+    let (busy, error) = started("while :; do :; done", 1_000, 1_500);
+    assert!(error.message.contains("still starting"), "{}", error.message);
+    assert!(
+        busy >= std::time::Duration::from_millis(1_500),
+        "a start that is working is waited for to the cap: {busy:?}"
+    );
+    assert!(!error.next.contains("--timeout"), "{}", error.next);
+}
+
+/// Failure (review, 2026-11-26): any rise in CPU time counts as progress, and the app's own watchdog wakes every 250 ms while its UI thread is stuck, so a start hung
+/// on the UI thread ran to the cap and was called "busy". A process that wakes often and does almost nothing is stopped at the stall.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_start_that_wakes_often_and_does_almost_nothing_is_stopped_at_the_stall() {
+    let (_, error) = started("exec perl -e 'select(undef,undef,undef,0.05) while 1'", 400, 30_000);
+    assert!(error.message.contains("made no progress"), "{}", error.message);
+}
+
+/// Failure: CPU counts as progress at any amount, or at one a hung start's wake-ups reach: it takes a hundredth of the stall since the last mark; a page-in always counts.
+#[test]
+fn cpu_is_progress_only_at_a_hundredth_of_the_stall_and_a_page_in_always() {
+    use qa_launch::{Marks, Patience, progressed};
+    use std::time::Duration;
+    let patience = Patience {
+        stall: Duration::from_secs(10),
+        cap: Duration::from_secs(180),
+    };
+    let mut marks = Marks { cpu_ns: 1_000, page_ins: 5 };
+    assert!(
+        !progressed(
+            &mut marks,
+            Marks {
+                cpu_ns: 1_000 + 99_000_000,
+                page_ins: 5
+            },
+            patience
+        ),
+        "99 ms of CPU in a 10 s stall is a watchdog's wake-ups"
+    );
+    assert!(
+        progressed(
+            &mut marks,
+            Marks {
+                cpu_ns: 1_000 + 100_000_000,
+                page_ins: 5
+            },
+            patience
+        ),
+        "100 ms is work, counted from the mark that was kept"
+    );
+    assert_eq!(marks.cpu_ns, 1_000 + 100_000_000);
+    assert!(
+        progressed(
+            &mut marks,
+            Marks {
+                cpu_ns: 1_000 + 100_000_000,
+                page_ins: 6
+            },
+            patience
+        ),
+        "a page-in is progress"
+    );
+}
+
+/// Failure (review, 2026-11-26): cleanup waits its whole 190 s for a copy's exit though the test is already 200 s into nextest's 300, so nextest kills the process mid-wait and the copy folder is left behind.
+#[test]
+fn cleanup_never_waits_past_the_harness_limit_on_a_test() {
+    use std::time::Duration;
+    let limit = lifetime::TEST_LIMIT;
+    assert_eq!(
+        copy_cleanup::exit_wait(Duration::ZERO),
+        copy_cleanup::EXIT_CAP,
+        "a test that has just begun gets the whole wait"
+    );
+    for since in [100, 150, 200, 250, 280] {
+        let since = Duration::from_secs(since);
+        assert!(
+            since + copy_cleanup::exit_wait(since) < limit,
+            "{since:?} into the test, cleanup would run past nextest's {limit:?}"
+        );
+    }
+    assert_eq!(copy_cleanup::exit_wait(limit * 2), copy_cleanup::MIN_EXIT_WAIT, "late or not, it still looks");
 }
