@@ -573,6 +573,7 @@ fn a_stop_right_after_the_gate_with_nothing_unlinked_says_nothing_was_cleared() 
     impl Steps for Swap {}
     let cleared = fx.clear(id, Who::Person, Instant::now(), &mut Swap(whole, false)).expect("started");
     assert!(cleared.stopped.is_some(), "{}", cleared.words);
+    assert_eq!(cleared.outcome, Outcome::Unchanged, "the outcome and the words are one fact: {}", cleared.words);
     assert!(cleared.words.contains("Nothing was cleared"), "{}", cleared.words);
     assert!(!cleared.words.contains("partly"), "{}", cleared.words);
 }

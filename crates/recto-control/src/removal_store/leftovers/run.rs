@@ -496,7 +496,13 @@ fn walk<A: Copy + Eq>(
         }
     }
     drop(leases);
-    let outcome = progress.outcome(plan).unwrap_or(Outcome::Unchanged);
+    // The outcome and the words are one fact: what `did` says was done. (`Progress` counts any Purge it was told of as an act, which a stop before the first
+    // unlink was not.)
+    let outcome = match (&stopped, did.is_none()) {
+        (None, _) => progress.outcome(plan).unwrap_or(Outcome::Unchanged),
+        (Some(_), true) => Outcome::Unchanged,
+        (Some(_), false) => Outcome::PartlyCleared,
+    };
     let words = match &stopped {
         None => words::done(&did),
         Some(why) => words::stopped(&did, acted, planned, why),
