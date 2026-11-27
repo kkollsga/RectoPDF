@@ -203,13 +203,13 @@ impl<A: crate::SessionAccess> Run<'_, A> {
     }
 
     /// A step needs the hits of what's in the field, for the document being read: found again if they're of something else, as after a restart. The
-    /// person's ⌘G with Find closed opens it, with what was typed last, as on a Mac. Says whether a query's been started for it.
-    fn hits_for_a_step(&self, events: &mut Vec<Event>) -> Result<bool, AgentError> {
+    /// person's ⌘G with Find closed opens it, with what was typed last, as on a Mac.
+    fn hits_for_a_step(&self, events: &mut Vec<Event>) -> Result<(), AgentError> {
         if self.at_the_window() && self.access.with(|s| !s.viewing().find().open || s.viewing().find().query.is_empty()) {
             self.open(events)?;
         }
         let Some(query) = stale_query(self.access, self.finding) else {
-            return Ok(false);
+            return Ok(());
         };
         if self.at_the_window() {
             begin_keyed(self.access, &query, self.access.persons_keys(self.actor).map(|keys| keys.for_find()))?;
@@ -217,20 +217,23 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             let generation = begin(self.access, &query)?;
             self.finding.wait(generation, self.deadline.saturating_duration_since(Instant::now()));
         }
-        Ok(true)
+        Ok(())
     }
 
     /// `--next` or `--previous`: an agent's waits for its hit; the person's goes now, or is kept for when its hit is known, as a query still running may not
     /// have reached it.
     fn step(&self, forward: bool, going: Going, events: &mut Vec<Event>) -> Result<Option<(u32, Hit)>, AgentError> {
         let (access, finding) = (self.access, self.finding);
-        let restarted = self.hits_for_a_step(events)?;
+        self.hits_for_a_step(events)?;
         if matches!(going, Going::Jump(_)) {
             access.take_places();
         }
         let went = if self.at_the_window() {
-            let went = (!restarted).then(|| step(access, finding, forward, going)).flatten();
-            if went.is_none() && running(finding) {
+            // Whether the query runs is read before the step: one that ends after this look queues its news behind this command, which tries the kept step,
+            // and one that ended before it is stepped in its final hits. (A restart cleared the results where it began, so a step never sees the old ones.)
+            let was_running = running(finding);
+            let went = step(access, finding, forward, going);
+            if went.is_none() && was_running {
                 access.effect(Effect::FindStepPending { forward, going });
                 return Ok(None);
             }
