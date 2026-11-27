@@ -5,8 +5,6 @@ use super::{CoreCall, Inner, lock};
 use recto_agent::Code;
 use recto_agent::{AgentError, Command, exit};
 use recto_control::record_store::Loaded;
-use recto_platform::isolate::SharedMemory;
-use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind, TileRect, TileRequest, TileResult};
 use recto_session::record::SettingsWindow;
 use recto_update::plan::TestLaunch;
 use recto_update::source::Mode;
@@ -186,7 +184,7 @@ impl Host for Hooks {
     fn can_draw(&self) -> bool {
         let Some(inner) = self.inner() else { return false };
         let Some(paths) = inner.serving.paths.as_ref() else { return false };
-        draws_a_page(&paths.root.join("update"))
+        super::proof_draw::draws_a_page(&paths.root.join("update"))
     }
 
     /// The record as read, once it has been: a first frame that came before that, off a slow disk, says nothing.
@@ -742,63 +740,6 @@ fn settings_answer(updates: &recto_update::updater::Updater) -> Value {
     json!({ "auto_update": on, "words": words })
 }
 
-/// A page of one colour, as small as a PDF gets. Ours, so it says something about this version and nothing about whatever the user had open.
-fn probe_pdf() -> Vec<u8> {
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Contents 4 0 R >>".to_owned(),
-        {
-            let content = "1 0 0 rg 0 0 64 64 re f";
-            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len())
-        },
-    ];
-    let mut pdf = b"%PDF-1.4\n".to_vec();
-    let mut places = Vec::new();
-    for (index, object) in objects.iter().enumerate() {
-        places.push(pdf.len());
-        pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
-    }
-    let table = pdf.len();
-    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
-    for place in places {
-        pdf.extend_from_slice(format!("{place:010} 00000 n \n").as_bytes());
-    }
-    pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{table}\n%%EOF\n", objects.len() + 1).as_bytes());
-    pdf
-}
-
-/// Whether this version can draw: the page above, through a real worker with the real library, and what comes back has to be that colour. What a new version has to show before it counts as having come up, as nothing else says a renderer that can't load is broken until someone's looking at a blank page.
-pub fn draws_a_page(folder: &Path) -> bool {
-    let file = folder.join("draws.pdf");
-    if std::fs::create_dir_all(folder).is_err() || std::fs::write(&file, probe_pdf()).is_err() {
-        return false;
-    }
-    let drew = (|| {
-        let config = ServiceConfig::discover().ok()?;
-        let mut document = DocRenderer::new(&file, None, config, Policy::default()).ok()?;
-        let surface = SharedMemory::create(64 * 64 * 4).ok()?;
-        let request = TileRequest {
-            page: 0,
-            rect: TileRect {
-                x: 0,
-                y: 0,
-                width: 64,
-                height: 64,
-            },
-            scale: 1.0,
-            stride: 64 * 4,
-            generation: 0,
-        };
-        match document.render_tile(&request, &surface).ok()? {
-            TileResult::Done(tile) => Some(matches!(tile.kind, TileKind::Blank { rgb } if (rgb >> 16) & 0xFF > 0xC0 && rgb & 0xFFFF < 0x4040)),
-            TileResult::Cancelled { .. } => None,
-        }
-    })();
-    let _ = std::fs::remove_file(&file);
-    drew == Some(true)
-}
-
 /// What a refusal to install comes to, for an agent: a code that doesn't change, our words, and what to do next.
 fn refused_words(refused: &InstallRefused) -> AgentError {
     let said = refused.said();
@@ -949,7 +890,7 @@ mod tests {
     /// Failure: the page a new version's asked to draw isn't one PDFium reads as a page of that colour, so every update would be sent back, or it says so whatever's drawn. Only the worker's own build isn't here, so the real drawing's in `restore`'s tests of the real app.
     #[test]
     fn the_page_it_draws_is_a_whole_pdf() {
-        let pdf = probe_pdf();
+        let pdf = crate::core::proof_draw::probe_pdf();
         assert!(pdf.starts_with(b"%PDF-1.4"));
         let text = String::from_utf8(pdf).unwrap();
         let table = text.rfind("xref\n0 5").unwrap();

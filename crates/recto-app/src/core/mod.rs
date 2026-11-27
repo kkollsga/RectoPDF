@@ -10,6 +10,7 @@ pub mod host;
 pub mod image_select;
 pub mod palette;
 pub mod printing;
+pub mod proof_draw;
 pub mod qa;
 pub mod reconcile;
 pub mod removal;
