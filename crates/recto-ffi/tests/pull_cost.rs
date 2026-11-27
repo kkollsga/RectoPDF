@@ -91,7 +91,7 @@ fn reader() -> recto_ffi::ReaderView {
         }),
         saving: false,
         save_tooltip: text("Save the rotated pages"),
-        save_problem: None,
+        sheet: None,
         save_as_note: Some(text("The new copy won't be signed.")),
         shown_tab: 1,
         document_name: text("A document with a long enough name"),

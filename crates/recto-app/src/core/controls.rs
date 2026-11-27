@@ -52,6 +52,8 @@ pub enum UiAction {
     CloseAnswered { tab: u32, choice: CloseChoice },
     /// Save As's sheet answered with this path.
     SaveAs { tab: u32, path: String },
+    /// A sheet's answer: which feature's (`kind`), which of its sheets (`id`), and the index of the button, or `u32::MAX` for none ([`super::sheets`]).
+    SheetAnswered { kind: String, id: u64, button: u32 },
     /// A switch in Settings.
     SettingChosen { id: String, on: bool },
     /// The mouse came up on a page in `pane` after a press: the link the click landed on, if the page view says it landed on one, is followed
@@ -101,6 +103,7 @@ impl UiAction {
             Self::PaletteRun { .. } => "PaletteRun",
             Self::CloseAnswered { .. } => "CloseAnswered",
             Self::SaveAs { .. } => "SaveAs",
+            Self::SheetAnswered { .. } => "SheetAnswered",
             Self::SettingChosen { .. } => "SettingChosen",
             Self::LinkClicked { .. } => "LinkClicked",
             Self::SnapshotTaken => "SnapshotTaken",
@@ -189,6 +192,16 @@ impl Inner {
             UiAction::SaveAs { tab, path } => {
                 self.save_as(tab, path);
                 return Acted::DONE;
+            }
+            UiAction::SheetAnswered { kind, id, button } => {
+                return Acted::host(super::sheets::answered(
+                    super::person::Person::of(self),
+                    &self.tools,
+                    &self.core,
+                    &kind,
+                    id,
+                    button,
+                ));
             }
             UiAction::SettingChosen { id, on } => super::updates::setting_command(&id, on),
             UiAction::LinkClicked { pane } => super::reconcile::link_clicked(self, pane as usize),

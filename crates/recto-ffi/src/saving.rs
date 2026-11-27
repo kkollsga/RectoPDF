@@ -1,17 +1,6 @@
 //! **Saving's records, as the host draws them.** The rules are `recto_app::saving`'s, and the window's saves `recto_app::core::saving`'s.
 
-pub use recto_app::saving::SaveProblem;
 pub use recto_app::saving::{CloseButton, CloseChoice, ClosePrompt, SavePanelModel};
-
-/// A save that didn't happen, as an alert over the window. Every word is Rust's.
-#[uniffi::remote(Record)]
-pub struct SaveProblem {
-    pub title: String,
-    pub message: String,
-    /// A button that opens Save As, when a copy is the way on.
-    pub save_as_title: Option<String>,
-    pub ok_title: String,
-}
 
 /// What Save As's sheet says.
 #[uniffi::remote(Record)]

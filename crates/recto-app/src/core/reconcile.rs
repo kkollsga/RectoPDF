@@ -346,7 +346,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     );
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
-    reader.save_problem = inner.tools.save_ui().problem();
+    reader.sheet = super::sheets::showing(&inner.tools);
     reader.link_prompt = lock(&inner.tools.prompts().link).clone();
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();

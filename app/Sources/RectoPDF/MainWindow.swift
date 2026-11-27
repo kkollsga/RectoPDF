@@ -255,8 +255,8 @@ final class BookMark: NSView {
     let sidebarButton = NSButton(title: "", target: nil, action: nil)
     /// Save, beside the sidebar's button, while the document showing has unsaved edits (owner: "something that looks more like a native save / save as feature"). Rust says when, and its words.
     let saveButton = NSButton(title: "", target: nil, action: nil)
-    /// The save problem showing as a sheet, so the same one isn't shown twice.
-    private var problemShowing: SaveProblem?
+    /// The Rust-worded sheet showing, so the same one isn't shown twice.
+    var sheetModelShowing: SheetModel?
     /// The password sheet showing, and its secure field, which QA types into as a person would.
     private var passwordShowing: PasswordPrompt?
     let passwordField = NSSecureTextField(string: "")
@@ -944,34 +944,6 @@ final class BookMark: NSView {
         saveButton.setAccessibilityLabel(reader.saveTooltip)
     }
 
-    /// A save that didn't happen, as a sheet over the window, as long as Rust has it. Save As opens the save sheet, where a copy is the way on.
-    private func showSaveProblemIfAny() {
-        guard let problem = reader.saveProblem else {
-            problemShowing = nil
-            return
-        }
-        guard problemShowing != problem, !delegate.sheets.isUp(over: window) else { return }
-        problemShowing = problem
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = problem.title
-        alert.informativeText = problem.message
-        alert.addButton(withTitle: problem.okTitle)
-        if let saveAs = problem.saveAsTitle { alert.addButton(withTitle: saveAs) }
-        let core = delegate.core
-        core.sheetChanged(open: true)
-        delegate.sheetShowing = ["kind": "save_problem", "message": problem.title, "informative": problem.message, "buttons": [problem.okTitle] + (problem.saveAsTitle.map { [$0] } ?? [])]
-        let delegate = self.delegate
-        delegate.sheets.present(alert, over: window) { response in
-            core.sheetChanged(open: false)
-            delegate.sheetShowing = nil
-            // Its window went: Rust still has the problem, and the next window says it.
-            guard response != SheetPresenter.windowGone else { return }
-            let action = core.saveProblemAnswered(saveAs: response == .alertSecondButtonReturn)
-            if action == .showSavePanel { delegate.showSavePanel() }
-        }
-    }
-
     /// A protected PDF's password, on the system's sheet with a secure field, in Rust's words. What's typed goes to Rust once and the field is emptied; nothing here keeps it.
     private func showPasswordPromptIfAny() {
         guard let prompt = reader.passwordPrompt else {
@@ -1117,7 +1089,7 @@ final class BookMark: NSView {
         // Unsaved edits: the red button's dot, as on any Mac app. Rust says.
         window.isDocumentEdited = reader.edited
         updateSaveButton()
-        showSaveProblemIfAny()
+        showSheetModelIfAny()
         showPasswordPromptIfAny()
         showLinkPromptIfAny()
         if reader.home { endPageEditing() }

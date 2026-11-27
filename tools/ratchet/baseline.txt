@@ -1,5 +1,5 @@
 apptest crates/recto-cli/tests 198
-ffi crates/recto-ffi/src 2037
+ffi crates/recto-ffi/src 2035
 file crates/recto-render-service/src/host.rs 2096
 file crates/recto-render/src/pdfium/contents.rs 2776
 file crates/recto-update/src/updater.rs 2418
@@ -14,7 +14,7 @@ fn crates/recto-proto/src/contents.rs::StreamCheck::accept 162
 fn crates/recto-render/src/pdfium/contents.rs::Walk::image 217
 fn crates/recto-render/src/pdfium/contents.rs::Walk::send_pending 180
 fn crates/recto-update/src/zip.rs::read_directory 182
-impl crates/recto-ffi/src/lib.rs::AppCore 112
+impl crates/recto-ffi/src/lib.rs::AppCore 111
 impl crates/recto-reader/src/layout.rs::PageLayout 45
 impl crates/recto-reader/src/selection.rs::Selecting 41
 impl crates/recto-render-service/src/host.rs::DocRenderer 57
@@ -36,7 +36,7 @@ sleep crates/recto-app/src/core/sleeper.rs 2
 sleep crates/recto-app/src/core/updates.rs 1
 sleep crates/recto-app/src/sleep_queue.rs 2
 sleep crates/recto-cli/src/qa.rs 12
-sleep crates/recto-cli/tests/app.rs 8
+sleep crates/recto-cli/tests/app.rs 7
 sleep crates/recto-cli/tests/app/marks.rs 1
 sleep crates/recto-cli/tests/app/opening.rs 1
 sleep crates/recto-cli/tests/app/quiet.rs 4
@@ -95,8 +95,8 @@ struct crates/recto-render/src/pdfium/contents.rs::Walk 44
 struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
-type crates/recto-app/src::Inner 44
-type crates/recto-ffi/src::AppCore 133
+type crates/recto-app/src::Inner 43
+type crates/recto-ffi/src::AppCore 132
 type crates/recto-reader/src::Engine 46
 type crates/recto-reader/src::Reader 80
 type crates/recto-render-service/src::DocRenderer 64

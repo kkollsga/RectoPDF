@@ -35,8 +35,9 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::SnapshotTaken => 22,
         UiAction::Pasted { .. } => 23,
         UiAction::CopyLink { .. } => 24,
+        UiAction::SheetAnswered { .. } => 25,
     };
-    (place, 25)
+    (place, 26)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -153,6 +154,12 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         UiAction::SettingChosen {
             id: crate::core::updates::AUTO_UPDATE_ROW.into(),
             on: false,
+        },
+        // With no sheet showing, an answer finds nothing to answer and sends nothing.
+        UiAction::SheetAnswered {
+            kind: crate::core::saving::SHEET_KIND.into(),
+            id: 0,
+            button: 0,
         },
         // The print panel's answer is the person's `print`, on a thread of its own (S2).
         UiAction::Print {

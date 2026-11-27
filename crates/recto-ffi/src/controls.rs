@@ -48,6 +48,8 @@ pub enum UiAction {
     CloseAnswered { tab: u32, choice: CloseChoice },
     /// Save As's sheet answered with this path.
     SaveAs { tab: u32, path: String },
+    /// A sheet's answer: the feature's kind, the sheet's id and the button's index (`u32::MAX` for none).
+    SheetAnswered { kind: String, id: u64, button: u32 },
     /// A switch in Settings.
     SettingChosen { id: String, on: bool },
     /// The mouse came up on a page in this pane after a press: the link the click landed on, if any, is followed. The bridge's own, from `selection_release`.

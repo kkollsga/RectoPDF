@@ -16,6 +16,7 @@ pub mod removal;
 pub mod saver;
 pub mod saving;
 pub mod session;
+pub mod sheets;
 pub mod sleeper;
 pub mod snapshot_tool;
 pub mod start;

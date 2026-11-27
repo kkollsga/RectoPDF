@@ -1,9 +1,9 @@
 //! **Sheets over the window** (a save's problem today, Clear Leftovers next): what a sheet carries and what each answer does, pinned on the app's own core
 //! before the sheets moved onto one Rust-worded model (`core/sheets.rs`).
-//! (The two lines that name the API are `app.reader().save_problem` and `save_problem_answered`.)
 
 use super::changed_under_edits::{look, pdf_bytes, replace};
 use crate::core::HostAction;
+use crate::core::controls::UiAction;
 use crate::testkit::headless::HeadlessApp;
 use recto_agent::Level;
 
@@ -19,7 +19,7 @@ fn with_a_problem() -> HeadlessApp {
     app.core().perform("file.save".into());
     app.settle();
     app.wait_for("the person's Save answered in the window", || {
-        app.reader().save_problem.map(|_| ()).ok_or_else(|| "no problem to show yet".to_string())
+        app.reader().sheet.map(|_| ()).ok_or_else(|| "no problem to show yet".to_string())
     });
     app
 }
@@ -30,22 +30,32 @@ fn with_a_problem() -> HeadlessApp {
 #[test]
 fn a_save_problem_carries_its_words_and_each_answer_acts_as_before() {
     let app = with_a_problem();
-    let problem = app.reader().save_problem.expect("the problem is showing");
+    let problem = app.reader().sheet.expect("the problem is showing");
     assert!(!problem.title.is_empty() && !problem.message.is_empty(), "{problem:?}");
-    assert_eq!(problem.ok_title, "OK");
+    assert_eq!(problem.buttons.first().map(String::as_str), Some("OK"));
     // A file changed under the edits can't be saved as a copy either, so no Save As is offered here.
-    assert_eq!(problem.save_as_title, None, "{problem:?}");
-    assert_eq!(app.core().save_problem_answered(false), HostAction::None);
+    assert_eq!(problem.buttons.len(), 1, "{problem:?}");
+    assert_eq!(answer(&app, 0), HostAction::None);
     app.settle();
-    assert!(app.reader().save_problem.is_none(), "answered, so gone");
+    assert!(app.reader().sheet.is_none(), "answered, so gone");
     // A problem where a copy helps offers Save As, and choosing it opens the panel.
     let error = recto_agent::AgentError::new(recto_agent::Code::READ_ONLY, "The file is read-only.", recto_agent::exit::FAILED);
     app.core().tools.save_ui().set_problem(Some(crate::saving::problem_for(&error)));
     app.send(crate::queue::CoreCall::Reconcile);
     app.settle();
-    let problem = app.reader().save_problem.expect("the second problem is showing");
-    assert_eq!(problem.save_as_title.as_deref(), Some("Save As…"), "{problem:?}");
-    assert_eq!(app.core().save_problem_answered(true), HostAction::ShowSavePanel);
+    let problem = app.reader().sheet.expect("the second problem is showing");
+    assert_eq!(problem.buttons.get(1).map(String::as_str), Some("Save As…"), "{problem:?}");
+    assert_eq!(answer(&app, 1), HostAction::ShowSavePanel);
     app.settle();
-    assert!(app.reader().save_problem.is_none(), "answered, so gone");
+    assert!(app.reader().sheet.is_none(), "answered, so gone");
+}
+
+/// The person's answer to the sheet showing: its button, as the window sends it.
+fn answer(app: &HeadlessApp, button: u32) -> HostAction {
+    app.act(UiAction::SheetAnswered {
+        kind: crate::core::saving::SHEET_KIND.into(),
+        id: 0,
+        button,
+    })
+    .host
 }

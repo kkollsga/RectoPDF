@@ -22,6 +22,10 @@ const HOST_ONLY: &[(&str, &str)] = &[
         "UiAction::CloseAnswered(SaveAs)",
         "opens the Save As sheet for a document Save is off for; its answer is `SaveAs`",
     ),
+    (
+        "UiAction::SheetAnswered",
+        "closes the sheet showing, and the feature that showed it acts: a save problem's Save As opens that sheet, and Clear Leftovers' yes is the person's `removal clear` (`leftovers_sheet.rs`); with none showing it does nothing",
+    ),
 ];
 
 /// A key to test: a menu id, run as the menu runs it, or a palette row, as the palette runs it.
@@ -272,6 +276,12 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
         UiAction::SettingChosen {
             id: crate::core::updates::AUTO_UPDATE_ROW.into(),
             on: false,
+        },
+        // With no sheet showing, an answer finds nothing to answer and sends nothing.
+        UiAction::SheetAnswered {
+            kind: crate::core::saving::SHEET_KIND.into(),
+            id: 0,
+            button: 0,
         },
         UiAction::Print {
             tab,
