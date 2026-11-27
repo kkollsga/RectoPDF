@@ -221,6 +221,19 @@ impl Run<'_> {
         Ended::NotInstalled
     }
 
+    /// An unfinished removal's record (`docs/design/removal.md` §6): copying the record would make a second copy of the very history being purged, in
+    /// `update/before`, and the new build would be one the removal may not have been told of. Nothing's replaced, and `update/before` (an older copy, which
+    /// a going back may still need) is not removed.
+    fn refuse_while_a_removal_is_pending(&self) -> Option<Ended> {
+        if !crate::removal_record::anything_there(&self.plan.root) {
+            return None;
+        }
+        self.say("installer: an unfinished removal is pending, so nothing was replaced");
+        self.finish_with(OutcomeKind::NotInstalled, "removal_pending");
+        let _ = self.open_app();
+        Some(Ended::NotInstalled)
+    }
+
     /// The swap failed: nothing's replaced, and the old app is opened again.
     fn swap_refused(&self, error: &std::io::Error) -> Ended {
         // macOS's App Management can refuse a change to an app in /Applications the first time, until the owner allows it: that's said so, apart from a swap that can't work.
@@ -431,14 +444,8 @@ pub fn run(plan: &Plan) -> Ended {
         let _ = run.open_app();
         return Ended::NotInstalled;
     }
-    // An unfinished removal's record (`docs/design/removal.md` §6): copying the record would make a second copy of the very history being purged, in
-    // `update/before`, and the new build would be one the removal may not have been told of. Nothing's replaced, and `update/before` (an older copy, which
-    // a going back may still need) is not removed.
-    if crate::removal_record::anything_there(&plan.root) {
-        run.say("installer: an unfinished removal is pending, so nothing was replaced");
-        run.finish_with(OutcomeKind::NotInstalled, "removal_pending");
-        let _ = run.open_app();
-        return Ended::NotInstalled;
+    if let Some(ended) = run.refuse_while_a_removal_is_pending() {
+        return ended;
     }
     let _ = std::fs::remove_file(files.launch_ok());
     let _ = std::fs::remove_file(files.launch_failed());

@@ -93,18 +93,26 @@ fn what_the_gate_costs() {
     println!("record: {size} bytes, {} artifacts", r.surveyed.inventory().artifacts().len());
     println!(
         "gate (anything_there), nothing there: {:?}",
-        time(|| std::hint::black_box(gate::anything_there(empty.path())))
+        time(|| {
+            std::hint::black_box(gate::anything_there(empty.path()));
+        })
     );
     println!(
         "gate (anything_there), pending at the cap: {:?}",
-        time(|| std::hint::black_box(gate::anything_there(held.path())))
+        time(|| {
+            std::hint::black_box(gate::anything_there(held.path()));
+        })
     );
     println!(
         "anything_there (the updater's look), nothing there: {:?}",
-        time(|| std::hint::black_box(recto_update::removal_record::anything_there(empty.path())))
+        time(|| {
+            std::hint::black_box(recto_update::removal_record::anything_there(empty.path()));
+        })
     );
     println!(
         "anything_there (the updater's look), a record there: {:?}",
-        time(|| std::hint::black_box(recto_update::removal_record::anything_there(held.path())))
+        time(|| {
+            std::hint::black_box(recto_update::removal_record::anything_there(held.path()));
+        })
     );
 }

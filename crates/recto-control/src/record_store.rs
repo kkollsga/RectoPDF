@@ -22,6 +22,7 @@ mod lock;
 mod page_ids;
 mod sleep_files;
 mod went_back;
+mod withheld;
 use crate::removal_store::gate::{self, Withheld};
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
@@ -105,8 +106,7 @@ pub enum Loaded {
     Newer,
     /// Another process keeps this folder's record.
     OtherInstance,
-    /// An unfinished removal's record is in the state folder (or something is where it would be that can't be read): nothing was read, moved, copied, rotated,
-    /// written or deleted, and nothing will be written until the removal is finished (`removal_store::gate`).
+    /// An unfinished removal's record is there (or what can't be read is): nothing was touched, and nothing will be written until it's finished (`gate`).
     Withheld(Withheld),
 }
 
@@ -416,7 +416,7 @@ impl RecordStore {
             return Loaded::OtherInstance;
         }
         *self.progress() = Progress::default();
-        // Before anything is moved, copied, rotated or removed: each of load's steps can bring back what a removal is purging.
+        // Before anything is moved, copied, rotated or removed: each step can bring back what a removal is purging.
         if let Some(withheld) = self.gate() {
             return Loaded::Withheld(withheld);
         }
@@ -741,39 +741,6 @@ impl RecordStore {
         (outcome, failed)
     }
 
-    /// What an unfinished removal's record says, looked at once (not under the progress lock: it reads the disk) and kept until the next load.
-    fn gate(&self) -> Option<Withheld> {
-        if let Some(known) = self.progress().gate {
-            return known;
-        }
-        let looked = gate::at(&self.root);
-        self.progress().gate = Some(looked);
-        looked
-    }
-
-    /// The state folder this record is kept under (`StatePaths::root`), for what looks at the removal's record from outside the store (`gate::state`).
-    pub fn state_root(&self) -> &Path {
-        &self.root
-    }
-
-    /// What `gate` found, if it has looked: for a QA read, which never reads the disk.
-    pub fn withheld(&self) -> Option<Withheld> {
-        self.progress().gate.flatten()
-    }
-
-    /// Why this won't write, if it won't.
-    fn refuses_writes(&self) -> Option<StoreError> {
-        if !self.holds_the_record() {
-            return Some(self.other_instance());
-        }
-        if let Some(withheld) = self.gate() {
-            return Some(StoreError::new(withheld.code(), record::notices::words(withheld.code()).unwrap_or_default()));
-        }
-        self.progress()
-            .read_only
-            .then(|| StoreError::new("record_unreadable", record::notices::words(record::notices::UNREADABLE).unwrap_or_default()))
-    }
-
     /// Working beside a newer app's record, this folder is what going forward has to bring with it.
     fn note_going_back(&self, dir: &Path) {
         if self.progress().beside_newer && !dir.join(WENT_BACK_NAME).exists() {
@@ -1051,11 +1018,8 @@ impl RecordStore {
 
     /// Removes a journal found to be stale.
     pub fn remove_journal(&self, name: &str) {
-        // A journal written for the target after the barrier is outside the removal's plan: it stays until the removal is finished.
-        if self.gate().is_some() {
-            return;
-        }
-        if is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name) {
+        // Not while a removal is unfinished: a journal written for the target after the barrier is outside its plan.
+        if self.gate().is_none() && (is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name)) {
             let folder = self.dir().join(JOURNALS);
             let _ = std::fs::remove_file(folder.join(name));
             let mut progress = self.progress();

@@ -1,7 +1,8 @@
 //! **What the last install left, settled at a launch that keeps the record:** the installer's outcome or its plan read, said and tidied away. Moved here
 //! unchanged from `updater.rs`, for its size.
 
-use super::{Notice, QUITS_FOR_NOTHING, Settled, Status, Updater, builds, clean_code, helper_alive, installer_reopened, went_back_words, why_not_installed};
+use super::outcome_words::{installer_reopened, went_back_words, why_not_installed};
+use super::{Notice, QUITS_FOR_NOTHING, Settled, Status, Updater, builds, clean_code, helper_alive};
 use crate::APP_NAME;
 use crate::plan::{Files, Outcome, OutcomeKind, Plan, beside_app};
 use crate::saved::Saved;
