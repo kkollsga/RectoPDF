@@ -297,7 +297,7 @@ fn ask_tool(program: &str, args: &[&str], limit: Duration) -> Result<Answer, Sta
     Ok(if fine { Answer::Yes(out) } else { Answer::No })
 }
 
-fn plist_value(app: &Path, key: &str) -> Result<Option<String>, StageError> {
+pub(crate) fn plist_value(app: &Path, key: &str) -> Result<Option<String>, StageError> {
     let plist = app.join("Contents/Info.plist");
     let command = format!("Print :{key}");
     let Some(path) = plist.to_str() else { return Ok(None) };

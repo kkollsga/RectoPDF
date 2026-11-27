@@ -79,12 +79,19 @@ impl RecordStore {
 
     /// Removes a tab's sleep file, for this version of this file, if there's one: a write that landed after the file was retired.
     pub fn remove_sleep(&self, stamp: FileStamp, path: &Path) {
+        if self.gate().is_some() {
+            return;
+        }
         let _ = std::fs::remove_file(self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path)));
     }
 
     /// A tab's sleep file, if there's one for this version of this file. The name goes by the stamp, so what's asked for is what's known of the file, and nothing here looks at the PDF, which may be on a disk that's gone away. Whoever's waking the tab looks at that on a thread of its own. **One that doesn't read is removed:** it can always be rebuilt.
     pub fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<SleepFile> {
         recto_platform::slow::pause(recto_platform::slow::Seam::SleepRead);
+        // This reads, and removes what it can't read: neither while a removal is unfinished.
+        if self.gate().is_some() {
+            return None;
+        }
         let file = self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path));
         let bytes = match read_ours(&file, MAX_SLEEP_FILE_BYTES) {
             Ok(bytes) => bytes?,

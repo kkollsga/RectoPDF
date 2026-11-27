@@ -30,6 +30,8 @@ recto-testpdf = { workspace = true, optional = true }
 
 [dev-dependencies]
 recto-platform = { workspace = true, features = ["test-seams"] }
+# The removal record's fixtures (`removal_store::barrier::fixture`), for the headless tests of an unfinished removal.
+recto-control = { workspace = true, features = ["test-seams"] }
 # The page view's QA seams (`Engine::hold_busy`) for the headless tests, as `testkit` has them for other crates' tests.
 recto-reader = { workspace = true, features = ["qa"] }
 # Tests read a refusal's code as the wire does.

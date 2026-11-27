@@ -1184,6 +1184,35 @@ fn an_app_opened_again_in_the_gap_is_left_alone() {
     second.wait().unwrap();
 }
 
+/// Failure (D3b review): an install that stops because the app is running again takes `update/before` away, though an unfinished removal's record is there
+/// and the copy is the one a going back (or the removal) may need. It stops as before, and the copy stays.
+#[test]
+fn an_app_opened_again_in_the_gap_leaves_update_before_while_a_removal_is_pending() {
+    let mut bed = Bed::new("reopened-removal", "ok");
+    leave_a_removal_record(&bed);
+    std::fs::create_dir_all(bed.files.before()).unwrap();
+    std::fs::write(bed.files.before().join("older.txt"), "an older copy").unwrap();
+    let mut second = Command::new(bed.plan.executable())
+        .args([
+            "test-app",
+            "0.1.0",
+            "hangs",
+            bed.files.work.to_str().unwrap(),
+            bed.dir.join("nowhere").to_str().unwrap(),
+        ])
+        .spawn()
+        .unwrap();
+    wait_until("the second app", Duration::from_secs(5), || {
+        !local::processes_running(&bed.plan.executable()).is_empty()
+    });
+    let ended = bed.run(None);
+    assert!(!ended.success());
+    assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "app_reopened");
+    assert_eq!(std::fs::read_to_string(bed.files.before().join("older.txt")).unwrap(), "an older copy");
+    second.kill().unwrap();
+    second.wait().unwrap();
+}
+
 /// Failure: an app opened after the installer's first look and before the swap (the record's copy and the signature check take over a second) is replaced while it runs. Held at `still_verified`, a second app comes up; the last look under the record's lock sees it and nothing's swapped.
 #[test]
 fn an_app_opened_after_the_first_look_is_not_replaced() {
@@ -1369,6 +1398,93 @@ fn a_damaged_plan_moves_nothing() {
             .success()
     );
     assert_eq!(bed.installed(), "0.1.0");
+}
+
+/// A state folder with something at the removal's record name, which is all the updater looks for.
+fn leave_a_removal_record(bed: &Bed) {
+    let folder = bed.files.root.join("removal");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("pending.v1"), b"an unfinished removal").unwrap();
+}
+
+/// Failure (D3b): an install with an unfinished removal's record in the state folder copies the record (the history being purged) into `update/before` and
+/// swaps in a build the removal may not know of, or removes the older copy a going back may need. It replaces nothing, says why, reopens the app, and leaves
+/// `update/before`, the session and the new app where they are.
+#[test]
+fn an_install_with_a_removal_pending_replaces_nothing_and_keeps_the_copy_it_found() {
+    let mut bed = Bed::new("install-removal", "ok");
+    leave_a_removal_record(&bed);
+    std::fs::create_dir_all(bed.files.before()).unwrap();
+    std::fs::write(bed.files.before().join("older.txt"), "an older copy").unwrap();
+    let ended = bed.run(None);
+    assert!(!ended.success(), "{}", std::fs::read_to_string(&bed.files.log).unwrap());
+    assert_eq!(bed.installed(), "0.1.0", "nothing was replaced");
+    assert!(new_app_in(&bed.plan.beside).exists(), "what was staged stays");
+    let outcome = Outcome::read(&bed.files.outcome()).unwrap();
+    assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::NotInstalled, "removal_pending"));
+    assert_eq!(
+        std::fs::read_to_string(bed.files.before().join("older.txt")).unwrap(),
+        "an older copy",
+        "update/before is not removed"
+    );
+    assert!(!bed.files.before().join(".whole").exists(), "and no copy of the record was made over it");
+    assert_eq!(bed.record(), "the state");
+    wait_until("the old app to be opened again", Duration::from_secs(20), || bed.ran("0.1.0"));
+}
+
+/// Failure (D3b): going back with an unfinished removal's record puts `update/before` over the session (which may hold the history being purged), or goes
+/// back to a build that doesn't read the record (which restores everything at its start), or refuses a build that does. Without the gate key on the kept build
+/// it stays where it is, stuck, and says why; with it, it goes back and leaves the session as it is.
+#[test]
+fn going_back_with_a_removal_pending_goes_only_to_a_build_that_reads_it() {
+    for reads_it in [false, true] {
+        let mut bed = Bed::new(if reads_it { "back-removal-reads" } else { "back-removal-doesnt" }, "ok");
+        assert!(bed.run(None).success());
+        assert_eq!(bed.installed(), "0.2.0");
+        if reads_it {
+            let kept = previous_app_in(&bed.plan.beside).join("Contents/Info.plist");
+            let added = Command::new("/usr/libexec/PlistBuddy")
+                .args(["-c", &format!("Add :{} string 1", recto_update::removal_record::GATE_KEY)])
+                .arg(kept)
+                .status()
+                .unwrap();
+            assert!(added.success());
+        }
+        std::fs::write(bed.files.session().join("record.a.json"), "what the removal left").unwrap();
+        leave_a_removal_record(&bed);
+        let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+        gone.wait().unwrap();
+        let plan = Plan {
+            id: "back".into(),
+            pid: gone.id(),
+            keep_record: false,
+            ..bed.plan.clone()
+        };
+        plan.write(&bed.files.plan()).unwrap();
+        bed.end_stand_in();
+        let ended = Command::new(installer_in(&bed.app))
+            .arg("back")
+            .arg(bed.files.plan())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        let outcome = Outcome::read(&bed.files.outcome()).unwrap();
+        assert!(!ended.success());
+        assert_eq!(
+            bed.record(),
+            "what the removal left",
+            "reads_it {reads_it}: the kept copy is not put over the session"
+        );
+        assert!(bed.files.before().join(".whole").exists(), "reads_it {reads_it}: update/before is not removed");
+        if reads_it {
+            assert_eq!(bed.installed(), "0.1.0");
+            assert_eq!(outcome.kind, OutcomeKind::WentBack);
+        } else {
+            assert_eq!(bed.installed(), "0.2.0", "a build that doesn't read the record is not gone back to");
+            assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::CouldntGoBack, "removal_pending"));
+        }
+    }
 }
 
 /// Failure: the updater carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process does). Looked at as it was just built for this test.

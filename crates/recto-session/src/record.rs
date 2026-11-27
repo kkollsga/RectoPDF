@@ -1401,6 +1401,9 @@ pub mod notices {
     pub const OTHER_INSTANCE: &str = "other_instance";
     pub const UNREADABLE: &str = "record_unreadable";
     pub const OLDER_RECORD: &str = "record_older";
+    /// An unfinished removal (`recto_control::removal_store::gate::Withheld::code`, which these two are).
+    pub const REMOVAL_PENDING: &str = "removal_pending";
+    pub const REMOVAL_UNREADABLE: &str = "removal_unreadable";
 
     /// The words for a code. `None` for one this build doesn't know, which is all a forged one can come to.
     pub fn words(code: &str) -> Option<&'static str> {
@@ -1418,6 +1421,12 @@ pub mod notices {
             }
             UNREADABLE => {
                 "Your last session's state couldn't be read just now, so it's been left as it is, and what you do in this window won't be remembered. Quit and open RectoPDF again to try again."
+            }
+            REMOVAL_PENDING => {
+                "RectoPDF stopped part way through removing data from a document. So that nothing it was removing comes back, your last session has been left exactly as it is and wasn't reopened, and what you do in this window won't be remembered."
+            }
+            REMOVAL_UNREADABLE => {
+                "RectoPDF found an unfinished removal it can't read (it may be damaged, from a newer RectoPDF, or on a disk it can't write to). So that nothing it was removing comes back, your last session has been left exactly as it is and wasn't reopened, and what you do in this window won't be remembered."
             }
             _ => return None,
         })
@@ -2057,6 +2066,8 @@ mod tests {
             notices::OTHER_INSTANCE,
             notices::UNREADABLE,
             notices::OLDER_RECORD,
+            notices::REMOVAL_PENDING,
+            notices::REMOVAL_UNREADABLE,
         ] {
             assert!(notices::words(code).is_some_and(|words| words.len() > 20), "{code}");
             assert!(code.len() <= MAX_NOTICE_BYTES);
