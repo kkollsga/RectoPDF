@@ -17,6 +17,7 @@ const MET_ONLY: &str = "met";
 /// Failure: a failing app test leaves nothing to go on but its message, as on CI on 2026-11-12, when each failure cost a rerun to learn anything: no folder, more than one, or one missing an item (every launch's messages, `qa state` as each launch was last read, the threads by name, a sample, the slow seams and seed, the system pressure, the machine, the settings and the runner's command line, Launch Services, and the command that runs it again); or one that holds a path from the owner's own folders.
 #[test]
 fn a_failing_app_test_leaves_one_folder_with_its_evidence() {
+    the_rerun_line_gives_back_the_seams_the_seed_and_the_test();
     if app_path().is_none() {
         return;
     }
@@ -121,8 +122,7 @@ fn check_the_folder(root: &Path, status: &std::process::ExitStatus, said: &str) 
     assert!(size <= common::evidence::FOLDER_CAP, "{size} bytes");
 }
 
-/// Failure (PLAN R0.7b): the command a failure prints doesn't run it again as it ran: the slow seams it met, written back from `qa state`'s report, read as another profile or lose the seed, or the line misses the test, its binary or the profile. No app needed.
-#[test]
+/// Failure (PLAN R0.7b): the command a failure prints doesn't run it again as it ran: the slow seams it met, written back from `qa state`'s report, read as another profile or lose the seed, or the line misses the test, its binary or the profile. No app needed, so it runs before the app is looked for, inside the test above, which holds the evidence in one place (and counts once among the tests that launch the app).
 fn the_rerun_line_gives_back_the_seams_the_seed_and_the_test() {
     use recto_platform::slow::{Profile, Seam};
     let asked = "state=1200,worker=60,draw=40,jitter=31337";
@@ -153,7 +153,7 @@ fn the_rerun_line_gives_back_the_seams_the_seed_and_the_test() {
     }
 }
 
-/// Failure (2026-11-26, CI 45857918813): a test that only met an app some other way (`Run::attach`, the restore bed) failed and its `summary.txt` said "(no panic message caught)", for the panic hook was set only when this process launched an app. No app needed: the child registers a run through `met` and panics. Run inside the test above, so no test is added to the ones that count as launching the app.
+/// Failure (2026-11-26, CI 45857918813): a test that only met an app some other way (`Run::attach`, the restore bed) failed and its `summary.txt` said "(no panic message caught)", for the panic hook was set only when this process launched an app. No app needed: the child registers a run through `met` and panics. Run inside the rerun line's check, so no test is added to the ones that count as launching the app.
 fn a_run_that_was_only_met_still_has_its_panic_in_the_summary() {
     let root = common::free_folder();
     std::fs::create_dir_all(&root).unwrap();
