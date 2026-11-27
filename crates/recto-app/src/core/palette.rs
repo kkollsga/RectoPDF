@@ -45,7 +45,7 @@ pub fn title_now(inner: &Arc<Inner>, id: &str) -> Option<String> {
 /// The rows a query finds, best first: the tabs, the files opened lately and the commands ranked together, in that order among equals, so an empty query lists the tabs, then the recent files, then the commands. The tabs' ranking is kept for the query and the tab list's version.
 pub fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::PaletteRow> {
     let version = lock(&inner.published).sidebar.tabs_version;
-    app::found_for(
+    let mut rows = app::found_for(
         inner.tools.palette(),
         query,
         version,
@@ -53,13 +53,20 @@ pub fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::Pa
         || items(inner),
         || recent_rows(inner),
         whom,
-    )
+    );
+    super::palette_link::offer(query, &mut rows);
+    rows
 }
 
 /// The agent's command a tab's or a recent file's row comes to, for `recto palette --run`. A menu id's is [`super::menu_rows`]'s.
 pub fn as_command(id: &str, recent: &[RecentFile]) -> Option<recto_agent::Command> {
     let recent: Vec<(&str, &str)> = recent.iter().map(|file| (file.key.as_str(), file.path.as_str())).collect();
-    app::as_command(id, &recent)
+    super::palette_link::as_command(id).or_else(|| app::as_command(id, &recent))
+}
+
+/// An agent's run of the row of a link that can't be read: that link's refusal.
+pub fn refusal(id: &str) -> Option<recto_agent::AgentError> {
+    super::palette_link::refusal(id)
 }
 
 /// **The palette's menu id** ([`super::menu_rows`]): ⌘K opens it, in the sidebar, so the sidebar's shown first, and its field takes the keyboard.
@@ -95,6 +102,9 @@ pub fn step(inner: &Arc<Inner>, by: i32) {
 
 /// Runs a row, closing the palette first, and says what's left for the host.
 pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
+    if let Some(done) = super::palette_link::run(inner.tools.palette(), &inner.life, &inner.core, id) {
+        return done;
+    }
     inner.tools.palette().close();
     let frozen = inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
     match app::route(id, super::find::is_open(inner), frozen) {
@@ -121,7 +131,7 @@ pub fn host_word(action: HostAction) -> &'static str {
 
 /// What's in the palette's field now, as it's typed.
 pub fn typed(inner: &Inner, text: &str) {
-    inner.tools.palette().typed(text);
+    inner.tools.palette().typed_up_to(text, super::palette_link::limit_for(text));
 }
 
 /// Escape, or the keyboard going elsewhere.

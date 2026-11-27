@@ -41,6 +41,7 @@ mod newer_read;
 mod page_ids;
 mod page_link;
 mod palette;
+mod palette_link;
 mod password_not_kept;
 mod passwords;
 mod ref_commands;

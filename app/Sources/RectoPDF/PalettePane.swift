@@ -32,7 +32,7 @@ final class PaletteRowCell: NSView {
 
     func applyLook() {
         guard let row = shown else { return }
-        title.set(row.title, font: .systemFont(ofSize: 13, weight: selected ? .medium : .regular), color: (selected ? Theme.textStrong : Theme.textBody).ns)
+        title.set(row.title, font: .systemFont(ofSize: 13, weight: selected ? .medium : .regular), color: (!row.enabled ? Theme.textQuiet : selected ? Theme.textStrong : Theme.textBody).ns)
         detail.set(row.aside, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns, alignment: .right)
         layer?.backgroundColor = selected ? Theme.rowActive.cg : nil
         needsLayout = true

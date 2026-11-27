@@ -98,6 +98,8 @@ for look in light dark; do
 
     # ⌘K's palette, with words typed.
     r qa menu palette.open; r qa palette-type "zoom"; settle; shot palette; r qa palette-key escape
+    # A link pasted into it: the first row is the link's open, at its page (a typed link, as a paste sends it).
+    r qa menu palette.open; r qa palette-type "rectopdf://$bashp#page=3"; settle; shot palette-link; r qa palette-key escape
 
     # Edit mode, an edit and the Save icon, and the close prompt (cancelled), then undone.
     r edit mode on; settle; shot edit-mode; r edit mode off

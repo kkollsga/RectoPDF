@@ -42,6 +42,7 @@ pub mod menu_rows;
 mod navigation;
 mod opening;
 pub(crate) mod page_ids;
+mod palette_link;
 pub mod person;
 mod person_lane;
 pub mod places;

@@ -41,6 +41,8 @@ pub struct PaletteRow {
     pub from_file: bool,
     /// What VoiceOver says for the row: its title, where it lives, and its key in words, as "Find Next, Edit, Command G".
     pub spoken: String,
+    /// Whether choosing it does anything. A row that can't be chosen (a link that couldn't be read) says why in its title, and is drawn quieter.
+    pub enabled: bool,
 }
 
 fn row(id: String, title: String, detail: &str, shortcut: String, from_file: bool) -> PaletteRow {
@@ -62,7 +64,18 @@ fn row(id: String, title: String, detail: &str, shortcut: String, from_file: boo
         aside,
         from_file,
         spoken,
+        enabled: true,
     }
+}
+
+/// A row for a link pasted into the field, `link:…` by its id: its title is Rust's words (a file's name is cleaned before it's here), `enabled` false for a
+/// link that couldn't be read, which is shown with why and does nothing.
+#[must_use]
+pub fn link_row(id: String, title: String, enabled: bool) -> PaletteRow {
+    let row = row(id, title, "Link", String::new(), true);
+    // A row that can't be chosen says so to VoiceOver, in Rust's words.
+    let spoken = if enabled { row.spoken } else { format!("{}, unavailable", row.spoken) };
+    PaletteRow { enabled, spoken, ..row }
 }
 
 /// A key as it's said, not drawn: `⇧⌘G` is "Shift Command G", in the order a Mac draws its marks.
@@ -319,8 +332,13 @@ impl Palette {
 
     /// What's typed now, within the query's limit, with the selection back on the first row.
     pub fn typed(&self, text: &str) {
+        self.typed_up_to(text, palette::MAX_QUERY_CHARS * 4);
+    }
+
+    /// What's typed now, keeping at most `limit` characters: a pasted link is kept whole ([`crate::core::palette_link::limit_for`]), as a cut one would name another file.
+    pub fn typed_up_to(&self, text: &str, limit: usize) {
         let mut state = lock(&self.state);
-        state.text = text.chars().take(palette::MAX_QUERY_CHARS * 4).collect();
+        state.text = text.chars().take(limit).collect();
         state.selected = 0;
     }
 

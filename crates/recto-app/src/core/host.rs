@@ -334,10 +334,13 @@ impl AppHost {
             })?;
             // A tab's or a recent file's row is the agent's own command; a menu id's is the one table's (`menu_rows`).
             let id = first.id.as_str();
+            if let Some(refused) = palette::refusal(id) {
+                return Err(refused);
+            }
             let host = match palette::as_command(id, &inner.recent_files()) {
                 Some(direct) => {
-                    inner.tools.palette().close();
                     self.run_counted(actor, &direct, events)?;
+                    inner.tools.palette().close();
                     HostAction::None
                 }
                 None => self.run_menu_id(actor, &inner, id, Some(&first.title), events)?,
@@ -386,8 +389,8 @@ impl AppHost {
         }
         match ran {
             super::menu_rows::ForAgent::Command(direct) => {
-                inner.tools.palette().close();
                 self.run_counted(actor, &direct, events)?;
+                inner.tools.palette().close();
                 Ok(HostAction::None)
             }
             // The window's alone, which the row lets an agent have: its way, at the level that needs, sending nothing as anyone. Past a hand-off's last
