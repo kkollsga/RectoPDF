@@ -111,8 +111,12 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
     spawn_with(exe, env, priority, None)
 }
 
-/// [`spawn`], and the helper is given `document` as its descriptor 3 ([`DOCUMENT_FD`]), still the one open file, at the offset it has now. The helper reads it with
+/// [`spawn`], and the helper is given `document` as its descriptor 3 ([`DOCUMENT_FD`]), open for reading only (anything else is refused with `InvalidInput`). The helper reads it with
 /// [`inherited_document`]. Nothing else of this process's reaches it.
+///
+/// **Give each spawn a `File` of its own, opened by the path for this spawn** (`File::open`). The helper's 3 is the same open file description as `document`, so it shares the
+/// offset: whatever the helper reads or seeks moves the host's file position too, and another helper given the same description starts where the first left off. A `try_clone` or a
+/// `dup` is the same description and doesn't help; a fresh open has its own offset. (distillPDF reads with positioned reads, but that is its detail, not a promise.)
 pub fn spawn_with_document(exe: &Path, env: &[(&str, &OsStr)], priority: Priority, document: &File) -> io::Result<Spawned> {
     // Read-only, or refused: a helper given a descriptor it could write through could cut the person's file to nothing with `ftruncate`, which `RLIMIT_FSIZE` doesn't stop.
     // SAFETY: only reads a descriptor's flags.
