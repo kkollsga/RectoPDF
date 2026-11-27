@@ -8,6 +8,9 @@ mod hooks;
 
 use recto_headings::{Failure, InkSource, PageInk, Scan, find_headings, keep_visible};
 use recto_index::corpus::CorpusKey;
+use recto_platform::helper;
+use recto_platform::helper_app::{exit, in_structure_helper};
+use recto_platform::wall;
 use recto_render_service::{DocRenderer, Policy, RenderStats, ServiceConfig};
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
@@ -101,10 +104,38 @@ fn peak() -> Option<u64> {
     recto_platform::isolate::process_memory(std::process::id()).map(|memory| memory.peak_footprint_bytes)
 }
 
+/// Puts the walls up when this is the structure helper laid out in an app (`RectoStructure.app`, `docs/engineering/sandbox.md`), and says whether it did. Before any job is read, so no
+/// byte of a document reaches a helper whose walls aren't up: it leaves with the code that says which wall was missing. A bare helper, run from `target/` or by a test, has none to put up,
+/// and isn't hardened either, since `RLIMIT_NPROC=0` would stop it starting its render worker.
+fn put_up_walls() -> bool {
+    if !in_structure_helper(std::env::current_exe().ok().as_deref()) {
+        return false;
+    }
+    recto_platform::isolate::harden_this_process();
+    match wall::put_up() {
+        Ok(_) => true,
+        Err(wall::NoWall::NotSandboxed) => recto_platform::leave::leave_now(exit::NO_WALL),
+        Err(wall::NoWall::NothingToDrop) => recto_platform::leave::leave_now(exit::NO_RIGHTS_TO_DROP),
+        Err(wall::NoWall::LaunchdReachable) => recto_platform::leave::leave_now(exit::LAUNCHD_REACHABLE),
+    }
+}
+
 fn main() {
+    let walled = put_up_walls();
+    say(&[&json!({ "state": "hello", "walled": walled }).to_string()]);
     let Some(job) = job() else { return failed("bad_job") };
-    let (Some(file), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else {
-        return failed("bad_job");
+    let counting = job["kind"] == "count";
+    // A walled helper has nothing to open by a name: it answers the one job that needs none, and reads nothing for any other.
+    if walled && !counting {
+        return failed("unsupported_job");
+    }
+    let (file, key) = if counting {
+        (None, None)
+    } else {
+        let (Some(file), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else {
+            return failed("bad_job");
+        };
+        (Some(file), Some(key))
     };
     let faults = hooks::apply(&job);
     // A helper that can't start its watchers doesn't run without them: nothing would stop it when its parent has gone, or when it grows.
@@ -128,9 +159,26 @@ fn main() {
         return failed("no_watch");
     }
     hooks::busy(&job);
-    let scan = if job["scan"] == "typography" { Scan::Typography } else { Scan::Full };
-    let started = Instant::now();
-    report(&file, key, scan, started);
+    if let (Some(file), Some(key)) = (file, key) {
+        let scan = if job["scan"] == "typography" { Scan::Typography } else { Scan::Full };
+        report(&file, key, scan, Instant::now());
+    } else {
+        count();
+    }
+}
+
+/// The `count` job: the pages of the document the host put on descriptor 3, opened by `/dev/fd/3`. Nothing is opened by a name, so a walled helper can do it, and the number is read
+/// from the same bytes the host chose, not from whatever is at a path now.
+fn count() {
+    let Ok(document) = helper::inherited_document() else {
+        return say(&[&json!({ "state": "refused", "code": "no_document" }).to_string()]);
+    };
+    match recto_headings::open(Path::new(helper::DOCUMENT_PATH)) {
+        Ok(opened) => say(&[&json!({ "state": "counted", "pages": opened.page_count(), "helper_peak_bytes": peak() }).to_string()]),
+        Err(failure) => say(&[&json!({ "state": "refused", "code": failure.code(), "helper_peak_bytes": peak() }).to_string()]),
+    }
+    // Held to the end: the open file is the descriptor the path above names.
+    drop(document);
 }
 
 /// Starts one of the helper's two watchers, which leave the process at once (`leave_now`, not `exit`: an exit handler or a destructor waiting on what the busy main thread holds would keep it). False if the thread couldn't be made.

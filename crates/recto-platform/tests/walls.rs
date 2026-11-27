@@ -1,6 +1,6 @@
 //! The renderer helper's walls, from inside, against a stand-in for a compromised renderer. `recto-sandbox-probe` is laid out and signed by `app/render-helper.sh` in place of the
 //! worker, exactly as the app's helper is (ad hoc), puts up the worker's walls with the worker's own calls, then tries what a compromised renderer would. Every attempt also runs with
-//! no sandbox, so a wall can't pass because the attempt was broken. What only a Developer ID build can prove is in `docs/research/2026-11-07-sandbox-spike.md`.
+//! no sandbox, so a wall can't pass because the attempt was broken. The structure helper (`RectoStructure.app`, `recto-headings`) has the same walls, and the probe stands in for it the same way. What only a Developer ID build can prove is in `docs/research/2026-11-07-sandbox-spike.md`.
 //!
 //! Each test's files are in its own temp folder, removed on success; a failure retains bounded receipts and a rerun line. The first sandboxed run of the helper's ad hoc identifier makes its container,
 //! `~/Library/Containers/io.github.kkollsga.RectoPDF.Render.adhoc`, the one every development build uses; these tests share it and leave nothing else in the home folder.
@@ -20,7 +20,8 @@ mod command;
 
 const PROBE: &str = env!("CARGO_BIN_EXE_recto-sandbox-probe");
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-const ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
+const RENDER_ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
+const STRUCTURE_ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Structure.adhoc";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const RECEIPT_CAP: u64 = 4096;
 
@@ -66,8 +67,40 @@ fn capped_text(path: &Path) -> std::io::Result<String> {
     Ok(text)
 }
 
+/// Which helper the probe stands in for: the renderer's (with PDFium beside it) or the structure helper's. Each is laid out by its own `render-helper.sh` command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Render,
+    Structure,
+}
+
+impl Kind {
+    fn folder(self) -> &'static str {
+        match self {
+            Self::Render => "RectoRender.app",
+            Self::Structure => "RectoStructure.app",
+        }
+    }
+
+    fn executable(self) -> &'static str {
+        match self {
+            Self::Render => "recto-render-service",
+            Self::Structure => "recto-headings",
+        }
+    }
+
+    /// The container's name: the identifier every development build of this helper has.
+    fn container_id(self) -> &'static str {
+        match self {
+            Self::Render => RENDER_ADHOC_ID,
+            Self::Structure => STRUCTURE_ADHOC_ID,
+        }
+    }
+}
+
 /// A scratch folder with a canary in it, and a listener to connect to. Removed on drop, with anything a launch left in the LaunchServices database.
 struct Fixture {
+    kind: Kind,
     scratch: Option<recto_testpdf::TempDir>,
     listener: TcpListener,
     nonce: String,
@@ -75,11 +108,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::of(Kind::Render, name)
+    }
+
+    fn of(kind: Kind, name: &str) -> Self {
         let scratch = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-walls-{name}-"));
         std::fs::create_dir_all(&scratch).unwrap();
         let nonce = format!("{:016x}", recto_platform::local::random_u64());
         std::fs::write(scratch.join("canary.txt"), format!("canary:{nonce}\n")).unwrap();
         Self {
+            kind,
             scratch: Some(scratch),
             listener: TcpListener::bind("127.0.0.1:0").unwrap(),
             nonce,
@@ -95,7 +133,7 @@ impl Fixture {
     }
 
     fn helper(&self) -> PathBuf {
-        self.contents().join("Helpers/RectoRender.app")
+        self.contents().join("Helpers").join(self.kind.folder())
     }
 
     fn escape_app(&self) -> PathBuf {
@@ -118,7 +156,10 @@ impl Fixture {
     /// holding the canary only if what got launched is outside the sandbox. The sandbox can read it, as it's in the helper's own bundle, and LaunchServices only launches what the
     /// caller can read.
     fn sandboxed_probe(&self) -> PathBuf {
-        run(Command::new(helper_script()).arg("--layout").arg(self.contents()).arg(PROBE).arg(pdfium()));
+        match self.kind {
+            Kind::Render => run(Command::new(helper_script()).arg("--layout").arg(self.contents()).arg(PROBE).arg(pdfium())),
+            Kind::Structure => run(Command::new(helper_script()).arg("--layout-structure").arg(self.contents()).arg(PROBE)),
+        }
         let escape = self.escape_app().join("Contents");
         std::fs::create_dir_all(escape.join("MacOS")).unwrap();
         std::fs::write(
@@ -146,7 +187,7 @@ impl Fixture {
         // Signed again, as the app's build signs it, so the seal covers what was added.
         run(Command::new(helper_script()).arg("--sign").arg(self.contents()));
         run(Command::new(helper_script()).arg("--check").arg(self.helper()));
-        self.helper().join("Contents/MacOS/recto-render-service")
+        self.helper().join("Contents/MacOS").join(self.kind.executable())
     }
 
     /// The attempts that must all fail in a sandboxed renderer, each with the names it reports.
@@ -248,7 +289,7 @@ impl Drop for Fixture {
         cleanup.push_str(&format!("remaining processes: {remaining:?}\n"));
         for (app, identifier) in [
             (self.escape_app(), format!("io.github.kkollsga.RectoPDF.WallsEscape.{}", self.nonce)),
-            (self.helper(), ADHOC_ID.into()),
+            (self.helper(), self.kind.container_id().into()),
         ] {
             if app.exists() {
                 match command::output(Command::new(LSREGISTER).arg("-u").arg(&app), CLEANUP_GUARD) {
@@ -287,6 +328,7 @@ impl Drop for Fixture {
             }
         }
         if std::thread::panicking() || !clean {
+            let helper_folder = Path::new("Host.app/Contents/Helpers").join(self.kind.folder());
             let scratch = self.scratch.take().expect("fixture still owned");
             let thread = std::thread::current();
             let test = thread.name().unwrap_or("the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app");
@@ -304,11 +346,11 @@ impl Drop for Fixture {
             // Keep only bounded diagnostics, not copied executables or PDFium. A rerun rebuilds its own fixture.
             for (from, name) in [
                 (
-                    scratch.join("Host.app/Contents/Helpers/RectoRender.app/Contents/Resources/Escape.app/Contents/Info.plist"),
+                    scratch.join(&helper_folder).join("Contents/Resources/Escape.app/Contents/Info.plist"),
                     "escape-Info.plist",
                 ),
                 (
-                    scratch.join("Host.app/Contents/Helpers/RectoRender.app/Contents/Resources/Escape.app/Contents/Resources/escape.txt"),
+                    scratch.join(&helper_folder).join("Contents/Resources/Escape.app/Contents/Resources/escape.txt"),
                     "escape-config.txt",
                 ),
             ] {
@@ -413,6 +455,37 @@ const WALLS: [&str; 12] = [
     "mach:com.apple.pasteboard.1",
 ];
 
+/// What a compromised structure helper might do with its document, which is open for reading only on descriptor 3, and must fail under the walls. `ftruncate` fails even with no sandbox,
+/// because the descriptor isn't open for writing; the other three succeed with no sandbox (the control that they are real calls here) and are stopped by the sandbox. `fd3:flock` is not in
+/// the list: the sandbox allows it, measured on macOS 27 (2026-11-27). It's advisory and only holds back a process that asks for the same lock, until the helper ends.
+const FD3: [&str; 4] = ["fd3:ftruncate", "fd3:fchmod", "fd3:fsetxattr", "fd3:reopen_write"];
+
+/// Runs the probe with `document` on its descriptor 3.
+fn probe_with_document(executable: &Path, args: &[String], document: &std::fs::File) -> BTreeMap<String, bool> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let source = document.as_raw_fd();
+    let mut command = Command::new(executable);
+    command.args(args);
+    // SAFETY: only `dup2` and `fcntl` on descriptors the child has, between the fork and the exec; nothing allocates.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(source, 3) != 3 || libc::fcntl(3, libc::F_SETFD, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let (exceeded, output) = command::output(&mut command, HANG_GUARD).unwrap();
+    assert!(
+        !exceeded && output.status.success(),
+        "the probe failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Failure: an attempt is broken in a way that makes it fail anywhere, so the tests below pass whatever the sandbox does.
 #[test]
 fn with_no_sandbox_every_attempt_gets_through() {
@@ -432,12 +505,63 @@ fn with_no_sandbox_every_attempt_gets_through() {
 /// runner with macOS 26 the system once killed the probe partway through its attempts, which hid the rest. A kill during an attempt counts as that attempt stopped, and is printed.
 #[test]
 fn the_helpers_walls_hold() {
-    let fixture = Fixture::new("walls");
+    walls_hold(&Fixture::new("walls"));
+}
+
+/// Failure: the structure helper, which reads a hostile document with distillPDF in a helper of its own, isn't behind the walls the renderer is: signed or laid out in a way that
+/// leaves one open. The same attempts, the same launch through LaunchServices (denied, no marker), and the same container write (denied under the walls), in `RectoStructure.app`
+/// as `--layout-structure` makes it.
+#[test]
+fn the_structure_helpers_walls_hold() {
+    let fixture = Fixture::of(Kind::Structure, "walls-structure");
     let executable = fixture.sandboxed_probe();
+    walls_hold_in(&fixture, &executable);
+    container_is_writable_only_without_the_file_size_limit(&fixture, &executable);
+    the_document_on_3_cannot_be_altered(&fixture, &executable);
+}
+
+/// Failure: a compromised structure helper changes the person's file through the descriptor it was given to read: cuts it short, changes its mode or attributes, locks it, or opens it
+/// again for writing by the path `F_GETPATH` gives. Run first with no sandbox (the probe as it is), which shows which of these the descriptor's own read-only mode already stops and that the
+/// others are real calls here; then with the walls, where every one must fail.
+fn the_document_on_3_cannot_be_altered(fixture: &Fixture, executable: &Path) {
+    let path = fixture.scratch().join("document.pdf");
+    std::fs::write(&path, b"%PDF-1.7 the person's file").unwrap();
+    let document = std::fs::File::open(&path).unwrap();
+    let args = vec!["--fd3".to_string()];
+    let bare = probe_with_document(Path::new(PROBE), &args, &document);
+    println!("fd 3 with no sandbox: {bare:?}");
+    let walled = probe_with_document(executable, &with_walls(args), &document);
+    println!("fd 3 with the walls: {walled:?}");
+    assert_eq!(walled.get("walls"), Some(&true), "the walls didn't go up: {walled:?}");
+    for name in FD3 {
+        assert_eq!(walled.get(name), Some(&false), "{name} wasn't stopped, or wasn't tried: {walled:?}");
+    }
+    assert_eq!(
+        bare.get("fd3:ftruncate"),
+        Some(&false),
+        "a read-only descriptor was truncated even with no sandbox: {bare:?}"
+    );
+    for name in ["fd3:fchmod", "fd3:fsetxattr", "fd3:reopen_write", "fd3:flock"] {
+        assert_eq!(
+            bare.get(name),
+            Some(&true),
+            "{name} failed with no sandbox, so stopping it proves nothing: {bare:?}"
+        );
+    }
+    assert_eq!(walled.get("fd3:flock"), Some(&true), "the sandbox now stops flock: say so in FD3 and this test");
+    assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-1.7 the person's file", "the document changed");
+}
+
+fn walls_hold(fixture: &Fixture) {
+    let executable = fixture.sandboxed_probe();
+    walls_hold_in(fixture, &executable);
+}
+
+fn walls_hold_in(fixture: &Fixture, executable: &Path) {
     let mut results = BTreeMap::new();
     let mut notes = Vec::new();
     for (args, names) in fixture.attempt_list() {
-        let one = attempt_alone(&executable, &args, &names, &mut notes);
+        let one = attempt_alone(executable, &args, &names, &mut notes);
         assert_eq!(
             one.get("walls"),
             Some(&true),
@@ -447,7 +571,7 @@ fn the_helpers_walls_hold() {
         results.extend(one.into_iter().filter(|(name, _)| name != "walls"));
     }
     let launch = attempt_alone(
-        &executable,
+        executable,
         &["--ls-open".to_string(), fixture.escape_app().display().to_string()],
         &["launchservices:open"],
         &mut notes,
@@ -491,18 +615,25 @@ fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
 fn the_container_is_writable_only_without_the_file_size_limit() {
     let fixture = Fixture::new("container");
     let executable = fixture.sandboxed_probe();
+    container_is_writable_only_without_the_file_size_limit(&fixture, &executable);
+}
+
+fn container_is_writable_only_without_the_file_size_limit(fixture: &Fixture, executable: &Path) {
     // The container exists once a sandboxed process of this identifier has run: the probe, just now, if no build had before.
-    let _ = probe(&executable, &[]);
-    let target =
-        PathBuf::from(std::env::var_os("HOME").unwrap()).join(format!("Library/Containers/{ADHOC_ID}/Data/tmp/recto-walls-{}.txt", std::process::id()));
+    let _ = probe(executable, &[]);
+    let target = PathBuf::from(std::env::var_os("HOME").unwrap()).join(format!(
+        "Library/Containers/{}/Data/tmp/recto-walls-{}.txt",
+        fixture.kind.container_id(),
+        std::process::id()
+    ));
     let args = vec!["--write".to_string(), format!("container={}", target.display())];
     assert_eq!(
-        probe(&executable, &args).get("write:container"),
+        probe(executable, &args).get("write:container"),
         Some(&true),
         "the sandbox alone stopped it, so the limit isn't what's being tested"
     );
     assert_eq!(
-        probe(&executable, &with_walls(args)).get("write:container"),
+        probe(executable, &with_walls(args)).get("write:container"),
         Some(&false),
         "a compromised renderer can write to its container"
     );

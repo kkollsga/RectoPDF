@@ -268,3 +268,6 @@ pub mod surface;
 #[cfg_attr(target_os = "macos", path = "wall_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "wall_stub.rs")]
 pub mod wall;
+
+/// Where the structure helper lives in the app, whether a program is that helper, and the exit codes its walls use. Pure, so every platform builds it.
+pub mod helper_app;

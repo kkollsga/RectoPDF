@@ -23,6 +23,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `qos_class_t`'s `QOS_CLASS_UTILITY`, from `<sys/qos.h>`.
 const QOS_CLASS_UTILITY: u32 = 0x11;
@@ -98,9 +99,44 @@ fn above_stdio(file: File) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(moved) })
 }
 
+/// Where a helper given a document finds it: descriptor 3, next to standard input, output and error. Everything else is closed in it.
+pub const DOCUMENT_FD: RawFd = 3;
+
+/// The same descriptor as a path the sandbox allows, for a library that opens by name: the open of `/dev/fd/3` is a duplicate of the descriptor, not a way to any file.
+pub const DOCUMENT_PATH: &str = "/dev/fd/3";
+
 /// Starts `exe` with no arguments, only `env` for its environment, its standard input and output on pipes to this process, its standard error on
 /// `/dev/null`, and no other descriptor.
 pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Result<Spawned> {
+    spawn_with(exe, env, priority, None)
+}
+
+/// [`spawn`], and the helper is given `document` as its descriptor 3 ([`DOCUMENT_FD`]), open for reading only (anything else is refused with `InvalidInput`). The helper reads it with
+/// [`inherited_document`]. Nothing else of this process's reaches it.
+///
+/// **Give each spawn a `File` of its own, opened by the path for this spawn** (`File::open`). The helper's 3 is the same open file description as `document`, so it shares the
+/// offset: whatever the helper reads or seeks moves the host's file position too, and another helper given the same description starts where the first left off. A `try_clone` or a
+/// `dup` is the same description and doesn't help; a fresh open has its own offset. (distillPDF reads with positioned reads, but that is its detail, not a promise.)
+pub fn spawn_with_document(exe: &Path, env: &[(&str, &OsStr)], priority: Priority, document: &File) -> io::Result<Spawned> {
+    // Read-only, or refused: a helper given a descriptor it could write through could cut the person's file to nothing with `ftruncate`, which `RLIMIT_FSIZE` doesn't stop.
+    // SAFETY: only reads a descriptor's flags.
+    let flags = check(unsafe { libc::fcntl(document.as_raw_fd(), libc::F_GETFL) })?;
+    if flags & libc::O_ACCMODE != libc::O_RDONLY {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the document must be open for reading only"));
+    }
+    spawn_with(exe, env, priority, Some(document))
+}
+
+/// A copy of `document` at a number of 4 or more, close-on-exec. The pipes this spawn made may be on 3 and 4, and the copy is the only one the file actions below need to put
+/// on 3: made first, it can't be one of the pipes' numbers, and putting it on 3 after the pipes are on 0 and 1 never overwrites one that's still wanted.
+fn duplicate_above_3(document: &File) -> io::Result<File> {
+    // SAFETY: duplicates a descriptor this borrows onto the lowest free number from 4, close-on-exec.
+    let copy = check(unsafe { libc::fcntl(document.as_raw_fd(), libc::F_DUPFD_CLOEXEC, DOCUMENT_FD + 1) })?;
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { File::from_raw_fd(copy) })
+}
+
+fn spawn_with(exe: &Path, env: &[(&str, &OsStr)], priority: Priority, document: Option<&File>) -> io::Result<Spawned> {
     let cstring = |bytes: &[u8]| CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
     let path = cstring(exe.as_os_str().as_bytes())?;
     let argv = [path.as_ptr().cast_mut(), std::ptr::null_mut()];
@@ -110,6 +146,7 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
         .collect::<io::Result<Vec<_>>>()?;
     let mut envp: Vec<*mut libc::c_char> = owned_env.iter().map(|entry| entry.as_ptr().cast_mut()).collect();
     envp.push(std::ptr::null_mut());
+    let copy = document.map(duplicate_above_3).transpose()?;
     let (child_in, stdin) = pipe()?;
     let (stdout, child_out) = pipe()?;
     // SAFETY: a flag change on a descriptor this owns.
@@ -145,6 +182,11 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
             }
             check_spawn(libc::posix_spawn_file_actions_adddup2(&raw mut actions, child_in.as_raw_fd(), 0))?;
             check_spawn(libc::posix_spawn_file_actions_adddup2(&raw mut actions, child_out.as_raw_fd(), 1))?;
+            // After 0 and 1, so a pipe that is on 3 has been copied before it's replaced. The copy is at 4 or more, so this is never `adddup2(3, 3)`, which would leave the
+            // descriptor close-on-exec.
+            if let Some(copy) = &copy {
+                check_spawn(libc::posix_spawn_file_actions_adddup2(&raw mut actions, copy.as_raw_fd(), DOCUMENT_FD))?;
+            }
             check_spawn(libc::posix_spawn_file_actions_addopen(
                 &raw mut actions,
                 2,
@@ -166,12 +208,38 @@ pub fn spawn(exe: &Path, env: &[(&str, &OsStr)], priority: Priority) -> io::Resu
         prepared?;
     }
     // The child's ends close here, so the helper's end of input is this process's `stdin` and nobody else's.
-    drop((child_in, child_out));
+    drop((child_in, child_out, copy));
     Ok(Spawned {
         child: Helper { pid, ended: None, lost: false },
         stdin,
         stdout,
     })
+}
+
+/// Set the first time [`inherited_document`] looks at descriptor 3, whatever it finds.
+static DOCUMENT_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// In a helper started with [`spawn_with_document`]: the document, taken from descriptor 3. Once only: a second call, whatever the first said, is refused, so nothing
+/// else in the process can come by a second handle on it. Close-on-exec from here, so a helper this one starts doesn't get it. `InvalidInput` unless descriptor 3 is a
+/// regular file: a pipe, a socket or a device put there, or nothing, is no document and is left alone.
+pub fn inherited_document() -> io::Result<File> {
+    if DOCUMENT_TAKEN.swap(true, Ordering::SeqCst) {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the document was already taken"));
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `stat` is live for the call, and this only looks at descriptor 3.
+    if unsafe { libc::fstat(DOCUMENT_FD, stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    // SAFETY: filled, as the call returned 0.
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    // SAFETY: a flag change on descriptor 3, which is a regular file here.
+    check(unsafe { libc::fcntl(DOCUMENT_FD, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    // SAFETY: a regular file the host put on 3 for this process. Nothing else here owns it: this is the only call that takes it, and it's taken once.
+    Ok(unsafe { File::from_raw_fd(DOCUMENT_FD) })
 }
 
 impl Helper {
@@ -491,5 +559,182 @@ mod tests {
         };
         assert!(state.is_empty() || state.contains('Z'), "a dropped helper is killed, and it's {state:?}");
         drop(stdin);
+    }
+
+    /// Runs `/bin/sh` as a helper given `document`, and says which of descriptors 0 to 9 it has open and what it reads from 3. Its script comes on its standard input, as the helper's job does.
+    fn what_a_shell_is_given(document: &File) -> (Vec<u32>, String) {
+        let Spawned {
+            mut child,
+            mut stdin,
+            mut stdout,
+        } = spawn_with_document(Path::new("/bin/sh"), &[], Priority::Inherited, document).unwrap();
+        stdin
+            .write_all(b"for n in 0 1 2 3 4 5 6 7 8 9; do if ( : <&$n ) 2>/dev/null; then echo \"fd $n\"; fi; done; cat <&3\n")
+            .unwrap();
+        drop(stdin);
+        let mut said = String::new();
+        stdout.read_to_string(&mut said).unwrap();
+        assert!(child.wait().unwrap().success(), "{said}");
+        let open = said.lines().filter_map(|line| line.strip_prefix("fd ")?.parse().ok()).collect();
+        let contents = said.lines().filter(|line| !line.starts_with("fd ")).collect::<Vec<_>>().join("\n");
+        (open, contents)
+    }
+
+    fn is_open(fd: RawFd) -> bool {
+        // SAFETY: only asks about a number.
+        unsafe { libc::fcntl(fd, libc::F_GETFD) != -1 }
+    }
+
+    /// Failure: a helper given a document has more than the document: a descriptor this process had open (here the document's own number and a pipe's), or it has the document on
+    /// another number, or none, or the copy is made so the pipes' own end is overwritten (a pipe that was on 3 when the document is put there). It has 0, 1, 2 and 3 and no others,
+    /// and 3 reads the file's bytes. Run in this process, and again in a process with 3 and 4 free, so the pipes land on 3 and 4 and are copied to 0 and 1 before 3 is replaced.
+    #[test]
+    fn a_helper_given_a_document_gets_it_at_3_and_nothing_else() {
+        let dir = recto_testpdf::TempDir::new("recto-helper-doc-");
+        let path = dir.join("doc.txt");
+        std::fs::write(&path, "the document's bytes").unwrap();
+        let document = File::open(&path).unwrap();
+        assert_eq!(what_a_shell_is_given(&document), (vec![0, 1, 2, 3], "the document's bytes".to_string()));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "helper::tests::document_with_3_and_4_free_probe",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("RECTO_HELPER_DOC", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "with 3 and 4 free:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "run by a_helper_given_a_document_gets_it_at_3_and_nothing_else, in a process where 3 and 4 are free"]
+    fn document_with_3_and_4_free_probe() {
+        let path = std::env::var_os("RECTO_HELPER_DOC").expect("run by its parent test");
+        let first = File::open(&path).unwrap();
+        // Out of the way of 3 and 4, so the pipes made by the spawn are the lowest numbers there are.
+        // SAFETY: duplicates a descriptor this owns onto a number from 10, close-on-exec.
+        let high = check(unsafe { libc::fcntl(first.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) }).unwrap();
+        drop(first);
+        // SAFETY: a fresh descriptor nothing else owns.
+        let document = unsafe { File::from_raw_fd(high) };
+        assert!(!is_open(3) && !is_open(4), "3 and 4 weren't free here, so this proves nothing");
+        assert_eq!(what_a_shell_is_given(&document), (vec![0, 1, 2, 3], "the document's bytes".to_string()));
+    }
+
+    /// Failure: a document the host can write to (opened read-write or write-only) is handed to a helper, which, if it's hostile, can `ftruncate` the person's PDF to nothing: `RLIMIT_FSIZE`
+    /// at 0 doesn't stop that. A descriptor that isn't read-only is refused as `InvalidInput`, and starts nothing; a read-only one is given.
+    #[test]
+    fn only_a_read_only_document_is_given_to_a_helper() {
+        let dir = recto_testpdf::TempDir::new("recto-helper-doc-");
+        let path = dir.join("doc.txt");
+        std::fs::write(&path, "bytes").unwrap();
+        let open = |read: bool, write: bool| std::fs::OpenOptions::new().read(read).write(write).open(&path).unwrap();
+        for (name, file) in [("read-write", open(true, true)), ("write-only", open(false, true))] {
+            let refused = spawn_with_document(Path::new("/bin/sh"), &[], Priority::Inherited, &file);
+            assert_eq!(
+                refused.err().map(|error| error.kind()),
+                Some(io::ErrorKind::InvalidInput),
+                "{name} was given to a helper"
+            );
+        }
+        assert_eq!(what_a_shell_is_given(&open(true, false)).1, "bytes");
+    }
+
+    /// Failure: a descriptor 3 in the helper isn't taken once, or is a document when it's a pipe or socket, or when there is nothing there, or stays open in what the helper starts.
+    /// Run in a process of its own, with the descriptors set up as a host would leave them.
+    #[test]
+    fn inherited_document_is_taken_once_and_only_if_it_is_a_regular_file() {
+        let dir = recto_testpdf::TempDir::new("recto-helper-doc-");
+        let path = dir.join("doc.txt");
+        std::fs::write(&path, "bytes").unwrap();
+        for (case, setup) in [("regular", "file"), ("pipe", "pipe"), ("nothing", "none")] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "helper::tests::inherited_document_probe",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("RECTO_HELPER_DOC", &path)
+                .env("RECTO_HELPER_SETUP", setup)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "run by inherited_document_is_taken_once_and_only_if_it_is_a_regular_file"]
+    fn inherited_document_probe() {
+        let path = std::env::var_os("RECTO_HELPER_DOC").expect("run by its parent test");
+        let setup = std::env::var("RECTO_HELPER_SETUP").unwrap();
+        assert!(!is_open(DOCUMENT_FD), "3 wasn't free here");
+        let kept: Option<File> = match setup.as_str() {
+            "file" => {
+                // Opened on 3, the lowest free number: moved up first, so that what's put on 3 below is a copy and nothing here owns 3 twice.
+                let first = File::open(&path).unwrap();
+                // SAFETY: duplicates a descriptor this owns onto a number from 10, close-on-exec.
+                let high = check(unsafe { libc::fcntl(first.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) }).unwrap();
+                drop(first);
+                // SAFETY: a fresh descriptor nothing else owns.
+                let file = unsafe { File::from_raw_fd(high) };
+                // SAFETY: puts a copy on 3, which was free again.
+                assert_eq!(unsafe { libc::dup2(file.as_raw_fd(), DOCUMENT_FD) }, DOCUMENT_FD);
+                Some(file)
+            }
+            "pipe" => {
+                // `pipe` numbers its ends above 2, and may have used 3: the read end is copied to 3 whatever it is.
+                let (reader, writer) = pipe().unwrap();
+                if reader.as_raw_fd() == DOCUMENT_FD {
+                    std::mem::forget(reader);
+                    drop(writer);
+                } else {
+                    // SAFETY: puts a copy of the read end on 3, which was free (a `pipe` end that was on 3 would have been the case above).
+                    assert_eq!(unsafe { libc::dup2(reader.as_raw_fd(), DOCUMENT_FD) }, DOCUMENT_FD);
+                    drop((reader, writer));
+                }
+                None
+            }
+            _ => None,
+        };
+        let taken = inherited_document();
+        match setup.as_str() {
+            "file" => {
+                let mut taken = taken.unwrap();
+                // SAFETY: only reads a descriptor's flags.
+                assert_ne!(
+                    unsafe { libc::fcntl(taken.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+                    0,
+                    "a helper this one starts would be given the document"
+                );
+                let mut text = String::new();
+                taken.read_to_string(&mut text).unwrap();
+                assert_eq!(text, "bytes");
+                assert_eq!(inherited_document().unwrap_err().kind(), io::ErrorKind::AlreadyExists, "taken twice");
+            }
+            _ => {
+                assert_eq!(taken.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+                assert_eq!(
+                    inherited_document().unwrap_err().kind(),
+                    io::ErrorKind::AlreadyExists,
+                    "a refusal still counts as the one look"
+                );
+            }
+        }
+        drop(kept);
     }
 }

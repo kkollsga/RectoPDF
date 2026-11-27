@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The structure helper's (RectoStructure.app, recto-headings) only entitlement, the same as the renderer's (RectoRender.entitlements): the App Sandbox, with nothing
+     added to it. No files, no network: the document comes as descriptor 3. Not com.apple.security.inherit, and not disable-library-validation (it loads no library of its
+     own). app/render-helper.sh checks a built helper has exactly this. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+</dict>
+</plist>

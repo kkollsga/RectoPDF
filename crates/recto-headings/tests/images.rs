@@ -59,13 +59,16 @@ fn document_with_a_bomb() -> Vec<u8> {
     )
 }
 
+#[path = "support/hello.rs"]
+mod hello;
+
 fn peak_here() -> u64 {
     recto_platform::isolate::process_memory(std::process::id())
         .expect("this process's memory")
         .peak_footprint_bytes
 }
 
-/// The helper as the session runs it, with the session's limit: its report line.
+/// The helper as the session runs it, with the session's limit: its report line, after its hello.
 fn helper_report(path: &std::path::Path) -> Value {
     let key = CorpusKey::of_file(path).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings"))
@@ -82,7 +85,11 @@ fn helper_report(path: &std::path::Path) -> Value {
     child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
     drop(stdin);
     let _ = child.wait();
-    said.lines().next().and_then(|line| serde_json::from_str(line).ok()).unwrap_or(Value::Null)
+    hello::after_hello(&said)
+        .lines()
+        .next()
+        .and_then(|line| serde_json::from_str(line).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// Failure: the headings helper decodes an image in a hostile PDF, so distillPDF's image decoders (`image`, `jpeg-decoder`, `fax`) run on untrusted bytes outside any sandbox, against the owner's decision of 2026-11-08. Here a 100 KB image that inflates to 108 MB of samples: decoded, the helper's peak footprint would pass the samples' size. And the contents must still come, from the text.

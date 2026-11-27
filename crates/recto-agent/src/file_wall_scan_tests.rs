@@ -180,8 +180,8 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     ),
     (
         "recto-platform/src/bin/recto-sandbox-probe.rs",
-        4,
-        "a test's probe, never in the app: adversarial file attempts, plus capped reads of its own fixture configuration/canary and creation of its exact launch receipt",
+        5,
+        "a test's probe, never in the app: adversarial file attempts (including opening the path of its descriptor 3 again for writing), plus capped reads of its own fixture configuration/canary and creation of its exact launch receipt",
     ),
     (
         "recto-platform/src/detached_mac.rs",

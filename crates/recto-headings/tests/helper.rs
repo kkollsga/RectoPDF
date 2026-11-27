@@ -9,6 +9,9 @@ use std::io::{Read, Write};
 use std::process::ExitStatus;
 #[path = "support/diagnostics.rs"]
 mod diagnostics;
+#[path = "support/hello.rs"]
+mod hello;
+use hello::after_hello;
 use std::time::{Duration, Instant};
 
 fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Option<Generated>, Duration) {
@@ -29,7 +32,7 @@ fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Opt
     stdout.read_to_string(&mut said).unwrap();
     let _ = child.wait();
     drop(held_open);
-    let mut lines = said.lines();
+    let mut lines = after_hello(&said).lines();
     let report: Value = lines.next().and_then(|line| serde_json::from_str(line).ok()).unwrap_or(Value::Null);
     let generated = lines.next().map(|line| Generated::decode(line.as_bytes(), key).unwrap());
     (report, generated, started.elapsed())
@@ -227,7 +230,7 @@ fn start_and_wait(extra: Value, close_stdin: bool, bound: Duration) -> Went {
 fn it_goes_at_once_when_its_stdin_closes_whatever_it_is_doing() {
     let went = start_and_wait(json!({ "test_busy_ms": 30_000, "test_stall_exit_ms": 15_000 }), true, GONE_WITHIN);
     assert!(
-        went.status.is_some_and(|status| status.success()) && went.said.is_empty(),
+        went.status.is_some_and(|status| status.success()) && after_hello(&went.said).is_empty(),
         "closing its stdin didn't stop it: it {}",
         went.describe()
     );
@@ -239,7 +242,7 @@ fn it_goes_at_once_when_it_passes_its_memory_limit() {
     let extra = json!({ "memory_limit": 100u64 << 20, "test_hold_mib": 300, "test_busy_ms": 30_000, "test_stall_exit_ms": 15_000 });
     let went = start_and_wait(extra, false, GONE_WITHIN);
     assert!(
-        went.status.is_some_and(|status| status.code() == Some(3)) && went.said.is_empty(),
+        went.status.is_some_and(|status| status.code() == Some(3)) && after_hello(&went.said).is_empty(),
         "past its memory limit it didn't stop: it {}",
         went.describe()
     );
@@ -249,13 +252,13 @@ fn it_goes_at_once_when_it_passes_its_memory_limit() {
 #[test]
 fn it_refuses_the_job_when_it_cant_start_its_watchers() {
     let went = start_and_wait(json!({ "memory_limit": 512u64 << 20, "test_spawn_fails": true }), false, GONE_WITHIN);
-    let report: Value = serde_json::from_str(went.said.lines().next().unwrap_or("null")).unwrap_or(Value::Null);
+    let report: Value = serde_json::from_str(after_hello(&went.said).lines().next().unwrap_or("null")).unwrap_or(Value::Null);
     assert!(
         went.status.is_some() && report["state"] == "failed" && report["code"] == "no_watch",
         "it did the job without its watchers: it {}",
         went.describe()
     );
-    assert_eq!(went.said.lines().count(), 1, "{}", went.describe());
+    assert_eq!(after_hello(&went.said).lines().count(), 1, "{}", went.describe());
 }
 
 /// Failure: keeping stdin open for a completed job leaks a parent descriptor on every request.
@@ -281,4 +284,73 @@ fn stdin_fd_probe() {
     let before = count();
     let _ = run(&pdf.0, key, false);
     assert_eq!(count(), before, "completed helper leaked a parent descriptor");
+}
+
+/// The helper's whole conversation for one job line: each line it said, as JSON, and how it ended. `document`, if there is one, is put on its descriptor 3.
+fn converse(job: &Value, document: Option<&std::fs::File>) -> (Vec<Value>, Option<ExitStatus>) {
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_recto-headings"));
+    let env = [("MallocLargeCache", std::ffi::OsStr::new("0"))];
+    let spawned = match document {
+        Some(file) => helper::spawn_with_document(exe, &env, Priority::Inherited, file),
+        None => helper::spawn(exe, &env, Priority::Inherited),
+    };
+    let helper::Spawned {
+        mut child,
+        mut stdin,
+        mut stdout,
+    } = spawned.unwrap();
+    writeln!(stdin, "{job}").unwrap();
+    let mut said = String::new();
+    stdout.read_to_string(&mut said).unwrap();
+    drop(stdin);
+    let status = child.wait().ok();
+    (said.lines().map(|line| serde_json::from_str(line).unwrap_or(Value::Null)).collect(), status)
+}
+
+/// Failure: a bare helper (as every development and test run is) claims walls it doesn't have, so the session believes a document was read behind them.
+#[test]
+fn a_bare_helper_says_it_has_no_walls() {
+    let (said, _) = converse(&json!({ "kind": "count" }), None);
+    assert_eq!(said[0], json!({ "state": "hello", "walled": false }), "{said:?}");
+}
+
+/// Failure: `count` reads the file by a name, or from the wrong descriptor, or counts another file's pages: its answer is the pages of the document it was handed, and the hello still comes first.
+#[test]
+fn count_gives_the_pages_of_the_document_it_was_handed() {
+    let pages: Vec<recto_testpdf::Page> = (1..=3)
+        .map(|number| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("page {number}")])))
+        .collect();
+    let pdf = TempPdf::new("three.pdf", &recto_testpdf::pages(&pages));
+    let file = std::fs::File::open(&pdf.0).unwrap();
+    let (said, status) = converse(&json!({ "kind": "count" }), Some(&file));
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!((said[1]["state"].as_str(), said[1]["pages"].as_u64()), (Some("counted"), Some(3)), "{said:?}");
+    assert!(said[1]["helper_peak_bytes"].as_u64().is_some_and(|peak| peak > 0), "{said:?}");
+    assert!(status.is_some_and(|status| status.success()), "{status:?}");
+}
+
+/// Failure: a descriptor 3 that isn't a regular file (a pipe the host left there) is read as a document, or the job hangs on it. It's refused as no document, and read from by nothing.
+#[test]
+fn count_with_a_pipe_on_3_says_there_is_no_document() {
+    let (reader, writer) = std::io::pipe().unwrap();
+    // The writer end stays open in this process and unwritten: a read of it would hang.
+    let as_file: std::fs::File = std::os::fd::OwnedFd::from(reader).into();
+    let (said, _) = converse(&json!({ "kind": "count" }), Some(&as_file));
+    drop(writer);
+    assert_eq!(
+        (said[1]["state"].as_str(), said[1]["code"].as_str()),
+        (Some("refused"), Some("no_document")),
+        "{said:?}"
+    );
+}
+
+/// Failure: with nothing on descriptor 3 the job opens some other file or counts nothing and says it counted. It says there is no document.
+#[test]
+fn count_with_no_descriptor_says_there_is_no_document() {
+    let (said, _) = converse(&json!({ "kind": "count" }), None);
+    assert_eq!(
+        (said[1]["state"].as_str(), said[1]["code"].as_str()),
+        (Some("refused"), Some("no_document")),
+        "{said:?}"
+    );
 }

@@ -235,6 +235,46 @@ mod mac {
         }
     }
 
+    /// What a compromised structure helper could do with the document it was given on descriptor 3, which is open for reading only: cut it short, change its mode or its
+    /// attributes, lock it, or open the file again for writing by the path the descriptor gives (`F_GETPATH`). One line each, `fd3:<what>`; `allowed` means the call succeeded.
+    /// Changes nothing that stays: the mode set is the mode it has, the attribute is removed again, the reopened file isn't written to.
+    fn fd3() {
+        const FD: c_int = 3;
+        let say = |name: &str, rc: c_int| report(&format!("fd3:{name}"), rc == 0, if rc == 0 { "succeeded".to_string() } else { errno_text() });
+        // SAFETY: calls on descriptor 3 and on buffers made here; a descriptor that isn't there fails with `EBADF`, which reads as denied.
+        unsafe {
+            let mut stat: libc::stat = std::mem::zeroed();
+            if libc::fstat(FD, &raw mut stat) != 0 {
+                for name in ["ftruncate", "fchmod", "fsetxattr", "flock", "reopen_write"] {
+                    report(&format!("fd3:{name}"), false, format!("no descriptor 3: {}", errno_text()));
+                }
+                return;
+            }
+            say("ftruncate", libc::ftruncate(FD, 0));
+            say("fchmod", libc::fchmod(FD, stat.st_mode & 0o7777));
+            let attribute = c"user.recto.probe";
+            let set = libc::fsetxattr(FD, attribute.as_ptr(), b"x".as_ptr().cast(), 1, 0, 0);
+            if set == 0 {
+                libc::fremovexattr(FD, attribute.as_ptr(), 0);
+            }
+            say("fsetxattr", set);
+            say("flock", libc::flock(FD, libc::LOCK_EX | libc::LOCK_NB));
+            let mut path = [0 as c_char; libc::PATH_MAX as usize];
+            let reopened = if libc::fcntl(FD, libc::F_GETPATH, path.as_mut_ptr()) == 0 {
+                let again = libc::open(path.as_ptr(), libc::O_WRONLY);
+                if again >= 0 {
+                    libc::close(again);
+                    0
+                } else {
+                    -1
+                }
+            } else {
+                -1
+            };
+            say("reopen_write", reopened);
+        }
+    }
+
     fn inet(port: u16) -> libc::sockaddr_in {
         // SAFETY: all zeros is a valid `sockaddr_in`, and the fields that matter are set below.
         let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
@@ -566,6 +606,7 @@ mod mac {
                     let (label, path) = split(value());
                     write_file(&label, &path);
                 }
+                "--fd3" => fd3(),
                 "--net" => network(value().parse().expect("a port")),
                 "--spawn" => spawn(&value()),
                 "--fork" => fork_attempt(),

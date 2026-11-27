@@ -37,3 +37,13 @@ pub fn launchd_reachable() -> bool {
 pub fn put_up() -> Result<MachDrop, NoWall> {
     Err(NoWall::NotSandboxed)
 }
+
+#[cfg(feature = "test-seams")]
+pub fn pid_sandboxed(_pid: u32) -> i32 {
+    -1
+}
+
+#[cfg(feature = "test-seams")]
+pub fn pid_may_read(_pid: u32, _path: &std::path::Path) -> i32 {
+    -1
+}
