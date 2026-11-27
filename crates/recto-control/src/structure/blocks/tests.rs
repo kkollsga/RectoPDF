@@ -99,6 +99,12 @@ fn an_answer_maps_each_page_in_order_and_puts_it_once() {
     let put = put.lock().unwrap();
     assert_eq!(put.iter().map(|page| page.page).collect::<Vec<_>>(), [0, 1, 2]);
     assert_eq!(put.iter().map(|page| page.blocks.len()).collect::<Vec<_>>(), [3, 2, 1]);
+    let page_chars: Vec<u32> = BLOCKS_TEXT.iter().map(|lines| lines.join("\n").chars().count() as u32).collect();
+    assert_eq!(
+        put.iter().map(|page| page.chars).collect::<Vec<_>>(),
+        page_chars,
+        "each page is mapped against its own text, not what the page before left in the buffer"
+    );
     assert_eq!(tally.pages, 3);
     assert_eq!(
         (
