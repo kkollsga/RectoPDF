@@ -93,6 +93,7 @@ case "$*" in
   "qa as-person page rotate"* | "qa menu markup.highlight") echo true > "$st/edited" ;;
   "qa as-person undo") echo false > "$st/edited" ;;
   "qa menu file.close") echo '{"kind":"close_prompt"}' > "$st/sheet" ;;
+  "qa menu edit.clear_leftovers") echo '{"kind":"clear_leftovers"}' > "$st/sheet" ;;
   "qa as-person open"*) echo '{"kind":"password"}' > "$st/sheet" ;;
   "qa sheet-answer"* | "qa password") echo null > "$st/sheet" ;;
   "qa menu edit.copy") echo '"notice"' > "$st/copy" ;;
