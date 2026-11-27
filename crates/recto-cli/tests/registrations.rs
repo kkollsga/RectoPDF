@@ -67,7 +67,7 @@ enum Verdict {
     Ended { folder: PathBuf },
     /// Forgotten, and the stage doesn't fail, with why: an older tree's before folders carried a tree, or another tree's, stale.
     Forget(&'static str),
-    /// This checkout's own build folder, `app/build.noindex/RectoPDF.app` and no other path: the one every app test launches, so no test can be named for it. Forgotten until it stays gone, said in one line, and not a failure unless it won't stay gone or a process of it is running.
+    /// This checkout's own build folder, `app/build.noindex/RectoPDF.app`, or the structure helper laid out at `target/Helpers/RectoStructure.app` for tests, and no other path: the one every app test launches, so no test can be named for it. Forgotten until it stays gone, said in one line, and not a failure unless it won't stay gone or a process of it is running.
     BuildFolder,
     /// Said, and left to whoever it belongs to.
     Leave(&'static str),
@@ -76,6 +76,11 @@ enum Verdict {
 /// This checkout's build folder, the one path `Verdict::BuildFolder` is for.
 fn build_folder(checkout: &Path) -> PathBuf {
     checkout.join("app/build.noindex/RectoPDF.app")
+}
+
+/// The structure helper laid out for the tests that start it (`tools/check.sh`, at `target/Helpers`): treated as the build folder is, since every such test starts it and none can be named for it.
+fn test_helper(checkout: &Path) -> PathBuf {
+    checkout.join("target/Helpers/RectoStructure.app")
 }
 
 /// Which `own-*` folder beside the build a path is in, and the process that made it: a test's own copy of the app (`OwnCopy`).
@@ -148,7 +153,7 @@ fn settle(paths: &[PathBuf]) -> Result<std::time::Duration, String> {
 
 /// What is done with a copy. **Another tree's ended test's copy is never this tree's to change, nor to answer for:** its tree's own stage forgets it and fails on it (2026-11-13: this stage forgot a copy another tree's update test had made 3 s before, blamed its own tree, and hid it from the tree whose test had left it).
 fn judge(copy: &Registered, checkout: &Path, temp: &Path, now_ms: u64, alive: impl Fn(u32) -> bool) -> Verdict {
-    if copy.path == build_folder(checkout) {
+    if copy.path == build_folder(checkout) || copy.path == test_helper(checkout) {
         return Verdict::BuildFolder;
     }
     match whose(copy, checkout, temp) {
@@ -344,6 +349,16 @@ fn what_counts_as_this_trees() {
         judged("/w/tree/app/build.noindex/RectoPDF.app", &none_alive),
         Verdict::BuildFolder,
         "the one path every app test launches"
+    );
+    assert_eq!(
+        judged("/w/tree/target/Helpers/RectoStructure.app", &none_alive),
+        Verdict::BuildFolder,
+        "the structure helper `tools/check.sh` lays out for the tests that start it, which Launch Services registers when it's started"
+    );
+    assert_eq!(
+        judged("/w/tree/target/Helpers/RectoStructure.app/Contents/Helpers/Other.app", &none_alive),
+        Verdict::Blame,
+        "inside it is no other path"
     );
     assert_eq!(
         judged("/w/tree/app/build.noindex/own-1-0/RectoPDF.app", &none_alive),
