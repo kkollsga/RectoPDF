@@ -573,6 +573,12 @@ fn told_on(
         .replace(plain.folder().to_str().unwrap(), "<plain>")
 }
 
+/// Whether `told`'s words are a refusal for permission (exit 5): `permission_denied`, or a command no agent may send at any level says it in its own
+/// words (`sign_refused`), as `walking_every_command_at_every_level` takes it.
+fn refused_for_permission(told: &str) -> bool {
+    told.contains(&format!("exit: {}", crate::exit::PERMISSION))
+}
+
 /// The arrangements worth running `command` in: all of them, except that a command naming no tab says the same naming the plain one, so the arrangement
 /// that only differs by that is the first again.
 fn arrangements_for(command: &Command) -> Vec<Arrangement> {
@@ -643,8 +649,8 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
         }),
         Command::from(commands::compare::Compare::Sync(commands::words::OnOff::On)),
     ];
-    // An agent at Off is refused at the gate, before a session is looked at: one session for each twin and arrangement does for all of its commands (a
-    // gate that let one through would show in what that command said, whichever session it ran on), where every other level has a fresh one for each.
+    // An agent at Off is refused at the gate, except the commands `walking_every_command_at_every_level` pins as open at Off: those get a fresh session, as
+    // at every other level. The rest share one session for each twin and arrangement, and are asserted refused there, so the sharing leans on nothing but that.
     let at_off = |secret: u32| ARRANGEMENTS.map(|arranged| (arranged, arranged_session(secret, arranged)));
     let (off_one, off_two) = (at_off(1), at_off(2));
     for command in every_command().into_iter().chain(synced) {
@@ -656,7 +662,18 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
                     .expect("made");
                 told_on(access, (locked, plain), Level::Off, &command, arranged)
             };
-            let (one, two) = (again(&off_one), again(&off_two));
+            let open_at_off = crate::actor::allowed(Level::Off, command.access());
+            let (one, two) = if open_at_off {
+                (told(1, Level::Off, &command, arranged), told(2, Level::Off, &command, arranged))
+            } else {
+                let (one, two) = (again(&off_one), again(&off_two));
+                assert!(
+                    refused_for_permission(&one) && refused_for_permission(&two),
+                    "{} at Off isn't refused, so a shared session isn't safe:\n  {one}\n  {two}",
+                    command.tag()
+                );
+                (one, two)
+            };
             if one != two {
                 differs.push(format!("{} at Off, {arranged:?}:\n  {one}\n  {two}", command.tag()));
             }
@@ -920,11 +937,24 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
                             .replace(locked.folder().to_str().unwrap(), "<locked>")
                             .replace(plain.folder().to_str().unwrap(), "<plain>")
                     };
-                    // At Off the gate refuses before a session is looked at, so one session of each twin serves all the commands; every other level has a
-                    // fresh one for each (a gate that let one through shows in what that command said).
+                    // At Off the gate refuses, except the commands `walking_every_command_at_every_level` pins as open at Off: those get a fresh session, as at
+                    // every other level. The rest share one session for each twin, and are asserted refused there, so the sharing leans on nothing but that.
                     let off = [following_session(1, followed), following_session(2, followed)];
                     for command in commands {
-                        let (one, two) = (run(&off[0], Level::Off, command), run(&off[1], Level::Off, command));
+                        let (one, two) = if crate::actor::allowed(Level::Off, command.access()) {
+                            (
+                                run(&following_session(1, followed), Level::Off, command),
+                                run(&following_session(2, followed), Level::Off, command),
+                            )
+                        } else {
+                            let (one, two) = (run(&off[0], Level::Off, command), run(&off[1], Level::Off, command));
+                            assert!(
+                                refused_for_permission(&one) && refused_for_permission(&two),
+                                "{} at Off isn't refused, so a shared session isn't safe:\n  {one}\n  {two}",
+                                command.tag()
+                            );
+                            (one, two)
+                        };
                         if one != two {
                             differs.push(format!("{} at Off, {followed:?}:\n  {one}\n  {two}", command.tag()));
                         }
