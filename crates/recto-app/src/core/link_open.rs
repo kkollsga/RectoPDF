@@ -18,16 +18,31 @@ use recto_core::locator::{read_address, read_page_fragment};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What's said when more links come than are opened.
 const TOO_MANY: &str = "More links arrived at once than RectoPDF opens, so the rest weren't opened.";
 
+/// What became of one arrival.
+#[derive(Debug, PartialEq, Eq)]
+enum Arrival {
+    /// Within the cap: counted, and read.
+    Taken,
+    /// Past the cap. `first` is true for exactly one arrival of a flood: the one that says so to the person.
+    Refused { first: bool },
+}
+
+/// The arrival times in the span, and whether the person has been told of this flood. One lock holds both, so whether an arrival is the first refused of a
+/// flood is decided where the queue is changed, and two threads at the edge of the cap can't both be (or neither).
+#[derive(Default)]
+struct Recent {
+    at: VecDeque<u64>,
+    told: bool,
+}
+
 /// **When links from outside arrived,** to keep their number bounded: no program, page or loop can open files without end by sending links.
 #[derive(Default)]
 pub(in crate::core) struct Arrivals {
-    at: Mutex<VecDeque<u64>>,
-    told: AtomicBool,
+    state: Mutex<Recent>,
 }
 
 impl Arrivals {
@@ -36,31 +51,37 @@ impl Arrivals {
     /// The span, in milliseconds, the cap is counted over.
     const SPAN_MS: u64 = 10_000;
 
-    /// Whether a link that arrived at `now_ms` is taken: true while fewer than the cap have arrived in the span, and then it's counted.
-    fn arrived(&self, now_ms: u64) -> bool {
-        let mut at = super::lock(&self.at);
-        while at.front().is_some_and(|first| now_ms.saturating_sub(*first) >= Self::SPAN_MS) {
-            at.pop_front();
+    /// What becomes of a link that arrived at `now_ms`: taken while fewer than the cap have arrived in the span (and then counted), else refused, the first
+    /// refusal of a flood being said so. A flood ends when the queue has emptied.
+    fn arrived(&self, now_ms: u64) -> Arrival {
+        let mut state = super::lock(&self.state);
+        while state.at.front().is_some_and(|first| now_ms.saturating_sub(*first) >= Self::SPAN_MS) {
+            state.at.pop_front();
         }
-        if at.is_empty() {
-            self.told.store(false, Ordering::SeqCst);
+        if state.at.is_empty() {
+            state.told = false;
         }
-        if at.len() >= Self::MAX_OUTSIDE {
-            return false;
+        if state.at.len() >= Self::MAX_OUTSIDE {
+            let first = !state.told;
+            state.told = true;
+            return Arrival::Refused { first };
         }
-        at.push_back(now_ms);
-        true
+        state.at.push_back(now_ms);
+        Arrival::Taken
     }
 }
 
 /// `UiAction::OpenLink`: the link the system handed over, as sent. Read here, then dropped.
 pub fn from_outside(window: &Window, life: &Lifecycle, core: &CoreQueue, link: String) {
     let notices = window.notices();
-    if !window.links.arrived(life.now_ms()) {
-        if !window.links.told.swap(true, Ordering::SeqCst) {
-            notices.fail_open(TOO_MANY.into());
+    match window.links.arrived(life.now_ms()) {
+        Arrival::Taken => {}
+        Arrival::Refused { first } => {
+            if first {
+                notices.fail_open(TOO_MANY.into());
+            }
+            return;
         }
-        return;
     }
     match read_address(&link) {
         Ok(address) => open_for_person(life, core, address.path, address.file_page),
@@ -91,5 +112,43 @@ pub fn answered(parts: &AnswerParts<'_>, ran: &person::Ran<'_>) {
         }
     } else if ran.refused().is_some_and(|error| error.code == Code::NO_SUCH_PAGE) {
         parts.fail_open("The link is to a page this PDF doesn't have, so nothing was opened.".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: two links at the edge of the cap both say "more arrived than open" (or neither does), so the person is told twice or never. Eight threads
+    /// send 50 links each at one instant: exactly 8 are taken and exactly one refusal is the first; after the span the queue has emptied, and the next flood
+    /// is told once again.
+    #[test]
+    fn a_flood_is_taken_eight_times_and_said_exactly_once() {
+        let arrivals = Arrivals::default();
+        let flood = |at: u64| {
+            let (taken, firsts) = std::thread::scope(|scope| {
+                let each: Vec<_> = (0..8)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let (mut taken, mut firsts) = (0, 0);
+                            for _ in 0..50 {
+                                match arrivals.arrived(at) {
+                                    Arrival::Taken => taken += 1,
+                                    Arrival::Refused { first: true } => firsts += 1,
+                                    Arrival::Refused { first: false } => {}
+                                }
+                            }
+                            (taken, firsts)
+                        })
+                    })
+                    .collect();
+                each.into_iter()
+                    .map(|each| each.join().expect("a sender"))
+                    .fold((0, 0), |(a, b), (c, d)| (a + c, b + d))
+            });
+            (taken, firsts)
+        };
+        assert_eq!(flood(1_000), (Arrivals::MAX_OUTSIDE, 1));
+        assert_eq!(flood(1_000 + Arrivals::SPAN_MS), (Arrivals::MAX_OUTSIDE, 1), "the next flood is said once more");
     }
 }
