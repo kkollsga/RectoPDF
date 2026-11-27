@@ -246,6 +246,7 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
         [
             "core/removal.rs",
             "record_store.rs",
+            "record_store/withheld.rs",
             "removal_store/leftovers/leases.rs",
             "removal_store/leftovers/run.rs"
         ],
