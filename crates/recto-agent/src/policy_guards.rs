@@ -547,16 +547,34 @@ fn naming_the_plain_tab(command: &Command) -> Command {
 /// said alike.
 fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> String {
     let (access, locked, plain) = arranged_session(secret, arranged);
+    told_on(&access, (&locked, &plain), level, command, arranged)
+}
+
+/// [`told`] on a session already made.
+fn told_on(
+    access: &Mutex<Session<crate::DrawableLoader>>,
+    (locked, plain): (&TempPdf, &TempPdf),
+    level: Level,
+    command: &Command,
+    arranged: Arrangement,
+) -> String {
     let command = if arranged.naming_locked {
         command.clone()
     } else {
         naming_the_plain_tab(command)
     };
     let mut events = Vec::new();
-    let result = execute(&access, Actor::Agent(level), &command, &mut events);
+    let result = execute(access, Actor::Agent(level), &command, &mut events);
     format!("{} {events:?}", said(result))
         .replace(locked.folder().to_str().unwrap(), "<locked>")
         .replace(plain.folder().to_str().unwrap(), "<plain>")
+}
+
+/// The arrangements worth running `command` in: all of them, except that a command naming no tab says the same naming the plain one, so the arrangement
+/// that only differs by that is the first again.
+fn arrangements_for(command: &Command) -> Vec<Arrangement> {
+    let names_a_tab = fields(command) != fields(&naming_the_plain_tab(command));
+    ARRANGEMENTS.into_iter().filter(|arranged| names_a_tab || arranged.naming_locked).collect()
 }
 
 /// `locked.pdf` (`#1`, `secret`'s) opened with its password beside a plain tab (`#2`), the one `arranged` says being read; with the two files, which go
@@ -622,9 +640,24 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
         }),
         Command::from(commands::compare::Compare::Sync(commands::words::OnOff::On)),
     ];
+    // An agent at Off is refused at the gate, before a session is looked at: one session for each twin and arrangement does for all of its commands (a
+    // gate that let one through would show in what that command said, whichever session it ran on), where every other level has a fresh one for each.
+    let at_off = |secret: u32| ARRANGEMENTS.map(|arranged| (arranged, arranged_session(secret, arranged)));
+    let (off_one, off_two) = (at_off(1), at_off(2));
     for command in every_command().into_iter().chain(synced) {
-        for level in LEVELS {
-            for arranged in ARRANGEMENTS {
+        for arranged in arrangements_for(&command) {
+            let again = |off: &[(Arrangement, (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf))]| {
+                let (_, (access, locked, plain)) = off
+                    .iter()
+                    .find(|(made, _)| made.reading_locked == arranged.reading_locked && made.naming_locked == arranged.naming_locked)
+                    .expect("made");
+                told_on(access, (locked, plain), Level::Off, &command, arranged)
+            };
+            let (one, two) = (again(&off_one), again(&off_two));
+            if one != two {
+                differs.push(format!("{} at Off, {arranged:?}:\n  {one}\n  {two}", command.tag()));
+            }
+            for level in LEVELS.into_iter().filter(|level| *level != Level::Off) {
                 let (one, two) = (told(1, level, &command, arranged), told(2, level, &command, arranged));
                 if one != two {
                     differs.push(format!("{} at {level:?}, {arranged:?}:\n  {one}\n  {two}", command.tag()));
@@ -652,7 +685,7 @@ fn no_persons_command_is_heard_with_anything_of_a_protected_document() {
         pages: "10".into(),
     });
     for command in every_command().into_iter().chain([past_one_end]) {
-        for arranged in ARRANGEMENTS {
+        for arranged in arrangements_for(&command) {
             let (one, two) = (heard(1, &command, arranged), heard(2, &command, arranged));
             if one != two {
                 differs.push(format!("{} as the person, {arranged:?}:\n  {one}\n  {two}", command.tag()));
@@ -875,18 +908,28 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
                 let commands = &commands;
                 scope.spawn(move || {
                     let mut differs = Vec::new();
+                    let run = |session: &(Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf), level: Level, command: &Command| {
+                        let (access, locked, plain) = session;
+                        let mut events = Vec::new();
+                        let result = execute(access, Actor::Agent(level), command, &mut events);
+                        crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+                        format!("{} {events:?}", said(result))
+                            .replace(locked.folder().to_str().unwrap(), "<locked>")
+                            .replace(plain.folder().to_str().unwrap(), "<plain>")
+                    };
+                    // At Off the gate refuses before a session is looked at, so one session of each twin serves all the commands; every other level has a
+                    // fresh one for each (a gate that let one through shows in what that command said).
+                    let off = [following_session(1, followed), following_session(2, followed)];
                     for command in commands {
-                        for level in LEVELS {
-                            let told = |secret: u32| {
-                                let (access, locked, plain) = following_session(secret, followed);
-                                let mut events = Vec::new();
-                                let result = execute(&access, Actor::Agent(level), command, &mut events);
-                                crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
-                                format!("{} {events:?}", said(result))
-                                    .replace(locked.folder().to_str().unwrap(), "<locked>")
-                                    .replace(plain.folder().to_str().unwrap(), "<plain>")
-                            };
-                            let (one, two) = (told(1), told(2));
+                        let (one, two) = (run(&off[0], Level::Off, command), run(&off[1], Level::Off, command));
+                        if one != two {
+                            differs.push(format!("{} at Off, {followed:?}:\n  {one}\n  {two}", command.tag()));
+                        }
+                        for level in LEVELS.into_iter().filter(|level| *level != Level::Off) {
+                            let (one, two) = (
+                                run(&following_session(1, followed), level, command),
+                                run(&following_session(2, followed), level, command),
+                            );
                             if one != two {
                                 differs.push(format!("{} at {level:?}, {followed:?}:\n  {one}\n  {two}", command.tag()));
                             }
