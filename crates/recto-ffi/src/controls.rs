@@ -22,9 +22,7 @@ pub enum UiAction {
     Chevron { first: u32 },
     /// A file to open: the Open panel's, a drop, the Finder's, by its path.
     Open { path: String },
-    /// A file the system handed over, with what came after `#` in its link (empty for none).
     OpenAt { path: String, fragment: String },
-    /// A `rectopdf:` link the system handed over, as it was sent.
     OpenLink { link: String },
     /// File > Open Recent's file, by its key.
     OpenRecent { key: String },
