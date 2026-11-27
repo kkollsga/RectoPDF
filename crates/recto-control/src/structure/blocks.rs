@@ -143,12 +143,12 @@ impl<S: PageStore> BlocksAnswer<S> {
         if pages != self.next {
             return Err(BAD);
         }
-        let failed = number("pages_failed").filter(|failed| *failed <= pages).ok_or(BAD)?;
+        number("pages_failed").filter(|failed| *failed <= pages).ok_or(BAD)?;
         let counted = line.get("blocks").and_then(Value::as_u64).ok_or(BAD)?;
         let sent = self.candidates + u64::from(self.tally.unreadable);
         let plain = line.len() <= MAX_NUMBERS && line.iter().all(|(name, value)| name == "state" || value.is_number() || value.is_boolean());
         let own = super::SESSION_NUMBERS.iter().any(|name| line.contains_key(*name));
-        if counted != sent || !line.get("cut").is_some_and(Value::is_number) || !plain || own || failed > pages {
+        if counted != sent || !line.get("cut").is_some_and(Value::is_number) || !plain || own {
             return Err(BAD);
         }
         // Only numbers go on, for measuring. Nothing the helper wrote is repeated as words.
