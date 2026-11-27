@@ -648,3 +648,59 @@ fn nothing_is_written_for_a_stopped_walk_or_another_plan() {
     assert_eq!(held2.retire(&other.plan, &mut at_retire).unwrap_err(), AckError::Order(OrderError::WrongPlan));
     assert!(path(dir.path()).exists(), "another plan's walk retired this record");
 }
+
+/// Catches a failed begin taking away whatever is at `pending.v1` by name: after the rename a thing that isn't the file made (another file put there,
+/// not private) is not ours to delete, so the error is returned and it is still there.
+#[test]
+fn a_failed_begin_leaves_what_is_not_the_file_it_made() {
+    let r = rig();
+    let root = temp();
+    let file = path(root.path());
+    let at = |p: Point| {
+        if p == Point::FolderSynced {
+            std::fs::rename(&file, file.with_file_name("aside")).unwrap();
+            std::fs::write(&file, b"someone else's").unwrap();
+            mode(&file, 0o644);
+        }
+        Flow::Go
+    };
+    let mut progress = r.progress();
+    assert!(r.begin(root.path(), &mut progress, &Opts { cap: MAX_BARRIER_BYTES, at: &at }).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"someone else's", "a file that was not ours was taken away");
+    assert_eq!(progress.acked(), r.base());
+}
+
+/// Catches slot 0 being written to, or the barrier acknowledged for, a file the name no longer leads to: swapped before the slot is written, or after it is
+/// flushed, `begin` is `NotDurable` and the barrier is not acknowledged.
+#[test]
+fn slot_0_needs_the_name_to_still_lead_to_the_file() {
+    let r = rig();
+    for point in [Point::ReadBack, Point::Slot0Synced] {
+        let root = temp();
+        let file = path(root.path());
+        let aside = file.with_file_name("aside");
+        let at = |p: Point| {
+            if p == point {
+                std::fs::rename(&file, &aside).unwrap();
+                std::fs::copy(&aside, &file).unwrap();
+            }
+            Flow::Go
+        };
+        let mut progress = r.progress();
+        assert_eq!(
+            r.begin(root.path(), &mut progress, &Opts { cap: MAX_BARRIER_BYTES, at: &at }).unwrap_err(),
+            BeginError::NotDurable,
+            "{point:?}"
+        );
+        assert_eq!(progress.acked(), r.base(), "{point:?}: the barrier was acknowledged");
+        if point == Point::ReadBack {
+            for f in [&file, &aside] {
+                let rec = match decode_barrier_within(&std::fs::read(f).unwrap(), MAX_BARRIER_BYTES) {
+                    Decoded::Pending(rec) => rec,
+                    other => panic!("{other:?}"),
+                };
+                assert_eq!(rec.acked(), r.base(), "slot 0 was written to a file the name did not lead to");
+            }
+        }
+    }
+}

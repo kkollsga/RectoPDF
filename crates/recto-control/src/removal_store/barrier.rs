@@ -329,16 +329,20 @@ pub fn begin_with(
         Err(error) => return Err(cleanup(BeginError::Io(error.kind()))),
     }
     at!(Point::Renamed);
-    // From here the name is made; a failure takes it away again, since no slot exists and nothing was purged.
+    // From here the name is made. A failure takes it away again (no slot exists, so nothing was purged), but only while it still leads to the file made: anything
+    // else there now is not ours to delete.
+    let made = file.metadata().map_err(|e| BeginError::Io(e.kind()))?;
     let unmake = |error: BeginError| {
-        let _ = folder.unlink_in(OsStr::new(NAME), false);
+        let ours = matches!(folder.look(OsStr::new(NAME)), Ok(e) if e.kind == Kind::File && (e.dev, e.ino) == (made.dev(), made.ino()));
+        if ours {
+            let _ = folder.unlink_in(OsStr::new(NAME), false);
+        }
         error
     };
     folder.sync().map_err(|e| unmake(BeginError::Io(e.kind())))?;
     at!(Point::FolderSynced);
     // `sync_all` is `F_FULLFSYNC` here: it flushes the drive's cache, which covers the folder's `fsync` before it.
     file.sync_all().map_err(|e| unmake(BeginError::Io(e.kind())))?;
-    let made = file.metadata().map_err(|e| unmake(BeginError::Io(e.kind())))?;
     drop(file);
     let file = folder.open_private_rw_in(OsStr::new(NAME)).map_err(|e| unmake(BeginError::Io(e.kind())))?;
     let seen = private_plain(&file).map_err(|e| unmake(BeginError::Io(e.kind())))?;
@@ -361,10 +365,16 @@ pub fn begin_with(
     };
     // Slot 0: the barrier itself. A failure leaves the record with no slot written or not known to be: resume or abandon it.
     let (offset, slot) = held.layout.slot(barrier + 1).ok_or(BeginError::NotDurable)?;
+    if !held.ours() {
+        return Err(BeginError::NotDurable);
+    }
     held.file.write_all_at(&slot, offset).map_err(|_| BeginError::NotDurable)?;
     at!(Point::Slot0Written);
     held.file.sync_all().map_err(|_| BeginError::NotDurable)?;
     at!(Point::Slot0Synced);
+    if !held.ours() {
+        return Err(BeginError::NotDurable);
+    }
     progress
         .acknowledge(plan, barrier, Ack::Done)
         .map_err(|_| BeginError::Refused(BarrierRefusal::NotAtBarrier))?;
