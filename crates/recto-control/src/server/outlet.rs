@@ -51,15 +51,18 @@ impl Cleared {
 pub(super) struct Outlet {
     pub(super) done: Sender<Done>,
     pub(super) wake: Stream,
+    /// The socket's name, for the host's stop to take before it returns ([`super::leaving`]).
+    pub(super) socket: std::path::PathBuf,
     host: OnceLock<Weak<dyn Host>>,
     listening: AtomicBool,
 }
 
 impl Outlet {
-    pub(super) fn new(done: Sender<Done>, wake: Stream) -> Self {
+    pub(super) fn new(done: Sender<Done>, wake: Stream, socket: std::path::PathBuf) -> Self {
         Self {
             done,
             wake,
+            socket,
             host: OnceLock::new(),
             listening: AtomicBool::new(false),
         }

@@ -166,6 +166,7 @@ impl Server {
         let outlet = Arc::new(Outlet::new(
             done_tx,
             wake_tx.try_clone().map_err(|_| failed("The session couldn't be started."))?,
+            paths.socket.clone(),
         ));
         Ok(Self {
             paths: paths.clone(),
@@ -180,7 +181,7 @@ impl Server {
 
     /// Asks a running server to end, from another thread. For a host that started it on its own thread.
     pub fn stopper(&self) -> std::io::Result<Stopper> {
-        Ok(Stopper(self.wake_tx.try_clone()?, self.paths.socket.clone()))
+        Ok(Stopper(Arc::clone(&self.outlet)))
     }
 
     /// Tells watchers and waiters what the host's own user did, from another thread. Commands' events go by themselves: this is for a tap in the app's sidebar, which no command caused.
@@ -228,13 +229,13 @@ impl Server {
 
 /// Wakes a server and tells it to end.
 #[derive(Debug)]
-pub struct Stopper(Stream, std::path::PathBuf);
+pub struct Stopper(Arc<Outlet>);
 
 impl Stopper {
     pub fn stop(&self) {
         // The stop is carried out on the server's thread, and a process that ends meanwhile would leave the name on disk with its connections closing: the name goes now.
-        leaving::release(&self.1);
-        let _ = (&self.0).write(&[STOP_BYTE]);
+        leaving::release(&self.0.socket);
+        let _ = (&self.0.wake).write(&[STOP_BYTE]);
     }
 }
 
