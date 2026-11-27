@@ -114,7 +114,11 @@ fn a_file_changed_after_it_was_asked_for_gets_nothing() {
     std::fs::write(&pdf.0, recto_testpdf::text_lines(&["not even a PDF now"])).unwrap();
     let (outcome, report) = Walled::at(walled_helper()).run(&job, &AtomicBool::new(false));
     assert!(matches!(outcome, Outcome::Changed), "{outcome:?}");
-    assert_eq!(report, Value::Null, "a helper was started on a file that wasn't the version asked for: {report}");
+    assert_eq!(
+        report,
+        Value::Null,
+        "a helper was started on a file that wasn't the version asked for: {report}"
+    );
 }
 
 /// Failure: the session falls back to an unwalled helper, or accepts one, so a hostile file is read with no walls. The bare `recto-headings` of `target/debug` says it isn't walled (it has no
