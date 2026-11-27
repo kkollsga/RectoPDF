@@ -60,3 +60,18 @@ Generated contents now runs only through `RectoStructure.app`. `recto_control::s
 - **The environment is `MallocLargeCache=0` and nothing else.** Not `spawn_helper`'s pass-through of the render worker's and PDFium's locations, never `APP_SANDBOX_CONTAINER_ID`; the helper starts no worker.
 - **The check for hidden text moved to the session** (`generating/ink.rs`, `recto_index::generated::visible`): the walled helper has no way to start a render worker, so it only finds headings, and the session's render worker, at the renderer's own level, draws the pages that have some. A walled and a bare helper find the same (`the_walled_helper_finds_what_the_bare_one_does`: plain, bold and a hidden-heading document, every line the same but for two numbers that are a run's own).
 - **Proven** in `recto-control/tests/structure.rs` (macOS): the 15 ways of hiding a heading and the bold and moved-media-box documents through the walled helper and the session's check; a bare helper refused as `structure_not_sandboxed` in every build; the run again under `sandbox-exec` giving `structure_inside_another_sandbox`; a cancelled job writing nothing and leaving no child. In `src/structure/tests.rs`: the admit table, a stand-in that lies `walled:true` and is never given its job (a stand-in that writes what it reads, never written), a stand-in that sends 70,000 bytes in a line killed as `bad_answer` and gone, a 64 KiB line of `[` refused on the reader's own 256 KiB stack, and the environment exactly `MallocLargeCache=0`.
+
+**Cost of the walls on the structure helper, and of moving the check into the session** (2026-11-27, release builds without `RECTO_RELEASE`, so the same binary runs bare from a folder and walled laid out in a `Host.app/Contents`; this Mac under load of 6.6 to 7.8 for the helper rounds, 11 to 29 for the rest, other agents building; `crates/recto-headings/examples/sample.rs --helper`, 5 rounds taking turns, medians):
+
+| | Bare | Walled |
+|---|---:|---:|
+| NASA `ntrs20240002628` (383 pages): wall time | 12.70 s | 12.71 s |
+| helper peak (own = watched from outside) | 35.9 MiB | 35.8 MiB |
+| entries found | 180 | 180 |
+| USGS map `usgs70277338` (330 MiB): wall time | 0.69 s | 0.65 s |
+| helper peak | 31.4 MiB | 31.0 MiB |
+| entries found | 35 | 35 |
+
+`rfc9110` (636), `un_sdg2024` (99) and the AI Act (152) found the same entries bare and walled, title for title (a hash of the printed list). The walls cost nothing that these numbers can see.
+
+The check for hidden text now runs in the session, after the helper, with a render worker at the renderer's own level (the helper's worker ran at the helper's, utility). Three runs each of a session-side `Walled::run` (`dev-release` build of the session, the release helper above) against `main`'s helper with its worker inside, on the same files, load 11 to 20 and rising, not controlled: NASA total 13.8, 14.3 and 17.7 s against 16.6, 20.6 and 27.1 s before; USGS 1.4, 1.4 and 1.5 s against 1.3, 1.5 and 2.5 s. The check itself (`ink_ms`) took 1.4 to 2.2 s on NASA (kept 172 of the 180 found, a worker peak of 92 MiB, 2 spawns) and 0.7 s on USGS (kept 29 of 35, 459 MiB, 1 spawn). Nothing is slower that load doesn't explain; S6b-2 measures it again at a quiet time and decides whether the level is right for a job someone is waiting on.
