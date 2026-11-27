@@ -42,4 +42,9 @@ impl RecordStore {
         };
         self.withheld_error().or_else(unreadable)
     }
+
+    /// Whether a journal can be kept at all: not when another copy keeps the record, an unfinished removal's record is there, or what's here couldn't be read.
+    pub fn keeps_journals(&self) -> bool {
+        self.refuses_writes().is_none()
+    }
 }

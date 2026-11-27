@@ -44,8 +44,10 @@ impl SaveSupport for AppSaving {
         self.saver.write_journals_now(inner.on_disk.keeper(), inner.on_disk.sleeper());
         let name = inner.host.session.with_session(|session| session.journals().name_of(tab).map(String::from));
         match name {
-            // A session that keeps no journal has no crash to carry a save across.
+            // A session that keeps no journal has no crash to carry a save across: none named, or none the store can write (it names one in memory all the same
+            // while a removal is unfinished or the record couldn't be read, and a save is no less a save for that).
             None => Ok(()),
+            Some(_) if !self.saver.store.keeps_journals() => Ok(()),
             Some(name) if self.saver.store.journal_says_saving(&name, target) => Ok(()),
             Some(_) => Err("the save's note didn't reach the journal".into()),
         }

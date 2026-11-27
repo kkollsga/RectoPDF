@@ -76,3 +76,42 @@ fn a_launch_with_an_unfinished_removal_starts_empty_and_leaves_the_session_as_it
     let (answer, _) = app.quit();
     assert!(answer.go, "with nothing edited the quit isn't asked about: {answer:?}");
 }
+
+/// Opens a PDF, turns a page and saves it as an agent at Full does, in an app started on `disk`; says what the save answered and whether the file changed.
+fn turn_and_save(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Value, recto_agent::AgentError>, bool) {
+    let c = disk.pdf("c.pdf", 2);
+    let app = disk.start();
+    app.settle();
+    let was = std::fs::read(&c).unwrap();
+    app.open(&c);
+    app.person(r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##);
+    app.settle();
+    let saved = app.agent(Level::Full, r##"{"cmd":"save","tab":"#1"}"##);
+    app.settle();
+    let changed = std::fs::read(&c).unwrap() != was;
+    drop(app.quit_anyway());
+    (saved, changed)
+}
+
+/// Failure (D3b review, a blocker): in a window whose session is withheld the store keeps no journal, but the session still names one in memory for the
+/// tab, and a save looks for its note on disk, doesn't find it and fails ("the save's note didn't reach the journal"): a person can't save a PDF they edit
+/// in that window. The save goes through, the file is written, and the state folder is as it was.
+#[test]
+fn a_pdf_edited_in_a_withheld_window_can_be_saved() {
+    let disk = crate::testkit::headless::Disk::new();
+    pending_at(&disk.paths().root, 1);
+    let (saved, changed) = turn_and_save(disk);
+    assert!(saved.is_ok() && changed, "{saved:?}, file changed: {changed}");
+}
+
+/// Failure (found on the way, the same bug in the mode that was there before D3b): a record that can't be read leaves the store refusing writes, and a save
+/// of an edited PDF in that window fails for the same reason.
+#[test]
+fn a_pdf_edited_in_an_unreadable_record_window_can_be_saved() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let disk = a_saved_session();
+    let slot = disk.paths().root.join("session").join("record.a.json");
+    std::fs::set_permissions(&slot, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let (saved, changed) = turn_and_save(disk);
+    assert!(saved.is_ok() && changed, "{saved:?}, file changed: {changed}");
+}
