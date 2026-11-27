@@ -10,6 +10,7 @@
 //! Tables and figures have no text to map and aren't stored. Every cap says what it dropped, never a failure: a page that maps nothing is a page with no blocks.
 
 use super::{Block, Kind, MAX_BLOCKS, MAX_LEVEL, MAX_PAGE_CHARS, PageBlocks};
+use recto_core::match_letters as letters;
 use serde_json::Value;
 
 /// Most letters in one block. A block with more isn't stored. At the limit it is.
@@ -190,30 +191,6 @@ impl Counts {
 pub struct Mapped {
     pub blocks: PageBlocks,
     pub counts: Counts,
-}
-
-/// The letters of `text`, as a heading's are compared: letters and digits, lowercased, with the common ligatures spelled out. `origin` is the index of the
-/// character each letter came from.
-fn letters(text: impl IntoIterator<Item = char>, mut out: impl FnMut(char, usize)) {
-    for (at, c) in text.into_iter().enumerate() {
-        let spelled: &str = match c {
-            '\u{FB00}' => "ff",
-            '\u{FB01}' => "fi",
-            '\u{FB02}' => "fl",
-            '\u{FB03}' => "ffi",
-            '\u{FB04}' => "ffl",
-            '\u{FB05}' | '\u{FB06}' => "st",
-            _ => {
-                if c.is_alphanumeric() {
-                    for lower in c.to_lowercase() {
-                        out(lower, at);
-                    }
-                }
-                continue;
-            }
-        };
-        spelled.chars().for_each(|letter| out(letter, at));
-    }
 }
 
 /// Where every start of `needle` in `key` at or after `from` is, in order, until `each` says stop (false) or the budget runs out. Each character looked at costs 1.
