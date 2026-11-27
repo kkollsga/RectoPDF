@@ -468,11 +468,12 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &TabRef, all: bool) -> Re
         indexing.cancel(None);
         wait_until_stopped(indexing, None);
         let report = corpus::clear_all(indexing.root()).map_err(|_| failed())?;
-        let contents = access.generating().map(|generating| crate::generated::clear(generating, None));
+        let contents = access.generating().map(|generating| crate::generated::clear(generating, None, &[]));
         return said_cleared(report, contents);
     }
     let (_, files) = tab_files(access, tab)?;
     let mut report = corpus::Cleared::default();
+    let mut all_keys = Vec::new();
     for file in &files {
         // Every version there's a record of, even if the file's gone, or the text of the last one stays behind what's there now.
         for key in corpus::keys_of_file(indexing.root(), &file.path) {
@@ -480,11 +481,14 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &TabRef, all: bool) -> Re
             indexing.cancel(Some(key));
             wait_until_stopped(indexing, Some(key));
             report.note(corpus::clear(indexing.root(), key));
+            all_keys.push(key);
         }
         corpus::forget_file(indexing.root(), &file.path);
     }
     let paths: Vec<PathBuf> = files.into_iter().map(|file| file.path).collect();
-    let contents = access.generating().map(|generating| crate::generated::clear(generating, Some(&paths)));
+    let contents = access
+        .generating()
+        .map(|generating| crate::generated::clear(generating, Some(&paths), &all_keys));
     said_cleared(report, contents)
 }
 
