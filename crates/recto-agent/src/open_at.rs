@@ -170,7 +170,7 @@ mod tests {
             let error = line(text).err().unwrap_or_else(|| panic!("{text} should be refused"));
             assert_eq!(error.code, crate::Code::USAGE, "{text}");
         }
-        let error = line(r#"{"cmd":"open","link":"http://MARKERLINK/a.pdf"}"#).err().expect("not a link");
+        let error = line(r#"{"cmd":"open","link":"http://MARKERLINK/a.pdf"}"#).expect_err("not a link");
         assert_eq!(error.code, crate::Code::NOT_A_LINK);
         assert!(!error.message.contains("MARKERLINK"), "{}", error.message);
         assert!(line(r#"{"cmd":"open","path":"/d/a.pdf","page":2}"#).is_ok());

@@ -1432,7 +1432,7 @@ mod tests {
         assert_eq!(parsed.fields.get("link"), Some(&json!("rectopdf:///d/a.pdf#page=3")));
         assert!(parsed.command().is_ok());
         for link in ["rectopdf:///d/a.pdf", "file:///d/a.pdf", "FILE:///d/a.pdf"] {
-            let error = parse_line(&format!("recto open {link}")).err().expect("a link is no path");
+            let error = parse_line(&format!("recto open {link}")).expect_err("a link is no path");
             assert!(error.message.contains("recto open --link"), "{}", error.message);
         }
     }
