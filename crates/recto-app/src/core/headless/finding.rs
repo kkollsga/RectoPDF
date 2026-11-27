@@ -207,6 +207,31 @@ fn the_persons_find_shows_the_sidebar_and_opens_with_what_was_typed() {
     assert!(!app.reader().sidebar_hidden, "⌘G opening Find shows the sidebar");
 }
 
+/// Failure (a `--like-ci` run under load, 2026-11-27: ⌘G after Find was closed and reopened left Find open with no hit selected, 1 run in a few hundred): the
+/// person's ⌘G keeps its step for when the hits are known ([`recto_agent::Effect::FindStepPending`]) and the Finder's news tries it; when the query finishes
+/// and its news is taken before the kept step arrives, nothing tries it again and the step is never made. The hits already known when a kept step arrives:
+/// it's made then, to the first hit, and the hit is the list's current row.
+#[test]
+fn a_kept_step_arriving_after_the_hits_are_known_is_made() {
+    let app = findable();
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.settle();
+    let before = find_view(&app);
+    assert!(
+        before.open && before.row_count == 22 && !before.running && before.current_row.is_none(),
+        "{before:?}"
+    );
+    app.send(crate::queue::CoreCall::Find(crate::core::find::FindCall::Effect(
+        recto_agent::Effect::FindStepPending {
+            forward: true,
+            going: recto_agent::find::Going::Step,
+        },
+    )));
+    app.settle();
+    let view = find_view(&app);
+    assert_eq!(view.current_row, Some(1), "the kept step was made once its hit was known: {view:?}");
+}
+
 /// Failure: a query too long to find is searched anyway, or the line under the field doesn't say why nothing's found, or what was typed is lost from the
 /// field; or the line keeps saying it once something findable is typed.
 #[test]

@@ -403,7 +403,17 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                 }
             }
             // What watchers hear of it is the command's, which said it as it went.
-            FindCall::Effect(effect) => self.carry_out(effect),
+            FindCall::Effect(effect) => {
+                let kept = matches!(effect, recto_agent::Effect::FindStepPending { .. });
+                self.carry_out(effect);
+                // A step kept after the query ended, its news taken before the step arrived, is made now: nothing else would try it.
+                let pending = lock(self.field).pending_step;
+                if kept && !self.frozen.load(Ordering::SeqCst) && !session.finder().is_running() {
+                    if let Some((forward, going)) = pending {
+                        self.try_step(forward, going, events);
+                    }
+                }
+            }
         }
         self.keep_up();
         self.tell();

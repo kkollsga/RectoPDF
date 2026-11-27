@@ -229,7 +229,9 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             access.take_places();
         }
         let went = if self.at_the_window() {
-            let went = (!restarted).then(|| step(access, finding, forward, going)).flatten();
+            // A query restarted for this step may already have ended, as with the Finder's thread quicker than this call: its hits are the ones to step in,
+            // and only a query still running is waited on, by the kept step.
+            let went = (!restarted || !running(finding)).then(|| step(access, finding, forward, going)).flatten();
             if went.is_none() && running(finding) {
                 access.effect(Effect::FindStepPending { forward, going });
                 return Ok(None);
