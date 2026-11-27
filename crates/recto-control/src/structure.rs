@@ -3,7 +3,8 @@
 //!
 //! **Never an unwalled one.** [`Structure::installed`] is the only finder, and it looks for the helper in its app, beside this program's own app and nowhere else: no fallback to a bare
 //! `recto-headings`, whatever is in the environment. A helper that says it isn't walled, or that the kernel doesn't show in a sandbox (`structure_not_sandboxed`), or can't be confirmed (`structure_unconfirmed`), or that may read the document by its name, is
-//! killed before it is given its job, so not a byte of a document or of a job reaches it: [`talk`] writes the job only after [`outside_check`] says yes.
+//! killed before it is given its job: [`talk`] writes the job only after [`outside_check`] says yes. The document's descriptor 3 is the helper's from the spawn (it's inherited, and can't be
+//! given later), so what's withheld until the check passes is the job: until then the helper has the descriptor and no instruction, and a helper that fails the check is killed holding it.
 //!
 //! **The document is a descriptor, not a path.** It's opened here, read-only, by the file wall (`open_regular`), its key checked against the one asked for, and handed over as the helper's
 //! descriptor 3 (`recto_platform::helper::spawn_with_document`); the key is looked at again when the helper has ended, so a file that changed while it was read is `Changed`.
@@ -51,7 +52,7 @@ pub const SESSION_NUMBERS: [&str; 3] = ["walled", "elapsed_ms", "helper_peak_wat
 /// `MallocLargeCache=0` must be there from the start, as the allocator reads it once: without it, freed large blocks stay in the footprint.
 pub const HELPER_ENV: [(&str, &str); 1] = [("MallocLargeCache", "0")];
 
-/// Why a structure helper wasn't used. Rust's words, as codes, and each means no byte of the document or the job was given to it.
+/// Why a structure helper wasn't used. Rust's words, as codes, and each means the job was never given to it (the document's descriptor is inherited at the spawn, before the check).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WallsDown {
     /// It isn't in its sandbox, or doesn't say it is: this copy is signed wrong.
