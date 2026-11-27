@@ -7,7 +7,7 @@
 
 use crate::{Failure, Scan, failure_of};
 use distillpdf::model::{Block, BlockKind};
-use distillpdf::pages::{BlockContinuation, DocStats};
+use distillpdf::pages::{BlockContinuation, DocStats, PageOutput};
 use recto_index::blocks::map::{MAX_LINE_BLOCKS, MAX_LINE_BYTES};
 use serde_json::Value;
 use std::io::Write;
@@ -129,6 +129,48 @@ fn peak() -> Option<u64> {
     recto_platform::isolate::process_memory(std::process::id()).map(|memory| memory.peak_footprint_bytes)
 }
 
+/// What page `number`'s result comes to.
+#[derive(Debug)]
+pub struct PageSaid {
+    pub line: String,
+    pub sent: usize,
+    pub cut: usize,
+    /// distillPDF couldn't make the page: its line has no blocks.
+    pub failed: bool,
+}
+
+/// A page's result as its line. **A page never ends the job:** one that can't be made is a line with no blocks and a mark in the count. Only a document that changed under the read (stale statistics, a cancelled walk) ends it.
+///
+/// # Errors
+///
+/// [`Failure::Changed`].
+pub fn said_of(number: u32, result: Result<PageOutput, distillpdf::Error>) -> Result<PageSaid, Failure> {
+    match result {
+        Ok(page) => {
+            let outs: Vec<Out> = page
+                .blocks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, block)| out_of(block, index, &page.continuations))
+                .collect();
+            let (line, sent, cut) = page_line(number - 1, &outs);
+            Ok(PageSaid {
+                line,
+                sent,
+                cut,
+                failed: false,
+            })
+        }
+        Err(distillpdf::Error::StaleStats(_) | distillpdf::Error::Cancelled) => Err(Failure::Changed),
+        Err(_) => Ok(PageSaid {
+            line: page_line(number - 1, &[]).0,
+            sent: 0,
+            cut: 0,
+            failed: true,
+        }),
+    }
+}
+
 /// Reads the document at `path` and writes a line a page, then the end line, to `out`, flushing each. A page distillPDF can't read is an empty line and a count, never the end of the job. A write that fails means the
 /// session has gone, and ends it quietly. Holds one page's output at a time.
 ///
@@ -150,25 +192,11 @@ pub fn run(path: &Path, scan: Scan, out: &mut impl Write, started: Instant) -> R
     }
     let (mut failed, mut sent_all, mut cut_all) = (0u32, 0u64, 0u64);
     for number in 1..=total {
-        let (line, sent, cut) = match stream.page(number) {
-            Ok(page) => {
-                let outs: Vec<Out> = page
-                    .blocks
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, block)| out_of(block, index, &page.continuations))
-                    .collect();
-                page_line(number - 1, &outs)
-            }
-            Err(distillpdf::Error::StaleStats(_) | distillpdf::Error::Cancelled) => return Err(Failure::Changed),
-            Err(_) => {
-                failed += 1;
-                page_line(number - 1, &[])
-            }
-        };
-        sent_all += sent as u64;
-        cut_all += cut as u64;
-        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+        let said = said_of(number, stream.page(number))?;
+        failed += u32::from(said.failed);
+        sent_all += said.sent as u64;
+        cut_all += said.cut as u64;
+        if writeln!(out, "{}", said.line).and_then(|()| out.flush()).is_err() {
             return Ok(());
         }
     }

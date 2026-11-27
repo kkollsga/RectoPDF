@@ -2,8 +2,8 @@
 
 use distillpdf::model::{Block, BlockKind};
 use distillpdf::pages::BlockContinuation;
-use recto_headings::Scan;
-use recto_headings::blocks::{Out, end_line, kind_name, out_of, page_line, scan_of};
+use recto_headings::blocks::{Out, end_line, kind_name, out_of, page_line, said_of, scan_of};
+use recto_headings::{Failure, Scan};
 use recto_index::blocks::map::{MAX_LINE_BLOCKS, MAX_LINE_BYTES, PageLines, Shape};
 use recto_platform::helper::{self, Priority};
 use recto_testpdf::TempPdf;
@@ -250,4 +250,17 @@ fn hostile_documents_end_with_an_answer() {
     );
     let said = run(&page.0);
     assert_eq!(said.lines.last().map(|end| end["state"].clone()), Some(json!("ready")), "{:?}", said.lines);
+}
+
+/// Failure: a page distillPDF can't make ends the whole job (so one bad page in a book gives the book no blocks), is left out of the answer (so pages after it shift), or a document that changed under the read is carried on with. A page error is a line for that page with no blocks and a mark in the count; stale statistics or a cancelled walk end the job as changed.
+#[test]
+fn a_page_that_cant_be_made_is_an_empty_line_and_only_a_changed_file_ends_the_job() {
+    let said = said_of(3, Err(distillpdf::Error::NoPage(Some(3)))).expect("a page never ends the job");
+    assert_eq!(
+        (said.line.as_str(), said.failed, said.sent, said.cut),
+        ("{\"page\":2,\"blocks\":[]}", true, 0, 0)
+    );
+    for error in [distillpdf::Error::StaleStats("moved".into()), distillpdf::Error::Cancelled] {
+        assert!(matches!(said_of(1, Err(error)), Err(Failure::Changed)));
+    }
 }
