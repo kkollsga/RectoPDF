@@ -154,6 +154,23 @@ mod tests {
         assert_eq!(said["page"].as_u64(), Some(3), "{said}");
     }
 
+    /// Failure: a page the file doesn't have is refused after the tab was brought forward, so "nothing was opened" comes with another tab in front. Open A, then
+    /// B (in front), then A at a page past its end: refused as `no_such_page`, and B is still the active tab, at its own page.
+    #[test]
+    fn a_page_the_file_lacks_leaves_the_tab_in_front_where_it_was() {
+        let (session, a) = four_pages();
+        let pages: Vec<_> = (1..=2)
+            .map(|n| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("B {n}")])))
+            .collect();
+        let b = recto_testpdf::TempPdf::new("two.pdf", &recto_testpdf::pages(&pages));
+        open(&session, &b.0, None).expect("B opens");
+        let before = session.lock().unwrap().tabs().active();
+        let error = open(&session, &a.0, Some(5)).expect_err("page 5 of a four-page file");
+        assert_eq!(error.code, crate::Code::NO_SUCH_PAGE);
+        assert_eq!(session.lock().unwrap().tabs().active(), before, "the tab in front is the one that was");
+        assert_eq!(session.lock().unwrap().tabs().len(), 2);
+    }
+
     fn line(text: &str) -> Result<Command, crate::AgentError> {
         parse(text)
     }

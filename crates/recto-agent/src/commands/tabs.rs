@@ -381,6 +381,13 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
         }
+        // Where the page lands is decided before the tab is brought forward, against the tab's own count too: an answer that says nothing was opened never
+        // comes with the tab moved. (The two counts agree today, the tab's from its edit list or the record; this holds it if they ever don't.)
+        if let Some(open_at::Landing::At(place)) = page.map(|page| open_at::landing(s, id, page))
+            && place > s.pages().count(id)
+        {
+            return Some(Err(wrong_page(pages)));
+        }
         s.go_to_file(path, stamp);
         Some(Ok(id))
     });
