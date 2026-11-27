@@ -45,8 +45,8 @@ pub trait Generating: Send + Sync {
 /// How long a clear gives a running helper to stop. It ends as soon as it's told, and a stopped one writes nothing.
 const STOP_WAIT: Duration = Duration::from_secs(3);
 
-/// **`recto index clear` takes generated contents too:** headings are the file's text, kept on disk, and the command says it removes that. These files', or with `None` every file's. What's on its way for them stops first, and a running one is waited for a moment, so nothing's written back after. One still running after that is counted as being built.
-pub(crate) fn clear(generating: &dyn Generating, paths: Option<&[PathBuf]>) -> Cleared {
+/// **`recto index clear` takes generated contents too:** headings are the file's text, kept on disk, and the command says it removes that. These files' (and every version in `keys`, kept under whatever path), or with `None` every file's. What's on its way for them stops first, and a running one is waited for a moment, so nothing's written back after. One still running after that is counted as being built.
+pub(crate) fn clear(generating: &dyn Generating, paths: Option<&[PathBuf]>, keys: &[CorpusKey]) -> Cleared {
     generating.cancel_files(paths);
     let started = Instant::now();
     while started.elapsed() < STOP_WAIT && generating.making(paths) {
@@ -56,7 +56,7 @@ pub(crate) fn clear(generating: &dyn Generating, paths: Option<&[PathBuf]>) -> C
         None => generated::clear_all(generating.root()),
         Some(paths) => paths
             .iter()
-            .map(|path| generated::clear(generating.root(), path))
+            .map(|path| generated::clear(generating.root(), path, keys))
             .fold(Cleared::default(), |sum, one| Cleared {
                 cleared: sum.cleared + one.cleared,
                 being_built: sum.being_built + one.being_built,

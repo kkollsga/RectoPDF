@@ -260,9 +260,14 @@ pub fn write(root: &Path, path: &Path, key: CorpusKey, generated: &Generated) ->
 }
 
 /// Takes away everything kept for a file, every version that's still there, and says how many went and how many couldn't be removed, whose headings are still on disk.
-pub fn clear(root: &Path, path: &Path) -> Cleared {
+///
+/// Kept under this path's tag, or under any `keys` (the versions the file is known to have had, as the search index finds them), whatever tag: contents kept while the file was somewhere else are still its own. Decided by the name alone, no file is opened.
+pub fn clear(root: &Path, path: &Path, keys: &[CorpusKey]) -> Cleared {
     let tag = format!("{}.", path_tag(path));
-    remove_ours(root, |name| name.starts_with(&tag))
+    let suffixes: Vec<String> = keys.iter().map(|key| format!(".{}.json", key.hex())).collect();
+    remove_ours(root, |name| {
+        name.starts_with(&tag) || suffixes.iter().any(|suffix| name.ends_with(suffix.as_str()))
+    })
 }
 
 /// Takes away every document's kept contents: `recto index clear --all`. Only files named as ours, so nothing else in the folder is touched.
@@ -493,15 +498,36 @@ mod tests {
         write(&root, &one, key(1), &sample()).unwrap();
         write(&root, &two, key(2), &sample()).unwrap();
         fs::write(root.join("notes.txt"), b"not ours").unwrap();
-        assert_eq!(clear(&root, &one).cleared, 1);
+        assert_eq!(clear(&root, &one, &[]).cleared, 1);
         assert!(read(&root, &one, key(1)).is_none());
         assert!(read(&root, &two, key(2)).is_some(), "another file's stay");
-        assert_eq!(clear(&root, &one), Cleared::default(), "nothing left to take");
+        assert_eq!(clear(&root, &one, &[]), Cleared::default(), "nothing left to take");
         let all = clear_all(&root);
         assert_eq!((all.cleared, all.failed), (1, 0));
         assert!(read(&root, &two, key(2)).is_none());
         assert!(root.join("notes.txt").exists(), "only ours are removed");
         assert_eq!(clear_all(&temp.join("never made")), Cleared::default());
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// Failure: a file that was renamed or moved keeps its old generated contents (heading text from the file) after `recto index clear`, since they sit under the old path's tag; or the clear by key takes another document's contents.
+    #[test]
+    fn clearing_also_takes_contents_kept_under_an_older_path_for_the_files_versions() {
+        let temp = recto_testpdf::TempDir::new("recto-generated-clear-old-");
+        let root = temp.join("generated");
+        let (old, now, other) = (temp.join("old.pdf"), temp.join("now.pdf"), temp.join("other.pdf"));
+        for path in [&old, &now, &other] {
+            local::ensure_private_dir(&temp).unwrap();
+            fs::write(path, b"%PDF").unwrap();
+        }
+        write(&root, &old, key(1), &sample()).unwrap();
+        write(&root, &now, key(3), &sample()).unwrap();
+        write(&root, &other, key(9), &sample()).unwrap();
+        let report = clear(&root, &now, &[key(1), key(3)]);
+        assert_eq!((report.cleared, report.failed), (2, 0), "key 1 under the old path, key 3 under this one");
+        assert!(read(&root, &old, key(1)).is_none(), "the older path's contents for a known key are gone");
+        assert!(read(&root, &now, key(3)).is_none());
+        assert!(read(&root, &other, key(9)).is_some(), "another document's stay");
         let _ = fs::remove_dir_all(&temp);
     }
 }
