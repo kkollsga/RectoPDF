@@ -138,7 +138,7 @@ impl HeadingsAnswer {
 /// One entry of a page line, as believed.
 fn entry_of(entry: &Value, page: u32) -> Option<Found> {
     let entry = entry.as_object().filter(|entry| entry.len() == 3)?;
-    let level = entry.get("level")?.as_u64().filter(|level| (1..=6).contains(level))? as u8;
+    let depth = entry.get("level")?.as_u64().filter(|one| (1..=6).contains(one))? as u8;
     let bbox = match entry.get("bbox")? {
         Value::Null => None,
         Value::Array(edges) if edges.len() == 4 => {
@@ -152,7 +152,12 @@ fn entry_of(entry: &Value, page: u32) -> Option<Found> {
     };
     let title = entry.get("title")?.as_str().filter(|title| title.len() <= MAX_TITLE_BYTES)?;
     let title = short_title(title);
-    title.chars().any(char::is_alphanumeric).then_some(Found { level, page, bbox, title })
+    title.chars().any(char::is_alphanumeric).then_some(Found {
+        level: depth,
+        page,
+        bbox,
+        title,
+    })
 }
 
 impl Answer for HeadingsAnswer {

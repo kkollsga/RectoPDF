@@ -130,17 +130,11 @@ fn make_every_folder(app: &HeadlessApp, file: &Path) {
     let has_something = |folder: &Path| std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some());
     let corpus = app.disk().paths().corpus.clone();
     app.wait_until("the page text made", || has_something(&corpus));
-    app.person(r##"{"cmd":"contents_show","which":"generated","tab":"#1"}"##);
-    let id = recto_session::TabId(app.tabs()[0].tab);
-    app.wait_until("the generated contents kept", || {
-        app.core().host.session.with_session(|session| {
-            !matches!(
-                session.generated().view(id),
-                None | Some(recto_session::GeneratedView::Making | recto_session::GeneratedView::NotKept)
-            )
-        })
-    });
+    // Made by the store's own writer, which the generator calls, and not by running the helper: the session only ever starts the walled `RectoStructure.app` in an installed app (`Structure::installed`), which a test isn't, and what this test holds is the folder the writer makes.
     let generated = app.disk().paths().generated.clone();
+    let key = recto_index::corpus::CorpusKey::of_file(file).expect("the file's key");
+    recto_index::generated::write(&generated, file, key, &recto_index::generated::Generated::default()).expect("the generated contents written");
+    let has_something = |folder: &Path| std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some());
     app.wait_until("the generated contents written", || has_something(&generated));
     app.settle();
     let files = recto_update::plan::Files::in_state(&app.disk().paths().root);
