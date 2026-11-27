@@ -1,7 +1,7 @@
 //! Shared by this crate's test binaries.
 #![allow(dead_code)]
 
-use recto_render_service::{DocRenderer, HeavySlot, MAX_BUSY, Policy, RenderFailure, ServiceConfig, Surface};
+use recto_render_service::{DocRenderer, HeavySlot, Policy, ServiceConfig, Surface};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -15,22 +15,17 @@ pub fn real_config() -> ServiceConfig {
     config
 }
 
-/// A renderer of the file with the real worker. `DocRenderer::new` starts no worker: it opens the file and makes the control block's shared memory, and on a Mac loaded with other tests either can answer `Unavailable` once (2026-11-26/27, `tests/common/mod.rs` `.unwrap()` in a `like-ci` run, no reason kept). The product asks again at `open_retry_pause`, and so does this: at most [`MAX_BUSY`] tries (the one bound the service has for asking again), then it panics with the last answer, so a file that really can't be opened still fails the test.
+/// A renderer of the file with the real worker, opened in its two steps so a failure says which one it was. `DocRenderer::new` starts no worker: `open_file` opens the file and `with_file` makes the control block's shared memory, and both answer a bare `Unavailable` (the io error isn't in `RenderFailure`, which is `Copy`). It is not asked again: `Unavailable` isn't busy, and a person's file that can't be opened or a Mac that can't give shared memory is a fault to see. On a failed open the kit tries the file again itself to name the io error it gets now, which may not be the one the first open had.
 pub fn renderer(path: &Path, policy: Policy) -> DocRenderer {
-    opened_again(|| DocRenderer::new(path, None, real_config(), policy.clone()))
-}
-
-/// Asks `open` again while it says [`RenderFailure::Unavailable`] (a try that couldn't start, which remembers nothing), up to [`MAX_BUSY`] tries.
-pub fn opened_again(mut open: impl FnMut() -> Result<DocRenderer, RenderFailure>) -> DocRenderer {
-    let mut last = RenderFailure::Unavailable;
-    for _ in 0..MAX_BUSY {
-        match open() {
-            Ok(doc) => return doc,
-            Err(RenderFailure::Unavailable) => last = RenderFailure::Unavailable,
-            Err(other) => panic!("the renderer wasn't opened: {other:?}"),
-        }
-    }
-    panic!("the renderer wasn't opened in {MAX_BUSY} tries: {last:?}");
+    let file = DocRenderer::open_file(path).unwrap_or_else(|failure| {
+        panic!(
+            "step 1, opening {}: {failure:?}; a plain open now says {:?}",
+            path.display(),
+            std::fs::File::open(path).map(|_| ())
+        )
+    });
+    DocRenderer::with_file(file, path, None, real_config(), policy)
+        .unwrap_or_else(|failure| panic!("step 2, the control block's shared memory for {}: {failure:?}", path.display()))
 }
 
 pub fn tile_surface() -> Surface {
