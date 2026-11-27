@@ -120,7 +120,7 @@ pub struct Marks {
     pub page_ins: u64,
 }
 
-pub fn marks_of(pid: u32) -> Option<Marks> {
+fn marks_of(pid: u32) -> Option<Marks> {
     recto_platform::local::process_counters(pid).map(|counters| Marks {
         cpu_ns: counters.cpu_ns,
         page_ins: counters.page_ins,
