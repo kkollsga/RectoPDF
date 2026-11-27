@@ -124,13 +124,40 @@ pub fn check(names: &Names, found: &Found) -> String {
 /// The longest a document's name is shown, in characters: a longer one is cut with an ellipsis.
 const MAX_NAME: usize = 60;
 
-/// A name as the sheet shows it: its curly quotes made plain, so it can't close the quotes it is shown in and go on in RectoPDF's voice, and cut if long.
-fn shown(name: &str) -> String {
-    let plain: String = name.chars().map(|c| if matches!(c, '“' | '”') { '"' } else { c }).collect();
-    if plain.chars().count() <= MAX_NAME {
-        return format!("“{plain}”");
+/// Whether a character joins the one before it into what the eye sees as one: a combining mark, a variation selector or a joiner. (`unicode-segmentation`
+/// isn't a dependency of this crate or the workspace, so the cut is made by these ranges and the flag rule below.)
+fn extends(c: char) -> bool {
+    matches!(c, '\u{300}'..='\u{36F}' | '\u{1AB0}'..='\u{1AFF}' | '\u{1DC0}'..='\u{1DFF}' | '\u{20D0}'..='\u{20FF}' | '\u{FE00}'..='\u{FE0F}' | '\u{FE20}'..='\u{FE2F}' | '\u{200D}')
+}
+
+fn is_flag_letter(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
+/// How many characters of `chars` to keep, at most `max`, without cutting inside what the eye sees as one character.
+fn cut_at(chars: &[char], max: usize) -> usize {
+    let mut at = max.min(chars.len());
+    loop {
+        let joined = at > 0 && at < chars.len() && (extends(chars[at]) || chars[at - 1] == '\u{200D}');
+        let run = chars[..at].iter().rev().take_while(|c| is_flag_letter(**c)).count();
+        let half_flag = at < chars.len() && is_flag_letter(chars[at]) && run % 2 == 1;
+        if (joined || half_flag) && at > 0 {
+            at -= 1;
+        } else {
+            return at;
+        }
     }
-    format!("“{}…”", plain.chars().take(MAX_NAME).collect::<String>())
+}
+
+/// A name as the sheet shows it: its curly quotes made plain, so it can't close the quotes it is shown in and go on in RectoPDF's voice, and cut if long, at
+/// a boundary between characters the eye sees, never inside one.
+fn shown(name: &str) -> String {
+    let plain: Vec<char> = name.chars().map(|c| if matches!(c, '“' | '”') { '"' } else { c }).collect();
+    if plain.len() <= MAX_NAME {
+        return format!("“{}”", plain.iter().collect::<String>());
+    }
+    let at = cut_at(&plain, MAX_NAME);
+    format!("“{}…”", plain[..at].iter().collect::<String>())
 }
 
 /// The line that says whose some of the unfinished saves are, for the person, when a save belongs to another document: those documents by name (at most
