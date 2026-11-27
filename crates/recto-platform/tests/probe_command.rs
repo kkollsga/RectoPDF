@@ -50,7 +50,10 @@ fn the_probe_deadline_exits_with_its_own_unblocked_signal() {
         });
     }
     let (bounded, output) = command::output(&mut probe, HANG_GUARD).unwrap();
-    assert!(!bounded, "the collector's {HANG_GUARD:?} guard, not the probe's own timer, ended it: {output:?}");
+    assert!(
+        !bounded,
+        "the collector's {HANG_GUARD:?} guard, not the probe's own timer, ended it: {output:?}"
+    );
     assert_eq!(
         output.status.signal(),
         Some(libc::SIGALRM),
