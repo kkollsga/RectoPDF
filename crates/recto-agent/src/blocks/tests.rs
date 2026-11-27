@@ -79,7 +79,7 @@ impl SessionAccess for World {
     }
 }
 
-fn world(indexed: bool) -> World {
+fn a_world(indexed: bool) -> World {
     let file = recto_testpdf::TempPdf::new("doc.pdf", b"%PDF-1.7");
     let key = CorpusKey::of_file(&file.0).unwrap();
     let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-agent-blocks-");
@@ -141,7 +141,7 @@ impl World {
 /// for one that was refused or failed. Asked once while nothing is on its way, `blocks_building` while it's queued or running, and `blocks_not_made` for everything else, asking nothing.
 #[test]
 fn get_says_blocks_building_while_queued_or_running_and_asks_once() {
-    let world = world(true);
+    let world = a_world(true);
     assert_eq!(world.why(), BUILDING, "the first ask starts it");
     assert_eq!(world.host.wants.load(Ordering::SeqCst), 1);
     assert_eq!(world.why(), BUILDING);
@@ -153,7 +153,7 @@ fn get_says_blocks_building_while_queued_or_running_and_asks_once() {
         assert_eq!(world.why(), NOT_MADE);
     }
     assert_eq!(world.host.wants.load(Ordering::SeqCst), 1, "a refusal or a failure isn't asked again");
-    let bare = world(false);
+    let bare = a_world(false);
     assert_eq!(bare.why(), NOT_MADE, "no index to make blocks from");
     assert_eq!(bare.host.wants.load(Ordering::SeqCst), 0, "nothing is asked of a file with no index");
 }
@@ -161,7 +161,7 @@ fn get_says_blocks_building_while_queued_or_running_and_asks_once() {
 /// Failure: `get` goes on saying blocks are building once they are made (until S5 reads them it says `blocks_not_made`), or asks for them again; or a stored set that doesn't add up is kept.
 #[test]
 fn made_blocks_are_not_asked_for_again() {
-    let world = world(true);
+    let world = a_world(true);
     world.make_blocks();
     assert_eq!(world.why(), NOT_MADE);
     assert_eq!(world.host.wants.load(Ordering::SeqCst), 0);
@@ -176,7 +176,7 @@ fn made_blocks_are_not_asked_for_again() {
 #[test]
 fn index_clear_stops_a_blocks_build_before_it_clears() {
     for all in [false, true] {
-        let world = world(true);
+        let world = a_world(true);
         world.host.making.store(true, Ordering::SeqCst);
         let said = crate::index::clear(&world, &TabRef::Active, all).unwrap();
         assert_eq!(
@@ -193,7 +193,7 @@ fn index_clear_stops_a_blocks_build_before_it_clears() {
 /// numbers, or a damaged set is believed. Every state, and the words of every code.
 #[test]
 fn wait_blocks_ready_maps_each_state() {
-    let world = world(true);
+    let world = a_world(true);
     assert_eq!(world.wait(), ConditionState::Waiting);
     assert_eq!(world.wait(), ConditionState::Waiting);
     assert_eq!(world.host.wants.load(Ordering::SeqCst), 1, "asked once");
@@ -231,7 +231,7 @@ fn wait_blocks_ready_maps_each_state() {
     assert_eq!(world.wait(), ConditionState::Waiting, "a damaged set is thrown away and made again");
     assert!(!header.exists());
     // No host, and no index.
-    let bare = world(false);
+    let bare = a_world(false);
     assert!(matches!(bare.wait(), ConditionState::Waiting | ConditionState::Failed(_)));
     let fallback = reason_words("something new");
     for code in [
