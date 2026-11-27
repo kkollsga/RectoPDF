@@ -45,6 +45,8 @@ pub const MAX_ANSWER_BYTES: u64 = 4 * 1024 * 1024;
 pub const READER_STACK: usize = 256 * 1024;
 /// The reader thread's name, for the thread table that shows nothing runs when nothing is asked.
 pub const READER_THREAD: &str = "recto-headings-out";
+/// The names of the numbers this session measures itself and reports last; an answer that uses one is a bad answer.
+pub const SESSION_NUMBERS: [&str; 3] = ["walled", "elapsed_ms", "helper_peak_watched_bytes"];
 /// What the helper is started with, and nothing else ever: not `spawn_helper`, which passes the render worker's and PDFium's locations on, and never `APP_SANDBOX_CONTAINER_ID`.
 /// `MallocLargeCache=0` must be there from the start, as the allocator reads it once: without it, freed large blocks stay in the footprint.
 pub const HELPER_ENV: [(&str, &str); 1] = [("MallocLargeCache", "0")];
@@ -404,8 +406,11 @@ pub(crate) fn talk<A: Answer>(
     let Ok((answer, said)) = reading.join() else {
         return (Ended::Failed("helper_stopped".into()), numbers);
     };
-    if let (Some(numbers), Some(more)) = (numbers.as_object_mut(), answer.numbers().as_object()) {
-        numbers.extend(more.clone());
+    // The answer's numbers go first and the session's own over them: nothing the helper says replaces what was measured here.
+    if let (Some(own), Some(more)) = (numbers.as_object().cloned(), answer.numbers().as_object()) {
+        let mut all = more.clone();
+        all.extend(own);
+        numbers = Value::Object(all);
     }
     // A limit's code wins over a helper that stopped, and a line it wouldn't have over what it said before.
     let code = watched.stopped_for.or_else(|| flags.bad.load(Ordering::SeqCst).then_some("bad_answer"));

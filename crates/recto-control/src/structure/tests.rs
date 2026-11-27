@@ -202,3 +202,32 @@ fn the_helper_is_started_with_one_variable_and_no_other() {
     let _ = child.wait();
     assert_eq!(said, "MallocLargeCache=0\n");
 }
+
+/// An answer that ends at once and reports numbers that look like the session's own.
+#[derive(Debug, Default)]
+struct Boasts;
+
+impl Answer for Boasts {
+    fn take(&mut self, _line: &[u8]) -> Result<Said, &'static str> {
+        Ok(Said::End)
+    }
+    fn numbers(&self) -> Value {
+        json!({ "walled": false, "elapsed_ms": 999_999_999u64, "helper_peak_watched_bytes": 1, "kept": 7 })
+    }
+}
+
+/// Failure: the numbers an answer reports are merged over the session's own, so a helper that gets one through can say it wasn't walled, or that it took no time. The session's win, and the
+/// answer's other numbers stay.
+#[test]
+fn the_sessions_numbers_win_over_the_answers() {
+    let folder = folder("numbers");
+    let exe = stand_in(&folder, "echo '{\"state\":\"hello\",\"walled\":true}'\necho end");
+    let spawned = helper::spawn(&exe, &[], Priority::Inherited).unwrap();
+    let (deadline, stop) = never();
+    let (ended, numbers) = talk(spawned, &json!({ "kind": "x" }), Boasts, deadline, &stop, |_, _| Ok(()));
+    assert!(matches!(ended, Ended::Answered(_)), "{ended:?}");
+    assert_eq!(numbers["walled"], json!(true));
+    assert!(numbers["elapsed_ms"].as_u64().unwrap() < 600_000, "{numbers}");
+    assert_ne!(numbers["helper_peak_watched_bytes"], json!(1));
+    assert_eq!(numbers["kept"], json!(7), "its other numbers go on");
+}

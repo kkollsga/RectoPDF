@@ -91,7 +91,9 @@ impl HeadingsAnswer {
         let counted = line.get("found").and_then(Value::as_u64).ok_or(BAD)?;
         let all_before = self.last_page.is_none_or(|last| last < pages);
         let plain = line.len() <= MAX_NUMBERS && line.iter().all(|(name, value)| name == "state" || value.is_number() || value.is_boolean());
-        if counted != self.found.len() as u64 || !all_before || !plain {
+        // The session's own measurements; a helper doesn't get to say them.
+        let own = super::SESSION_NUMBERS.iter().any(|name| line.contains_key(*name));
+        if counted != self.found.len() as u64 || !all_before || !plain || own {
             return Err(BAD);
         }
         // Only numbers go on, for measuring. Nothing the helper wrote is repeated as words.

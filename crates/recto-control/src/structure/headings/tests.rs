@@ -202,3 +202,14 @@ fn a_line_at_the_cap_is_parsed_and_over_it_is_not() {
     let long = said(&[&"x".repeat(MAX_LINE_BYTES + 1)]);
     assert_eq!(read_all(&long, 10).map(|_| ()), Err("bad_answer"));
 }
+
+/// Failure: a helper's end line carries the names the session measures itself by (`walled`, `elapsed_ms`, `helper_peak_watched_bytes`), so a hostile helper writes its own proof of being
+/// walled and its own timings into the report. An end line that names any of them is a bad answer.
+#[test]
+fn an_end_line_may_not_name_the_sessions_own_numbers() {
+    for name in ["walled", "elapsed_ms", "helper_peak_watched_bytes"] {
+        let value = if name == "walled" { "false" } else { "12" };
+        let end = end(1, 1).replace(r#""distilled_ms":120"#, &format!(r#""{name}":{value}"#));
+        assert_eq!(read_all(&said(&[&page(0, &["A"]), &end]), 10).map(|_| ()), Err("bad_answer"), "{name}");
+    }
+}

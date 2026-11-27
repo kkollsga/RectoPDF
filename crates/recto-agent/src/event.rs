@@ -74,7 +74,7 @@ pub enum Event {
         path: PathBuf,
         file: String,
     },
-    /// `elapsed_ms` and `helper_peak_bytes` are the helper's own numbers, passed on as it gave them. `walled` is whether the session found the helper behind its walls before it gave it the document (`true`), or never got that far (`null`).
+    /// `elapsed_ms` and `helper_peak_bytes` are the session's own measurements (from starting the helper to its end; the helper's footprint as watched from outside), never numbers the helper gave. `walled` is whether the session found the helper behind its walls before it gave it the document (`true`), or never got that far (`null`).
     ContentsGenerated {
         path: PathBuf,
         file: String,
