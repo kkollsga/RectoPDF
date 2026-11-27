@@ -13,6 +13,7 @@
 //! (`bad_answer`); its footprint is read every [`WATCH_EVERY`] and it's killed past [`MEMORY_LIMIT`], past its time, or when it's no longer wanted. After the end line it has [`END_GRACE`]
 //! to exit. The one thread here, [`READER_THREAD`], lives as long as the helper does.
 
+pub mod blocks;
 pub mod headings;
 
 use recto_index::corpus::CorpusKey;
@@ -94,6 +95,18 @@ pub enum Said {
 /// The job's own reader of what the helper says after its hello: each line, one at a time, believing nothing. A line it won't have is `Err`, and ends the helper.
 pub trait Answer: Send + 'static {
     fn take(&mut self, line: &[u8]) -> Result<Said, &'static str>;
+    /// The most one line may be, hello included. Over it the helper is killed.
+    fn max_line_bytes(&self) -> usize {
+        MAX_LINE_BYTES
+    }
+    /// The most it may say in all.
+    fn max_answer_bytes(&self) -> u64 {
+        MAX_ANSWER_BYTES
+    }
+    /// Why the answer itself stopped the job: it refused a line (`take` was `Err`) for a reason of its own, or something it was handed (a store it writes to) said stop. It wins over `bad_answer`, which its `Err` would otherwise be reported as.
+    fn stopped_for(&self) -> Option<&'static str> {
+        None
+    }
     /// The numbers and bools of what it said, for measuring: never words.
     fn numbers(&self) -> Value {
         Value::Null
@@ -196,9 +209,9 @@ fn why_it_ended(code: Option<i32>, in_a_sandbox: bool) -> &'static str {
     }
 }
 
-/// Reads one line, without its newline, into `buf`. `Ok(false)` at the end of input. Over [`MAX_LINE_BYTES`], over what's left of `budget` (everything it may say in all), or a last line
+/// Reads one line, without its newline, into `buf`. `Ok(false)` at the end of input. Over `cap` (the answer's own: [`MAX_LINE_BYTES`] unless it says more), over what's left of `budget` (everything it may say in all), or a last line
 /// that never ended, is bad, and nothing past the cap is ever held.
-fn next_line(input: &mut impl BufRead, buf: &mut Vec<u8>, budget: &mut u64) -> Result<bool, &'static str> {
+fn next_line(input: &mut impl BufRead, buf: &mut Vec<u8>, budget: &mut u64, cap: usize) -> Result<bool, &'static str> {
     buf.clear();
     loop {
         let Ok(available) = input.fill_buf() else { return Ok(false) };
@@ -210,7 +223,7 @@ fn next_line(input: &mut impl BufRead, buf: &mut Vec<u8>, budget: &mut u64) -> R
             None => (available.len(), false),
         };
         let body = if done { used - 1 } else { used };
-        if buf.len() + body > MAX_LINE_BYTES || used as u64 > *budget {
+        if buf.len() + body > cap || used as u64 > *budget {
             return Err("bad_answer");
         }
         *budget -= used as u64;
@@ -233,8 +246,9 @@ struct Flags {
 
 /// The first line is the hello, and the rest go to `answer`; each is read as hostile. Returns the answer and how it ended, if it did.
 fn read_lines<A: Answer>(mut input: impl BufRead, mut answer: A, hello: SyncSender<Option<bool>>, flags: &Flags) -> (A, Option<Said>) {
-    let (mut buf, mut budget, mut terminal) = (Vec::new(), MAX_ANSWER_BYTES, None);
-    match next_line(&mut input, &mut buf, &mut budget) {
+    let (mut buf, mut budget, mut terminal) = (Vec::new(), answer.max_answer_bytes(), None);
+    let cap = answer.max_line_bytes();
+    match next_line(&mut input, &mut buf, &mut budget, cap) {
         // Nothing before the end of input: the sender is dropped, which the other side reads as a helper that stopped.
         Ok(false) => return (answer, None),
         Ok(true) => {
@@ -257,7 +271,7 @@ fn read_lines<A: Answer>(mut input: impl BufRead, mut answer: A, hello: SyncSend
         }
     }
     loop {
-        match next_line(&mut input, &mut buf, &mut budget) {
+        match next_line(&mut input, &mut buf, &mut budget, cap) {
             Ok(false) => return (answer, terminal),
             // Anything after the end, or a line that isn't one.
             Ok(true) if terminal.is_some() => break,
@@ -274,6 +288,24 @@ fn read_lines<A: Answer>(mut input: impl BufRead, mut answer: A, hello: SyncSend
     }
     flags.bad.store(true, Ordering::SeqCst);
     (answer, terminal)
+}
+
+/// A refusal, a change or a failure: the only things a helper says instead of an answer, and only as the first line (`first`). Its code is one of the known ones, never its own words.
+pub(crate) fn instead(first: bool, line: &serde_json::Map<String, Value>) -> Result<Said, &'static str> {
+    if !first {
+        return Err("bad_answer");
+    }
+    match line.get("state").and_then(Value::as_str) {
+        Some("refused") => {
+            let code = line.get("code").and_then(Value::as_str).unwrap_or("");
+            let known = ["needs_password", "couldnt_read", "no_pages"].into_iter().find(|known| *known == code);
+            Ok(Said::Refused(known.unwrap_or("couldnt_read").to_string()))
+        }
+        Some("changed") => Ok(Said::Changed),
+        // What it failed at is its own word for it, never repeated.
+        Some("failed") => Ok(Said::Failed("helper_stopped".into())),
+        _ => Err("bad_answer"),
+    }
 }
 
 /// The reader over bytes already in hand: for the fuzz target and the tests. The answer, how it ended if it did, and whether a line was refused.
@@ -419,8 +451,11 @@ pub(crate) fn talk<A: Answer>(
         all.extend(own);
         numbers = Value::Object(all);
     }
-    // A limit's code wins over a helper that stopped, and a line it wouldn't have over what it said before.
-    let code = watched.stopped_for.or_else(|| flags.bad.load(Ordering::SeqCst).then_some("bad_answer"));
+    // The answer's own reason first (what its `Err` would otherwise be reported as `bad_answer`), then a limit's code, which wins over a helper that stopped, and a line it wouldn't have over what it said before.
+    let code = answer
+        .stopped_for()
+        .or(watched.stopped_for)
+        .or_else(|| flags.bad.load(Ordering::SeqCst).then_some("bad_answer"));
     let ended = match (code, said) {
         (Some(code), _) => Ended::Failed(code.to_string()),
         (None, Some(Said::End)) => Ended::Answered(answer),
