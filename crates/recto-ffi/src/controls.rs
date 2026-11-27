@@ -11,108 +11,57 @@ pub use recto_app::core::controls::{Acted, UiAction};
 #[uniffi::remote(Enum)]
 pub enum UiAction {
     /// A menu item, a key, a panel button or the context menu, by its id.
-    Menu {
-        id: String,
-    },
+    Menu { id: String },
     /// A sidebar row tapped, or ⌘- or ⌃-clicked (`adding`).
-    Row {
-        row: SidebarRow,
-        adding: bool,
-    },
+    Row { row: SidebarRow, adding: bool },
     /// A contents row's right-click, Copy Link.
-    CopyLink {
-        row: SidebarRow,
-    },
+    CopyLink { row: SidebarRow },
     /// The reader's moved into another pane, by the pointer or a scroll, as the page views report it: that pane's tab.
-    PaneRead {
-        tab: u32,
-    },
+    PaneRead { tab: u32 },
     /// A contents row's chevron, by the row's place in the contents.
-    Chevron {
-        first: u32,
-    },
+    Chevron { first: u32 },
     /// A file to open: the Open panel's, a drop, the Finder's, by its path.
-    Open {
-        path: String,
-    },
-    OpenAt {
-        path: String,
-        fragment: String,
-    },
-    OpenLink {
-        link: String,
-    },
+    Open { path: String },
+    /// A file the system handed over, with what came after `#` in its link (empty for none).
+    OpenAt { path: String, fragment: String },
+    /// A `rectopdf:` link the system handed over, as it was sent.
+    OpenLink { link: String },
     /// File > Open Recent's file, by its key.
-    OpenRecent {
-        key: String,
-    },
+    OpenRecent { key: String },
     /// What's in the Find field now, as it's typed.
-    FindTyped {
-        text: String,
-    },
+    FindTyped { text: String },
     /// ⌘F's opening of Find, from the field's own button.
     FindOpen,
     /// Escape in the Find field, or its close button.
     FindClose,
     /// Return (forward) or ⇧Return in the Find field.
-    FindReturn {
-        forward: bool,
-    },
+    FindReturn { forward: bool },
     /// A row of Find's list, clicked.
-    FindChoose {
-        row: u32,
-    },
+    FindChoose { row: u32 },
     /// Return in the go-to field.
-    PageTyped {
-        text: String,
-    },
+    PageTyped { text: String },
     /// A swipe on the page, as the system reports it.
-    Swiped {
-        delta_x: f64,
-    },
+    Swiped { delta_x: f64 },
     /// Return in the zoom level's field, with the Mac's decimal sign (its first character; `.` if it has none).
-    ZoomTyped {
-        text: String,
-        decimal: String,
-    },
+    ZoomTyped { text: String, decimal: String },
     /// The sidebar's button beside the window's controls.
     ToggleSidebar,
     /// A row of the palette, run.
-    PaletteRun {
-        id: String,
-    },
+    PaletteRun { id: String },
     /// The close prompt's answer, for the tab it asked about.
-    CloseAnswered {
-        tab: u32,
-        choice: CloseChoice,
-    },
+    CloseAnswered { tab: u32, choice: CloseChoice },
     /// Save As's sheet answered with this path.
-    SaveAs {
-        tab: u32,
-        path: String,
-    },
+    SaveAs { tab: u32, path: String },
     /// A sheet's answer: the feature's kind, the sheet's id and the button's index (`u32::MAX` for none).
-    SheetAnswered {
-        kind: String,
-        id: u64,
-        button: u32,
-    },
+    SheetAnswered { kind: String, id: u64, button: u32 },
     /// A switch in Settings.
-    SettingChosen {
-        id: String,
-        on: bool,
-    },
+    SettingChosen { id: String, on: bool },
     /// The mouse came up on a page in this pane after a press: the link the click landed on, if any, is followed. The bridge's own, from `selection_release`.
-    LinkClicked {
-        pane: u32,
-    },
+    LinkClicked { pane: u32 },
     /// The mouse came up with the snapshot tool on: what it took goes to the clipboard. The bridge's own, from `selection_release`.
     SnapshotTaken,
     /// The system's paste asked for a promised type of the offer with this number. The bridge's own, from `clipboard_data`.
-    Pasted {
-        serial: u64,
-        uti: String,
-    },
+    Pasted { serial: u64, uti: String },
     /// The print panel answered with Print, for the tab it was opened for: all the pages or a range from 1, or just the selection's, on paper or, with
     /// `to_file`, to a PDF the system's printing saves or previews.
     Print {
