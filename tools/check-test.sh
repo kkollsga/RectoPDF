@@ -1754,6 +1754,10 @@ has "and says so" "the build doesn't claim rectopdf: links" "$out"
 out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/tools/dev-build.sh" --package "$app" --out "$X/q/out" --version "$version.1" 2>&1)
 has "with the test's variable it says plainly the package is for a test" "this package doesn't claim rectopdf: links, and is for a test" "$out"
 case "$out" in *"the build doesn't claim"*) echo "FAIL  with the variable it was still refused for the claim"; fails=$((fails + 1)) ;; *) echo "ok    and isn't refused for the claim" ;; esac
+# Only `--package` honours it: any other mode (the owner's build, --first-install, --place) refuses it. --place is the one that is safe to run here.
+out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/tools/dev-build.sh" --place "$X/q/none.zip" 2>&1); rc=$?
+check "any mode but --package refuses the test's variable" "1" "$rc"
+has "naming it" "RECTO_DEV_BUILD_UNCLAIMED is for --package" "$out"
 out=$(RECTO_DEV_BUILD_UNCLAIMED=1 "$SOURCE/app/release-zip.sh" --allow-dirty 2>&1); rc=$?
 check "release-zip.sh refuses the variable" "1" "$rc"
 has "naming it" "RECTO_DEV_BUILD_UNCLAIMED is for a test's dev package" "$out"

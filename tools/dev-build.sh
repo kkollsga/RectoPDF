@@ -137,6 +137,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# The test's switch (see package) is for --package alone: the owner's build, --first-install and --place never honour it, so a build that doesn't claim
+# rectopdf: links can't be made for the owner's app by it.
+if [ "$mode" != package ] && [ -n "${RECTO_DEV_BUILD_UNCLAIMED:-}" ]; then
+  fail "RECTO_DEV_BUILD_UNCLAIMED is for --package in a test, not for the owner's builds"
+fi
+
 if [ "$mode" = package ]; then
   [ -n "$dev" ] || dev="$(release_version).1"
   package "$built" "$out" "$dev"
