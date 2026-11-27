@@ -240,25 +240,7 @@ const MAX_COMPARISONS: usize = 20_000_000;
 
 /// What a heading's text comes to for matching: letters and digits, lowercased, with the common ligatures spelled out, because PDFium and distillPDF don't always agree about them.
 fn letters(text: &str, mut out: impl FnMut(char)) {
-    for c in text.chars() {
-        let spelled: &str = match c {
-            '\u{FB00}' => "ff",
-            '\u{FB01}' => "fi",
-            '\u{FB02}' => "fl",
-            '\u{FB03}' => "ffi",
-            '\u{FB04}' => "ffl",
-            '\u{FB05}' | '\u{FB06}' => "st",
-            _ => {
-                if c.is_alphanumeric() {
-                    for lower in c.to_lowercase() {
-                        out(lower);
-                    }
-                }
-                continue;
-            }
-        };
-        spelled.chars().for_each(&mut out);
-    }
+    recto_core::match_letters(text.chars(), |letter, _| out(letter));
 }
 
 /// How far outside distillPDF's box a character's centre may be and still count as in it, in points.

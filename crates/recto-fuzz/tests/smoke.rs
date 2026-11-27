@@ -274,3 +274,21 @@ fn the_save_target_reaches_a_highlights_removal() {
     // 69 on 2026-11-14: most of the rest are refused as damaged, where a hostile number makes an object the rewrite can't read.
     assert!(reached >= 40, "{reached} of 400 made files had a highlight the save could take out");
 }
+
+/// Failure: a hostile stored-blocks record panics its reader, or opens as something no build writes (over the cap, overlapping, out of range) or doesn't write back as it was read.
+#[test]
+fn hostile_block_records_are_refused() {
+    smoke("blocks", seed(), rounds(2000), 12_000);
+}
+
+/// Failure: a hostile helper line or page panics or hangs the mapping, loses a candidate from the counts, or stores a block that overlaps another or lies off the page.
+#[test]
+fn hostile_block_lines_do_no_harm() {
+    smoke("distill_line", seed(), rounds(1500), 8192);
+}
+
+/// Failure: document text through the Markdown of blocks starts a heading, a list, a quote, a rule, a table row or a fence the program didn't write, makes a link or HTML, ends a code fence early, or forges the hidden mark.
+#[test]
+fn hostile_text_makes_no_markdown_of_its_own() {
+    smoke("markdown", seed(), rounds(2000), 2048);
+}
