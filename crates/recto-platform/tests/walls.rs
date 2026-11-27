@@ -29,6 +29,10 @@ const RECEIPT_CAP: u64 = 4096;
 /// with nothing wrong.
 const CLEANUP_GUARD: Duration = Duration::from_secs(60);
 
+/// How long to look for a launch that must not happen. Waiting out the guard on every pass would cost a minute; a loaded Mac only makes the launch later,
+/// so a longer window can only find more, never less.
+const ABSENCE_WINDOW: Duration = Duration::from_secs(5);
+
 /// A script step (`--layout`, `--sign`, `--check`, `--key`) must end, and the tests assert that it succeeds. The product holds no time bound on these (`codesign`, python3 and PlistBuddy run untimed in the build), so a limit here is only a guard against a hang, below nextest's terminate: a busy Mac that takes 16 s fails nothing, and a step that never ends fails naming itself.
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
@@ -186,10 +190,10 @@ impl Fixture {
         self.attempt_list().into_iter().flat_map(|(args, _)| args).collect()
     }
 
-    /// The same guard covers both the complete atomic receipt and the exact private executable exiting.
-    fn marker_after_launch(&self) -> Option<String> {
+    /// `window` covers both the complete atomic receipt and the exact private executable exiting.
+    fn marker_after_launch(&self, window: Duration) -> Option<String> {
         let started = Instant::now();
-        while started.elapsed() < CLEANUP_GUARD {
+        while started.elapsed() < window {
             if let Ok(text) = capped_text(&self.marker())
                 && self.own_processes().is_empty()
             {
@@ -461,7 +465,7 @@ fn the_helpers_walls_hold() {
         );
     }
     assert_eq!(results.get("launchservices:open"), Some(&false), "LaunchServices took the request: {results:?}");
-    assert_eq!(fixture.marker_after_launch(), None, "something was launched outside the sandbox");
+    assert_eq!(fixture.marker_after_launch(ABSENCE_WINDOW), None, "something was launched outside the sandbox");
 }
 
 /// Failure: the App Sandbox stops letting a process launch an app, and nobody notices that the Mach drop no longer carries its own weight. Or this stays true and the drop is taken out
@@ -477,7 +481,7 @@ fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
     std::fs::write(fixture.scratch().join("probe.txt"), &said).unwrap();
     let results = parse(&said);
     assert_eq!(results.get("launchservices:open"), Some(&true), "{results:?}");
-    let marker = fixture.marker_after_launch().expect("the launched app left no marker");
+    let marker = fixture.marker_after_launch(CLEANUP_GUARD).expect("the launched app left no marker");
     fixture.assert_receipt(&marker);
 }
 
