@@ -235,6 +235,7 @@ impl Builder {
     /// **A launch, as the host makes it, with no window:** the core started, the state read on its thread and waited for, the window "opened" as the host does when
     /// the state's in, then `ready`, and everything that set going settled.
     fn start_on(self, disk: Disk) -> HeadlessApp {
+        let turn = OneAtATime::take();
         recto_platform::slow::gate::hold(&self.held);
         let clock = Arc::new(FakeClock::at(self.clock_ms));
         let listener = Arc::new(FakeListener::default());
@@ -292,6 +293,7 @@ impl Builder {
             host: std::sync::Mutex::new(HostPlay::default()),
             open: self.open.clone(),
             view: std::sync::Mutex::new(super::scrolled::ScrolledView::default()),
+            _turn: turn,
         };
         let state_held = self.held.contains(&Seam::State);
         // The state read late, as a slow disk reads it: the host's second of patience is over before the reading even starts, and what the core says to that is
@@ -450,6 +452,46 @@ pub struct HeadlessApp {
     /// The page being read's view as the host has it, by [`Self::person_scrolls`]: where it's scrolled to and the last scroll it was sent that it's
     /// arrived at; and the last scroll it was sent, from the layer changes taken, `(y, seq)`.
     pub(super) view: std::sync::Mutex<super::scrolled::ScrolledView>,
+    /// The process's one turn at the seams' gates, held while this app lives ([`OneAtATime`]). Last, so it's let go of after everything above has ended.
+    _turn: OneAtATime,
+}
+
+/// **The seams' gates and the slow mode are the process's** ([`recto_platform::slow::gate`]), and an app's end opens every gate. Under nextest each test is a
+/// process and this costs nothing; under `cargo test` (threads, one process) one test's end opened the gate another test held, and the other saw its pages
+/// read at once ("each page read once, left 0 right 12", 2026-11-27). So an app lives alone in its process: one at a time takes the lock, and a thread that
+/// has an app already (a test with two, or one that quits and starts again) goes on without waiting for itself.
+struct OneAtATime {
+    _held: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+thread_local! {
+    /// How many apps this thread has live: the lock is taken by the first and let go of by the last.
+    static LIVE_HERE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl OneAtATime {
+    /// Whether another thread has the turn now (for the test of this).
+    #[cfg(test)]
+    fn taken_by_another_thread() -> bool {
+        LIVE_HERE.with(|n| n.get() == 0) && matches!(TURN.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    }
+
+    fn take() -> Self {
+        let first = LIVE_HERE.with(|n| {
+            n.set(n.get() + 1);
+            n.get() == 1
+        });
+        let held = first.then(|| TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        Self { _held: held }
+    }
+}
+
+impl Drop for OneAtATime {
+    fn drop(&mut self) {
+        LIVE_HERE.with(|n| n.set(n.get().saturating_sub(1)));
+    }
 }
 
 impl HeadlessApp {
@@ -881,6 +923,9 @@ impl Drop for HeadlessApp {
         // A test that failed is unwinding through here: its failure is the one to see, so nothing here adds a second.
         if self.inner.is_some() && !std::thread::panicking() {
             drop(end(self, None));
+        } else if std::thread::panicking() {
+            // What the failed test held stays held no longer, for the next test in this process.
+            recto_platform::slow::gate::open_all();
         }
     }
 }
@@ -978,5 +1023,28 @@ mod tests {
             busy.iter().any(|what| what == "the record being written"),
             "settle would have returned: {busy:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod one_at_a_time {
+    use super::*;
+
+    /// Failure (2026-11-27, `find_with_late_answers_reads_each_page_once_and_says_how_far_it_is`, "each page read once, left 0 right 12", under `cargo test`'s
+    /// threads in one process): another test's app ended and opened the gate this one held. An app holds the process's turn while it lives, so a second thread
+    /// finds it taken, and the thread that has an app can start another (quit and start again) without waiting for itself.
+    #[test]
+    fn an_app_lives_alone_in_its_process_and_its_thread_can_start_another() {
+        let disk = Disk::new();
+        let app = disk.start();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| assert!(OneAtATime::taken_by_another_thread(), "another thread would have to wait for this app to end"))
+                .join()
+                .expect("looked");
+        });
+        let (_, disk) = app.quit();
+        let again = disk.builder().start();
+        drop(again);
     }
 }
