@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
     *) targets+=("$1"); shift ;;
   esac
 done
-[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree save_copy proto index select agent control edits record update generated corpus chrome svg kept page_decode sidecar locator blocks distill_line)
+[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree save_copy proto index select agent control edits record update generated corpus chrome svg kept page_decode sidecar locator blocks distill_line markdown)
 toolchain="${FUZZ_TOOLCHAIN:-nightly}"
 sanitizer="${FUZZ_SANITIZER:-none}"
 mkdir -p "$work"
@@ -56,6 +56,7 @@ max_len() {
     locator) echo 129 ;;
     blocks) echo 12000 ;;
     distill_line) echo 8192 ;;
+    markdown) echo 2048 ;;
   esac
 }
 

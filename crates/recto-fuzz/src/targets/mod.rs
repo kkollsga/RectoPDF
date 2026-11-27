@@ -11,6 +11,7 @@ pub mod generated;
 pub mod index;
 pub mod kept;
 pub mod locator;
+pub mod markdown;
 pub mod page_id;
 pub mod pdf;
 pub mod proto;

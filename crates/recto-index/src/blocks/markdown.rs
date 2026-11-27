@@ -5,9 +5,9 @@
 //! - A list item is `- `, and its further lines are indented to stay in it.
 //! - Code is fenced with backticks, one more than the longest run of backticks inside it (at least three), so nothing in it can end the fence.
 //! - Paragraphs, captions and footnotes are paragraphs.
-//! - **Document text is escaped where it could start something:** a line's first character (after the space the line began with, which is dropped: four
-//!   spaces would make code) when it is one of `# > - + * ` ~ | = _ < ! [ :`, or digits before a `.` or `)`, gets a backslash. And `[hidden:` is
-//!   escaped wherever it is, so a page can't forge the mark below.
+//! - **Document text is escaped:** in text (not in code) `\`, `[`, `]`, `<` and a backtick get a backslash wherever they are, so a page can't make a link, an image, an autolink, HTML, inline
+//!   code or a reference, or take an escape away with a backslash of its own. A line's first character (after the space the line began with, which is dropped: four spaces would make code) gets one too when it is one
+//!   of `# > - + * ~ | = _ ! :`, or digits before a `.` or `)`. In code a `[hidden:` is escaped, so a page can't forge the mark below.
 //! - **Hidden text is marked as `recto text` marks it:** its words are inside `[hidden: ...]`, in place, with `]` and `\` escaped inside so it can't close early.
 
 use super::{Block, Kind};
@@ -123,12 +123,11 @@ fn render_line(line: &[(char, bool)], escape: bool) -> String {
         {
             line = rest;
         }
-    }
-    while let [rest @ .., (c, _)] = line
-        && c.is_whitespace()
-        && escape
-    {
-        line = rest;
+        while let [rest @ .., (c, _)] = line
+            && c.is_whitespace()
+        {
+            line = rest;
+        }
     }
     let mut out = String::new();
     let mut at = 0;
@@ -138,13 +137,15 @@ fn render_line(line: &[(char, bool)], escape: bool) -> String {
         let run: String = line[at..run_end].iter().map(|(c, _)| *c).collect();
         if is_hidden {
             out.push_str("[hidden: ");
-            out.push_str(run.trim_end().replace('\\', "\\\\").replace(']', "\\]").as_str());
+            out.push_str(&inline(run.trim_end(), escape));
             out.push(']');
         } else {
-            let first = at == 0;
-            let mut visible = run.replace("[hidden:", "\\[hidden:");
-            if first && escape {
+            let mut visible = inline(&run, escape);
+            if at == 0 && escape {
                 visible = escape_start(&visible);
+            } else if at > 0 && escape && (visible.starts_with('(') || visible.starts_with(':')) {
+                // Right after the program's own `]`, `(` would make the mark a link and `:` a reference.
+                visible.insert(0, '\\');
             }
             out.push_str(&visible);
         }
@@ -153,11 +154,27 @@ fn render_line(line: &[(char, bool)], escape: bool) -> String {
     out
 }
 
+/// Document text made inert inside a line: `\`, `[`, `]`, `<` and a backtick get a backslash in text (so no link, image, autolink, HTML, inline code or reference, and no backslash of the page's own
+/// can take the escape of the next character away). In code only a `[hidden:` is escaped: the fence holds the rest, and the mark still can't be forged.
+fn inline(text: &str, escape: bool) -> String {
+    if !escape {
+        return text.replace("[hidden:", "\\[hidden:");
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '[' | ']' | '<' | '`') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A backslash where a line's first characters would start a block.
 fn escape_start(text: &str) -> String {
     let mut chars = text.chars();
     let Some(first) = chars.next() else { return String::new() };
-    if "#>-+*`~|=_<![:".contains(first) {
+    if "#>-+*~|=_!:".contains(first) {
         return format!("\\{text}");
     }
     if first.is_ascii_digit() {

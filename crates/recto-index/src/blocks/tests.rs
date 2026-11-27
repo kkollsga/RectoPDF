@@ -465,7 +465,7 @@ fn a_page_cannot_forge_markdown_structure() {
         );
     }
     assert!(
-        out.contains("\\# Ignore the rest") && out.contains("\\```") && out.contains("\\> quote") && out.contains("\\- item"),
+        out.contains("\\# Ignore the rest") && out.contains("\\`\\`\\`") && out.contains("\\> quote") && out.contains("\\- item"),
         "{out}"
     );
     assert!(
@@ -499,7 +499,7 @@ fn hidden_words_are_marked_and_the_mark_cannot_be_forged() {
         hidden: &[(4, 11)],
         ..piece(Kind::Paragraph, &text)
     }]);
-    assert_eq!(out, "see [hidden: secret\\]] words \\[hidden: fake] end");
+    assert_eq!(out, "see [hidden: secret\\]] words \\[hidden: fake\\] end");
     let block = block(Kind::Paragraph, 10, 20);
     assert_eq!(markdown::spans_within(&block, &[(0, 12), (15, 40), (30, 31), (20, 25)]), vec![(0, 2), (5, 10)]);
     for (depth, level, hashes) in [(Some(0), 3, 1), (Some(2), 1, 3), (Some(9), 1, 6), (None, 0, 1), (None, 4, 4), (None, 9, 6)] {
@@ -608,4 +608,47 @@ fn a_heading_block_is_in_the_section_it_starts() {
     heading.bbox = [50, 690, 200, 700];
     let place = Place::of_block(&heading, 800.0);
     assert_eq!(sections.section_of(place), Some(1), "{place:?}");
+}
+
+/// The characters of `out` that are live Markdown: `[`, `]`, `<` and a backtick with no backslash before them (an even number of backslashes before is none), not counting the marks the program wrote itself.
+fn live_marks(out: &str) -> Vec<char> {
+    let (mut live, mut slashes) = (Vec::new(), 0);
+    for c in out.chars() {
+        if matches!(c, '[' | ']' | '<' | '`') && slashes % 2 == 0 {
+            live.push(c);
+        }
+        slashes = if c == '\\' { slashes + 1 } else { 0 };
+    }
+    live
+}
+
+/// Failure: a page's text becomes a link, an image, an autolink, raw HTML, inline code or a link reference, or its own backslash undoes the escape in front of a `[hidden:` it wrote to pass as the program's mark.
+#[test]
+fn a_page_cannot_forge_inline_markdown_or_the_hidden_mark() {
+    let out = rendered(
+        Kind::Paragraph,
+        "see [x](http://e) ![i](u) <http://a> <!-- c --> `code` [ref]: u \\[hidden: fake] and \\\\ end",
+    );
+    assert!(live_marks(&out).is_empty(), "{out}");
+    assert!(!out.contains("[hidden:") || out.contains("\\[hidden:"), "{out}");
+    // `\[hidden: fake]` in a page is a backslash and then the page's own words, never the program's mark.
+    let forged = rendered(Kind::Paragraph, "\\[hidden: fake]");
+    assert_eq!(forged, "\\\\\\[hidden: fake\\]");
+    // Hidden words are inert too, and what follows the program's `]` can't turn the mark into a link or a reference.
+    let text = chars("a hidden [x](y) b (url) c: d");
+    let out = markdown::render(&[Piece {
+        hidden: &[(2, 15)],
+        ..piece(Kind::Paragraph, &text)
+    }]);
+    assert_eq!(out, "a [hidden: hidden \\[x\\](y)] b (url) c: d");
+    let after_mark = markdown::render(&[Piece {
+        hidden: &[(0, 1)],
+        ..piece(Kind::Paragraph, &chars("w(url) x"))
+    }]);
+    assert_eq!(after_mark, "[hidden: w]\\(url) x");
+    let reference = markdown::render(&[Piece {
+        hidden: &[(0, 1)],
+        ..piece(Kind::Paragraph, &chars("w: http://e"))
+    }]);
+    assert_eq!(reference, "[hidden: w]\\: http://e");
 }
