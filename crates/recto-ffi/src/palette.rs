@@ -1,5 +1,4 @@
-//! **⌘K, the command palette: its records.** What it lists, how it's worded and ranked, and what a row runs are `recto_app::palette`'s; `core::palette` gives it the
-//! window's lists and does what a row comes to.
+//! **⌘K, the command palette: its records.** What it lists, its words, ranking and what a row runs are `recto_app::palette`'s and `core::palette`'s.
 
 pub use recto_app::palette::{PaletteRow, PaletteView};
 
@@ -19,7 +18,6 @@ pub struct PaletteRow {
     pub from_file: bool,
     /// What VoiceOver says for the row: its title, where it lives, and its key in words, as "Find Next, Edit, Command G".
     pub spoken: String,
-    /// Whether choosing it does anything: a row that can't be chosen is drawn quieter.
     pub enabled: bool,
 }
 

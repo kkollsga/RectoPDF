@@ -97,7 +97,7 @@ pub fn step(inner: &Arc<Inner>, by: i32) {
 
 /// Runs a row, closing the palette first, and says what's left for the host.
 pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
-    if let Some(done) = super::palette_link::run(inner, id) {
+    if let Some(done) = super::palette_link::run(inner.tools.palette(), &inner.life, &inner.core, id) {
         return done;
     }
     inner.tools.palette().close();

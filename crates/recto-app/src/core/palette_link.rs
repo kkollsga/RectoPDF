@@ -6,12 +6,11 @@
 //!
 //! The row's id is `link:` and the link as typed; the link is read again, by the same `read_address`, when the row is run.
 
-use super::{HostAction, Inner};
+use super::{CoreQueue, HostAction, Lifecycle};
 use crate::palette::{PaletteRow, link_row};
 use recto_agent::Command;
 use recto_agent::commands::tabs::Open;
 use recto_core::locator::{AddressError, read_address};
-use std::sync::Arc;
 
 const PREFIX: &str = "link:";
 /// The id of the row that can't be chosen: nothing of the link.
@@ -70,12 +69,12 @@ pub fn as_command(id: &str) -> Option<Command> {
 }
 
 /// The person's run of a row: `None` when it isn't a link's. The refused row does nothing, and leaves the palette as it is.
-pub fn run(inner: &Arc<Inner>, id: &str) -> Option<HostAction> {
+pub fn run(palette: &crate::palette::Palette, life: &Lifecycle, core: &CoreQueue, id: &str) -> Option<HostAction> {
     if id == REFUSED {
         return Some(HostAction::None);
     }
     let address = read_address(id.strip_prefix(PREFIX)?).ok()?;
-    inner.tools.palette().close();
-    super::opening::open_for_person(&inner.life, &inner.core, address.path, address.file_page);
+    palette.close();
+    super::opening::open_for_person(life, core, address.path, address.file_page);
     Some(HostAction::None)
 }
