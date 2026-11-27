@@ -685,3 +685,10 @@ What went wrong, and what changes:
 - **CI:** median rose 18:12 → 19:58 against 21:00. Measured: mostly runner variance (300 s swings, cache restore 69-122 s); summed test time flat; one new app-launching test costs 19.8 s. Cuts in hand (`build/ci-cuts`, ~100-150 s).
 - **Load:** four workers ran at once twice (load 16-29); the build queue's per-round solo for `--like-ci` held the queue fair.
 - **Changes:** ask the owner's design questions before the Opus design, when an answer could change the design; brief text "call back" gets "do not settle it yourself" in bold.
+
+## 2026-11-27 afternoon
+
+- **A merge conflict was the coordinator's:** `build/open-link` and `build/exit-socket-first` both raised `Inner`'s size budget and the ratchet baseline by hand; both briefs allowed it. Resolved on the merge (Inner 4,504 measured; both reasons kept). Change: a brief that may raise a shared budget names the other running briefs that may, and the second to merge re-measures.
+- **The quit race came back twice** before its cause was found: the socket-name fix covered the server's stop but not the host's stop (AppKit ends the process before the server thread runs) or the direct `exit` calls. A fix to an ordering rule is checked against every way out, not the one the failure showed.
+- **A busy Mac rolled back a good update** (the new app's renderer start starved four times, reported as "can't draw"): found on main's full check, fixed by asking again within a quarter of the installer's wait.
+- **Workers kept re-sending their report** after handing back (three today); stopped once the work was read. And two workers stopped or waited on processes by a pattern their own command contained, against `worker-testing.md` (one was refused by the permission system and not retried). Briefs now say it in bold.
