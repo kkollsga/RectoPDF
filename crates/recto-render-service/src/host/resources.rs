@@ -131,7 +131,8 @@ mod tests {
     /// Failure: the shared memory a renderer needs not being had (`shm_open`, `ftruncate` or `mmap` out of descriptors, memory or space) failed the document for good. It's `OutOfResources`; a refusal is `Unavailable`.
     #[test]
     fn shared_memory_out_of_space_is_busy_and_a_refusal_is_not() {
-        let file = std::fs::File::open("/dev/null").unwrap();
+        use std::os::fd::AsFd;
+        let file = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
         let attempt = |errno: i32| {
             fail_next_shared_memory_with(errno);
             DocRenderer::with_file(
