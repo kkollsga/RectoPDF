@@ -21,6 +21,7 @@ impl Command {
             Self::Qa(command) => serde_json::to_string(command),
             Self::Record(command) => serde_json::to_string(command),
             Self::Updates(command) => serde_json::to_string(command),
+            Self::Removal(command) => serde_json::to_string(command),
         };
         // Every payload is plain fields of strings, numbers, switches and paths, which always make JSON.
         line.unwrap_or_default()
@@ -40,6 +41,7 @@ impl Command {
             Self::Qa(command) => command.tag(),
             Self::Record(command) => command.tag(),
             Self::Updates(command) => command.tag(),
+            Self::Removal(command) => command.tag(),
         }
     }
 
@@ -57,6 +59,7 @@ impl Command {
             Self::Qa(command) => command.access(),
             Self::Record(command) => command.access(),
             Self::Updates(command) => command.access(),
+            Self::Removal(command) => command.access(),
         }
     }
 
@@ -74,6 +77,7 @@ impl Command {
             Self::Qa(command) => command.draws(),
             Self::Record(command) => command.draws(),
             Self::Updates(command) => command.draws(),
+            Self::Removal(command) => command.draws(),
         }
     }
 
@@ -91,6 +95,7 @@ impl Command {
             Self::Qa(command) => command.reads_pages(),
             Self::Record(command) => command.reads_pages(),
             Self::Updates(command) => command.reads_pages(),
+            Self::Removal(command) => command.reads_pages(),
         }
     }
 
@@ -108,6 +113,7 @@ impl Command {
             Self::Qa(command) => command.waits(),
             Self::Record(command) => command.waits(),
             Self::Updates(command) => command.waits(),
+            Self::Removal(command) => command.waits(),
         }
     }
 
@@ -125,6 +131,7 @@ impl Command {
             Self::Qa(command) => command.protected_ok(),
             Self::Record(command) => command.protected_ok(),
             Self::Updates(command) => command.protected_ok(),
+            Self::Removal(command) => command.protected_ok(),
         }
     }
 
@@ -142,6 +149,7 @@ impl Command {
             Self::Qa(command) => command.starts_from(),
             Self::Record(command) => command.starts_from(),
             Self::Updates(command) => command.starts_from(),
+            Self::Removal(command) => command.starts_from(),
         }
     }
 
@@ -159,6 +167,7 @@ impl Command {
             Self::Qa(command) => command.tab(),
             Self::Record(command) => command.tab(),
             Self::Updates(command) => command.tab(),
+            Self::Removal(command) => command.tab(),
         }
     }
 
@@ -176,6 +185,7 @@ impl Command {
             Self::Qa(command) => command.about(),
             Self::Record(command) => command.about(),
             Self::Updates(command) => command.about(),
+            Self::Removal(command) => command.about(),
         }
     }
 
@@ -193,6 +203,7 @@ impl Command {
             Self::Qa(command) => command.log_details(),
             Self::Record(command) => command.log_details(),
             Self::Updates(command) => command.log_details(),
+            Self::Removal(command) => command.log_details(),
         }
     }
 }

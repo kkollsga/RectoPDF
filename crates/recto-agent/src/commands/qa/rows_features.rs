@@ -250,6 +250,44 @@ pub(crate) const ROWS: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "qa removal-hold",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Control),
+        summary: "Holds the next `removal clear` before the act of a step of its plan until it's released, so what answers a check or a second clear meanwhile can be seen. Step 0 is the leases, then one step for each unfinished save, one for the update's copy and one for the session copies.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Text,
+            required: true,
+            help: "A step number, or `release`.",
+        }],
+        fixed: &[("verb", "removal_hold")],
+        data: "`qa state`'s `app`.",
+        examples: &["recto qa removal-hold 1", "recto qa removal-hold release"],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
+        name: "qa removal-state",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Control),
+        summary: "Says what Clear leftovers holds: how many plans wait for a yes, whether a clear is running and whether it is held.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Choice(&["show"]),
+            required: true,
+            help: "`show`.",
+        }],
+        fixed: &[("verb", "removal_state")],
+        data: "`{ pending, clearing, held }`.",
+        examples: &["recto qa removal-state show"],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
         name: "qa hold-reads",
         tag: "qa_drive",
         group: GROUP_QA,
@@ -568,6 +606,8 @@ pub(super) const VERBS: &[QaVerb] = &[
     verb("owner_edit", Person, None),
     verb("note_input", Condition, None),
     verb("hold_reads", Condition, None),
+    verb("removal_hold", Condition, None),
+    verb("removal_state", Condition, None),
     verb("hand_off_quit", Condition, None),
     verb("sheet", Condition, Some(Dialogs)),
     verb("update_tick", Condition, None),

@@ -44,6 +44,8 @@ pub struct Walk<'a> {
     pub rank: &'a dyn Fn(usize, &OsStr, Kind) -> u8,
     /// Asked before every entry and folder is unlinked, with its name; `false` stops the walk there.
     pub gate: &'a mut dyn FnMut(&OsStr) -> bool,
+    /// Called after each entry or folder was really unlinked, so a stop after it can say something is gone and a stop before it that nothing is.
+    pub unlinked: &'a mut dyn FnMut(),
 }
 
 /// Takes the folder `name` of `parent` away with everything in it, if it is still what `tree` says and everything in it is pinned.
@@ -112,7 +114,10 @@ fn remove_folder(parent: &Folder, name: &OsStr, tree: &Tree, depth: usize, walk:
                     Err(error) => return Err(Failure::Io(pinned.name.clone(), error)),
                 }
                 match folder.unlink_in(&pinned.name, false) {
-                    Ok(()) => removed.unlinked += 1,
+                    Ok(()) => {
+                        removed.unlinked += 1;
+                        (walk.unlinked)();
+                    }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => removed.already_gone += 1,
                     Err(error) => return Err(Failure::Io(pinned.name.clone(), error)),
                 }
@@ -136,7 +141,10 @@ fn remove_folder(parent: &Folder, name: &OsStr, tree: &Tree, depth: usize, walk:
         Err(error) => return Err(Failure::Io(name.to_owned(), error)),
     }
     match parent.unlink_in(name, true) {
-        Ok(()) => removed.unlinked += 1,
+        Ok(()) => {
+            removed.unlinked += 1;
+            (walk.unlinked)();
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => removed.already_gone += 1,
         // Something was put in since it was looked at.
         Err(error) if error.raw_os_error() == Some(libc::ENOTEMPTY) => return Err(Failure::Unpinned(name.to_owned())),

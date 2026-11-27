@@ -125,6 +125,18 @@ impl Why {
 pub struct Report {
     pub done: Vec<(ArtifactKey, Done)>,
     pub stopped: Option<(ArtifactKey, Why)>,
+    /// What the artifact it stopped at already had done to it, if anything: a copy with entries unlinked, or a save that may be in the Trash. Not in `done`,
+    /// which is whole acts, and never to be told as "nothing was changed".
+    pub partly: Option<Partly>,
+}
+
+/// What a stopped artifact had done to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Partly {
+    /// A copy with at least one entry unlinked (or being unlinked) when it stopped.
+    Copy,
+    /// A save that was moved, or may have been, and isn't known to be where it was.
+    Save,
 }
 
 /// Whether an unfinished save may be moved now: what the check offers and what the act requires.
@@ -206,19 +218,27 @@ pub fn clear(pins: &PinSet, keys: &[ArtifactKey], env: &Env<'_>, hooks: &mut dyn
                 hooks.after(&pin.key, &done);
                 report.done.push((pin.key, done));
             }
-            Err(why) => return stopped(report, pin.key, why),
+            Err(why) => {
+                // A move that isn't known to have stayed undone is told as one that may have happened.
+                report.partly = why.in_doubt().then_some(Partly::Save);
+                return stopped(report, pin.key, why);
+            }
         }
     }
     for pin in copies {
         if !hooks.before(&pin.key) {
             return stopped(report, pin.key, Why::Asked);
         }
-        match delete_copy(pin, env, hooks) {
+        let mut touched = false;
+        match delete_copy(pin, env, hooks, &mut touched) {
             Ok(done) => {
                 hooks.after(&pin.key, &done);
                 report.done.push((pin.key, done));
             }
-            Err(why) => return stopped(report, pin.key, why),
+            Err(why) => {
+                report.partly = touched.then_some(Partly::Copy);
+                return stopped(report, pin.key, why);
+            }
         }
     }
     report
@@ -280,7 +300,8 @@ fn rank(depth: usize, name: &OsStr, kind: Kind) -> u8 {
     }
 }
 
-fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks) -> Result<Done, Why> {
+/// `touched` is set once an entry has really been unlinked, so a stop after that is told as a copy partly deleted.
+fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks, touched: &mut bool) -> Result<Done, Why> {
     if copy_state(pin) != CopyState::Offerable {
         return Err(Why::WentBack);
     }
@@ -305,6 +326,7 @@ fn delete_copy(pin: &CopyPin, env: &Env<'_>, hooks: &mut dyn Hooks) -> Result<Do
     let mut walk = Walk {
         rank: &rank,
         gate: &mut |name| hooks.entry(name),
+        unlinked: &mut || *touched = true,
     };
     match remove_tree_in(&parent, &pin.name, &pin.tree, &mut walk) {
         Ok(removed) => {

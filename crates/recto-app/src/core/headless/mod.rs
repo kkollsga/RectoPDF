@@ -57,6 +57,7 @@ mod quit;
 mod reading_later;
 mod recent;
 mod record_threads;
+mod removal_clear;
 mod removal_ledger;
 mod selection;
 mod sidebar;

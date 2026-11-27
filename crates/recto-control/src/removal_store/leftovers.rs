@@ -10,8 +10,11 @@
 //! folder, or is named `<flavor>.v<CURRENT_VERSION>`, is refused before it is touched.
 
 pub mod act;
+pub mod leases;
 pub mod pin;
+pub mod run;
 pub mod trash;
+pub mod words;
 
 #[cfg(test)]
 mod tests;

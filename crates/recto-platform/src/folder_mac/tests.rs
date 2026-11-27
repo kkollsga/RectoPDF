@@ -288,7 +288,11 @@ fn a_walk_finds_a_pinned_entry_by_bisection() {
     };
     let mut unsorted = sorted.clone();
     unsorted.entries.reverse();
-    let mut walk = Walk { rank: &rank, gate: &mut go };
+    let mut walk = Walk {
+        rank: &rank,
+        gate: &mut go,
+        unlinked: &mut || {},
+    };
     assert!(matches!(
         remove_tree_in(&parent, OsStr::new("copy"), &unsorted, &mut walk),
         Err(Failure::Unpinned(_))

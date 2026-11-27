@@ -261,6 +261,17 @@ impl AppHost {
                 let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
                 super::updates::command(&inner.updates, &inner.life.update_facts, command)
             }
+            Command::Removal(_) => {
+                let inner = self.saver.inner().ok_or_else(recto_agent::commands::removal::removal_needs_app)?;
+                let parts = super::removal::Parts {
+                    tools: &inner.tools,
+                    serving: &inner.serving,
+                    saver: &inner.saver,
+                    on_disk: &inner.on_disk,
+                    life: &inner.life,
+                };
+                super::removal::command(self, parts, actor, command)
+            }
             // Declared the app's with nothing here to answer it: the session says it needs the app, and the guard on this routing says that's wrong.
             _ => self.run_session(actor, command, events),
         }

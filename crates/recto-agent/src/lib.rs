@@ -208,6 +208,8 @@ pub enum Command {
     Record(commands::Record),
     #[serde(skip)]
     Updates(commands::Updates),
+    #[serde(skip)]
+    Removal(commands::Removal),
 }
 
 /// Which tab a command is about to act on, as an id for the log. Never a name, and none if it means no tab or several. Asked before the command runs, because `close` leaves nothing to ask afterwards.
@@ -670,6 +672,7 @@ fn execute_held<A: SessionAccess>(access: &A, actor: Actor, command: &Command, e
         Command::Move(command) => command.run(&mut commands::Cx { access, actor, events }),
         Command::Read(command) => command.run(&mut commands::Cx { access, actor, events }),
         Command::Updates(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Removal(command) => command.run(&mut commands::Cx { access, actor, events }),
         Command::Start(command) => command.run(&mut commands::Cx { access, actor, events }),
         Command::Waits(command) => command.run(&mut commands::Cx { access, actor, events }),
         Command::Rights(command) => command.run(&mut commands::Cx { access, actor, events }),
