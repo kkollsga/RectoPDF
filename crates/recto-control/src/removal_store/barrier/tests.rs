@@ -436,7 +436,7 @@ fn a_byte_changed_before_the_read_back_fails_the_begin_and_takes_the_file_away()
 #[test]
 fn a_record_at_the_cap_is_made_and_one_over_makes_nothing() {
     let r = rig();
-    let len = r.len();
+    let len = r.record_bytes();
     let (root, over) = (temp(), temp());
     let mut progress = r.progress();
     r.begin(

@@ -170,7 +170,7 @@ impl Rig {
         (held, progress)
     }
 
-    pub fn len(&self) -> usize {
+    pub fn record_bytes(&self) -> usize {
         let progress = self.progress();
         encode_barrier_within(&self.plan, &self.surveyed, &self.limits, &progress, &self.facts, MAX_BARRIER_BYTES)
             .unwrap()
