@@ -129,7 +129,9 @@ fn make_every_folder(app: &HeadlessApp, file: &Path) {
     // inside it, which the store writes after.
     let has_something = |folder: &Path| std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some());
     let corpus = app.disk().paths().corpus.clone();
-    app.wait_until("the page text made", || has_something(&corpus));
+    // The store writes the files, then marks the folder: both are waited for, as a folder seen without its mark is not a fault.
+    let marked = |folder: &Path| std::iter::successors(Some(folder), |path| path.parent()).any(|path| is_excluded_from_backups(path));
+    app.wait_until("the page text made and its folder marked", || has_something(&corpus) && marked(&corpus));
     // Made by the store's own writer, which the generator calls, and not by running the helper: the session only ever starts the walled `RectoStructure.app` in an installed app (`Structure::installed`), which a test isn't, and what this test holds is the folder the writer makes.
     let generated = app.disk().paths().generated.clone();
     let key = recto_index::corpus::CorpusKey::of_file(file).expect("the file's key");
