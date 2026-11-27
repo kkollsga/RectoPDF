@@ -25,7 +25,7 @@ use recto_platform::{folder::Kind, local};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::{BuildHasher, Hasher};
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Write as _};
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::Path;
 
@@ -51,50 +51,60 @@ pub enum Looked {
     Pending(Box<Recorded>),
 }
 
-/// Where a call has got to, for a test to stop or change things at (a kill is a `Stop` with nothing cleaned up).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Point {
-    /// The folder is prepared and its leftovers are swept; no temporary is made yet.
-    Swept,
-    TempMade,
-    TempWritten,
-    TempSynced,
-    Renamed,
-    FolderSynced,
-    ReadBack,
-    Slot0Written,
-    Slot0Synced,
-    /// The slot that acknowledges the step before this count was written, and then flushed.
-    SlotWritten(u32),
-    SlotSynced(u32),
-    Unlinked,
-    UnlinkSynced,
-}
+/// What a test stops or changes a call at. Only a test build (or the `test-seams` feature) can name them; the app's calls use [`seams::Opts::standard`].
+mod seams {
+    use recto_core::removal::MAX_BARRIER_BYTES;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Flow {
-    Go,
-    Stop,
-}
+    /// Where a call has got to, for a test to stop or change things at (a kill is a `Stop` with nothing cleaned up).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Point {
+        /// The folder is prepared and its leftovers are swept; no temporary is made yet.
+        Swept,
+        TempMade,
+        TempWritten,
+        TempSynced,
+        Renamed,
+        FolderSynced,
+        ReadBack,
+        Slot0Written,
+        Slot0Synced,
+        /// The slot that acknowledges the step before this count was written, and then flushed.
+        SlotWritten(u32),
+        SlotSynced(u32),
+        Unlinked,
+        UnlinkSynced,
+    }
 
-/// A call's settings: the cap on a record, and what is called at each [`Point`].
-pub struct Opts<'a> {
-    pub cap: usize,
-    pub at: &'a dyn Fn(Point) -> Flow,
-}
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Flow {
+        Go,
+        Stop,
+    }
 
-fn go(_: Point) -> Flow {
-    Flow::Go
-}
+    /// A call's settings: the cap on a record, and what is called at each [`Point`].
+    pub struct Opts<'a> {
+        pub cap: usize,
+        pub at: &'a dyn Fn(Point) -> Flow,
+    }
 
-impl Opts<'static> {
-    pub const fn standard() -> Self {
-        Self {
-            cap: MAX_BARRIER_BYTES,
-            at: &go,
+    fn go(_: Point) -> Flow {
+        Flow::Go
+    }
+
+    impl Opts<'static> {
+        pub const fn standard() -> Self {
+            Self {
+                cap: MAX_BARRIER_BYTES,
+                at: &go,
+            }
         }
     }
 }
+
+#[cfg(any(test, feature = "test-seams"))]
+pub use self::seams::{Flow, Opts, Point};
+#[cfg(not(any(test, feature = "test-seams")))]
+use self::seams::{Flow, Opts, Point};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BeginError {
@@ -163,10 +173,18 @@ fn private_plain(file: &File) -> io::Result<std::fs::Metadata> {
     }
 }
 
-/// The whole of a file, if it is at most `cap` bytes: reads at most `cap + 1`.
+/// The whole of a file, from its start, if it is at most `cap` bytes: reads at most `cap + 1`.
 fn read_capped(file: &File, cap: usize) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
-    file.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+    let mut chunk = [0u8; 16 * 1024];
+    while bytes.len() <= cap {
+        let want = chunk.len().min(cap + 1 - bytes.len());
+        let n = file.read_at(&mut chunk[..want], bytes.len() as u64)?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
     Ok((bytes.len() <= cap).then_some(bytes))
 }
 
@@ -198,10 +216,15 @@ fn read_record(folder: &Folder, cap: usize) -> Result<Option<(Decoded, File)>, i
 
 /// What is at `<root>/removal/pending.v1`. Never makes anything, and never says `Nothing` for what is there.
 pub fn look(root: &Path) -> Looked {
-    look_with(root, MAX_BARRIER_BYTES)
+    look_at(root, MAX_BARRIER_BYTES)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 pub fn look_with(root: &Path, cap: usize) -> Looked {
+    look_at(root, cap)
+}
+
+fn look_at(root: &Path, cap: usize) -> Looked {
     let folder = match open_dir(root) {
         Ok(Some(folder)) => folder,
         Ok(None) => return Looked::Nothing,
@@ -282,10 +305,23 @@ fn make_temp(folder: &Folder) -> Result<(OsString, File), BeginError> {
 
 /// Writes the record and acknowledges the barrier. See the module's account of the order.
 pub fn begin(root: &Path, plan: &Plan, surveyed: &Surveyed, limits: &Limits, progress: &mut Progress, facts: &BarrierFacts) -> Result<Held, BeginError> {
-    begin_with(root, plan, surveyed, limits, progress, facts, &Opts::standard())
+    begin_inner(root, plan, surveyed, limits, progress, facts, &Opts::standard())
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 pub fn begin_with(
+    root: &Path,
+    plan: &Plan,
+    surveyed: &Surveyed,
+    limits: &Limits,
+    progress: &mut Progress,
+    facts: &BarrierFacts,
+    opts: &Opts<'_>,
+) -> Result<Held, BeginError> {
+    begin_inner(root, plan, surveyed, limits, progress, facts, opts)
+}
+
+fn begin_inner(
     root: &Path,
     plan: &Plan,
     surveyed: &Surveyed,
@@ -400,11 +436,16 @@ impl Held {
     }
 
     pub fn acknowledge(&self, plan: &Plan, progress: &mut Progress, index: u32, ack: Ack) -> Result<Outcome, AckError> {
-        self.acknowledge_with(plan, progress, index, ack, &Opts::standard())
+        self.acknowledge_inner(plan, progress, index, ack, &Opts::standard())
+    }
+
+    #[cfg(any(test, feature = "test-seams"))]
+    pub fn acknowledge_with(&self, plan: &Plan, progress: &mut Progress, index: u32, ack: Ack, opts: &Opts<'_>) -> Result<Outcome, AckError> {
+        self.acknowledge_inner(plan, progress, index, ack, opts)
     }
 
     /// The only way to acknowledge a step after the barrier: the step's slot is written and flushed first, and only then is it acknowledged.
-    pub fn acknowledge_with(&self, plan: &Plan, progress: &mut Progress, index: u32, ack: Ack, opts: &Opts<'_>) -> Result<Outcome, AckError> {
+    fn acknowledge_inner(&self, plan: &Plan, progress: &mut Progress, index: u32, ack: Ack, opts: &Opts<'_>) -> Result<Outcome, AckError> {
         let fail = |progress: &mut Progress, error: AckError| {
             let _ = progress.acknowledge(plan, index, Ack::Failed);
             error
@@ -455,10 +496,15 @@ impl Held {
 
     /// The last step: takes the file away, flushes the folder, and acknowledges. Only when `RetireBarrier` is next.
     pub fn retire(self, plan: &Plan, progress: &mut Progress) -> Result<Outcome, AckError> {
-        self.retire_with(plan, progress, &Opts::standard())
+        self.retire_inner(plan, progress, &Opts::standard())
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn retire_with(self, plan: &Plan, progress: &mut Progress, opts: &Opts<'_>) -> Result<Outcome, AckError> {
+        self.retire_inner(plan, progress, opts)
+    }
+
+    fn retire_inner(self, plan: &Plan, progress: &mut Progress, opts: &Opts<'_>) -> Result<Outcome, AckError> {
         let index = progress.acked();
         if plan.digest() != self.digest {
             return Err(AckError::Order(OrderError::WrongPlan));
@@ -517,11 +563,11 @@ pub fn reopen(root: &Path, recorded: &Recorded) -> Result<Held, AbandonError> {
 /// starts again after a begin that was cut short.
 pub fn abandon(root: &Path, recorded: &Recorded) -> Result<(), AbandonError> {
     let held = reopen(root, recorded)?;
-    // The file now, not the decoding of a while ago: a slot may have been written since.
-    let (decoded, _) = match read_record(&held.folder, MAX_BARRIER_BYTES) {
-        Ok(Some(found)) => found,
-        Ok(None) => return Err(AbandonError::Gone),
-        Err(kind) => return Err(AbandonError::Io(kind)),
+    // The file now, not the decoding of a while ago (a slot may have been written since), read through the descriptor already held: two descriptors in all.
+    let decoded = match read_capped(&held.file, MAX_BARRIER_BYTES) {
+        Ok(Some(bytes)) => decode_barrier_within(&bytes, MAX_BARRIER_BYTES),
+        Ok(None) => Decoded::Damaged,
+        Err(error) => return Err(AbandonError::Io(error.kind())),
     };
     match decoded {
         Decoded::Pending(now) if now.acked() == now.layout().base() => {}
