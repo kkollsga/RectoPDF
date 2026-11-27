@@ -17,8 +17,8 @@ use serde_json::Value;
 pub const MAX_LETTERS: usize = 64 * 1024;
 /// Most character comparisons looking for the blocks of one page, as `recto-headings` bounds one heading's: 2,000,000 `a`s and a block of 240 of them would otherwise be half a billion. Past this the blocks still unplaced aren't stored.
 pub const MAX_COMPARISONS: usize = 20_000_000;
-/// Most bytes of one candidate's line.
-pub const MAX_LINE_BYTES: usize = 1 << 20;
+/// Most bytes of one page's line: 512 KiB.
+pub const MAX_LINE_BYTES: usize = 512 * 1024;
 
 /// What distillPDF calls a block, tables and figures included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,15 +116,9 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// One candidate from a line of the helper's answer: a JSON object `{"kind", "level", "box": [4 numbers], "text", "continues"}`. `None` for a line that is
-    /// too long, isn't such an object, or names no kind this knows. A level that is missing or isn't a whole number is 0; a box that isn't four numbers is empty.
-    /// Hostile text never panics here: it is a string, and nothing of it is run.
-    #[must_use]
-    pub fn from_line(line: &[u8]) -> Option<Self> {
-        if line.len() > MAX_LINE_BYTES {
-            return None;
-        }
-        let value: Value = serde_json::from_slice(line).ok()?;
+    /// One block of a page line. `None` for what isn't an object with a kind this knows. A level that is missing or isn't a whole number is 0; a box that isn't
+    /// four numbers is empty; hostile text never panics here, it is a string and nothing of it is run.
+    fn from_value(value: &Value) -> Option<Self> {
         let object = value.as_object()?;
         let shape = Shape::from_name(object.get("kind")?.as_str()?)?;
         let level = object
@@ -144,6 +138,71 @@ impl Candidate {
             text: object.get("text").and_then(Value::as_str).unwrap_or("").to_owned(),
             continues: object.get("continues").and_then(Value::as_bool).unwrap_or(false),
         })
+    }
+}
+
+/// Most blocks read from one page's line. Past it they are counted as unreadable, so a line of a hundred thousand empty objects costs no more than this.
+pub const MAX_LINE_BLOCKS: usize = 4096;
+
+/// Why a page's line wasn't taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineError {
+    /// Over [`MAX_LINE_BYTES`].
+    TooLong,
+    /// Not a JSON object with a whole `page` and a `blocks` list.
+    NotAPageLine,
+    /// A page the document doesn't have.
+    PageOutOfRange,
+    /// A page that doesn't come after the last one read: pages arrive once each, in order.
+    OutOfOrder,
+}
+
+/// One page's blocks as the helper says them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageLine {
+    /// Zero-based.
+    pub page: u32,
+    pub candidates: Vec<Candidate>,
+    /// Blocks in the line that couldn't be read as one: not an object, or a kind this doesn't know, or past [`MAX_LINE_BLOCKS`].
+    pub unreadable: u32,
+}
+
+/// The lines of one helper run, one per page: `{"page":N,"blocks":[{"kind","level","box":[4],"text","continues"}]}`. `kind` is `para` (or `paragraph`), `heading`, `list_item`,
+/// `caption`, `code`, `footnote`, `table` or `figure`; `text` is plain text of which only the letters are used.
+#[derive(Clone, Debug)]
+pub struct PageLines {
+    pages: u32,
+    next: u32,
+}
+
+impl PageLines {
+    /// For a document of `pages` pages (the page map's length).
+    #[must_use]
+    pub fn new(pages: u32) -> Self {
+        Self { pages, next: 0 }
+    }
+
+    /// The next line. A refused line changes nothing: the caller drops it, or the whole run.
+    ///
+    /// # Errors
+    ///
+    /// [`LineError`].
+    pub fn read(&mut self, line: &[u8]) -> Result<PageLine, LineError> {
+        if line.len() > MAX_LINE_BYTES {
+            return Err(LineError::TooLong);
+        }
+        let value: Value = serde_json::from_slice(line).map_err(|_| LineError::NotAPageLine)?;
+        let object = value.as_object().ok_or(LineError::NotAPageLine)?;
+        let page = object.get("page").and_then(Value::as_u64).ok_or(LineError::NotAPageLine)?;
+        let blocks = object.get("blocks").and_then(Value::as_array).ok_or(LineError::NotAPageLine)?;
+        let page = u32::try_from(page).ok().filter(|page| *page < self.pages).ok_or(LineError::PageOutOfRange)?;
+        if page < self.next {
+            return Err(LineError::OutOfOrder);
+        }
+        self.next = page + 1;
+        let candidates: Vec<Candidate> = blocks.iter().take(MAX_LINE_BLOCKS).filter_map(Candidate::from_value).collect();
+        let unreadable = (blocks.len() - candidates.len()) as u32;
+        Ok(PageLine { page, candidates, unreadable })
     }
 }
 
@@ -173,6 +232,8 @@ pub struct Drops {
 pub struct Counts {
     pub stored: [u32; Shape::COUNT],
     pub dropped: [u32; Shape::COUNT],
+    /// Blocks in the page's line that couldn't be read as one (see [`PageLine::unreadable`]). They are dropped too, with no kind to count them under.
+    pub unreadable: u32,
     pub why: Drops,
 }
 
@@ -184,7 +245,7 @@ impl Counts {
 
     #[must_use]
     pub fn dropped_total(&self) -> u32 {
-        self.dropped.iter().sum()
+        self.dropped.iter().sum::<u32>() + self.unreadable
     }
 }
 
@@ -195,6 +256,25 @@ pub struct Mapped {
     pub counts: Counts,
     /// Steps the search took: characters compared and mapped blocks looked at. Bounded by [`MAX_COMPARISONS`] whatever the page and the candidates.
     pub work: u64,
+    /// For each stored block, in the same order: which candidate it came from and which step of the rule placed it. For a test or a fuzz target to check the rule by.
+    pub placed: Vec<Placed>,
+}
+
+/// Which step of the rule placed a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The first run after the previous mapped block's end.
+    AfterPrevious,
+    /// The one run anywhere on the page that overlaps no mapped block.
+    OnlyOccurrence,
+}
+
+/// A stored block's source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// Index in the candidates given.
+    pub candidate: u32,
+    pub step: Step,
 }
 
 /// What a page's search may still spend, and what it has.
@@ -273,6 +353,14 @@ fn whole_points(bbox: [f32; 4]) -> [i16; 4] {
     [left.min(right), bottom.min(top), left.max(right), bottom.max(top)]
 }
 
+/// [`map_page`] for a page's line: its unreadable blocks are counted as dropped.
+#[must_use]
+pub fn map_line(page: &[char], line: &PageLine) -> Mapped {
+    let mut mapped = map_page(line.page, page, &line.candidates);
+    mapped.counts.unreadable = line.unreadable;
+    mapped
+}
+
 /// Maps a page's candidates onto its text, as `recto text` gives it (`page` is the characters of `text`, as `read_page` yields them), by the rule above.
 /// Blocks come back in the candidates' order, none overlapping another.
 #[must_use]
@@ -284,6 +372,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
         },
         counts: Counts::default(),
         work: 0,
+        placed: Vec::new(),
     };
     // A page a record can't point into is not read at all: nothing is copied, nothing is found, and every candidate says why.
     if page.len() > MAX_PAGE_CHARS as usize {
@@ -309,7 +398,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
     let mut previous_end = 0u32;
     // Sorted by where they start, and overlapping none another.
     let mut mapped: Vec<(u32, u32)> = Vec::new();
-    for candidate in candidates {
+    for (index, candidate) in candidates.iter().enumerate() {
         let shape = candidate.shape.index();
         let drop = |counts: &mut Counts, why: fn(&mut Drops) -> &mut u32| {
             counts.dropped[shape] += 1;
@@ -353,6 +442,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             found = free(start, &mapped, meter);
             found.is_none()
         });
+        let mut step = Step::AfterPrevious;
         let mut ambiguous = false;
         if found.is_none() && complete {
             let mut seen = 0;
@@ -367,6 +457,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
             ambiguous = seen > 1;
             if seen == 1 {
                 found = only;
+                step = Step::OnlyOccurrence;
             }
         }
         let Some((start, end)) = found else {
@@ -384,6 +475,7 @@ pub fn map_page(page_no: u32, page: &[char], candidates: &[Candidate]) -> Mapped
         mapped.insert(at, (start, end));
         previous_end = end;
         out.counts.stored[shape] += 1;
+        out.placed.push(Placed { candidate: index as u32, step });
         out.blocks.blocks.push(Block {
             kind: candidate.shape.stored().unwrap_or(Kind::Paragraph),
             level: candidate.level.min(MAX_LEVEL),

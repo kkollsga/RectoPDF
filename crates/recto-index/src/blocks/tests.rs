@@ -287,23 +287,59 @@ fn a_box_is_whole_points_in_range_and_in_order() {
     assert_eq!(bbox, [0, i16::MIN, 100, i16::MAX]);
 }
 
-/// Failure: a line from the helper that is hostile (too long, not an object, an unknown kind, wrong types) panics or is believed.
+/// Failure: a page's line from the helper that is hostile (too long, not an object, a page that doesn't exist or comes twice or backwards, blocks of the wrong types) panics, is believed,
+/// or a block it can't read goes unaccounted for.
 #[test]
-fn a_candidate_line_is_read_with_care() {
-    let line = br#"{"kind":"heading","level":2,"box":[1,2,3,4],"text":"Intro","continues":true}"#;
-    let got = Candidate::from_line(line).unwrap();
+fn a_page_line_is_read_with_care() {
+    let mut lines = map::PageLines::new(5);
+    let line = br#"{"page":1,"blocks":[{"kind":"heading","level":2,"box":[1,2,3,4],"text":"Intro","continues":true},{"kind":"banner"},7,{"kind":"para","level":99,"box":"x","text":5}]}"#;
+    let got = lines.read(line).unwrap();
+    assert_eq!((got.page, got.candidates.len(), got.unreadable), (1, 2, 2));
+    let first = &got.candidates[0];
     assert_eq!(
-        (got.shape, got.level, got.bbox, got.text.as_str(), got.continues),
+        (first.shape, first.level, first.bbox, first.text.as_str(), first.continues),
         (Shape::Heading, 2, [1.0, 2.0, 3.0, 4.0], "Intro", true)
     );
+    assert_eq!(got.candidates[1].level, super::MAX_LEVEL);
+    // The unreadable are dropped and counted when the page is mapped.
+    let mapped = map::map_line(&chars("Intro"), &got);
     assert_eq!(
-        Candidate::from_line(br#"{"kind":"para","level":99,"box":"x","text":5}"#).unwrap().level,
-        super::MAX_LEVEL
+        (mapped.counts.stored_total(), mapped.counts.dropped_total(), mapped.counts.unreadable),
+        (1, 3, 2),
+        "{:?}",
+        mapped.counts
     );
-    for bad in [&b""[..], b"[]", b"{}", br#"{"kind":"banner"}"#, b"{\"kind\":", &[0xff, 0xfe]] {
-        assert!(Candidate::from_line(bad).is_none(), "{bad:?}");
+    // Order, range and shape of the line itself.
+    assert_eq!(lines.read(br#"{"page":1,"blocks":[]}"#), Err(map::LineError::OutOfOrder), "a page twice");
+    assert_eq!(lines.read(br#"{"page":0,"blocks":[]}"#), Err(map::LineError::OutOfOrder), "a page back");
+    assert_eq!(lines.read(br#"{"page":5,"blocks":[]}"#), Err(map::LineError::PageOutOfRange));
+    assert_eq!(lines.read(br#"{"page":-1,"blocks":[]}"#), Err(map::LineError::NotAPageLine));
+    assert_eq!(lines.read(br#"{"page":4294967296,"blocks":[]}"#), Err(map::LineError::PageOutOfRange));
+    for bad in [
+        &b""[..],
+        b"[]",
+        b"{}",
+        br#"{"page":2}"#,
+        br#"{"page":2,"blocks":{}}"#,
+        b"{\"page\":",
+        &[0xff, 0xfe],
+    ] {
+        assert_eq!(lines.read(bad), Err(map::LineError::NotAPageLine), "{bad:?}");
     }
-    assert!(Candidate::from_line(&vec![b' '; map::MAX_LINE_BYTES + 1]).is_none());
+    assert_eq!(
+        lines.read(br#"{"page":2,"blocks":[]}"#).map(|line| line.page),
+        Ok(2),
+        "a refused line changed nothing"
+    );
+    // 512 KiB is taken, one byte more is not.
+    let mut at_limit = br#"{"page":3,"blocks":[]}"#.to_vec();
+    at_limit.resize(map::MAX_LINE_BYTES, b' ');
+    assert_eq!(lines.read(&at_limit).map(|line| line.page), Ok(3));
+    at_limit.push(b' ');
+    assert_eq!(lines.read(&at_limit), Err(map::LineError::TooLong));
+    // More blocks than a page may send: the rest are counted, not kept.
+    let many = format!(r#"{{"page":4,"blocks":[{}]}}"#, vec!["7"; map::MAX_LINE_BLOCKS + 3].join(","));
+    assert_eq!(lines.read(many.as_bytes()).map(|line| line.unreadable), Ok(map::MAX_LINE_BLOCKS as u32 + 3));
 }
 
 fn toc(lines: &[(u32, u8, u16)]) -> Toc {
