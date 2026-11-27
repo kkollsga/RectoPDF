@@ -140,6 +140,8 @@ fn switches_in_a_look(pid: u32) -> u64 {
 const REST: u64 = 40;
 /// No look after the first quiet one may pass this: a burst or something that wakes now and then isn't rest.
 const BURST: u64 = 400;
+/// The most processor time the process may use from "settled" to the end of its first quiet look. Unlike a look's context switches, processor time doesn't grow with load: a busy tail of work that is slow on a loaded Mac still costs what it costs. Measured 2026-11-27, 6 runs at load 9-15: 46-107 microseconds; this is 50 ms, so a thread that works for even a moment after settling fails, and a poller or a spin fails by seconds.
+const CPU_TO_REST_NS: u64 = 50_000_000;
 /// The most looks to wait for the first quiet one, a hang guard (60 s of looks), not a speed bound: on a loaded Mac the work that follows "settled" (the draw's last replies, the worker's own wind-down) is slowed, and one run's looks were [5442, 745, 23, 2] (2026-11-27, load 20-28), the first two the tail of work and the last two rest.
 const MOST_LOOKS: usize = 30;
 
@@ -151,6 +153,7 @@ fn the_engine_is_silent_at_rest() {
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
     let pid = std::process::id();
+    let cpu_at_settle = process_counters(pid).unwrap().cpu_ns;
     let mut looks = Vec::new();
     while looks.last().is_none_or(|last| *last > REST) {
         assert!(
@@ -160,6 +163,12 @@ fn the_engine_is_silent_at_rest() {
         );
         looks.push(switches_in_a_look(pid));
     }
+    let spent = process_counters(pid).unwrap().cpu_ns.saturating_sub(cpu_at_settle);
+    assert!(
+        spent <= CPU_TO_REST_NS,
+        "the engine used {spent} ns of processor time between settling and its first quiet look ({} looks): busy after it settled",
+        looks.len()
+    );
     let after: Vec<u64> = (0..3).map(|_| switches_in_a_look(pid)).collect();
     assert!(
         after.iter().all(|woke| *woke <= BURST) && after.iter().min().is_some_and(|woke| *woke <= REST),
