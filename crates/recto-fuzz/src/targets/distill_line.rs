@@ -122,6 +122,8 @@ fn through_the_session(page: &[char], lines: &[&[u8]]) {
 
 pub fn check(data: &[u8]) {
     let (page, lines) = data.split_at(data.iter().position(|byte| *byte == 0).unwrap_or(data.len()));
+    // `split_at` leaves the zero byte at the front of the lines: it went in front of the first line, which was never read as a page line.
+    let lines = lines.get(1..).unwrap_or_default();
     let page: Vec<char> = String::from_utf8_lossy(page).chars().take(MAX_PAGE).collect();
     through_the_session(&page, &lines.split(|byte| *byte == b'\n').take(MAX_LINES).collect::<Vec<_>>());
     let mut reader = PageLines::new(PAGES);
