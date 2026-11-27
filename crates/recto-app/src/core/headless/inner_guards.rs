@@ -63,9 +63,9 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// listener's two words), `AnswerParts`, 88 (ten), and the `Person` they carry, 8 (one): made on the stack for one menu id or one answered command, never
 /// kept. And D6's sheet (2026-11-27): Published 808 to 824 (one `SheetModel` of 112 bytes in the reader's view where the save problem's 96 sat: its kind, id
 /// and destructive index, so every feature's sheet is one record), and Inner 4,480 to 4,488 (Clear Leftovers' sheet slot, a mutex and a box that holds nothing
-/// at rest). One of each per app.
+/// at rest). One of each per app. And Inner 4,488 to 4,496 with the exit's socket name (2026-11-27): the stopper is one reference to the server's outlet, which holds the socket's name, where it was a descriptor of its own, so one handle fewer per app and the word padded.
 const BUDGETS: [(&str, usize); 14] = [
-    ("Inner", 4488),
+    ("Inner", 4496),
     ("Lifecycle", 344),
     ("Serving", 1040),
     ("Window", 464),

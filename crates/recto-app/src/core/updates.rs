@@ -399,7 +399,7 @@ fn tell(launch: &LaunchFacts, updates: &recto_update::updater::Updater, facts: O
     if let Some(facts) = facts
         && updates.launched(facts) == recto_update::updater::AtLaunch::Exit
     {
-        std::process::exit(0);
+        recto_control::server::exit_process(0);
     }
     drop(counted);
     launch.first_frame_after_launch(updates);
@@ -416,7 +416,7 @@ fn tell_first_frame(updates: &recto_update::updater::Updater, at: u64) {
                 let _ = std::fs::write(updates.session_folder().join(slot), "damaged by the version that kept ending");
             }
         }
-        std::process::exit(70);
+        recto_control::server::exit_process(70);
     }
 }
 
