@@ -34,6 +34,11 @@ struct Rig {
 
 /// A removal of a journal, a writer's temporary and a session record, with another document's journal beside them.
 fn rig() -> Rig {
+    rig_named("")
+}
+
+/// The same shape of removal over other files: another plan.
+fn rig_named(suffix: &str) -> Rig {
     let limits = limits(8);
     let mut survey = Survey::new(&limits);
     for store in Store::ALL.into_iter().filter(|s| s.enumerated()) {
@@ -42,9 +47,9 @@ fn rig() -> Rig {
     let ledger = read_ledger(&encode_header(1_000), &LEDGER_LIMITS);
     survey.history(&lineage(&ledger, version(5), Path::new("/d/a.pdf"), &LEDGER_LIMITS).unwrap());
     for f in [
-        found(Store::Journal, "j1", Owner::Target),
-        found(Store::WriterTemp, "t1", Owner::Target),
-        found(Store::SessionRecord, "s1", Owner::Target),
+        found(Store::Journal, &format!("j1{suffix}"), Owner::Target),
+        found(Store::WriterTemp, &format!("t1{suffix}"), Owner::Target),
+        found(Store::SessionRecord, &format!("s1{suffix}"), Owner::Target),
         found(Store::Journal, "other", Owner::Unrelated),
     ] {
         survey.add(f).unwrap();
@@ -603,4 +608,43 @@ fn one_transaction_at_a_time_and_abandon_is_for_the_record_given() {
     let mut bytes = std::fs::read(path(other.path())).unwrap();
     bytes.truncate(bytes.len());
     assert!(matches!(abandon(temp().path(), &rec), Err(AbandonError::Gone)));
+}
+
+/// Catches a slot being made durable for a step the walk may not take: a walk stopped by a failure, a walk of another plan, and a retire handed another plan's
+/// walk. Each is refused before anything is written, so a later look never finds an acknowledgment nobody gave.
+#[test]
+fn nothing_is_written_for_a_stopped_walk_or_another_plan() {
+    let r = rig();
+    let other = rig_named("-other");
+    assert_ne!(r.plan.digest(), other.plan.digest());
+    let dir = temp();
+    let (held, mut progress) = r.begin_ok(dir.path());
+    let before = std::fs::read(path(dir.path())).unwrap();
+    let i = r.base() + 1;
+    assert!(held.acknowledge(&r.plan, &mut progress, i, Ack::Failed).is_ok());
+    assert_eq!(
+        held.acknowledge(&r.plan, &mut progress, i, Ack::Done).unwrap_err(),
+        AckError::Order(OrderError::Stopped)
+    );
+    assert!(std::fs::read(path(dir.path())).unwrap() == before, "a stopped walk got a slot");
+
+    let (held, _) = r.begin_ok(temp().path());
+    let mut foreign = other.progress();
+    let dir = temp();
+    let (held2, _) = r.begin_ok(dir.path());
+    let before = std::fs::read(path(dir.path())).unwrap();
+    drop(held);
+    assert_eq!(
+        held2.acknowledge(&other.plan, &mut foreign, other.base(), Ack::Done).unwrap_err(),
+        AckError::Order(OrderError::WrongPlan)
+    );
+    assert!(std::fs::read(path(dir.path())).unwrap() == before, "another plan's walk got a slot");
+
+    // Another plan's walk at its own last step.
+    let mut at_retire = other.progress();
+    for i in other.base()..other.last() {
+        at_retire.acknowledge(&other.plan, i, Ack::Done).unwrap();
+    }
+    assert_eq!(held2.retire(&other.plan, &mut at_retire).unwrap_err(), AckError::Order(OrderError::WrongPlan));
+    assert!(path(dir.path()).exists(), "another plan's walk retired this record");
 }

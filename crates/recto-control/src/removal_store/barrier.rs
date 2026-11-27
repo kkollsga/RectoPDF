@@ -17,7 +17,7 @@
 //! Every call may wait on the disk, so none belongs on the UI thread.
 
 use recto_core::removal::{
-    Ack, BarrierFacts, BarrierRefusal, Decoded, Effect, Layout, Limits, MAX_BARRIER_BYTES, OrderError, Outcome, Plan, Progress, Recorded, Surveyed,
+    Ack, BarrierFacts, BarrierRefusal, Decoded, Effect, Layout, Limits, MAX_BARRIER_BYTES, OrderError, Outcome, Plan, PlanDigest, Progress, Recorded, Surveyed,
     decode_barrier_within, encode_barrier_within,
 };
 use recto_platform::folder::{Folder, Opened};
@@ -145,6 +145,8 @@ pub struct Held {
     dev: u64,
     ino: u64,
     layout: Layout,
+    /// The plan this record is of: nothing is written or retired for another.
+    digest: PlanDigest,
 }
 
 fn dir_of(root: &Path) -> std::path::PathBuf {
@@ -355,6 +357,7 @@ pub fn begin_with(
         dev: seen.dev(),
         ino: seen.ino(),
         layout: encoded.layout,
+        digest: plan.digest(),
     };
     // Slot 0: the barrier itself. A failure leaves the record with no slot written or not known to be: resume or abandon it.
     let (offset, slot) = held.layout.slot(barrier + 1).ok_or(BeginError::NotDurable)?;
@@ -397,9 +400,11 @@ impl Held {
             error
         };
         let step = plan.steps().get(index as usize).ok_or(AckError::Order(OrderError::Finished))?;
-        if index != progress.acked() {
-            return Err(AckError::Order(OrderError::OutOfOrder));
+        // Before anything is written: this record's plan, a walk of it, and the step it is at. A stopped walk is at no step.
+        if plan.digest() != self.digest {
+            return Err(AckError::Order(OrderError::WrongPlan));
         }
+        progress.check_next(plan, index).map_err(AckError::Order)?;
         if step.effect() == Effect::RetireBarrier {
             return Err(AckError::UseRetire);
         }
@@ -445,6 +450,9 @@ impl Held {
 
     pub fn retire_with(self, plan: &Plan, progress: &mut Progress, opts: &Opts<'_>) -> Result<Outcome, AckError> {
         let index = progress.acked();
+        if plan.digest() != self.digest {
+            return Err(AckError::Order(OrderError::WrongPlan));
+        }
         if plan.steps().get(index as usize).map(|s| s.effect()) != Some(Effect::RetireBarrier) || progress.next(plan).is_none() {
             return Err(AckError::NotAtRetire);
         }
@@ -487,6 +495,7 @@ pub fn reopen(root: &Path, recorded: &Recorded) -> Result<Held, AbandonError> {
                 dev: meta.dev(),
                 ino: meta.ino(),
                 layout: recorded.layout(),
+                digest: recorded.plan().digest(),
             })
         }
         Ok(_) => Err(AbandonError::Gone),

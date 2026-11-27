@@ -128,7 +128,9 @@ impl Progress {
         plan.steps.get(self.acked as usize).copied()
     }
 
-    pub fn acknowledge(&mut self, plan: &Plan, index: u32, ack: Ack) -> Result<Outcome, OrderError> {
+    /// Whether `index` is the step this walk is at, with nothing changed: the reasons `acknowledge` refuses, for a carrier that must know before it
+    /// writes anything down for the step.
+    pub fn check_next(&self, plan: &Plan, index: u32) -> Result<(), OrderError> {
         if self.digest != plan.digest {
             return Err(OrderError::WrongPlan);
         }
@@ -141,6 +143,11 @@ impl Progress {
         if index != self.acked {
             return Err(OrderError::OutOfOrder);
         }
+        Ok(())
+    }
+
+    pub fn acknowledge(&mut self, plan: &Plan, index: u32, ack: Ack) -> Result<Outcome, OrderError> {
+        self.check_next(plan, index)?;
         let effect = plan.steps[index as usize].effect;
         let failed = match ack {
             Ack::Done => false,
