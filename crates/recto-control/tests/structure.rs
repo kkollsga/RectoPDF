@@ -6,6 +6,7 @@
 
 use recto_agent::generated::{GenState, Generating};
 use recto_control::generating::{GenJob, Generator, Outcome, Runner, Walled};
+use recto_control::structure::{Ended, Structure, headings};
 use recto_index::corpus::CorpusKey;
 use recto_index::generated::{self, Generated};
 use recto_testpdf::TempPdf;
@@ -206,4 +207,59 @@ fn cancelled_part_way_nothing_is_written() {
     assert!(generator.held(key).is_none());
     // Its child is collected: the runner never leaves a helper behind.
     assert_eq!(children(), "", "children left");
+}
+
+/// How a file is changed while the helper is reading it.
+fn change_while_it_runs(pdf: &TempPdf, how: impl FnOnce(&std::path::Path)) -> Ended<headings::HeadingsAnswer> {
+    let job = job_for(pdf, 6);
+    let mut line = headings::job();
+    // Debug builds of the helper only: it spins this long before it reads, which is the time to change the file in.
+    line["test_busy_ms"] = 1500.into();
+    let (path, key) = (pdf.0.clone(), job.key);
+    let running = std::thread::spawn(move || {
+        let stop = AtomicBool::new(false);
+        let answer = headings::HeadingsAnswer::new(generated::MAX_ENTRIES, 6);
+        Structure::at(walled_helper(), recto_platform::helper::Priority::Inherited)
+            .run(&path, key, &line, answer, Instant::now() + Duration::from_secs(120), &stop)
+            .0
+    });
+    // The helper is there once this process has a child; it's busy for longer than this takes, and the key is looked at when it ends.
+    let until = Instant::now() + Duration::from_secs(30);
+    while !std::process::Command::new("/usr/bin/pgrep")
+        .args(["-P", &std::process::id().to_string()])
+        .output()
+        .unwrap()
+        .status
+        .success()
+    {
+        assert!(Instant::now() < until, "the helper never started");
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+    how(&pdf.0);
+    running.join().unwrap()
+}
+
+/// Failure: a file written in place while the helper reads it is answered for as the version that was asked for, and its headings are kept under the old key. The key is looked at again
+/// when the helper has ended.
+#[test]
+fn a_file_written_in_place_while_it_is_read_is_changed() {
+    let pdf = TempPdf::new("inplace.pdf", &recto_testpdf::headings_document());
+    let ended = change_while_it_runs(&pdf, |path| {
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes.extend_from_slice(b"\n% appended\n");
+        std::fs::write(path, bytes).unwrap();
+    });
+    assert!(matches!(ended, Ended::Changed), "{ended:?}");
+}
+
+/// Failure: a file replaced by renaming another over it while the helper reads is answered for as unchanged, because the descriptor it was given still shows the old file.
+#[test]
+fn a_file_swapped_by_a_rename_while_it_is_read_is_changed() {
+    let pdf = TempPdf::new("swap.pdf", &recto_testpdf::headings_document());
+    let ended = change_while_it_runs(&pdf, |path| {
+        let other = path.with_extension("new");
+        std::fs::write(&other, recto_testpdf::text_lines(&["a different file"])).unwrap();
+        std::fs::rename(&other, path).unwrap();
+    });
+    assert!(matches!(ended, Ended::Changed), "{ended:?}");
 }
