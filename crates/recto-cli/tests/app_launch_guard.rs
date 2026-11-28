@@ -271,9 +271,9 @@ fn fixture_program_lease_restores_bytes_and_never_overwrites_replacement() {
     );
 }
 
-/// Failure: explicit quit/handoff reconnects to replacement state instead of the attached exact instance.
+/// Failure: explicit quit/handoff goes through the state folder's `recto` commands, which reach whatever app is there now, instead of the lifetime's connection checked against the exact instance.
 #[test]
-fn explicit_lifecycle_commands_use_the_retained_instance_connection() {
+fn explicit_lifecycle_commands_go_through_the_lifetimes_checked_connection() {
     let source = include_str!("common/app.rs");
     for name in ["pub fn quit(mut self)", "pub fn hand_off(mut self)"] {
         let code = source.split(name).nth(1).unwrap().split("\n    }").next().unwrap();
@@ -832,4 +832,93 @@ fn the_settle_guard_is_a_hang_guard_between_the_apps_default_and_the_test_limit(
     assert!(lifetime::SETTLE_GUARD.as_secs() >= 4 * APP_DEFAULT_SECONDS, "{:?}", lifetime::SETTLE_GUARD);
     assert!(lifetime::SETTLE_GUARD < lifetime::TEST_LIMIT, "{:?}", lifetime::SETTLE_GUARD);
     assert_eq!(lifetime::settle_guard_arg(), "120s");
+}
+
+/// A session that answers every command: a real server, with a host that only says what it ran.
+#[derive(Default)]
+struct Answers {
+    ran: std::sync::Mutex<Vec<&'static str>>,
+}
+
+impl recto_control::host::Host for Answers {
+    fn run(
+        &self,
+        _actor: recto_agent::Actor,
+        command: &recto_agent::Command,
+        _events: &mut Vec<recto_agent::Event>,
+    ) -> Result<serde_json::Value, recto_agent::AgentError> {
+        self.ran.lock().unwrap().push(command.tag());
+        Ok(serde_json::json!({ "ran": command.tag() }))
+    }
+
+    fn check(&self, _condition: recto_agent::Condition, _tab: &recto_agent::TabRef, _page: Option<u32>) -> recto_agent::ConditionState {
+        recto_agent::ConditionState::Waiting
+    }
+
+    fn tab_count(&self) -> u32 {
+        0
+    }
+
+    fn unsaved_tabs(&self) -> Vec<(recto_session::TabId, String)> {
+        Vec::new()
+    }
+
+    fn for_watchers(&self, _events: &mut Vec<recto_agent::Event>) {}
+}
+
+/// Failure (`--like-ci`, 2026-11-28, `an_update_in_the_middle_of_things_changes_nothing` at load 43.8): an attached run (the app an update put in place) sent its Quit over the connection it
+/// had kept since attaching, which the session had closed after `Limits::idle_deadline` (a minute) with nothing asked, as it closes any idle client. The Quit went nowhere, the app ran
+/// on, and the test read `connection_dropped`. A lifecycle command on an attached run reaches the app however long the test has been away, on a connection checked against its pid;
+/// and an attached app that another process has replaced at the socket is sent nothing.
+#[test]
+fn an_attached_runs_quit_reaches_the_app_after_its_connection_was_idle_past_the_sessions_limit() {
+    use std::time::{Duration, Instant};
+    let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "qi");
+    let paths = recto_control::StatePaths::overridden(&root).unwrap();
+    paths.prepare().unwrap();
+    recto_control::levels::store(&paths, recto_agent::Level::Full).unwrap();
+    let server = recto_control::server::Server::bind(&paths).unwrap();
+    let stopper = server.stopper().unwrap();
+    let limits = recto_control::server::Limits {
+        idle_deadline: Duration::from_millis(200),
+        ..recto_control::server::Limits::default()
+    };
+    let host = std::sync::Arc::new(Answers::default());
+    let hosted = std::sync::Arc::clone(&host);
+    let thread = std::thread::spawn(move || server.run(hosted, limits));
+    // The server answers `status` with its own process's pid, which is this test's.
+    let mut attached = lifetime::Lifetime::attached(&paths, std::process::id());
+    // Connected after the attach's last word, so once the session has let this one go as idle, it has let the attached run's go too.
+    let mut later = recto_control::client::Client::connect(&paths).unwrap();
+    let began = Instant::now();
+    loop {
+        match later.read(Duration::from_millis(5)) {
+            Err(error) if error.code == "no_answer" => {}
+            Err(error) => {
+                assert_eq!(error.code, "connection_dropped", "{}", error.message);
+                break;
+            }
+            Ok(reply) => panic!("nothing was asked: {reply}"),
+        }
+        assert!(began.elapsed() < Duration::from_secs(20), "the session never let an idle connection go");
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+    let reply = attached.quit_reply(&paths);
+    // The app attached to has ended and this one has its socket: the check refuses it, and the Quit is never sent.
+    let replaced = lifetime::Lifetime::Borrowed(Some(std::process::id() + 1)).quit_reply(&paths);
+    let ran = host.ran.lock().unwrap().clone();
+    stopper.stop();
+    let _ = thread.join();
+    let answer = reply.map_err(|error| error.to_string());
+    assert!(
+        answer.as_ref().is_ok_and(|data| data["ran"].is_string()),
+        "the Quit reached the session and was answered: {answer:?}"
+    );
+    let refused = replaced.map_err(|error| error.to_string()).unwrap_err();
+    assert!(refused.contains("isn't the expected process"), "{refused}");
+    assert_eq!(
+        ran.len(),
+        1,
+        "one Quit reached the host, the attached one's, and nothing of the replaced one's: {ran:?}"
+    );
 }
