@@ -931,6 +931,7 @@ impl recto_index::corpus::PageFeed for OnePageFails {
             chars: read.chars,
             boxes: read.boxes,
             hidden_checked: read.hidden_checked,
+            frame: None,
         })
     }
     fn still_the_same_file(&mut self) -> bool {

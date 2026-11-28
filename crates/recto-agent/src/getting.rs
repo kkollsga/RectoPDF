@@ -12,13 +12,13 @@
 //! - **No path** is ever in an answer: the link is the file's name and `#page=N`, under `untrusted` with the text.
 
 mod blocks;
+mod heads;
 
 use crate::commands::getting::{Form, Grain};
 use crate::commands::locating::{PageOrRef, Where};
 use crate::{AgentError, Code, Event, SessionAccess, TabRef, exit};
 use recto_core::locator::{self, Locator, Referrer, ScanCaps};
-use recto_index::blocks::markdown::{self, Piece};
-use recto_index::blocks::{Kind, unit};
+use recto_index::blocks::unit;
 use recto_index::corpus::{CorpusKey, PageKind, ReadyCorpus};
 use serde_json::{Value, json};
 
@@ -52,6 +52,8 @@ struct PageRead {
     /// Whether the page was checked for hidden text, and whether some stretches didn't fit in `hidden`.
     checked: bool,
     partial: bool,
+    /// What the page leaves out as chrome, as `[start, end)` in `text`: from the index's stored edges, or the spans `text` marks a live read with. `None` when it isn't known.
+    chrome: Option<Vec<(u32, u32)>>,
 }
 
 /// Whether a stored page may be given as it is: it was checked for hidden text and no stretch was dropped. Otherwise its words would show unmarked what
@@ -69,16 +71,19 @@ fn from_index<A: SessionAccess>(access: &A, path: &std::path::Path, file_page: u
     let indexing = access.indexing()?;
     let find_key = indexing.find_key()?;
     let key = CorpusKey::of_file(path).ok()?;
-    let corpus = ReadyCorpus::open(find_key, indexing.root(), key).ok()??;
+    let corpus = std::sync::Arc::new(ReadyCorpus::open(find_key, indexing.root(), key).ok()??);
     let mut buffer = Vec::new();
     let stored = corpus.page(file_page, &mut buffer).ok()?;
-    (stored.kind == PageKind::Text && index_is_enough(stored.hidden_checked, stored.spans_dropped)).then(|| PageRead {
+    let mut read = (stored.kind == PageKind::Text && index_is_enough(stored.hidden_checked, stored.spans_dropped)).then(|| PageRead {
         text: stored.text.to_owned(),
         hidden: stored.hidden_spans(),
         key: Some(key),
         checked: true,
         partial: false,
-    })
+        chrome: None,
+    })?;
+    read.chrome = heads::ring(&corpus).spans(file_page);
+    Some(read)
 }
 
 /// The page as `text` reads it now.
@@ -99,6 +104,12 @@ fn read_live(path: &std::path::Path, file_page: u32) -> Result<PageRead, AgentEr
         key: None,
         checked: said["hidden_text"]["checked"] == true,
         partial: said["hidden_spans_dropped"].as_u64().is_some_and(|dropped| dropped > 0) || said["hidden_spans_dropped"] == true,
+        chrome: said["chrome_spans"].as_array().map(|spans| {
+            spans
+                .iter()
+                .filter_map(|span| Some((u32::try_from(span[0].as_u64()?).ok()?, u32::try_from(span[1].as_u64()?).ok()?)))
+                .collect()
+        }),
     })
 }
 
@@ -168,30 +179,19 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
             (0, total, "page", said)
         }
     };
-    let unit = &page_chars[from as usize..to as usize];
-    let given = unit::cut_at(unit, asked.max_chars as usize);
-    let shown = &unit[..given];
-    let hidden = unit::clip_spans(&read.hidden, from, from + given as u32);
-
-    let counts = json!({ "chars_in_unit": unit.len(), "chars_given": given, "hidden_spans": hidden.len() });
+    // What the page leaves out as chrome is not given and takes no room. A hit is the characters it names: nothing of it is left out.
+    let slice = heads::slice(
+        &read,
+        &page_chars,
+        found.characters(),
+        asked.grain == Grain::Hit,
+        (from, to),
+        asked.max_chars as usize,
+    );
+    let (given, in_unit, cut) = (slice.given, slice.in_unit, slice.cut);
+    let counts = slice.counts();
     let mut untrusted = json!({ "link": locator::link_of(file.path(), found.file_page + 1).ok() });
-    let mut data_hidden = Value::Null;
-    match asked.form {
-        Form::Text => {
-            untrusted["text"] = json!(shown.iter().collect::<String>());
-            data_hidden = json!(hidden.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>());
-        }
-        Form::Markdown => {
-            let piece = Piece {
-                kind: Kind::Paragraph,
-                level: 0,
-                depth: None,
-                text: shown,
-                hidden: &hidden,
-            };
-            untrusted["markdown"] = json!(markdown::render(&[piece]));
-        }
-    }
+    let data_hidden = slice.write(asked.form, &mut untrusted);
 
     // Refs: the unit's own, the page it is on, and (for a page) its neighbours in the tab as it stands.
     let opened = recto_session::identify::Opened::open(file.path(), found.stamp).ok_or_else(changed)?;
@@ -200,8 +200,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
     let here = position;
     let up = page_ref(&mut referrer, Some(found.file_page));
     // Where the page goes on when it was cut: up to 32 characters from the cut, checked against the text this answer is made from.
-    let cut = from + given as u32;
-    let more = (given < unit.len())
+    let more = (given < in_unit)
         .then(|| locator::characters(&read.text, cut, cut.saturating_add(unit::REF_CHARS).min(total)).ok())
         .flatten()
         .map_or(Value::Null, |range| {
@@ -214,9 +213,23 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         let prev = page_ref(&mut referrer, here.checked_sub(1).and_then(|before| file.file_page_at(before)));
         json!({ "self": up, "next": next, "prev": prev, "more": more, "more_entry": null, "up": null, "up_grain": null })
     };
+    // The headings above it, from the contents a section is cut by, none where there are none (and never made here).
+    let (headings, headings_at) = match read.key.or_else(|| CorpusKey::of_file(file.path()).ok()) {
+        Some(key) => {
+            let hit = (kind == "hit").then_some((from, total));
+            let anchor = blocks::Anchor {
+                file_page: found.file_page,
+                hit,
+                opened: &opened,
+            };
+            blocks::headings_of_page(access, &file, key, &anchor)
+        }
+        None => (Vec::new(), blocks::HeadingsAt::PageEnd),
+    };
     drop(opened);
 
     // The same version of the file, and of the index it was read from, to the end.
+    recto_platform::slow::pause(recto_platform::slow::Seam::Get);
     crate::locating::still_located(access, &found)?;
     if let Some(key) = read.key
         && CorpusKey::of_file(file.path()).ok() != Some(key)
@@ -229,11 +242,12 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         "grain": asked.grain.word(),
         "as": asked.form.word(),
         "ref": found.told(),
-        "unit": { "kind": kind, "pages": 1, "chars": unit.len() },
+        "unit": { "kind": kind, "pages": 1, "chars": in_unit },
         "widened": widened,
-        "headings_above": [],
+        "headings_above": headings,
+        "headings_at": headings_at.word(),
         "refs": refs,
-        "truncated": given < unit.len(),
+        "truncated": given < in_unit,
         "counts": counts,
         "hidden_text": { "checked": read.checked, "partial": read.partial },
         "read_from": if read.key.is_some() { "index" } else { "file" },
@@ -246,15 +260,4 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::index_is_enough;
-
-    /// Failure: a stored page is given though the index never checked it for hidden text, or dropped some of its stretches, so its hidden words show as
-    /// plain text. Only a checked page with no dropped stretch is enough.
-    #[test]
-    fn only_a_checked_page_with_no_dropped_stretch_is_taken_from_the_index() {
-        assert!(index_is_enough(true, false));
-        assert!(!index_is_enough(false, false));
-        assert!(!index_is_enough(true, true));
-    }
-}
+mod tests;

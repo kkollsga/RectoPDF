@@ -30,6 +30,7 @@ impl PageFeed for Feed {
             chars: text.chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect(),
             boxes: Vec::new(),
             hidden_checked: true,
+            frame: None,
         })
     }
     fn still_the_same_file(&mut self) -> bool {

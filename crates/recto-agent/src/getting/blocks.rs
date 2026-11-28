@@ -4,6 +4,7 @@
 //!
 //! Sections come from the tab's contents: the file's own when `verdict::judge` says `Fine`, else generated ones **if they are already made** (an ask does one thing: `get` never starts them).
 
+use super::heads::Chrome;
 use super::{Asked, NO_PAGE_TEXT, PageRead, changed, index_is_enough, read_live};
 use crate::commands::getting::{Form, Grain as AskedGrain};
 use crate::locating::Located;
@@ -11,13 +12,14 @@ use crate::reading::TabFile;
 use crate::{AgentError, Code, Event, SessionAccess, exit};
 use recto_core::locator::{self, Locator, Referrer, ScanCaps, Target};
 use recto_core::{Toc, nav::Frame, verdict};
-use recto_index::blocks::sections::Sections;
+use recto_index::blocks::Block;
+use recto_index::blocks::sections::{Place, Sections};
 use recto_index::blocks::unit::{self, Ask, Grain, Mark, Outcome, Pages, Why};
-use recto_index::blocks::{Block, markdown};
 use recto_index::corpus::{CorpusKey, PageKind, ReadyCorpus, StoredBlocks};
 use recto_session::TabId;
 use recto_session::identify::Opened;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Time given to reading pages live for one answer. Past it reading stops, the answer is cut and says where it goes on.
@@ -43,21 +45,106 @@ fn widen(why: &'static str, read: Option<PageRead>) -> Result<Reached, AgentErro
     Ok(Reached::Widen { why, note: None, read })
 }
 
-/// The contents sections are cut by, and which they are: the file's own if they are good, else generated ones that have been made.
-fn contents_for<A: SessionAccess>(access: &A, file: &TabFile, key: CorpusKey) -> Option<(Toc, &'static str)> {
+/// The contents sections are cut by, and which they are.
+type Contents = (Arc<Toc>, &'static str);
+
+/// The contents sections are cut by: the file's own if they are good, else generated ones that have been made. **The outline the tab already holds is used when it is held** (a warm tab's, for a tab with no
+/// edit list, whose pages are the file's); only otherwise is the file read, as `contents` reads it.
+fn contents_for<A: SessionAccess>(access: &A, file: &TabFile, key: CorpusKey) -> Option<Contents> {
     if file.renderer_only() {
         return None;
     }
-    let loader = access.with(|s| s.loader().clone());
-    if let Ok(facts) = recto_session::DocLoader::load(&loader, file.path())
-        && !facts.renderer_only
-        && !facts.toc.entries().is_empty()
-        && matches!(verdict::judge(&facts.toc, facts.page_count), verdict::ContentsVerdict::Fine)
+    let held = if file.has_edit_list() {
+        None
+    } else {
+        access.with(|s| s.warm().toc(TabId(file.id())).cloned())
+    };
+    let own = match held {
+        Some(toc) => Some((toc, file.pages())),
+        None => {
+            let loader = access.with(|s| s.loader().clone());
+            recto_session::DocLoader::load(&loader, file.path())
+                .ok()
+                .filter(|facts| !facts.renderer_only)
+                .map(|facts| (Arc::new(facts.toc), facts.page_count))
+        }
+    };
+    if let Some((toc, pages)) = own
+        && !toc.entries().is_empty()
+        && matches!(verdict::judge(&toc, pages), verdict::ContentsVerdict::Fine)
     {
-        return Some((facts.toc, "file"));
+        return Some((toc, "file"));
     }
     let made = crate::generated::find(access.generating()?, file.path(), key)?;
-    (!made.entries.is_empty()).then(|| (made.toc(), "generated"))
+    (!made.entries.is_empty()).then(|| (Arc::new(made.toc()), "generated"))
+}
+
+/// `headings_above` as an answer says them: each entry's depth, which contents it is from and its title (the document's words, under `untrusted`).
+fn titles((toc, source): &Contents, chain: &[usize]) -> Vec<Value> {
+    chain
+        .iter()
+        .filter_map(|entry| {
+            let entry = toc.entries().get(*entry)?;
+            Some(json!({ "depth": entry.depth, "source": source, "untrusted": { "title": toc.title(entry) } }))
+        })
+        .collect()
+}
+
+/// Where the headings of a `hit` or a `page` were read at.
+#[derive(Clone, Copy)]
+pub(super) enum HeadingsAt {
+    /// The hit's own block, from the stored blocks that are made.
+    Block,
+    /// The foot of the page: a page, or a hit with no stored blocks or no block that holds it.
+    PageEnd,
+}
+
+impl HeadingsAt {
+    pub(super) const fn word(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::PageEnd => "page_end",
+        }
+    }
+}
+
+/// What `headings_above` of a `hit` or a `page` needs of the answer being made.
+pub(super) struct Anchor<'a> {
+    pub file_page: u32,
+    /// For a hit: its first character, and the page's length in characters.
+    pub hit: Option<(u32, u32)>,
+    pub opened: &'a Opened,
+}
+
+/// `headings_above` of a `hit` or a `page`, from the contents a section is cut by (the file's own if good, else generated ones if they are made: `get` never starts them), and where they were read at. **A hit
+/// whose page has stored blocks, one of which holds its first character,** is read at that block's place, as a paragraph's are; otherwise at **the end of the page** (the sections that hold its foot: one that
+/// starts on the page is named, one that ended on it isn't). Blocks are used where they are and never asked for. `[]` with no usable contents.
+pub(super) fn headings_of_page<A: SessionAccess>(access: &A, file: &TabFile, key: CorpusKey, anchor: &Anchor<'_>) -> (Vec<Value>, HeadingsAt) {
+    let Some(contents) = contents_for(access, file, key) else {
+        return (Vec::new(), HeadingsAt::PageEnd);
+    };
+    let sections = Sections::with_tops(contents.0.entries(), |entry| recto_session::entry_place(entry, file.placed()));
+    let (place, at) = match block_place(access, key, anchor) {
+        Some(place) => (place, HeadingsAt::Block),
+        None => (
+            Place {
+                page: anchor.file_page,
+                top: recto_core::TOP_SCALE,
+            },
+            HeadingsAt::PageEnd,
+        ),
+    };
+    (titles(&contents, &unit::headings_above(&sections, place)), at)
+}
+
+/// The place of the stored block that holds a hit's first character, as the paragraph grain finds its block.
+fn block_place<A: SessionAccess>(access: &A, key: CorpusKey, anchor: &Anchor<'_>) -> Option<Place> {
+    let (first, chars) = anchor.hit?;
+    let stored = crate::blocks::stored_now(access, key)?;
+    let blocks = unit::in_reading_order(stored.page(anchor.file_page, chars).ok()?.blocks, chars);
+    let block = &blocks[unit::block_holding(&blocks, first)?];
+    let frame = recto_core::page_id::page_frame(anchor.opened.reader(), anchor.opened.map(), anchor.file_page);
+    Some(frame.map_or(Place::middle(anchor.file_page), |frame| Place::of_block(block, frame)))
 }
 
 /// The pages of one tab's file, as the builder reads them.
@@ -66,7 +153,8 @@ struct Source<'a, A: SessionAccess> {
     events: &'a mut Vec<Event>,
     id: TabId,
     file: &'a TabFile,
-    corpus: ReadyCorpus,
+    corpus: Arc<ReadyCorpus>,
+    chrome: Chrome,
     stored: StoredBlocks,
     opened: &'a Opened,
     live_spent: Duration,
@@ -99,11 +187,15 @@ impl<A: SessionAccess> Source<'_, A> {
                 key: Some(self.key),
                 checked: true,
                 partial: false,
+                chrome: None,
             })),
             _ => None,
         };
         self.wipe();
-        if let Some(read) = indexed {
+        if let Some(mut read) = indexed {
+            if let Some(read) = read.as_mut() {
+                read.chrome = self.chrome.spans(page);
+            }
             return Ok(read);
         }
         let started = Instant::now();
@@ -150,12 +242,14 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
         if let Some((_, read)) = self.anchor.as_ref().filter(|(held, _)| *held == page) {
             chars.extend(read.text.chars());
             hidden.extend_from_slice(&read.hidden);
+            self.chrome.keep(page, read.chrome.clone());
             return true;
         }
         match self.fetch(page) {
             Ok(Some(read)) => {
                 self.take_in(&read);
                 chars.extend(read.text.chars());
+                self.chrome.keep(page, read.chrome);
                 *hidden = read.hidden;
                 true
             }
@@ -177,6 +271,10 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
 
     fn over(&mut self) -> bool {
         self.live_spent >= LIVE_BUDGET
+    }
+
+    fn chrome(&mut self, page: u32, _chars: u32) -> Option<Vec<(u32, u32)>> {
+        self.chrome.take(page)
     }
 
     /// False only for a page the index recorded as having no characters at all. A page that failed to index, or whose record doesn't open, is still read: nothing is passed over for not having been looked at.
@@ -246,11 +344,13 @@ pub(super) fn answer<A: SessionAccess>(
         .as_ref()
         .map(|(toc, _)| Sections::with_tops(toc.entries(), |entry| recto_session::entry_place(entry, file.placed())));
     let opened = Opened::open(file.path(), found.stamp).ok_or_else(changed)?;
+    let corpus = Arc::new(corpus);
     let mut source = Source {
         access,
         events,
         id,
         file,
+        chrome: Chrome::new(&corpus),
         corpus,
         stored,
         opened: &opened,
@@ -273,6 +373,10 @@ pub(super) fn answer<A: SessionAccess>(
         entry: asked.entry,
         max_chars: asked.max_chars,
         sections: sections.as_ref(),
+        chrome: unit::heads::Rule {
+            named: found.characters(),
+            ..unit::heads::Rule::default()
+        },
     };
     let built = match unit::build(&mut source, &one) {
         Ok(Outcome::Unit(built)) => built,
@@ -317,17 +421,9 @@ pub(super) fn answer<A: SessionAccess>(
             untrusted["text"] = json!(text);
             data_hidden = json!(spans.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>());
         }
-        Form::Markdown => untrusted["markdown"] = json!(markdown::render(&unit::render_pieces(&built.given))),
+        Form::Markdown => untrusted["markdown"] = json!(unit::as_markdown(&built.given)),
     }
-    let headings: Vec<Value> = built
-        .headings
-        .iter()
-        .filter_map(|entry| {
-            let (toc, source) = contents.as_ref()?;
-            let entry = toc.entries().get(*entry)?;
-            Some(json!({ "depth": entry.depth, "source": source, "untrusted": { "title": toc.title(entry) } }))
-        })
-        .collect();
+    let headings = contents.as_ref().map_or_else(Vec::new, |contents| titles(contents, &built.headings));
     let spans_given: usize = built.given.iter().map(|piece| piece.hidden.len()).sum();
     let mut unit_json = json!({ "kind": kind_word(asked.grain), "pages": built.pages, "chars": built.chars });
     if asked.grain == AskedGrain::Paragraph {
@@ -353,6 +449,8 @@ pub(super) fn answer<A: SessionAccess>(
             "chars_in_unit": built.chars, "chars_given": built.chars_given, "hidden_spans": spans_given, "blocks": counts.blocks,
             "chars_outside_blocks": counts.chars_outside_blocks, "pages_read": counts.pages_read, "pages_left_out": counts.pages_left_out,
             "whole_edge_pages": counts.whole_edge_pages, "pages_without_frame": counts.pages_without_frame,
+            "chrome_chars_left_out": counts.chrome_chars_left_out, "chrome_pages": counts.chrome_pages,
+            "chrome_unknown_pages": counts.chrome_unknown_pages, "chrome_over_cap_pages": counts.chrome_over_cap_pages,
         },
         "hidden_text": { "checked": checked, "partial": partial },
         "read_from": if live { "file" } else { "index" },

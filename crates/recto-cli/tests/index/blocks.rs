@@ -210,8 +210,8 @@ fn blocks_measure() {
     }
 }
 
-/// A measurement, not a test: what a `get` costs once blocks are made. `RECTO_BLOCKS_FILES` (separated by `:`) opened, blocks made, then 20 `get`s of a paragraph and 20 of a section (the page `RECTO_BLOCKS_PAGE`, 5 if left out)
-/// are timed. Prints p50 and p95 in milliseconds, and how many pages the section spans and was read over.
+/// A measurement, not a test: what a `get` costs once blocks are made. `RECTO_BLOCKS_FILES` (separated by `:`) opened, blocks made, then 20 `get`s of a hit (the first 20 characters of the page `RECTO_BLOCKS_PAGE`, 5 if left out) and 20 of that page, each with its `headings_above`
+/// are timed. Prints p50 and p95 in milliseconds, and where the headings were read at.
 ///
 /// `cargo test --release -p recto-cli --test index get_measure -- --ignored --nocapture`
 #[test]
@@ -225,7 +225,7 @@ fn get_measure() {
         let copy = TempPdf::new("measured.pdf", &std::fs::read(file).expect("a file to measure"));
         state.json(&["open", path(&copy)]);
         wait_done(&state, "active");
-        let (made, _) = state.json(&["ref", &page]);
+        let (made, _) = state.json(&["ref", &page, "--chars", "0-20"]);
         let reference = made["data"]["ref"].as_str().expect("a reference").to_string();
         state.json(&["get", &reference, "--grain", "paragraph"]);
         let (ready, code) = wait_made(&state, "30m");
@@ -234,7 +234,7 @@ fn get_measure() {
         state.json(&["contents", "--generated"]);
         let (_, code) = state.json(&["wait", "contents-generated", "--timeout", "30m"]);
         assert_eq!(code, 0, "generated contents");
-        for grain in ["paragraph", "section"] {
+        for grain in ["hit", "page"] {
             let mut millis = Vec::new();
             let mut last = Value::Null;
             for _ in 0..20 {
@@ -246,8 +246,8 @@ fn get_measure() {
             }
             millis.sort_by(f64::total_cmp);
             println!(
-                "GET {file} {grain} p50={:.1}ms p95={:.1}ms widened={} unit={} counts={}",
-                millis[9], millis[18], last["data"]["widened"], last["data"]["unit"], last["data"]["counts"]
+                "GET {file} {grain} p50={:.1}ms p95={:.1}ms headings_at={} headings={} unit={}",
+                millis[9], millis[18], last["data"]["headings_at"], last["data"]["headings_above"], last["data"]["unit"]
             );
         }
     }

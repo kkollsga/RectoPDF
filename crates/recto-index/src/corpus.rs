@@ -66,6 +66,8 @@ pub use agent_life::{
     AgentClaim, MAX_REMOVED_PER_SWEEP, agent_folders_may_be_there, claim_agent_folder, note_agent_folder, retire_agent_folder, sweep_agent_folders,
 };
 mod sealed;
+use crate::chrome::{EdgeLine, stored};
+use crate::select::PageText;
 use crate::{hidden_report, read_page};
 pub use plain::{plain_corpora_may_be_there, remove_plain_corpora, remove_unreadable};
 use recto_platform::find_key::FindKey;
@@ -361,6 +363,8 @@ const FLAG_HIDDEN_CHECKED: u8 = 1;
 const FLAG_HIDDEN_FLAGGED: u8 = 2;
 const FLAG_TAG_CHARS: u8 = 4;
 const FLAG_SPANS_DROPPED: u8 = 8;
+/// The chunk ends with the page's edge pieces, as [`crate::chrome::stored`] writes them: even none, which says "known, none".
+const FLAG_EDGES: u8 = 16;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Reading
@@ -491,6 +495,7 @@ pub struct StoredPage<'a> {
     pub spans_dropped: bool,
     pub reason: FailReason,
     aux: &'a [u8],
+    edges: Option<&'a [u8]>,
 }
 
 impl<'a> StoredPage<'a> {
@@ -502,6 +507,12 @@ impl<'a> StoredPage<'a> {
     /// Where the page's hidden text is, in characters of `text`.
     pub fn hidden_spans(&self) -> Vec<(u32, u32)> {
         Aux::read(self.aux).map_or_else(Vec::new, |aux| aux.spans)
+    }
+
+    /// The page's edge pieces, for chrome: `None` if the page was kept without them (an index built before they were, or a page that failed), or if the region's content doesn't check (the count, finite places, spans inside the page): that is "unknown", never a damaged page, since Find reads pages without decoding the region. The content is checked here once, as it's decoded; the region's length is checked when the page is opened.
+    pub fn edges(&self) -> Option<Vec<EdgeLine>> {
+        let characters = u32::try_from(self.text.chars().count()).unwrap_or(u32::MAX);
+        stored::read(self.edges?, characters)
     }
 }
 
@@ -569,16 +580,20 @@ impl ReadyCorpus {
         let start = page as usize * RECORD_LEN;
         let entry = self.table.get(start..start + RECORD_LEN).and_then(Entry::decode).ok_or(Damaged)?;
         let (record, blob) = open_page(&self.pack, self.pack_len, &self.seal, page, entry, buffer).ok_or(Damaged)?;
-        let (text, aux) = buffer[blob].split_at(record.text_len as usize);
+        let (text, rest) = buffer[blob].split_at(record.text_len as usize);
+        let (aux, edges) = rest.split_at(record.aux_len as usize);
+        let text = std::str::from_utf8(text).map_err(|_| Damaged)?;
+        let edges = (record.flags & FLAG_EDGES != 0).then_some(edges);
         Ok(StoredPage {
             kind: record.kind,
-            text: std::str::from_utf8(text).map_err(|_| Damaged)?,
+            text,
             hidden_checked: record.flags & FLAG_HIDDEN_CHECKED != 0,
             hidden_flagged: record.flags & FLAG_HIDDEN_FLAGGED != 0,
             has_tag_chars: record.flags & FLAG_TAG_CHARS != 0,
             spans_dropped: record.flags & FLAG_SPANS_DROPPED != 0,
             reason: FailReason::from_byte(record.reason),
             aux,
+            edges,
         })
     }
 }
@@ -605,6 +620,8 @@ pub struct FedPage {
     pub chars: Vec<CharRecord>,
     pub boxes: Vec<CharBox>,
     pub hidden_checked: bool,
+    /// The page as it's shown, if the feed could say: with it, the page's edge pieces are kept for chrome. Without it they aren't, and the page is kept as one whose edges aren't known.
+    pub frame: Option<recto_proto::PageFrame>,
 }
 
 /// What went wrong reading.
@@ -826,25 +843,29 @@ fn build_with_lock(
 
 /// A page as read, digested into its record and, in `blob`, its text and what goes beside it.
 fn digest_into(read: Result<FedPage, FailReason>, blob: &mut Vec<u8>) -> PageRecord {
-    let (record, also_spelled, spans, text) = digest_safely(read);
+    let (record, also_spelled, spans, text, edges) = digest_safely(read);
     blob.clear();
     blob.extend_from_slice(text.as_bytes());
     Aux::write(&also_spelled, &spans, blob);
-    PageRecord {
-        aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX),
-        ..record
+    let aux_len = u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX);
+    if let Some(edges) = &edges {
+        stored::write(edges, blob);
     }
+    PageRecord { aux_len, ..record }
 }
 
+/// What a page is digested into: its record, the other spellings, the hidden spans, its text, and its edge pieces if its frame was known.
+type Digested = (PageRecord, Vec<String>, Vec<(u32, u32)>, String, Option<Vec<EdgeLine>>);
+
 /// [`digest`], with a panic or a page too large to keep costing only that page.
-fn digest_safely(read: Result<FedPage, FailReason>) -> (PageRecord, Vec<String>, Vec<(u32, u32)>, String) {
+fn digest_safely(read: Result<FedPage, FailReason>) -> Digested {
     // A panic here would be a bug of ours, on text a hostile file chose.
     catch_unwind(AssertUnwindSafe(|| digest(read)))
         .ok()
-        .filter(|(_, also_spelled, spans, text)| {
-            text.len() + also_spelled.iter().map(|word| word.len() + 2).sum::<usize>() + spans.len() * 8 + 6 <= MAX_BLOB_BYTES
+        .filter(|(_, also_spelled, spans, text, _)| {
+            text.len() + also_spelled.iter().map(|word| word.len() + 2).sum::<usize>() + spans.len() * 8 + 6 + stored::MAX_REGION_LEN <= MAX_BLOB_BYTES
         })
-        .unwrap_or_else(|| (failed_record(FailReason::Internal), Vec::new(), Vec::new(), String::new()))
+        .unwrap_or_else(|| (failed_record(FailReason::Internal), Vec::new(), Vec::new(), String::new(), None))
 }
 
 fn now_seconds() -> u64 {
@@ -902,10 +923,10 @@ pub fn remove_old_folder(root: &Path) {
 }
 
 /// Turns what was read into what's stored: reading it the one way `text` and `search` read a page, and judging hidden text the same.
-fn digest(read: Result<FedPage, FailReason>) -> (PageRecord, Vec<String>, Vec<(u32, u32)>, String) {
+fn digest(read: Result<FedPage, FailReason>) -> Digested {
     let page = match read {
         Ok(page) => page,
-        Err(reason) => return (failed_record(reason), Vec::new(), Vec::new(), String::new()),
+        Err(reason) => return (failed_record(reason), Vec::new(), Vec::new(), String::new(), None),
     };
     if page.chars.is_empty() {
         let record = PageRecord {
@@ -913,10 +934,10 @@ fn digest(read: Result<FedPage, FailReason>) -> (PageRecord, Vec<String>, Vec<(u
             aux_len: 0,
             chars: 0,
             kind: PageKind::NoText,
-            flags: FLAG_HIDDEN_CHECKED,
+            flags: FLAG_HIDDEN_CHECKED | if page.frame.is_some() { FLAG_EDGES } else { 0 },
             reason: 0,
         };
-        return (record, Vec::new(), Vec::new(), String::new());
+        return (record, Vec::new(), Vec::new(), String::new(), page.frame.map(|_| Vec::new()));
     }
     let report = hidden_report(&page.chars, page.hidden_checked);
     let reading = read_page(&page.chars, &page.boxes, page.hidden_checked);
@@ -934,6 +955,18 @@ fn digest(read: Result<FedPage, FailReason>) -> (PageRecord, Vec<String>, Vec<(u
     if reading.hidden_spans_dropped > 0 {
         flags |= FLAG_SPANS_DROPPED;
     }
+    // The page's edge pieces, by the one reading that decides chrome, when the frame to place them is known.
+    let edges = page
+        .frame
+        .map(|frame| {
+            PageText::build(&page.chars, &page.boxes, frame, page.hidden_checked, false)
+                .edge_lines()
+                .to_vec()
+        })
+        .filter(|lines| stored::kept(lines, u32::try_from(normalized.text.chars().count()).unwrap_or(u32::MAX)).is_some());
+    if edges.is_some() {
+        flags |= FLAG_EDGES;
+    }
     let text_len = u32::try_from(normalized.text.len()).unwrap_or(u32::MAX);
     let record = PageRecord {
         text_len,
@@ -943,7 +976,7 @@ fn digest(read: Result<FedPage, FailReason>) -> (PageRecord, Vec<String>, Vec<(u
         flags,
         reason: 0,
     };
-    (record, normalized.also_spelled, reading.hidden_spans, normalized.text)
+    (record, normalized.also_spelled, reading.hidden_spans, normalized.text, edges)
 }
 
 fn failed_record(reason: FailReason) -> PageRecord {
