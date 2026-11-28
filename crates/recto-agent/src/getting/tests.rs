@@ -150,7 +150,7 @@ fn a_hit_in_a_stored_block_is_read_at_the_blocks_place_and_otherwise_at_the_foot
     let (dir, path, session) = open(&bytes);
     let texts: Vec<String> = (0..3).map(|page| crate::render::page_text(&path, page).expect("a page's text")).collect();
     let key = CorpusKey::of_file(&path).unwrap();
-    let root = recto_testpdf::TempDir::new_in(&dir.to_path_buf(), "recto-getting-corpus-");
+    let root = recto_testpdf::TempDir::new_in(&dir, "recto-getting-corpus-");
     recto_platform::local::ensure_private_dir(&root).unwrap();
     let find_key = FindKey::for_tests(5);
     build_text_corpus(&find_key, &root, (key, Some(&path)), &texts.iter().cloned().map(Some).collect::<Vec<_>>()).unwrap();

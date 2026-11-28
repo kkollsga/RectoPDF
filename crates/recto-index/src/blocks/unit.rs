@@ -260,26 +260,39 @@ pub fn clip_spans(spans: &[(u32, u32)], from: u32, to: u32) -> Vec<(u32, u32)> {
 /// The pieces as Markdown. A piece that [`Given::joins`] the one before it is the rest of that paragraph (or list item), so it goes on in the same block, on the next line, and isn't a block of its own.
 #[must_use]
 pub fn as_markdown(given: &[Given]) -> String {
-    let mut merged: Vec<(Kind, u8, Option<u8>, Vec<char>, Vec<(u32, u32)>)> = Vec::new();
+    struct Merged {
+        kind: Kind,
+        level: u8,
+        depth: Option<u8>,
+        text: Vec<char>,
+        hidden: Vec<(u32, u32)>,
+    }
+    let mut merged: Vec<Merged> = Vec::new();
     for one in given {
         match merged.last_mut() {
-            Some(last) if one.joins && last.0 == one.kind => {
-                last.3.push('\n');
-                let at = last.3.len() as u32;
-                last.4.extend(one.hidden.iter().map(|&(start, end)| (start + at, end + at)));
-                last.3.extend(one.text.iter());
+            Some(last) if one.joins && last.kind == one.kind => {
+                last.text.push('\n');
+                let at = last.text.len() as u32;
+                last.hidden.extend(one.hidden.iter().map(|&(start, end)| (start + at, end + at)));
+                last.text.extend(one.text.iter());
             }
-            _ => merged.push((one.kind, one.level, one.depth, one.text.clone(), one.hidden.clone())),
+            _ => merged.push(Merged {
+                kind: one.kind,
+                level: one.level,
+                depth: one.depth,
+                text: one.text.clone(),
+                hidden: one.hidden.clone(),
+            }),
         }
     }
     let pieces: Vec<Piece<'_>> = merged
         .iter()
-        .map(|(kind, level, depth, text, hidden)| Piece {
-            kind: *kind,
-            level: *level,
-            depth: *depth,
-            text,
-            hidden,
+        .map(|one| Piece {
+            kind: one.kind,
+            level: one.level,
+            depth: one.depth,
+            text: &one.text,
+            hidden: &one.hidden,
         })
         .collect();
     super::markdown::render(&pieces)
