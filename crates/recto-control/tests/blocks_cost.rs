@@ -29,6 +29,9 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+/// The most characters a page may have in a corpus (2,000,000): more than a block may point into (`MAX_PAGE_CHARS`, 1 Mi), which maps nothing, but the session still holds them as a buffer of 8 MB.
+const PAGE_CHARS: usize = 2_000_000;
+
 /// A store with a page of this many characters, that keeps nothing.
 struct Text(usize);
 
@@ -66,7 +69,7 @@ fn peak_over(said: &[u8], chars: usize) -> isize {
 #[test]
 fn a_hostile_page_line_costs_the_session_little() {
     for (name, filler) in [("empty blocks", "[],"), ("short objects", r#"{"kind":"para","text":"a"},"#)] {
-        let peak = peak_over(&said(filler, 0), 1_000_000);
+        let peak = peak_over(&said(filler, 0), PAGE_CHARS);
         println!("BLOCKS_COST {name}: {:.1} MiB over", peak as f64 / 1048576.0);
         assert!(peak < 32 * 1024 * 1024, "{name}: {peak} bytes over");
     }

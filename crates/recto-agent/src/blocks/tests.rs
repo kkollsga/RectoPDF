@@ -33,6 +33,8 @@ struct Host {
     wants: AtomicU32,
     /// A build that doesn't end until it's told to.
     making: AtomicBool,
+    /// After it's told to stop it still says it's making them this many looks more, as a helper does that takes a moment to end.
+    still_stopping: AtomicU32,
     /// Whether the corpus folder was still there when `cancel_files` came.
     folder_when_cancelled: Mutex<Option<bool>>,
     folder: PathBuf,
@@ -48,10 +50,16 @@ impl Blocking for Host {
     }
     fn cancel_files(&self, _paths: Option<&[PathBuf]>) {
         *self.folder_when_cancelled.lock().unwrap() = Some(self.folder.exists());
-        self.making.store(false, Ordering::SeqCst);
+        if self.making.swap(false, Ordering::SeqCst) {
+            self.still_stopping.store(3, Ordering::SeqCst);
+        }
     }
     fn making(&self, _paths: Option<&[PathBuf]>) -> bool {
         self.making.load(Ordering::SeqCst)
+            || self
+                .still_stopping
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+                .is_ok()
     }
 }
 
@@ -98,6 +106,7 @@ fn a_world(indexed: bool) -> World {
             state: Mutex::new(GenState::Idle),
             wants: AtomicU32::new(0),
             making: AtomicBool::new(false),
+            still_stopping: AtomicU32::new(0),
             folder_when_cancelled: Mutex::new(None),
             folder: root.join(key.hex()),
         },
@@ -186,6 +195,11 @@ fn index_clear_stops_a_blocks_build_before_it_clears() {
         );
         assert!(!world.root.join(world.key.hex()).exists(), "the folder is cleared (all: {all})");
         assert_eq!(said["being_built"], 0, "{said}");
+        assert_eq!(
+            world.host.still_stopping.load(Ordering::SeqCst),
+            0,
+            "the clear didn't wait for the build to end (all: {all})"
+        );
     }
 }
 
@@ -232,7 +246,9 @@ fn wait_blocks_ready_maps_each_state() {
     assert!(!header.exists());
     // No host, and no index.
     let bare = a_world(false);
-    assert!(matches!(bare.wait(), ConditionState::Waiting | ConditionState::Failed(_)));
+    // No index to make blocks from: the wait is the index's own, and asks nothing of blocks.
+    assert_eq!(bare.wait(), ConditionState::Waiting, "an index that isn't made is waited for");
+    assert_eq!(bare.host.wants.load(Ordering::SeqCst), 0);
     let fallback = reason_words("something new");
     for code in [
         "needs_password",

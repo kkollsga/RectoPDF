@@ -397,12 +397,19 @@ fn a_file_rewritten_while_blocks_are_made_gets_none() {
         Box::new(Walled::at(walled_helper())),
         Box::new(recto_control::blocking::Walled::at(walled_helper()).busy_for(1500)),
     );
+    let asked = Instant::now();
     agent_blocks::Blocking::want(&generator, blocks_ask(&pdf, key, &root, &find_key));
     helper_running(&generator, key);
     let other = pdf.0.with_extension("new");
     std::fs::write(&other, recto_testpdf::text_lines(&["a different file"])).unwrap();
     std::fs::rename(&other, &pdf.0).unwrap();
     until_idle(&generator, key);
+    // Only a debug helper spins before it reads (`test_busy_ms`): with a release one laid out the job is over before the file is swapped, and this proves nothing.
+    assert!(
+        asked.elapsed() >= Duration::from_millis(1500),
+        "R3 needs the debug helper in target/Helpers: the job took {:?}",
+        asked.elapsed()
+    );
     assert!(
         StoredBlocks::open(&find_key, &root, key).unwrap().is_none(),
         "blocks were made for a file that was swapped"

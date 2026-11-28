@@ -214,7 +214,7 @@ impl BlocksBuild {
     /// Page `page`'s characters, in the numbering `recto text` gives, into `chars` (which is cleared). False when the page has no text to map against: no text, failed, or can't be read.
     pub fn text(&mut self, page: u32, chars: &mut Vec<char>) -> bool {
         chars.clear();
-        // A page of a great many characters leaves its room in the buffer for the rest of the job; past a megabyte it is given back.
+        // A long page leaves its room in these buffers for the rest of the job. The characters' is given back past 1 Mi of them (4 MiB), and the page's bytes' past 1 MiB, at the next page.
         if chars.capacity() > 1 << 20 {
             *chars = Vec::new();
         }
