@@ -102,11 +102,14 @@ impl Inner {
         host.session
             .set_persons_keys(recto_agent::keys::PersonsKeys::new(move |identity| persons_keys.get(identity)));
         let backups = recto_control::host::backups_folder(&paths);
-        recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
+        if recto_control::removal_store::gate::backups_may_change(&paths.root) {
+            recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
+        }
         let save_step = Arc::new(AtomicU8::new(0));
         host.session.set_saving(Arc::new(saving::AppSaving {
             saver: Arc::clone(&saver),
             backups,
+            root: paths.root.clone(),
             step: Arc::clone(&save_step),
             core: Arc::clone(&core),
         }));

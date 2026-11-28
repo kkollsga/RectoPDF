@@ -81,3 +81,16 @@ impl Updater {
         }
     }
 }
+
+/// What a person is told when the version they have keeps failing and can't go back, because an unfinished removal's record is there and the kept version
+/// can't read it. Said as it is, once, and the log line stays.
+pub(super) fn going_back_withheld(current: &str, previous: &str) -> String {
+    format!("{APP_NAME} {current} keeps failing, but it can't go back to {previous}: {previous} {WITHHELD_REASON}, so {current} stays.")
+}
+
+const WITHHELD_REASON: &str = "can't read an unfinished removal of data from a document";
+
+/// Whether this is that sentence ([`going_back_withheld`]), for the notice that stays up.
+pub(super) fn is_going_back_withheld(text: &str) -> bool {
+    text.contains(WITHHELD_REASON)
+}

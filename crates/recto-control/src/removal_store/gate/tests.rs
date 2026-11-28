@@ -242,9 +242,18 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
     };
     assert_eq!(in_code(&["barrier::look("]), ["removal_store/gate.rs"], "where the record is looked at");
     assert_eq!(
-        in_code(&["gate::at(", "gate::state(", "gate::anything_there(", "removal_store::gate"]),
+        in_code(&[
+            "gate::at(",
+            "gate::state(",
+            "gate::anything_there(",
+            "gate::backups_may_change(",
+            "removal_store::gate"
+        ]),
         [
             "core/removal.rs",
+            "core/saving.rs",
+            "core/start.rs",
+            "host.rs",
             "record_store.rs",
             "record_store/withheld.rs",
             "removal_store/leftovers/leases.rs",
@@ -252,4 +261,79 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
         ],
         "who asks the gate"
     );
+}
+
+/// Failure: a damaged, too-new or not-ours record lets a backup be made or pruned (only a readable pending one is looked at), or a record's ledger-only folder
+/// withholds them. For every shape of `removal/`, backups may change exactly when the gate says nothing is there.
+#[test]
+fn backups_may_not_change_while_any_record_shape_is_there() {
+    for kind in Kind::ALL {
+        let dir = temp();
+        let _put_back = (kind == Kind::ReadOnly).then(|| Restore(dir.join("removal").join("pending.v1")));
+        seed(dir.path(), kind);
+        let paths = paths(&dir);
+        assert_eq!(backups_may_change(&paths.root), kind.answer() == "nothing", "{kind:?}");
+    }
+}
+
+/// A backup file made old enough for the prune to take it.
+fn old_backup(root: &Path) -> std::path::PathBuf {
+    let folder = root.join("backups.noindex");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("original-aaaaaaaa.pdf");
+    std::fs::write(&file, b"%PDF-1.4 an original").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+    file
+}
+
+/// Failure: a session that starts while a removal is unfinished prunes the old backups (a file the removal's plan pinned goes outside it), or, with no record
+/// there, no longer prunes at all. A host (`recto serve`, `recto session`) makes no backup for a save while a record is there either, and makes one with none.
+#[test]
+fn old_backups_stay_while_a_record_is_there() {
+    use crate::host::{BackupsOnly, SessionHost};
+    use recto_agent::saving::SaveSupport as _;
+    for pending in [false, true] {
+        let dir = temp();
+        let paths = paths(&dir);
+        if pending {
+            pending_at(&paths.root, 1);
+        }
+        let file = old_backup(&paths.root);
+        let _host = SessionHost::new(recto_agent::DrawableLoader).with_backups(&paths);
+        assert_eq!(file.exists(), pending, "pending {pending}: an old backup after the host started");
+        let support = BackupsOnly {
+            folder: crate::host::backups_folder(&paths),
+            root: paths.root.clone(),
+        };
+        assert_eq!(support.backups().is_some(), !pending, "pending {pending}: a save's backup folder");
+    }
+}
+
+/// Failure (the gates' review, round 2): a save's note is skipped while an unfinished removal's record is there. The ledger records where copies are, not
+/// session memory, and anything it doesn't write must leave a gap so a removal refuses; a silent skip lets a save in the withheld window leave a temp file or
+/// a new version that a later `removal check` never sees. With a record there, as with none, the note is appended.
+#[test]
+fn a_save_while_a_record_is_there_is_still_noted() {
+    for pending in [true, false] {
+        let dir = temp();
+        let root = dir.join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        if pending {
+            pending_at(&root, 1);
+        }
+        let file = dir.join("a.pdf");
+        std::fs::write(&file, b"%PDF-1.4 a").unwrap();
+        let seen = recto_platform::file_stamp(&file).unwrap();
+        crate::removal_store::ledger::note_save(
+            &root.join("backups.noindex"),
+            &recto_agent::saving::SaveNote::Starting {
+                path: &file,
+                from: Some(seen),
+                destination: None,
+            },
+        );
+        let ledger = crate::removal_store::ledger::read(&root);
+        assert!(!ledger.links.is_empty(), "record there {pending}: nothing noted: {:?}", ledger.links);
+    }
 }

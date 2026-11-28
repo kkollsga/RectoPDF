@@ -92,5 +92,12 @@ pub fn anything_there(root: &std::path::Path) -> bool {
     at(root).is_some()
 }
 
+/// Whether a backup of an original may be made or an old one pruned: only with no record there (`!anything_there`, and always on a system that writes none).
+/// A backup made while a record is there is a new copy of a file the removal's plan didn't pin, which it would then bring back; one pruned is a file the plan
+/// did pin, taken away outside it. A save goes on without its backup. On the disk, may wait: not for the UI thread.
+pub fn backups_may_change(root: &std::path::Path) -> bool {
+    at(root).is_none()
+}
+
 #[cfg(test)]
 mod tests;

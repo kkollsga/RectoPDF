@@ -333,7 +333,7 @@ codes! {
     RENDERER_LAUNCHD_REACHABLE = "renderer_launchd_reachable", Next::Says("Tell the user RectoPDF's renderer can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling.");
     REMOVAL_BUSY = "removal_busy", Next::Says("Try again in a moment.");
     REMOVAL_CANT_CLEAR = "removal_cant_clear", Next::Says("`recto removal check` says what stands in the way.");
-    REMOVAL_PENDING = "removal_pending", Next::Says("Tell the user. A removal was left unfinished, and RectoPDF keeps the session as it is until it is finished.");
+    REMOVAL_PENDING = "removal_pending", Next::Says("Tell the user. A removal was left unfinished, so RectoPDF keeps the last session as it is and keeps nothing new from it.");
     REMOVAL_PLAN_CHANGED = "removal_plan_changed", Next::Says("`recto removal check` looks again, and gives a new plan to confirm.");
     REMOVAL_PLAN_EXPIRED = "removal_plan_expired", Next::Says("`recto removal check` looks again, and gives a new plan to confirm.");
     REMOVAL_STOPPED = "removal_stopped", Next::Says("`recto removal check` shows what is left.");

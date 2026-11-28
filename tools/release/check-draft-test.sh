@@ -27,8 +27,28 @@ wrong_version=0.0.0
 
 # Failure: the script refuses the release that is out there and was checked by hand, so its refusals of a new one mean nothing.
 out=$("$CHECK" "$REL" --previous "$PREV" 2>&1); rc=$?
-check "the published $v_prev passes as itself" 0 "$rc"
-has "with every check said" "every check passed for RectoPDF $v_prev" "$out"
+# A release made before the gate key (RectoRemovalGate, removal.md section 6) fails that one line and nothing else: it is the only fault of a release that was
+# checked by hand.
+if [ "$(unzip -p "$PREV" 'RectoPDF.app/Contents/Info.plist' 2>/dev/null | plutil -extract RectoRemovalGate raw -o - - 2>/dev/null)" = "1" ]; then
+  check "the published $v_prev passes as itself" 0 "$rc"
+  has "with every check said" "every check passed for RectoPDF $v_prev" "$out"
+else
+  check "the published $v_prev, which predates the gate key, fails on that alone" 1 "$rc"
+  check "with one failure" 1 "$(printf '%s\n' "$out" | grep -c '^FAIL  ')"
+  has "the gate key" "FAIL  bundle: its Info.plist has no RectoRemovalGate 1" "$out"
+fi
+
+# Failure: a release that can't read an unfinished removal's record ships, and an install of it restores a removal's data on a going back. Whatever the
+# published release has, the same one with the key taken out is refused by name (its signature breaks too, which is not what is asserted).
+copy nogate "$REL"
+mkdir "$X/nogate/unpacked" && ditto -x -k "$X/nogate"/RectoPDF-*.zip "$X/nogate/unpacked" \
+  && /usr/libexec/PlistBuddy -c "Delete :RectoRemovalGate" "$X/nogate/unpacked/RectoPDF.app/Contents/Info.plist" >/dev/null 2>&1
+rm -f "$X/nogate"/RectoPDF-*.zip
+(cd "$X/nogate/unpacked" && ditto -c -k --sequesterRsrc --keepParent RectoPDF.app "$X/nogate/RectoPDF-$v_prev.zip") && rm -rf "$X/nogate/unpacked"
+resum "$X/nogate"
+out=$("$CHECK" "$X/nogate" --previous "$PREV" 2>&1); rc=$?
+check "a draft without the gate key is refused" 1 "$rc"
+has "by name" "FAIL  bundle: its Info.plist has no RectoRemovalGate 1" "$out"
 
 # Failure: a draft whose zip isn't the file SHA256SUMS names (a re-upload, a truncated download) passes.
 copy sums "$REL"
@@ -70,6 +90,7 @@ out=$("$CHECK" "$X/adhoc" --previous "$PREV" 2>&1); rc=$?
 check "an ad hoc bundle is refused" 1 "$rc"
 has "its own reader still takes the zip" "ok    unpack: $v_prev's own recto-updater check-zip takes it" "$out"
 has "the feed is a release's" "ok    feed: latest.json names $v_local" "$out"
+has "the build reads a removal's record" "ok    bundle: reads an unfinished removal's record (RectoRemovalGate 1)" "$out"
 has "no Developer ID" "FAIL  bundle: the app: no Developer ID Application authority" "$out"
 has "no ticket" "FAIL  bundle: stapler validate" "$out"
 has "Gatekeeper refuses it" "FAIL  bundle: Gatekeeper" "$out"

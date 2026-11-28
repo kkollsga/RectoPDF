@@ -95,7 +95,7 @@ impl Updater {
     }
 
     /// What [`flow::next`] reads of the host, asked in the order it's read and no further than it's read: whether the app's ended, and unless a quit's under way
-    /// by other means, whether a build may still go in, and if it may, what's in flight and how long since the person touched the app.
+    /// by other means, whether a removal's record is there (a name-only look), whether a build may still go in, and if it may, what's in flight and how long since the person touched the app.
     fn seen(&self, stopping: bool, development_build: bool) -> Seen {
         let mut seen = Seen {
             gone: self.host.gone(),
@@ -104,6 +104,7 @@ impl Updater {
         if seen.gone || stopping {
             return seen;
         }
+        seen.removal_pending = crate::removal_record::anything_there(&self.files.root);
         seen.build_allowed = !development_build || self.host.may_take_a_build();
         if seen.build_allowed {
             let look = self.host.look();

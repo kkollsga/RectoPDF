@@ -104,6 +104,7 @@ else fail feed "${out:-latest.json does not parse}"; fi
 [ "$(plist "$APP" CFBundleIdentifier)" = "$BUNDLE_ID" ] && pass "bundle: id $BUNDLE_ID" || fail bundle "its id is $(plist "$APP" CFBundleIdentifier), not $BUNDLE_ID"
 [ "$(plist "$APP" CFBundleShortVersionString)" = "$version" ] && pass "bundle: version $version" || fail bundle "its version is $(plist "$APP" CFBundleShortVersionString), not the tag's $version"
 [ -z "$(plist "$APP" RectoDevVersion)" ] && pass "bundle: no development version" || fail bundle "it carries a development version, $(plist "$APP" RectoDevVersion)"
+[ "$(plist "$APP" RectoRemovalGate)" = "1" ] && pass "bundle: reads an unfinished removal's record (RectoRemovalGate 1)" || fail bundle "its Info.plist has no RectoRemovalGate 1: an install of it would restore a removal's data on a going back"
 first="$(head -1 "$APP/Contents/Resources/Licenses.txt" 2>/dev/null)"
 [ "$first" = "RectoPDF $version: third-party software notices" ] && pass "bundle: the licences name $version" || fail bundle "its Licenses.txt says \"$first\" (THIRD-PARTY-NOTICES.txt not bumped?)"
 codesign --verify --deep --strict "$APP" 2>"$W/v" && pass "bundle: codesign --verify --deep --strict" || fail bundle "the signature doesn't verify: $(tr '\n' ' ' < "$W/v")"

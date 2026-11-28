@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub struct AppSaving {
     pub saver: Arc<Saver>,
     pub backups: PathBuf,
+    /// The state folder, where an unfinished removal's record would be: no backup is made while it is there.
+    pub root: PathBuf,
     /// How the save under way is going, for the window's progress: 0 for none.
     pub step: Arc<AtomicU8>,
     pub core: Arc<super::CoreQueue>,
@@ -24,7 +26,7 @@ pub struct AppSaving {
 
 impl SaveSupport for AppSaving {
     fn backups(&self) -> Option<PathBuf> {
-        Some(self.backups.clone())
+        recto_control::removal_store::gate::backups_may_change(&self.root).then(|| self.backups.clone())
     }
 
     fn provenance(&self, note: &recto_agent::saving::SaveNote<'_>) {

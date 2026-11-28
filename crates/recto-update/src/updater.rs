@@ -30,6 +30,7 @@ pub mod seams;
 mod settle;
 mod started;
 use started::say_started;
+mod record_copy;
 mod words;
 use flow::Going;
 pub use now::UpdateAction;
@@ -294,6 +295,13 @@ pub enum AtLaunch {
     Exit,
 }
 
+/// An install that doesn't go ahead clears what was said about it, but not the person's notice that a going back was refused: nothing they did has answered it.
+fn clear_notice(st: &mut St) {
+    if !st.notice.as_ref().is_some_and(|notice| words::is_going_back_withheld(&notice.text)) {
+        st.notice = None;
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -438,7 +446,8 @@ impl Updater {
             st.facts = Some(facts);
             st.second_copy = second_copy;
             st.status = status;
-            st.notice = settled.notice;
+            // What a refused going back said, if it did, stays unless the settling has something of its own to say.
+            st.notice = settled.notice.or_else(|| st.notice.take());
             st.reopened_by_update = !second_copy && (settled.arrived.is_some() || settled.reopened);
             st.fall_back = settled.fall_back;
             st.arrived = settled.arrived;
@@ -480,19 +489,6 @@ impl Updater {
         }
     }
 
-    /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time.
-    fn drop_an_old_record_copy(&self, now_ms: u64, offered_to_fall_back_on: bool) {
-        let whole = self.files.before().join(".whole");
-        let made_ms = std::fs::metadata(&whole)
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|since| since.as_millis());
-        if !offered_to_fall_back_on && made_ms.is_some_and(|made| u128::from(now_ms).saturating_sub(made) > u128::from(KEEP_RECORD_COPY_MS)) {
-            let _ = std::fs::remove_dir_all(self.files.before());
-        }
-    }
-
     /// The state's record folder.
     #[must_use]
     pub fn session_folder(&self) -> PathBuf {
@@ -521,25 +517,6 @@ impl Updater {
             }
         }
         self.files.plan().exists() || self.files.outcome().exists()
-    }
-
-    /// The record from before the update, if this launch is the version before coming back from one that kept ending, and it's there: for when what that one left can't be read here. Taken once.
-    #[must_use]
-    pub fn take_record_to_fall_back_on(&self) -> Option<PathBuf> {
-        lock(&self.st).fall_back.take()
-    }
-
-    /// The record from before the update was put back, as what the version that didn't work left couldn't be read: the notice says so.
-    pub fn fell_back(&self) {
-        let mut st = lock(&self.st);
-        if let Status::WentBack { version, back_on } = &st.status {
-            let text = format!(
-                "{APP_NAME} {version} kept quitting unexpectedly, and what it left couldn't be read, so {back_on} came back with your session from before the update."
-            );
-            st.notice = Some(Notice { text, fades: true });
-        }
-        drop(st);
-        self.log("what the version that didn't work left couldn't be read, so the record from before the update was put back");
     }
 
     /// The new version's here and the installer isn't: moves the old app to where it's kept, if it stopped short of that, and clears up.
@@ -664,6 +641,10 @@ impl Updater {
             self.log(&format!(
                 "{current} keeps failing, and an unfinished removal is pending that the kept {previous} doesn't read"
             ));
+            lock(&self.st).notice = Some(Notice {
+                text: words::going_back_withheld(current, &previous),
+                fades: false,
+            });
             return false;
         }
         let plan = Plan {
@@ -1046,7 +1027,7 @@ impl Updater {
         }
         // A failure that may pass gets another chance after a while, by the back-off.
         st.install_look_at = (!lasting && self.offered_here(&st).is_some()).then(|| now.saturating_add(st.saved.install_back_off(now)));
-        st.notice = None;
+        clear_notice(&mut st);
         if asked == Asked::ByHand {
             Self::answer_by_hand(&mut st, format!("Couldn't update to {version}: {why}. {APP_NAME} is unchanged."));
         }
@@ -1067,7 +1048,7 @@ impl Updater {
             Status::Available(version.to_owned())
         };
         st.install_look_at = look_at;
-        st.notice = None;
+        clear_notice(&mut st);
         st.from_menu = false;
         drop(st);
         self.host.changed();
@@ -1086,7 +1067,7 @@ impl Updater {
                 st.saved.offered = None;
                 st.status = Status::UpToDate;
                 st.install_look_at = None;
-                st.notice = None;
+                clear_notice(&mut st);
                 if asked == Asked::ByHand {
                     Self::answer_by_hand(
                         &mut st,
@@ -1242,11 +1223,18 @@ mod tests {
 
     mod record_copy;
 
+    /// What the hand-off does when it's made: refuses, and a record that comes into the state folder as it freezes (the file to write).
+    #[derive(Default)]
+    struct HandOffScript {
+        refuse: Option<HandOffRefused>,
+        record_comes_in: Option<PathBuf>,
+    }
+
     #[derive(Default)]
     struct Fake {
         busy: Mutex<Vec<String>>,
         since_input_ms: Mutex<u64>,
-        refuse_with: Mutex<Option<HandOffRefused>>,
+        hand_off_is: Mutex<HandOffScript>,
         hand_offs: AtomicU32,
         quits: AtomicU32,
         cancels: AtomicU32,
@@ -1272,7 +1260,11 @@ mod tests {
         }
         fn hand_off(&self, _limit: Duration) -> Result<HandedOff, HandOffRefused> {
             self.hand_offs.fetch_add(1, Ordering::SeqCst);
-            match lock(&self.refuse_with).clone() {
+            if let Some(record) = lock(&self.hand_off_is).record_comes_in.take() {
+                std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+                std::fs::write(record, b"anything at the name").unwrap();
+            }
+            match lock(&self.hand_off_is).refuse.clone() {
                 Some(refused) => Err(refused),
                 None => Ok(HandedOff { tabs: Some(2) }),
             }
@@ -1571,7 +1563,7 @@ mod tests {
         bed.publish("0.2.0");
         bed.found("0.2.0");
         // A refusal: the state couldn't be written. The app's frozen only inside the hand-off, which undid it.
-        *lock(&bed.fake.refuse_with) = Some(HandOffRefused::NotSaved("the disk is full".into()));
+        lock(&bed.fake.hand_off_is).refuse = Some(HandOffRefused::NotSaved("the disk is full".into()));
         bed.updater.install(Asked::ByHand).unwrap();
         bed.wait_for("the failure", |bed| matches!(bed.status(), Status::Failed { .. }));
         assert_eq!(bed.fake.quits.load(Ordering::SeqCst), 0, "no quit, or the state would be lost");
@@ -1587,7 +1579,7 @@ mod tests {
             "this may pass, so it's not held against the version"
         );
         // A good hand-off and no installer: this one has to be undone.
-        *lock(&bed.fake.refuse_with) = None;
+        lock(&bed.fake.hand_off_is).refuse = None;
         bed.fake.installer_fails.store(true, Ordering::SeqCst);
         bed.found("0.2.0");
         bed.updater.install(Asked::ByHand).unwrap();
