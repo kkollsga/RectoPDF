@@ -245,6 +245,9 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
         in_code(&["gate::at(", "gate::state(", "gate::anything_there(", "removal_store::gate"]),
         [
             "core/removal.rs",
+            "core/saving.rs",
+            "core/start.rs",
+            "host.rs",
             "record_store.rs",
             "record_store/withheld.rs",
             "removal_store/leftovers/leases.rs",
