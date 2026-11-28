@@ -275,7 +275,7 @@ pub(crate) const ROWS_GET: &[Spec] = &[Spec {
             flag: Some("--entry"),
             kind: Kind::Count(65_535),
             required: false,
-            help: "With `--from-here` and `--grain section`: the `refs.more_entry` of the answer being followed, so going on continues that section and not the nested one the reference is in. Ignored if it isn't an entry of the contents reaching the reference's page.",
+            help: "With `--from-here` and `--grain section`: pass the `refs.more_entry` of the answer being followed back, so going on continues that section and not the nested one the reference is in. A number that isn't an entry of the contents reaching the reference's page is ignored; one from other contents that happens to fit gives the wrong section on that page, never more than the page's own text.",
         },
         TAB,
     ],
