@@ -201,6 +201,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the index's own pack under the app's index folder, read again to find the pages a retry reads",
     ),
     (
+        "recto-index/src/corpus/used.rs",
+        1,
+        "the corpus's own `build.lock` (`note_used`), opened through `local::open_private_file`: read only, never created, no link followed, no wait on a pipe, a plain private file of this user's only; held only to try its lock once and kept while `app/used` is written, then unlocked, never read or written: never a document",
+    ),
+    (
         "recto-index/src/corpus/sealed.rs",
         1,
         "the index's own pack under the app's index folder, read to say what it keeps of a document: `opened_text`, for the index tests",
