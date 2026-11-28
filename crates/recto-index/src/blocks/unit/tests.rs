@@ -875,3 +875,16 @@ fn a_page_over_the_chrome_cap_is_given_whole() {
         ("HEAD body", 1, 0)
     );
 }
+
+/// Failure: a cut before a piece that begins with a running head falls at the head's first character, so `more` names the head (and a reference that starts in chrome names it, so going on gives it back). A
+/// section whose second piece is the text between blocks, which begins with the head, over a cap that holds only the first piece: the cut is at the head's end.
+#[test]
+fn a_cut_before_a_piece_that_begins_with_a_head_is_at_the_heads_end() {
+    let mut doc = Doc::new(vec![("aaaaHEADbbbbbbbb", vec![block(Kind::Paragraph, 0, (0, 4), 100)])]);
+    doc.pages[0].chrome = Some(vec![(4, 8)]);
+    let sections = Sections::new(toc(&[(0, 0, 0)]).entries());
+    let one = unit(build(&mut doc, &ask(Grain::Section, 0, None, Some(&sections), 6)));
+    assert_eq!((joined(&one).as_str(), one.truncated), ("aaaa", true));
+    assert_eq!(one.refs.more.map(|more| more.range.offsets().0), Some(8), "{:?}", one.refs);
+    assert_eq!(one.counts.chrome_chars_left_out, 4);
+}
