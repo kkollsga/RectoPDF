@@ -16,6 +16,9 @@ use std::sync::Arc;
 /// A corpus's pages' edges, asked for in the order pages are walked.
 pub(super) type Ring = StoredChrome<Box<dyn FnMut(u32) -> Option<Vec<EdgeLine>>>>;
 
+/// A page's chrome spans, `None` when they aren't known.
+type Spans = Option<Vec<(u32, u32)>>;
+
 /// What `get` of a page or a hit gives of the characters `[from, to)`: the ones that aren't chrome, up to the cap.
 pub(super) struct Slice {
     pub shown: Vec<char>,
@@ -92,7 +95,7 @@ pub(super) fn slice(read: &super::PageRead, chars: &[char], named: Option<(u32, 
 /// What a blocks answer holds of chrome while it reads: the window over the stored edges, and the spans of the page read last, kept for the builder's next question about it.
 pub(super) struct Chrome {
     ring: Ring,
-    read: Option<(u32, Option<Vec<(u32, u32)>>)>,
+    read: Option<(u32, Spans)>,
 }
 
 impl Chrome {
