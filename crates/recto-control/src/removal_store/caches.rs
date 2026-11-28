@@ -21,6 +21,7 @@ mod clear_tests;
 mod names;
 #[cfg(test)]
 mod pins;
+pub mod purge;
 /// The fixtures are shared with the coverage gate (`removal_store/coverage_tests.rs`).
 #[cfg(test)]
 pub(crate) mod tests;
@@ -62,6 +63,27 @@ pub(super) fn is_plain_cache_entry(entry: &Entry, uid: u32) -> bool {
             Kind::Folder => true,
             Kind::Link | Kind::Other => false,
         }
+}
+
+/// The tree of `folder` (open) if everything in it is a plain thing of this user's ([`is_plain_cache_entry`], with `uid_of` saying whose), within `cap` entries and
+/// on the folder's own device: the one predicate of the survey and of the purge, so what was proved plain is what is acted on. `None` if something isn't,
+/// `TooLarge` if there are more entries than `cap`.
+pub(super) fn plain_tree_in(folder: &Folder, cap: usize, uid_of: &dyn Fn(&Entry) -> u32) -> Result<Option<Tree>, Refusal> {
+    let Some(device) = folder.identity().ok().map(|id| id.dev) else {
+        return Ok(None);
+    };
+    let (mut budget, refused) = (cap, std::cell::Cell::new(false));
+    let accept = |entry: &Entry| {
+        let ok = is_plain_cache_entry(entry, uid_of(entry));
+        refused.set(refused.get() || !ok);
+        ok
+    };
+    match tree_accepting(folder, 0, &mut budget, device, &accept) {
+        Some(tree) => Ok(Some(tree)),
+        // The walk stopped with nothing left to count and nothing refused: one entry too many.
+        None if budget == 0 && !refused.get() => Err(Refusal::TooLarge),
+        None => Ok(None),
+    }
 }
 
 /// The caps (design limits, not measurements), so a test can make them small. One over any is `TooLarge`, and nothing is marked.
@@ -343,21 +365,7 @@ impl Run<'_> {
     /// The tree of an app folder that is open, if everything in it is a plain thing of this user's ([`is_plain_cache_entry`]): `None` if not, `TooLarge` if it holds
     /// more entries than the cap.
     fn plain_tree(&self, folder: &Folder) -> Result<Option<Tree>, Refusal> {
-        let Some(device) = folder.identity().ok().map(|id| id.dev) else {
-            return Ok(None);
-        };
-        let (mut budget, refused) = (self.caps.tree_entries, std::cell::Cell::new(false));
-        let accept = |entry: &Entry| {
-            let ok = is_plain_cache_entry(entry, self.uid_of(entry));
-            refused.set(refused.get() || !ok);
-            ok
-        };
-        match tree_accepting(folder, 0, &mut budget, device, &accept) {
-            Some(tree) => Ok(Some(tree)),
-            // The walk stopped with nothing left to count and nothing refused: one entry too many.
-            None if budget == 0 && !refused.get() => Err(Refusal::TooLarge),
-            None => Ok(None),
-        }
+        plain_tree_in(folder, self.caps.tree_entries, &|entry| self.uid_of(entry))
     }
 
     /// The owner of something proven the target's: the target's for a Save, the source's for a Save As; a file with other names is shared.

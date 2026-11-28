@@ -26,7 +26,8 @@ mod update_copy;
 mod writer_temps;
 
 pub use backups::{survey_backups, survey_backups_pinned};
-pub use caches::{CacheTarget, survey_caches};
+pub use caches::purge::{CacheRoots, CachesQuiet, purge_caches};
+pub use caches::{CacheTarget, caches_are_clear, survey_caches, survey_caches_to_clear};
 pub use journals::{survey_journals, survey_journals_pinned};
 pub use legacy_session::survey_legacy_sessions;
 pub use library::survey_library;

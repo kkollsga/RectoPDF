@@ -247,6 +247,8 @@ pub(super) fn purge_files(
             }
         })?;
     }
+    // A fixed order (by place, then name), so a stop part way leaves the same files and a resume takes the same rest.
+    matches.sort_by(|a, b| (a.place, &a.entry.name).cmp(&(b.place, &b.entry.name)));
     let mut already_gone = (want.len() - matches.len()) as u32;
     // Pass 1: nothing is unlinked unless every file to go is what was pinned.
     for found in &matches {
