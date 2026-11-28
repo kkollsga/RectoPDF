@@ -11,9 +11,9 @@ use crate::reading::TabFile;
 use crate::{AgentError, Code, Event, SessionAccess, exit};
 use recto_core::locator::{self, Locator, Referrer, ScanCaps, Target};
 use recto_core::{Toc, nav::Frame, verdict};
+use recto_index::blocks::Block;
 use recto_index::blocks::sections::Sections;
 use recto_index::blocks::unit::{self, Ask, Grain, Mark, Outcome, Pages, Why};
-use recto_index::blocks::{Block, markdown};
 use recto_index::corpus::{CorpusKey, PageKind, ReadyCorpus, StoredBlocks};
 use recto_session::TabId;
 use recto_session::identify::Opened;
@@ -317,7 +317,7 @@ pub(super) fn answer<A: SessionAccess>(
             untrusted["text"] = json!(text);
             data_hidden = json!(spans.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>());
         }
-        Form::Markdown => untrusted["markdown"] = json!(markdown::render(&unit::render_pieces(&built.given))),
+        Form::Markdown => untrusted["markdown"] = json!(unit::as_markdown(&built.given)),
     }
     let headings: Vec<Value> = built
         .headings

@@ -104,6 +104,8 @@ pub struct Given {
     pub text: Vec<char>,
     /// Hidden stretches, in characters of `text`.
     pub hidden: Vec<(u32, u32)>,
+    /// This piece is the rest of the paragraph the piece before it began, on a later page ([`Block::continues`]): one paragraph in the answer, not two.
+    pub joins: bool,
 }
 
 /// A place to go to: a run of one page's characters, with their check.
@@ -245,19 +247,32 @@ pub fn clip_spans(spans: &[(u32, u32)], from: u32, to: u32) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// The pieces as the Markdown renderer takes them.
+/// The pieces as Markdown. A piece that [`Given::joins`] the one before it is the rest of that paragraph (or list item), so it goes on in the same block, on the next line, and isn't a block of its own.
 #[must_use]
-pub fn render_pieces(given: &[Given]) -> Vec<Piece<'_>> {
-    given
+pub fn as_markdown(given: &[Given]) -> String {
+    let mut merged: Vec<(Kind, u8, Option<u8>, Vec<char>, Vec<(u32, u32)>)> = Vec::new();
+    for one in given {
+        match merged.last_mut() {
+            Some(last) if one.joins && last.0 == one.kind => {
+                last.3.push('\n');
+                let at = last.3.len() as u32;
+                last.4.extend(one.hidden.iter().map(|&(start, end)| (start + at, end + at)));
+                last.3.extend(one.text.iter());
+            }
+            _ => merged.push((one.kind, one.level, one.depth, one.text.clone(), one.hidden.clone())),
+        }
+    }
+    let pieces: Vec<Piece<'_>> = merged
         .iter()
-        .map(|one| Piece {
-            kind: one.kind,
-            level: one.level,
-            depth: one.depth,
-            text: &one.text,
-            hidden: &one.hidden,
+        .map(|(kind, level, depth, text, hidden)| Piece {
+            kind: *kind,
+            level: *level,
+            depth: *depth,
+            text,
+            hidden,
         })
-        .collect()
+        .collect();
+    super::markdown::render(&pieces)
 }
 
 /// The pieces as plain text: the pieces end to end, with one `\n` where a page ends and the next begins. The hidden stretches are in characters of that text.
@@ -296,6 +311,35 @@ struct Taken {
     cut: Option<(u32, u32)>,
     /// The first character given: the unit's own start.
     first: Option<Mark>,
+}
+
+/// Where a paragraph's walk has got to: the last page it reached, and the block after that block on that page (made while the page was loaded).
+struct Tail {
+    page: u32,
+    next: Option<Mark>,
+    has_next: bool,
+}
+
+/// What a paragraph's walk has taken in so far.
+struct Walked {
+    chars: u32,
+    pages: u32,
+    continues: bool,
+    truncated: bool,
+}
+
+/// The next page with blocks, as [`Walk::page_after_with_blocks`] finds it.
+enum Found {
+    At(u32),
+    /// No page after it has blocks.
+    End,
+    /// Reading stopped (the page cap, the live time, or too many pages with no text) at this page.
+    Stopped(u32),
+}
+
+/// Whether a block of this kind, going on at the top of a page, is one paragraph with its rest.
+const fn joins_across_pages(kind: Kind) -> bool {
+    matches!(kind, Kind::Paragraph | Kind::ListItem | Kind::Caption | Kind::Footnote)
 }
 
 struct Walk<'a, P: Pages> {
@@ -563,6 +607,7 @@ impl<'a, P: Pages> Walk<'a, P> {
                 depth,
                 text: self.chars[spec.start as usize..end as usize].to_vec(),
                 hidden: clip_spans(&self.hidden, spec.start, end),
+                joins: false,
             });
             taken.chars_given = taken.chars_given.saturating_add(take as u32);
             if kind_outside {
@@ -618,28 +663,126 @@ impl<'a, P: Pages> Walk<'a, P> {
         refs.up = refs.this;
         let before = index.checked_sub(1).map(|at| self.blocks[at]);
         let after = self.blocks.get(index + 1).copied();
-        refs.next = after.and_then(|next| self.mark(next.start, next.end));
         refs.prev = before.and_then(|prev| self.mark(prev.start, prev.end));
-        let (needs_next, needs_prev) = (after.is_none(), before.is_none());
-        if needs_next {
-            refs.next = self.neighbour_block(ask.page, true)?;
+        let mut tail = Tail {
+            page: ask.page,
+            next: after.and_then(|next| self.mark(next.start, next.end)),
+            has_next: after.is_some(),
+        };
+        let mut walked = Walked {
+            chars: block.end - from,
+            pages: 1,
+            continues: block.continues,
+            truncated: taken.cut.is_some(),
+        };
+        if block.continues && taken.cut.is_none() && joins_across_pages(block.kind) {
+            self.join_on(ask, &block, &mut taken, &mut tail, &mut walked, &mut refs)?;
         }
-        if needs_prev {
+        if before.is_none() {
             refs.prev = self.neighbour_block(ask.page, false)?;
         }
-        let truncated = taken.cut.is_some();
+        // After the last piece reached: the block after it on its page, else the first block of a later page.
+        refs.next = if tail.has_next { tail.next } else { self.neighbour_block(tail.page, true)? };
         Ok(Outcome::Unit(Box::new(Unit {
-            chars: block.end - from,
+            chars: walked.chars,
             chars_given: taken.chars_given,
             given: taken.given,
-            pages: 1,
-            truncated,
-            continues: block.continues,
+            pages: walked.pages,
+            truncated: walked.truncated,
+            continues: walked.continues,
             entry: None,
             headings: Self::headings_above(ask.sections, place),
             refs,
             counts: self.counts,
         })))
+    }
+
+    /// Follows a paragraph that goes on at the top of a later page, piece by piece, until its last piece, the end of what's read (the cap on pages read, the live time, the caller's characters) or a page that
+    /// doesn't go on with the same kind of block. **Bounded by the reads, not by what a store says:** a store that sets `continues` on every page is followed only as far as the page cap lets pages be read.
+    fn join_on(&mut self, ask: &Ask<'_>, block: &Block, taken: &mut Taken, tail: &mut Tail, walked: &mut Walked, refs: &mut Refs) -> Result<(), Fault> {
+        loop {
+            let at = match self.page_after_with_blocks(tail.page)? {
+                Found::At(at) => at,
+                Found::End => {
+                    walked.continues = false;
+                    return Ok(());
+                }
+                Found::Stopped(page) => {
+                    // The next piece isn't read: its place is named, with the one read past the cap that naming is allowed.
+                    walked.truncated = true;
+                    refs.more = if self.load_to_name(page)? {
+                        self.blocks.first().copied().and_then(|first| self.mark(first.start, first.end))
+                    } else {
+                        None
+                    };
+                    return Ok(());
+                }
+            };
+            let Some(first) = self.blocks.first().copied().filter(|first| first.kind == block.kind) else {
+                // The page begins with something else: this paragraph ended on the page before.
+                walked.continues = false;
+                return Ok(());
+            };
+            *tail = Tail {
+                page: at,
+                next: self.blocks.get(1).and_then(|next| self.mark(next.start, next.end)),
+                has_next: self.blocks.len() > 1,
+            };
+            walked.pages = at - ask.page + 1;
+            walked.chars = walked.chars.saturating_add(first.end - first.start);
+            walked.continues = first.continues;
+            let before = taken.given.len();
+            let depths = vec![None; self.blocks.len()];
+            let specs = [Spec {
+                kind: first.kind,
+                level: first.level,
+                start: first.start,
+                end: first.end,
+                block: Some(0),
+            }];
+            self.give(taken, &specs, &depths, ask.max_chars as usize);
+            if let Some(joined) = taken.given.get_mut(before) {
+                joined.joins = true;
+            }
+            if let Some((_, cut)) = taken.cut {
+                walked.truncated = true;
+                refs.more = self.mark_from_here(cut);
+                return Ok(());
+            }
+            if !first.continues {
+                return Ok(());
+            }
+        }
+    }
+
+    /// The next page after `page` that has stored blocks, loaded: pages the tab doesn't show and pages with no text are passed over, and the cap on pages read and the live time stop it.
+    fn page_after_with_blocks(&mut self, page: u32) -> Result<Found, Fault> {
+        let count = self.pages.pages();
+        let (mut at, mut blank) = (page, 0);
+        loop {
+            at += 1;
+            if at >= count {
+                return Ok(Found::End);
+            }
+            if !self.pages.shown(at) {
+                continue;
+            }
+            if self.loaded != Some(at) {
+                if !self.pages.has_text(at) {
+                    blank += 1;
+                    if blank > BLANK_PAGES_PASSED {
+                        return Ok(Found::Stopped(at));
+                    }
+                    continue;
+                }
+                if !self.can_read() {
+                    return Ok(Found::Stopped(at));
+                }
+            }
+            if self.load(at)? && !self.blocks.is_empty() {
+                return Ok(Found::At(at));
+            }
+        }
     }
 
     /// The first block of the next page, or the last of the one before, that has any: skipping pages with none and pages the tab doesn't show, as far as pages may be read.
