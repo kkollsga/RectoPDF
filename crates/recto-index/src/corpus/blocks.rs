@@ -483,6 +483,7 @@ pub fn build_text_corpus(find_key: &FindKey, root: &Path, (key, file): (CorpusKe
                 chars: text.chars().map(|ch| recto_proto::CharRecord::new(ch as u32, 0)).collect(),
                 boxes: Vec::new(),
                 hidden_checked: true,
+                frame: None,
             })
         }
         fn still_the_same_file(&mut self) -> bool {

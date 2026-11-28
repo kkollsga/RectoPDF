@@ -1,6 +1,6 @@
 //! Chrome detection, which a copy and a snapshot's box use to leave out running heads, footers and page numbers: on positions and text from hostile pages. It runs in the host, on what a worker sent, for every page a copy reads, so a NaN, a size of 1e30, a page number past `u32`, a page of thousands of rows at its edge or a neighbour that's nothing like its page has to do no harm and take no time.
 //!
-//! Three ways in: text alone, through the rules that read it (`numbers`, `key`, `framed_number`, `page_number`); edge pieces made straight from the bytes, through `chrome_spans`, with neighbours any number of pages away; and whole pages of rows, five of them, each built from its own characters and boxes, compared with each other as a copy compares them. `select` only ever compares a page with itself.
+//! Four ways in: text alone, through the rules that read it (`numbers`, `key`, `framed_number`, `page_number`); edge pieces made straight from the bytes, through `chrome_spans`, with neighbours any number of pages away; and whole pages of rows, five of them, each built from its own characters and boxes, compared with each other as a copy compares them (`select` only ever compares a page with itself); and a page's stored region (`chrome::stored`), decoded straight from the bytes.
 //!
 //! What must hold: no panic, bounded time and memory; what's left out is one of the page's own pieces, in order, inside its text; a page keeps no more than its cap of edge pieces; the rules on text give what they say they give.
 
@@ -83,12 +83,52 @@ const INDEXES: &[u32] = &[0, 1, 2, 11, 12, u32::MAX - 1, u32::MAX];
 /// Catches: a panic, a span left out that isn't one of the page's own or is outside its text, an edge piece past its cap, a rule on text that gives what it says it doesn't, and anything worse than linear on a hostile page.
 pub fn check(data: &[u8]) {
     let mut take = Take(data);
-    let route = take.u8() % 3;
+    let route = take.u8() % 4;
     within("chrome on a hostile page", BUDGET, || match route {
         0 => text_rules(take.rest()),
         1 => edge_pieces(&mut take),
-        _ => whole_pages(&mut take),
+        2 => whole_pages(&mut take),
+        _ => stored_region(&mut take),
     });
+}
+
+/// A region decoded from arbitrary bytes, for a page of some characters: no panic, and a region that opens has at most the cap's pieces, each inside the page, and writes back to the same pieces. Half the time the bytes are a region written from fuzzed pieces with one byte changed, so the decoder's acceptance is reached and not only its refusals.
+fn stored_region(take: &mut Take<'_>) {
+    let chars = take.u32() % 4096;
+    let from_lines = take.u8() & 1 == 0;
+    let made;
+    let bytes = if from_lines {
+        let mut region = Vec::new();
+        let mut lines = lines_of(take);
+        // A page number is at most five digits, so the writer is never given one that reads as none.
+        lines
+            .iter_mut()
+            .for_each(|line| line.number = line.number.filter(|number| *number != NO_NUMBER));
+        chrome::stored::write(&lines, &mut region);
+        let (at, byte) = (usize::from(take.u8()) | usize::from(take.u8()) << 8, take.u8());
+        if !region.is_empty() && byte & 1 == 0 {
+            let at = at % region.len();
+            region[at] ^= byte;
+        }
+        made = region;
+        &made[..]
+    } else {
+        take.rest()
+    };
+    let checked = chrome::stored::check(bytes, chars);
+    let read = chrome::stored::read(bytes, chars);
+    assert_eq!(checked, read.is_some(), "check and read disagree");
+    if let Some(lines) = read {
+        assert!(lines.len() <= MAX_EDGE_LINES);
+        assert!(lines.iter().all(|line| line.start <= line.end && line.end <= chars));
+        let mut again = Vec::new();
+        chrome::stored::write(&lines, &mut again);
+        assert_eq!(
+            chrome::stored::read(&again, chars).as_deref(),
+            Some(&lines[..]),
+            "a region that opens writes back as it was"
+        );
+    }
 }
 
 /// A text from the pieces, each chosen by a byte, with `{n}` a number near this page's.
@@ -318,8 +358,8 @@ fn whole_pages(take: &mut Take<'_>) {
     let wild = take.u8().is_multiple_of(4);
     let (width, height) = if wild {
         (
-            take.pick(&[612.0f32, 595.0, 100.0, 1e-3, 1e30]),
-            take.pick(&[792.0f32, 842.0, 100.0, 0.0, f32::NAN]),
+            take.pick(&[612.0f32, 595.0, 100.0, 1e-3, 1e30, f32::MAX]),
+            take.pick(&[792.0f32, 842.0, 100.0, 0.0, f32::NAN, f32::MAX]),
         )
     } else {
         take.pick(&[(612.0f32, 792.0f32), (595.0, 842.0), (792.0, 612.0)])
@@ -350,6 +390,14 @@ fn whole_pages(take: &mut Take<'_>) {
     for (at, text) in texts.iter().enumerate() {
         let edges = text.edge_lines();
         assert!(edges.len() <= MAX_EDGE_LINES, "{} edge pieces", edges.len());
+        // What the index would store: nothing a reader refuses, and what it does store reads back as it was.
+        if let Some(region) = chrome::stored::kept(edges, text.len()) {
+            assert_eq!(
+                chrome::stored::read(&region, text.len()).as_deref(),
+                Some(edges),
+                "a stored region reads back as written"
+            );
+        }
         assert!(
             edges.iter().all(|line| line.start <= line.end && line.end <= text.len()),
             "an edge piece outside its page"

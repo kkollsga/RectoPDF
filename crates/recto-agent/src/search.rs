@@ -1706,6 +1706,7 @@ mod tests {
                     chars: text.chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect(),
                     boxes: Vec::new(),
                     hidden_checked: *checked,
+                    frame: None,
                 }),
                 None => Err(recto_index::corpus::FeedError::Page(recto_index::corpus::FailReason::Stopped)),
             }
