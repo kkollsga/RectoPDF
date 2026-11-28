@@ -963,7 +963,7 @@ fn digest(read: Result<FedPage, FailReason>) -> Digested {
                 .edge_lines()
                 .to_vec()
         })
-        .filter(|lines| stored_region_reads_back(lines, &normalized.text));
+        .filter(|lines| stored::kept(lines, u32::try_from(normalized.text.chars().count()).unwrap_or(u32::MAX)).is_some());
     if edges.is_some() {
         flags |= FLAG_EDGES;
     }
@@ -977,13 +977,6 @@ fn digest(read: Result<FedPage, FailReason>) -> Digested {
         reason: 0,
     };
     (record, normalized.also_spelled, reading.hidden_spans, normalized.text, edges)
-}
-
-/// Whether the reader would take these pieces back for a page of this text. A piece the reader refuses (a place that overflowed to infinity, on a hostile page) is not stored: its page then has no region, which says "unknown", and not one that reads as damaged on every open. The one check is the reader's own.
-fn stored_region_reads_back(lines: &[EdgeLine], text: &str) -> bool {
-    let mut region = Vec::new();
-    stored::write(lines, &mut region);
-    stored::check(&region, u32::try_from(text.chars().count()).unwrap_or(u32::MAX))
 }
 
 fn failed_record(reason: FailReason) -> PageRecord {

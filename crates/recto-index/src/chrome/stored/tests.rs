@@ -109,6 +109,7 @@ fn walking_pages_in_order_reads_each_pages_edges_once() {
     assert!(asked.len() <= 64 + 4, "{} reads for 64 pages", asked.len());
     assert!(most_held <= 2 * NEIGHBOURS as usize + 1, "{most_held} pages held at once");
     let mut sorted = asked.clone();
+    sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), asked.len(), "a page asked for twice");
 }

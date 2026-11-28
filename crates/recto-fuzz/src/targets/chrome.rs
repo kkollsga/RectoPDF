@@ -92,10 +92,27 @@ pub fn check(data: &[u8]) {
     });
 }
 
-/// A region decoded from arbitrary bytes, for a page of some characters: no panic, and a region that opens has at most the cap's pieces, each inside the page, and writes back to the same pieces.
+/// A region decoded from arbitrary bytes, for a page of some characters: no panic, and a region that opens has at most the cap's pieces, each inside the page, and writes back to the same pieces. Half the time the bytes are a region written from fuzzed pieces with one byte changed, so the decoder's acceptance is reached and not only its refusals.
 fn stored_region(take: &mut Take<'_>) {
     let chars = take.u32() % 4096;
-    let bytes = take.rest();
+    let from_lines = take.u8() & 1 == 0;
+    let made;
+    let bytes = if from_lines {
+        let mut region = Vec::new();
+        let mut lines = lines_of(take);
+        // A page number is at most five digits, so the writer is never given one that reads as none.
+        lines.iter_mut().for_each(|line| line.number = line.number.filter(|number| *number != NO_NUMBER));
+        chrome::stored::write(&lines, &mut region);
+        let (at, byte) = (usize::from(take.u8()) | usize::from(take.u8()) << 8, take.u8());
+        if !region.is_empty() && byte & 1 == 0 {
+            let at = at % region.len();
+            region[at] ^= byte;
+        }
+        made = region;
+        &made[..]
+    } else {
+        take.rest()
+    };
     let checked = chrome::stored::check(bytes, chars);
     let read = chrome::stored::read(bytes, chars);
     assert_eq!(checked, read.is_some(), "check and read disagree");
@@ -339,8 +356,8 @@ fn whole_pages(take: &mut Take<'_>) {
     let wild = take.u8().is_multiple_of(4);
     let (width, height) = if wild {
         (
-            take.pick(&[612.0f32, 595.0, 100.0, 1e-3, 1e30]),
-            take.pick(&[792.0f32, 842.0, 100.0, 0.0, f32::NAN]),
+            take.pick(&[612.0f32, 595.0, 100.0, 1e-3, 1e30, f32::MAX]),
+            take.pick(&[792.0f32, 842.0, 100.0, 0.0, f32::NAN, f32::MAX]),
         )
     } else {
         take.pick(&[(612.0f32, 792.0f32), (595.0, 842.0), (792.0, 612.0)])
@@ -371,6 +388,10 @@ fn whole_pages(take: &mut Take<'_>) {
     for (at, text) in texts.iter().enumerate() {
         let edges = text.edge_lines();
         assert!(edges.len() <= MAX_EDGE_LINES, "{} edge pieces", edges.len());
+        // What the index would store: nothing a reader refuses, and what it does store reads back as it was.
+        if let Some(region) = chrome::stored::kept(edges, text.len()) {
+            assert_eq!(chrome::stored::read(&region, text.len()).as_deref(), Some(edges), "a stored region reads back as written");
+        }
         assert!(
             edges.iter().all(|line| line.start <= line.end && line.end <= text.len()),
             "an edge piece outside its page"

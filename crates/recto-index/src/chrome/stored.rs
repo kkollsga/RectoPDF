@@ -59,9 +59,17 @@ pub fn write(lines: &[EdgeLine], out: &mut Vec<u8>) {
         out.extend_from_slice(&line.framed_number.to_le_bytes());
         out.extend_from_slice(&line.start.to_le_bytes());
         out.extend_from_slice(&line.end.to_le_bytes());
+        debug_assert!(line.number != Some(NO_NUMBER), "a number that reads as none");
         out.extend_from_slice(&line.number.unwrap_or(0).to_le_bytes());
         out.extend_from_slice(&line.place.row.to_le_bytes());
     }
+}
+
+/// A page's pieces as the region that would be stored for it, if the reader would take it back for a page of `chars` characters; `None` if it wouldn't (a place that overflowed to infinity on a hostile page), and then nothing is stored and the page is "unknown". The one check is [`check`], the reader's own.
+pub fn kept(lines: &[EdgeLine], chars: u32) -> Option<Vec<u8>> {
+    let mut region = Vec::new();
+    write(lines, &mut region);
+    check(&region, chars).then_some(region)
 }
 
 /// The records of a region, if its count and length agree.
