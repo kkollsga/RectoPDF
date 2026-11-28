@@ -487,8 +487,9 @@ mod tests {
             access.session.lock().unwrap().open(&file.0).expect("opened");
             let command = parse(r#"{"cmd":"contents_show","which":"generated"}"#).expect("parsed");
             execute(&access, actor, &command, &mut Vec::new()).expect("a show");
-            let counts = (*access.asked.as_agent.lock().unwrap(), *access.asked.as_person.lock().unwrap());
-            counts
+            let as_agent = *access.asked.as_agent.lock().unwrap();
+            let as_person = *access.asked.as_person.lock().unwrap();
+            (as_agent, as_person)
         };
         for level in [Level::Control, Level::Full] {
             assert_eq!(asked_by(Actor::Agent(level)), (1, 0), "an agent at {level:?} asks as an agent");

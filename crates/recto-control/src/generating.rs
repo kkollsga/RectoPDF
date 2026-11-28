@@ -433,7 +433,7 @@ impl Shared {
 
 /// Runs one job's work so that a panic in it is a failure (`if_it_panics`) and not the end of the queue's thread, then lets a test hold the moment after it ends, and says whether it was cancelled meanwhile. The one skeleton of every kind's run.
 fn guarded<O>(stop: &AtomicBool, if_it_panics: O, run: impl FnOnce() -> (O, Value)) -> (O, Value, bool) {
-    let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| (if_it_panics, Value::Null));
+    let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or((if_it_panics, Value::Null));
     recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
     (outcome, report, stop.load(Ordering::SeqCst))
 }
