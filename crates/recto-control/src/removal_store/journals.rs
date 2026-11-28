@@ -296,7 +296,7 @@ impl Run<'_> {
                 {
                     // Placed by its name alone (sleep, kept): pinned only if this user's, which the open of a journal or a sidecar has proved of its own.
                     match kind {
-                        Kind::SleepFile | Kind::KeptPages => pins.note_named(key, entry.identity(), self.folder, entry)?,
+                        Kind::SleepFile | Kind::KeptPages => pins.note_named(key, entry.identity(), entry)?,
                         _ => pins.note(key, entry.identity())?,
                     }
                 }

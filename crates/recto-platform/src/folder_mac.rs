@@ -51,6 +51,8 @@ pub struct Entry {
     pub dev: u64,
     pub ino: u64,
     pub kind: Kind,
+    /// The owner's user number, as `fstatat` says: what "this user's" is read from, so no second look by path is needed.
+    pub uid: u32,
 }
 
 impl Entry {
@@ -83,6 +85,7 @@ fn entry_of(name: OsString, st: &libc::stat) -> Entry {
         dev: st.st_dev as u64,
         ino: st.st_ino,
         kind: kind_of(st.st_mode),
+        uid: st.st_uid,
     }
 }
 

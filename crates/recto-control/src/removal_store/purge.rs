@@ -45,13 +45,10 @@ impl HistoryPins {
         Ok(())
     }
 
-    /// Pins a target's artifact that was placed by its name alone, so never opened: only if the file is this user's, looked at by the folder's own place and
-    /// the entry's name, and the same file as the entry (device and inode). One that isn't is not pinned, so the barrier's encode refuses it.
-    pub(super) fn note_named(&mut self, key: ArtifactKey, identity: Identity, folder: &Folder, entry: &Entry) -> Result<(), Refusal> {
-        match owner_of(folder, entry) {
-            Some(uid) => self.note_owned_by(key, identity, uid),
-            None => Ok(()),
-        }
+    /// Pins a target's artifact that was placed by its name alone, so never opened: only if the listed entry is this user's (the owner is read from the
+    /// listing, not by a second look at the path). One that isn't is not pinned, so the barrier's encode refuses it.
+    pub(super) fn note_named(&mut self, key: ArtifactKey, identity: Identity, entry: &Entry) -> Result<(), Refusal> {
+        self.note_owned_by(key, identity, entry.uid)
     }
 
     /// [`Self::note_named`] once the file's owner is known: pinned only if it is the user this runs as.
@@ -61,19 +58,6 @@ impl HistoryPins {
         }
         Ok(())
     }
-}
-
-/// Who owns the file `entry` of `folder` is, if it can be told and it is the file that was listed.
-#[cfg(unix)]
-fn owner_of(folder: &Folder, entry: &Entry) -> Option<u32> {
-    use std::os::unix::fs::MetadataExt as _;
-    let meta = std::fs::symlink_metadata(folder.path().ok()?.join(&entry.name)).ok()?;
-    (meta.dev() == entry.dev && meta.ino() == entry.ino).then(|| meta.uid())
-}
-
-#[cfg(not(unix))]
-fn owner_of(_folder: &Folder, _entry: &Entry) -> Option<u32> {
-    None
 }
 
 /// Where the history stores are.
