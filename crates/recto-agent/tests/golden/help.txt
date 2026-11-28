@@ -74,6 +74,7 @@ Wait instead of polling:
   wait tab-closed      Blocks until no tab matches the selector.
   wait page-drawn      Blocks until a page has been drawn (by `render`, or by `text`'s check), or failed to be.
   wait contents-generated Waits for the tab's generated contents to be made, asking for them if nobody has.
+  wait blocks-ready    Waits for the tab's blocks (paragraphs, headings, list items and the rest) to be made, asking for the index and then the blocks if nobody has.
   wait indexing-done   Waits for the tab's search index to be finished, asking for it to be built if nobody has.
   watch                Prints events from now on, one per line.
   watch stop           Ends every watch running on this session, each with its last line as usual.

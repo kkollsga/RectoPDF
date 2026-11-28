@@ -267,9 +267,13 @@ enum Verdict<'a> {
     Failed(&'a str),
 }
 
+/// The codes of a limit every job has, and the ones blocks add (the store's size and a page count that can't be made to agree).
+const LIMITS: &[&str] = &["over_memory", "out_of_time"];
+const BLOCKS_LIMITS: &[&str] = &["too_large", "pages_differ"];
+
 /// A limit is the version's own doing, so it isn't run again for it, as a refusal isn't: a hostile file could otherwise take a gigabyte every minute.
 fn is_limit(what: What, code: &str) -> bool {
-    matches!(code, "over_memory" | "out_of_time") || (what == What::Blocks && matches!(code, "too_large" | "pages_differ"))
+    LIMITS.contains(&code) || (what == What::Blocks && BLOCKS_LIMITS.contains(&code))
 }
 
 /// Remembers how a job ended and says the state word for the news of it.

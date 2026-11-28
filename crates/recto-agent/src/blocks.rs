@@ -98,29 +98,49 @@ pub(crate) fn why_page<A: SessionAccess>(access: &A, path: &Path) -> &'static st
 
 /// The words for a refusal or a failure's code. Rust's own, with no text from a file.
 pub fn reason_words(code: &str) -> &'static str {
-    match code {
-        "needs_password" => "it needs a password, and nothing of a protected file is read for this",
-        "couldnt_read" => "distillPDF's bounded reader couldn't read it",
-        "no_pages" => "it has no pages",
-        "pages_differ" => "the helper and the index count different pages in it",
-        "too_large" => "its blocks and its text together are more than one document may take",
-        "over_memory" => "finding them took more memory than they're allowed",
-        "out_of_time" => "finding them took longer than they're allowed",
-        "helper_missing" => "the helper that finds them isn't installed",
-        "helper_stopped" => "the helper that finds them stopped without an answer",
-        "bad_answer" => "the helper's answer didn't hold up",
-        "structure_not_sandboxed" => "the helper that reads blocks isn't in its sandbox, as this copy is signed wrong",
-        "structure_inside_another_sandbox" => "the helper that reads blocks can't start inside another sandbox",
-        "structure_walls_failed" => "the helper that reads blocks couldn't close itself off from the rest of macOS",
-        "structure_start_refused" => "macOS refused to start the helper that reads blocks",
-        "structure_unconfirmed" => "the helper that reads blocks couldn't be confirmed walled off, so the file wasn't read",
-        "busy" => "the file's index is being written right now",
-        "index_not_ready" => "the file's index isn't finished",
-        "index_damaged" => "the file's index didn't add up, so it's being built again",
-        "write_failed" => "they couldn't be kept on disk",
-        _ => "something went wrong making them",
-    }
+    REASONS
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map_or("something went wrong making them", |(_, words)| words)
 }
+
+/// The helper's, the store's and the index's own reasons, each with its words.
+const REASONS: &[(&str, &str)] = &[
+    ("needs_password", "it needs a password, and nothing of a protected file is read for this"),
+    ("couldnt_read", "distillPDF's bounded reader couldn't read it"),
+    ("no_pages", "it has no pages"),
+    ("pages_differ", "the helper and the index count different pages in it"),
+    ("too_large", "its blocks and its text together are more than one document may take"),
+    ("over_memory", "finding them took more memory than they're allowed"),
+    ("out_of_time", "finding them took longer than they're allowed"),
+    ("helper_missing", "the helper that finds them isn't installed"),
+    ("helper_stopped", "the helper that finds them stopped without an answer"),
+    ("bad_answer", "the helper's answer didn't hold up"),
+    (
+        "structure_not_sandboxed",
+        "the helper that reads blocks isn't in its sandbox, as this copy is signed wrong",
+    ),
+    (
+        "structure_inside_another_sandbox",
+        "the helper that reads blocks can't start inside another sandbox",
+    ),
+    (
+        "structure_walls_failed",
+        "the helper that reads blocks couldn't close itself off from the rest of macOS",
+    ),
+    ("structure_start_refused", "macOS refused to start the helper that reads blocks"),
+    (
+        "structure_unconfirmed",
+        "the helper that reads blocks couldn't be confirmed walled off, so the file wasn't read",
+    ),
+    ("busy", "the file's index is being written right now"),
+    ("index_not_ready", "the file's index isn't finished"),
+    ("index_damaged", "the file's index didn't add up, so it's being built again"),
+    ("write_failed", "they couldn't be kept on disk"),
+];
+
+/// The reason that is the person's to act on: the file needs a password, which an agent is never given.
+const NEEDS_PASSWORD: &str = "needs_password";
 
 fn no_blocking() -> AgentError {
     AgentError::new(Code::NEEDS_SERVER, "Blocks aren't made in this session.", exit::NOT_RUNNING).then("Run it against the app's session, or `recto serve`.")
@@ -169,7 +189,7 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState
         GenState::Refused(code) => ConditionState::Failed(AgentError::new(
             Code::BLOCKS_REFUSED,
             format!("This file won't have blocks: {}.", reason_words(&code)),
-            if code == "needs_password" { exit::PROTECTED } else { exit::FAILED },
+            if code == NEEDS_PASSWORD { exit::PROTECTED } else { exit::FAILED },
         )),
         GenState::Failed(code) => ConditionState::Failed(AgentError::new(
             Code::BLOCKS_FAILED,
