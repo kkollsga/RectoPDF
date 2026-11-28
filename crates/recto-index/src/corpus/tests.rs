@@ -82,11 +82,13 @@ impl PageFeed for FakeFeed {
                 chars: chars(text),
                 boxes: Vec::new(),
                 hidden_checked: true,
+                frame: None,
             }),
             Fake::Unchecked(text) => Ok(FedPage {
                 chars: chars(text),
                 boxes: Vec::new(),
                 hidden_checked: false,
+                frame: None,
             }),
             Fake::Failed => Err(FeedError::Page(FailReason::Stopped)),
             Fake::LostWorker => Err(FeedError::Page(FailReason::Crashed)),
@@ -96,6 +98,7 @@ impl PageFeed for FakeFeed {
                         chars: chars(text),
                         boxes: Vec::new(),
                         hidden_checked: true,
+                        frame: None,
                     })
                 } else {
                     self.lost_once.push(page);
@@ -465,6 +468,7 @@ fn a_finished_corpus_reads_back_exactly() {
         chars,
         boxes: Vec::new(),
         hidden_checked: checked,
+        frame: None,
     };
     let mut feed = Mixed(vec![
         page_of(hyphenated.clone(), true),
@@ -1671,6 +1675,7 @@ fn the_largest_page_there_can_be_reads_back() {
                 chars: vec![CharRecord::new(0x1F600, 0); recto_proto::MAX_PAGE_CHARS as usize],
                 boxes: Vec::new(),
                 hidden_checked: true,
+                frame: None,
             })
         }
         fn still_the_same_file(&mut self) -> bool {
@@ -2158,4 +2163,229 @@ fn a_bound_key_touches_no_other_corpus() {
         build(&for_x, &root, x, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).is_ok(),
         "X's own key couldn't go on with X"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Edge pieces kept for chrome (crate::chrome::stored)
+// ---------------------------------------------------------------------------------------------------------------------
+
+const EDGE_FRAME: recto_proto::PageFrame = recto_proto::PageFrame {
+    turns: 0,
+    left: 0.0,
+    bottom: 0.0,
+    right: 612.0,
+    top: 792.0,
+};
+
+/// A page of lines, `(text, x, y)`, with a box for each character: 6 pt a letter, 10 pt tall, as `select`'s tests make them.
+fn laid_out(lines: &[(&str, f32, f32)]) -> (Vec<CharRecord>, Vec<CharBox>) {
+    let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+    for (text, x, y) in lines {
+        for (index, ch) in text.chars().enumerate() {
+            let left = x + index as f32 * 6.0;
+            chars.push(CharRecord::new(ch as u32, 0));
+            boxes.push(if ch == ' ' {
+                [left, *y, left + 6.0, *y]
+            } else {
+                [left, *y, left + 5.0, *y + 10.0]
+            });
+        }
+        for generated in ['\r', '\n'] {
+            chars.push(CharRecord::new(generated as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+        }
+    }
+    (chars, boxes)
+}
+
+/// A report's page: a running head at the top, two lines of body, and the page's number at the foot.
+fn report_page(page: u32) -> Vec<(String, f32, f32)> {
+    vec![
+        ("Annual report 2024".to_string(), 72.0, 750.0),
+        (format!("Body line one of page {page}"), 72.0, 700.0),
+        (format!("Body line two of page {page}"), 72.0, 685.0),
+        (format!("{}", page + 1), 540.0, 30.0),
+    ]
+}
+
+/// Pages fed with boxes, each with its frame or without it.
+struct Laid(Vec<(Vec<(String, f32, f32)>, bool)>);
+
+impl PageFeed for Laid {
+    fn page_count(&mut self) -> Result<u32, FeedError> {
+        Ok(self.0.len() as u32)
+    }
+
+    fn read(&mut self, page: u32) -> Result<FedPage, FeedError> {
+        let (lines, framed) = &self.0[page as usize];
+        let lines: Vec<(&str, f32, f32)> = lines.iter().map(|(text, x, y)| (text.as_str(), *x, *y)).collect();
+        let (chars, boxes) = laid_out(&lines);
+        Ok(FedPage {
+            chars,
+            boxes,
+            hidden_checked: true,
+            frame: framed.then_some(EDGE_FRAME),
+        })
+    }
+
+    fn still_the_same_file(&mut self) -> bool {
+        true
+    }
+}
+
+fn built_from(temp: &Temp, pages: Vec<(Vec<(String, f32, f32)>, bool)>) -> (PathBuf, CorpusKey) {
+    let key = key_of(temp, b"a file");
+    let root = temp.0.join("corpus");
+    let outcome = build(tk(), &root, key, &mut Laid(pages), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(matches!(outcome, BuildOutcome::Ready { .. }), "{outcome:?}");
+    (root, key)
+}
+
+fn stored_edges(corpus: &ReadyCorpus) -> impl FnMut(u32) -> Option<Vec<EdgeLine>> + '_ {
+    let mut buffer = Vec::new();
+    move |page| corpus.page(page, &mut buffer).ok()?.edges()
+}
+
+/// Puts a page's chunk back changed: `edit` is given what the chunk holds (its 16 bytes, text, what's beside it, then its edges) before it's sealed again, new at the pack's end and the table pointing at it.
+fn reseal_page(root: &Path, key: CorpusKey, page: u32, edit: impl FnOnce(&mut Vec<u8>)) {
+    let paths = CorpusPaths::new(root, key);
+    let seal = read_seal(tk(), &paths).unwrap();
+    let (mut table, mut pack) = (fs::read(&paths.table).unwrap(), fs::read(&paths.pack).unwrap());
+    let at = page as usize * RECORD_LEN;
+    let entry = Entry::decode(&table[at..at + RECORD_LEN]).unwrap();
+    let mut chunk = pack[entry.offset as usize..entry.end() as usize].to_vec();
+    let plain = seal.open_in_place(crate::seal::Purpose::Page(page), &mut chunk).unwrap();
+    let mut inside = chunk[plain].to_vec();
+    edit(&mut inside);
+    let mut sealed = Vec::new();
+    seal.seal(crate::seal::Purpose::Page(page), &mut sealed, |out| out.extend_from_slice(&inside))
+        .unwrap();
+    let entry = Entry {
+        offset: pack.len() as u64,
+        len: sealed.len() as u32,
+    };
+    pack.extend_from_slice(&sealed);
+    table[at..at + RECORD_LEN].copy_from_slice(&entry.encode());
+    fs::write(&paths.pack, pack).unwrap();
+    fs::write(&paths.table, table).unwrap();
+}
+
+/// Failure: stored chrome disagrees with what `recto text` marks for the same pages, so `get` leaves out something `text` keeps or keeps what it leaves out. Five report pages built into a corpus: for each, what [`StoredChrome`] gives is what `select::chrome_for` gives over the pages as they were read, and the running head and the page's number are in it.
+#[test]
+fn a_stored_page_gives_the_chrome_its_text_is_marked_with() {
+    let temp = Temp::new();
+    let pages: Vec<_> = (0..5).map(|page| (report_page(page), true)).collect();
+    let (root, key) = built_from(&temp, pages.clone());
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+    let live: Vec<crate::select::PageText> = pages
+        .iter()
+        .map(|(lines, _)| {
+            let lines: Vec<(&str, f32, f32)> = lines.iter().map(|(text, x, y)| (text.as_str(), *x, *y)).collect();
+            let (chars, boxes) = laid_out(&lines);
+            crate::select::PageText::build(&chars, &boxes, EDGE_FRAME, true, false)
+        })
+        .collect();
+    let mut window = stored::StoredChrome::new(corpus.pages(), stored_edges(&corpus));
+    let mut buffer = Vec::new();
+    for page in 0..5u32 {
+        let expected = crate::select::chrome_for(page, &live[page as usize], 5, |other| {
+            live.get(other as usize).map(crate::select::PageText::edge_lines)
+        });
+        let got = window.spans(page).expect("every page and its neighbours were stored");
+        assert_eq!(got, expected, "page {page}");
+        let text = corpus.page(page, &mut buffer).unwrap().text.chars().collect::<Vec<_>>();
+        let left_out: Vec<String> = got.iter().map(|(start, end)| text[*start as usize..*end as usize].iter().collect()).collect();
+        assert!(left_out.iter().any(|piece| piece == "Annual report 2024"), "page {page}: {left_out:?}");
+        assert!(left_out.iter().any(|piece| *piece == (page + 1).to_string()), "page {page}: {left_out:?}");
+        assert!(!left_out.iter().any(|piece| piece.contains("Body")), "page {page}: {left_out:?}");
+    }
+}
+
+/// Failure: a page beside one with no stored edges is taken as having none, which sets off the rule for a lone page number and leaves a figure out of an agent's quote. The same page between two pages known to have nothing does give its number, so the rule is live here.
+#[test]
+fn a_page_beside_one_without_stored_edges_leaves_nothing_out() {
+    let temp = Temp::new();
+    let middle = |number: &str| {
+        vec![
+            ("Body line one of the middle page".to_string(), 72.0, 700.0),
+            ("Body line two of the middle page".to_string(), 72.0, 685.0),
+            (number.to_string(), 540.0, 30.0),
+        ]
+    };
+    let side = |framed| (vec![("Some body text beside it".to_string(), 72.0, 700.0)], framed);
+    let (root, key) = built_from(&temp, vec![side(false), (middle("2"), true), side(false)]);
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+    let mut buffer = Vec::new();
+    assert!(corpus.page(0, &mut buffer).unwrap().edges().is_none(), "no frame, no edges");
+    assert!(corpus.page(1, &mut buffer).unwrap().edges().is_some_and(|edges| !edges.is_empty()));
+    assert!(stored::StoredChrome::new(3, stored_edges(&corpus)).spans(1).is_none());
+
+    // Pages known to hold nothing: the number stands alone and is left out.
+    let temp = Temp::new();
+    let nothing = || (Vec::new(), true);
+    let (root, key) = built_from(&temp, vec![nothing(), (middle("2"), true), nothing()]);
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+    let spans = stored::StoredChrome::new(3, stored_edges(&corpus)).spans(1).expect("known beside known");
+    let text: Vec<char> = corpus.page(1, &mut buffer).unwrap().text.chars().collect();
+    let left_out: Vec<String> = spans.iter().map(|(start, end)| text[*start as usize..*end as usize].iter().collect()).collect();
+    assert_eq!(left_out, ["2"]);
+}
+
+/// Failure: a region a hostile or damaged chunk holds is read as edges, or panics: a count over the cap, a length one byte off, a span past the page, a NaN, the flag with no region, or trailing bytes with no flag. Each makes the page damaged, and a chunk put back as it was still opens.
+#[test]
+fn edges_that_dont_add_up_make_the_page_damaged() {
+    let temp = Temp::new();
+    let (root, key) = built_from(&temp, (0..3).map(|page| (report_page(page), true)).collect());
+    let region_at = |inside: &[u8]| {
+        let word = |at: usize| u32::from_le_bytes(inside[at..at + 4].try_into().unwrap()) as usize;
+        16 + word(8) + word(12)
+    };
+    let damaged_with = |what: &str, edit: &dyn Fn(&mut Vec<u8>, usize)| {
+        let temp = Temp::new();
+        let (root, key) = built_from(&temp, (0..3).map(|page| (report_page(page), true)).collect());
+        reseal_page(&root, key, 1, |inside| {
+            let at = region_at(inside);
+            edit(inside, at);
+        });
+        let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+        assert_eq!(corpus.page(1, &mut Vec::new()).map(|page| page.kind).unwrap_err(), Damaged, "{what}");
+        assert!(corpus.page(0, &mut Vec::new()).is_ok(), "{what}: only that page");
+    };
+    // The control: a chunk resealed as it was opens, with the same edges.
+    let before = {
+        let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+        let mut buffer = Vec::new();
+        corpus.page(1, &mut buffer).unwrap().edges().unwrap()
+    };
+    assert!(before.len() >= 2, "a head and a number: {before:?}");
+    reseal_page(&root, key, 1, |_| {});
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+    assert_eq!(corpus.page(1, &mut Vec::new()).unwrap().edges(), Some(before.clone()));
+
+    damaged_with("a count past the cap, with the bytes of 17", &|inside, at| {
+        let record = inside[at + 1..at + 71].to_vec();
+        inside.truncate(at + 1);
+        inside[at] = 17;
+        for _ in 0..17 {
+            inside.extend_from_slice(&record);
+        }
+    });
+    damaged_with("a count the bytes don't have", &|inside, at| inside[at] += 1);
+    damaged_with("a region one byte short", &|inside, _| {
+        inside.pop();
+    });
+    damaged_with("a region one byte long", &|inside, _| inside.push(0));
+    damaged_with("a span past the page's characters", &|inside, at| {
+        // `end` is bytes 60 to 64 of a record (see `chrome::stored::write`), and the first record follows the count.
+        inside[at + 1 + 60..at + 1 + 64].copy_from_slice(&u32::MAX.to_le_bytes());
+    });
+    damaged_with("a NaN where a place is", &|inside, at| {
+        inside[at + 1 + 2..at + 1 + 6].copy_from_slice(&f32::NAN.to_le_bytes())
+    });
+    damaged_with("the flag with no region", &|inside, at| inside.truncate(at));
+    damaged_with("trailing bytes where the flag isn't set", &|inside, at| {
+        inside[1] &= !FLAG_EDGES;
+        inside.truncate(at);
+        inside.extend_from_slice(&[0; 3]);
+    });
 }

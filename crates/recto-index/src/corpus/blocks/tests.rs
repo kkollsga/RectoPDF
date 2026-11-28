@@ -44,6 +44,7 @@ impl PageFeed for Feed {
             chars: text.chars().map(|ch| CharRecord::new(ch as u32, 0)).collect(),
             boxes: Vec::new(),
             hidden_checked: true,
+            frame: None,
         })
     }
 

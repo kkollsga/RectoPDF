@@ -7,7 +7,7 @@
 //!
 //! Both position and text are needed, as in distillPDF's `chrome.rs`: text alone would take a heading repeated mid-page, and position alone the first line of every page. Unlike distillPDF it doesn't read the whole document first: a copy reads its pages one at a time, and a few on either side is what it can afford.
 //!
-//! **Cost.** At most [`MAX_EDGE_LINES`] pieces a page, at most 80 B each (a test holds it), kept with its text, and a look at [`NEIGHBOURS`] pages' of them each side. Nothing is read for it that the page's text didn't already hold, past the neighbours' own text.
+//! **Cost.** At most [`MAX_EDGE_LINES`] pieces a page, at most 80 B each (a test holds it), kept with its text (and, in a corpus, in the page's own chunk: see [`stored`], at most 1,121 B), and a look at [`NEIGHBOURS`] pages' of them each side. Nothing is read for it that the page's text didn't already hold, past the neighbours' own text.
 //!
 //! **Ambiguous columns stay.** A row with at least three substantial pieces (two words and ten letters each), and no page number or framed page number, can be a table's column labels. Repetition alone never removes it, even when each piece is long enough to repeat by itself. No new page facts are kept for this: only the pieces already read are compared.
 //!
@@ -387,6 +387,8 @@ fn to_roman(mut value: u32) -> String {
     }
     out
 }
+
+pub mod stored;
 
 #[cfg(test)]
 mod repeated_content;

@@ -174,6 +174,7 @@ impl PageFeed for WorkerFeed {
                     chars: characters.chars,
                     boxes: characters.boxes,
                     hidden_checked: characters.hidden_checked,
+                    frame: Some(characters.frame),
                 })
             }
             Err(error) => Err(error),

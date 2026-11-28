@@ -121,6 +121,7 @@ impl PageFeed for Feed {
             chars,
             boxes: Vec::new(),
             hidden_checked: true,
+            frame: None,
         })
     }
 

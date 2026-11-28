@@ -2,7 +2,8 @@
 
 #[cfg(any(test, feature = "test-seams"))]
 use super::{CorpusKey, MAX_PAGES};
-use super::{CorpusPaths, FindKey, MAX_BLOB_BYTES, PageKind, clear_text};
+use super::{CorpusPaths, FLAG_EDGES, FindKey, MAX_BLOB_BYTES, PageKind, clear_text};
+use crate::chrome::stored;
 use crate::seal::{self, CorpusSeal, Purpose};
 use recto_platform::local;
 use serde_json::Value;
@@ -34,7 +35,7 @@ impl PageRecord {
         out.extend_from_slice(&self.aux_len.to_le_bytes());
     }
 
-    /// What a chunk's first bytes say, if they say it of exactly `rest` bytes after them. They're inside a chunk that opened, so they're ours, but they're checked as if they weren't.
+    /// What a chunk's first bytes say, if they say it of exactly `rest` bytes after them (and, with the edges flag, a region of whole pieces after the text and what's beside it). They're inside a chunk that opened, so they're ours, but they're checked as if they weren't.
     pub(super) fn read_inner(bytes: &[u8], rest: usize) -> Option<Self> {
         let word = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
         let kind = match bytes.first()? {
@@ -51,7 +52,13 @@ impl PageRecord {
             text_len: word(8)?,
             aux_len: word(12)?,
         };
-        (record.blob_len() == rest).then_some(record)
+        // With edges, what's left after the text and what's beside it is exactly a region of whole pieces: the region's own bytes are checked when the page is read, where its text is.
+        let fits = match rest.checked_sub(record.blob_len()) {
+            Some(0) => record.flags & FLAG_EDGES == 0,
+            Some(edges) => record.flags & FLAG_EDGES != 0 && stored::length_fits(edges),
+            None => false,
+        };
+        fits.then_some(record)
     }
 
     pub(super) fn blob_len(&self) -> usize {

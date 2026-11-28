@@ -687,6 +687,7 @@ mod tests {
                 chars,
                 boxes: Vec::new(),
                 hidden_checked: true,
+                frame: None,
             })
         }
         fn still_the_same_file(&mut self) -> bool {

@@ -16,6 +16,7 @@ impl PageFeed for EveryWord {
             chars: text.chars().map(|c| CharRecord::new(c as u32, 0)).collect(),
             boxes: Vec::new(),
             hidden_checked: true,
+            frame: None,
         })
     }
     fn still_the_same_file(&mut self) -> bool {
