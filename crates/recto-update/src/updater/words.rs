@@ -82,6 +82,18 @@ impl Updater {
     }
 }
 
+/// A going back refused for an unfinished removal's record: the log line, and the person's notice ([`going_back_withheld`]).
+pub(super) fn say_going_back_withheld(updater: &Updater, current: &str, previous: &str) {
+    updater.log(&format!(
+        "{current} keeps failing, and an unfinished removal is pending that the kept {previous} doesn't read"
+    ));
+    lock(&updater.st).notice = Some(Notice {
+        text: going_back_withheld(current, previous),
+        fades: false,
+    });
+    updater.host.changed();
+}
+
 /// What a person is told when the version they have keeps failing and can't go back, because an unfinished removal's record is there and the kept version
 /// can't read it. Said as it is, once, and the log line stays.
 pub(super) fn going_back_withheld(current: &str, previous: &str) -> String {

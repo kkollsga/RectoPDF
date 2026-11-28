@@ -408,7 +408,7 @@ impl Updater {
                 self.clear_leftovers(&app, &current, offered.is_some());
             }
             // The week is PRIVACY.md's, so it holds while a rollback refusal stands too. A copy offered to fall back on stays until the next launch.
-            self.drop_an_old_record_copy(now, settled.fall_back.is_some());
+            self.drop_an_old_record_copy(now, settled.fall_back.is_some() || crate::removal_record::anything_there(&self.files.root));
         }
         let status = settled.status.unwrap_or_else(|| match &offered {
             Some(offered) if may_replace => Status::Available(offered.clone()),
@@ -438,7 +438,6 @@ impl Updater {
             st.facts = Some(facts);
             st.second_copy = second_copy;
             st.status = status;
-            // What a refused going back said, if it did, stays unless the settling has something of its own to say.
             st.notice = settled.notice.or_else(|| st.notice.take());
             st.reopened_by_update = !second_copy && (settled.arrived.is_some() || settled.reopened);
             st.fall_back = settled.fall_back;
@@ -481,19 +480,15 @@ impl Updater {
         }
     }
 
-    /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time.
-    fn drop_an_old_record_copy(&self, now_ms: u64, offered_to_fall_back_on: bool) {
-        // While an unfinished removal's record is there the copy is something its plan pinned: it is left as it is.
-        if crate::removal_record::anything_there(&self.files.root) {
-            return;
-        }
+    /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time. `keep`: the copy is offered to fall back on, or an unfinished removal's record is there and the copy is something its plan pinned.
+    fn drop_an_old_record_copy(&self, now_ms: u64, keep: bool) {
         let whole = self.files.before().join(".whole");
         let made_ms = std::fs::metadata(&whole)
             .ok()
             .and_then(|meta| meta.modified().ok())
             .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|since| since.as_millis());
-        if !offered_to_fall_back_on && made_ms.is_some_and(|made| u128::from(now_ms).saturating_sub(made) > u128::from(KEEP_RECORD_COPY_MS)) {
+        if !keep && made_ms.is_some_and(|made| u128::from(now_ms).saturating_sub(made) > u128::from(KEEP_RECORD_COPY_MS)) {
             let _ = std::fs::remove_dir_all(self.files.before());
         }
     }
@@ -666,14 +661,7 @@ impl Updater {
         let record_there = crate::removal_record::anything_there(&self.files.root);
         let kept_reads_it = record_there && crate::removal_record::reads_the_record(&previous_app_in(&beside));
         if crate::removal_record::going_back(record_there, kept_reads_it, why == Back::KeptEnding) == crate::removal_record::GoingBack::Refuse {
-            self.log(&format!(
-                "{current} keeps failing, and an unfinished removal is pending that the kept {previous} doesn't read"
-            ));
-            lock(&self.st).notice = Some(Notice {
-                text: words::going_back_withheld(current, &previous),
-                fades: false,
-            });
-            self.host.changed();
+            words::say_going_back_withheld(self, current, &previous);
             return false;
         }
         let plan = Plan {
