@@ -375,7 +375,13 @@ fn plain_tree(folder: &Folder, seams: &CacheSeams) -> Result<recto_platform::fol
 
 /// `remove_tree_in` with the caches' order (what makes a corpus usable first, made durable) and the seams, its failures as a purge's.
 fn walk_away(parent: &Folder, name: &OsStr, tree: &recto_platform::folder::Tree, seams: &CacheSeams, touched: &Cell<bool>) -> Result<(), PurgeStop> {
-    let rank = |_: usize, name: &OsStr, _: Kind| u8::from(!names::is_first_to_go(name));
+    // 0: what makes a corpus unusable. 1: `app` among a format folder's children (depth 1: the entries of `<key>/<format>`, whose own folder is depth 1 under
+    // the corpus at 0), the text and the index, before the agent folders. 2: the rest.
+    let rank = |depth: usize, name: &OsStr, _: Kind| match () {
+        () if names::is_first_to_go(name) => 0,
+        () if depth == 1 && name == names::APP_FOLDER => 1,
+        () => 2,
+    };
     let mut gate = |name: &OsStr| seams.gate(name);
     let mut unlinked = || {
         touched.set(true);

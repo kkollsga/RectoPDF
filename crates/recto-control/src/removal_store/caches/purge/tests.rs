@@ -8,6 +8,7 @@ use crate::removal_store::coverage_tests::plan_of;
 use crate::removal_store::purge::Pins;
 use recto_core::removal::{ArtifactId, Effect, Surveyed};
 use recto_index::corpus::{self, CorpusKey};
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, symlink};
 use std::sync::Arc;
@@ -448,6 +449,72 @@ fn a_failed_format_folder_sync_is_not_durable_and_not_an_error() {
     let purged = purge(&w, Store::CorpusAgentPages, &agents, &seams).expect("a failed sync is not a stop");
     assert_eq!((purged.removed, purged.already_gone, purged.durable), (1, 0, false));
     assert!(!agent.exists());
+}
+
+/// Every name under `dir` (files and folders, recursively) and `dir`'s own, as the walk's gate sees them.
+fn names_under(dir: &Path) -> Vec<OsString> {
+    let mut found = vec![dir.file_name().unwrap().to_os_string()];
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(names_under(&path))
+        } else {
+            found.push(path.file_name().unwrap().to_os_string())
+        }
+    }
+    found
+}
+
+/// Failure: a corpus walk that stops part way after taking its agent folder but not `app` leaves text and a ready mark that a search reads, though the purge
+/// began (the ready marks and the manifest went first only among `app`'s own entries, and `agent` sorts before `app`). A corpus with `v4/app` (built by the
+/// indexer) and `v4/agent`, the walk's gate recording the order: the ready marks and manifest are unlinked before any other file of `app`, and every `app` name
+/// before any `agent` name.
+#[test]
+fn app_goes_before_the_agent_folders_in_a_corpus() {
+    let w = World::new();
+    let key = w.index(&w.mine);
+    drop(corpus::claim_agent_folder(&w.corpus, key).unwrap());
+    let version = w.corpus.join(key.hex()).join("v4");
+    let (app, agent) = (names_under(&version.join("app")), names_under(&version.join("agent")));
+    let (only_app, only_agent): (Vec<_>, Vec<_>) = (
+        app.iter().filter(|name| !agent.contains(name)).cloned().collect(),
+        agent.iter().filter(|name| !app.contains(name)).cloned().collect(),
+    );
+    assert!(
+        only_app.len() > 2 && !only_agent.is_empty(),
+        "the corpus has something under both: {only_app:?} {only_agent:?}"
+    );
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<OsString>::new()));
+    let recorded = seen.clone();
+    let seams = seams_with(|s| {
+        s.gate = Some(Arc::new(move |name: &OsStr| {
+            recorded.lock().unwrap().push(name.to_os_string());
+            true
+        }));
+    });
+    let corpora = step_of(&plan_steps(&w), Store::CorpusText);
+    purge(&w, Store::CorpusText, &corpora, &seams).unwrap();
+    let order = seen.lock().unwrap().clone();
+    let at = |name: &OsString| {
+        order
+            .iter()
+            .position(|seen| seen == name)
+            .unwrap_or_else(|| panic!("{name:?} was never unlinked: {order:?}"))
+    };
+    let last_app = only_app.iter().map(at).max().unwrap();
+    let first_agent = only_agent.iter().map(at).min().unwrap();
+    assert!(last_app < first_agent, "every app name before any agent name: {order:?}");
+    let marks: Vec<_> = only_app.iter().filter(|name| names::is_first_to_go(name)).map(at).collect();
+    let first_other_app = only_app
+        .iter()
+        .filter(|name| !names::is_first_to_go(name) && *name != names::APP_FOLDER)
+        .map(at)
+        .min()
+        .unwrap();
+    assert!(
+        !marks.is_empty() && marks.iter().all(|mark| *mark < first_other_app),
+        "the ready marks and the manifest first: {order:?}"
+    );
 }
 
 /// Failure: a step runs with a pin that isn't its store's kind, a pin on another volume, a key twice, a batch over the limit, or for a store that isn't a cache,
