@@ -40,6 +40,8 @@ fn an_agent_gets_blocks_made_on_its_first_paragraph_ask() {
     let (quiet, _) = state.json(&["get", &reference, "--grain", "page"]);
     assert!(quiet["data"]["widened"].is_null(), "{quiet}");
 
+    // A ReadOnly agent gets every blocks answer the same: asking is a read, it changes nothing of the document.
+    state.set_level(Level::ReadOnly);
     let started = Instant::now();
     let (asked, code) = state.json(&["get", &reference, "--grain", "paragraph"]);
     assert_eq!(code, 0, "{asked}");
@@ -53,6 +55,13 @@ fn an_agent_gets_blocks_made_on_its_first_paragraph_ask() {
     assert!(data["stored"].as_u64().is_some_and(|stored| stored > 0), "{ready}");
     assert!(data["bytes"].as_u64().is_some_and(|bytes| bytes > 0) && data["pages"] == 3, "{ready}");
     assert_eq!(data["by_kind"]["table"]["stored"], 0, "{ready}");
+    state.set_level(Level::Control);
+    let (again, code) = state.json(&["wait", "blocks-ready", "--timeout", "30s"]);
+    assert_eq!(
+        (code, &again["data"]),
+        (0, data),
+        "a ReadOnly agent and a Control one are told the same: {again}"
+    );
     let building = events.read().unwrap();
     assert_eq!(building["data"]["event"], "blocks_building", "{building}");
     let built = events.read().unwrap();
