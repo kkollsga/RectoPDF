@@ -249,7 +249,7 @@ fn a_folder_or_file_replaced_after_the_survey_stops_before_any_unlink() {
 }
 
 /// Failure: a name swapped for a link between the listing and the unlink is unlinked or followed. A note swapped at its own unlink stops (`NotAFile`): the
-/// person's file and the link stay, the earlier notes are gone and the folder is synced. In a tree, `text.pack` swapped at the walk's gate stops
+/// person's file and the link stay, the earlier notes are gone and the folder is synced. In a tree, `pages.bin` (which sorts before `ready.sealed`) swapped at the walk's gate stops
 /// (`NotThePinned`): the link and its target stay, and `ready.sealed`, which goes first, is already gone, with the root synced.
 #[test]
 fn a_swap_between_list_and_unlink_stops_there() {
@@ -279,9 +279,9 @@ fn a_swap_between_list_and_unlink_stops_there() {
     let corpora = step_of(&steps, Store::CorpusText);
     let app = w.corpus.join(keys[0].hex()).join("v4").join("app");
     let seams = seams_with(|s| {
-        let (pack, persons) = (app.join("text.pack"), persons.clone());
+        let (pack, persons) = (app.join("pages.bin"), persons.clone());
         s.gate = Some(Arc::new(move |name: &OsStr| {
-            if name == "text.pack" && pack.exists() && !pack.is_symlink() {
+            if name == "pages.bin" && pack.exists() && !pack.is_symlink() {
                 fs::remove_file(&pack).unwrap();
                 symlink(&persons, &pack).unwrap();
             }
@@ -290,7 +290,7 @@ fn a_swap_between_list_and_unlink_stops_there() {
     });
     assert_eq!(purge(&w, Store::CorpusText, &corpora, &seams), Err(PurgeStop::NotThePinned));
     assert!(
-        app.join("text.pack").is_symlink() && fs::read(&persons).unwrap() == b"mine",
+        app.join("pages.bin").is_symlink() && fs::read(&persons).unwrap() == b"mine",
         "the link and its target stay"
     );
     assert!(
@@ -443,4 +443,33 @@ fn the_purge_holds_at_most_eight_descriptors() {
     let most = peak.load(Ordering::SeqCst) as usize;
     assert!(most > baseline, "the gate ran with folders open");
     assert!(most - baseline <= 8, "{} more than before", most - baseline);
+}
+
+/// Failure: the last walk is missing or reads the first listing again, so a folder that is there again once the step is done (a build or a session made it
+/// again in the gap) is reported as taken. The corpus's folder and the agent folder are each made again at the unlink that takes them, and the step is
+/// `StillThere`.
+#[test]
+fn the_last_walk_finds_what_came_back() {
+    let w = World::new();
+    let key = w.index(&w.mine);
+    drop(corpus::claim_agent_folder(&w.corpus, key).unwrap());
+    let steps = plan_steps(&w);
+    let (corpus_dir, agent_dir) = (w.corpus.join(key.hex()), w.corpus.join(key.hex()).join("v4").join("agent"));
+    let again = |at: PathBuf| {
+        seams_with(|s| {
+            s.unlinked = Some(Arc::new(move || {
+                if !at.exists() {
+                    fs::create_dir(&at).unwrap();
+                }
+            }))
+        })
+    };
+    assert_eq!(
+        purge(&w, Store::CorpusAgentPages, &step_of(&steps, Store::CorpusAgentPages), &again(agent_dir)),
+        Err(PurgeStop::StillThere)
+    );
+    assert_eq!(
+        purge(&w, Store::CorpusText, &step_of(&steps, Store::CorpusText), &again(corpus_dir)),
+        Err(PurgeStop::StillThere)
+    );
 }
