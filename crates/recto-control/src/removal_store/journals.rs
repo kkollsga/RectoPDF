@@ -426,4 +426,4 @@ fn store_of(kind: Kind) -> Store {
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+pub(crate) mod tests;
