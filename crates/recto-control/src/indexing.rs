@@ -373,15 +373,15 @@ impl Indexing for Indexer {
         Indexer::find_key_report(self)
     }
 
-    fn made_agent_folder(&self, key: CorpusKey) {
+    fn made_agent_folder(&self, key: CorpusKey) -> bool {
         let mut inner = self.0.lock();
-        // Held: no mark and no claim, so nothing of this session's is written for a removal to find. Both are under the lock the hold takes.
+        // Held: no mark and no claim, so nothing of this session's is written for a removal to find, and the folder isn't written either. Both are under the lock the hold takes.
         if inner.on_hold {
-            return;
+            return false;
         }
         corpus::note_agent_folder(&self.0.root);
         if inner.agent_folders.iter().any(|(held, _)| *held == key) {
-            return;
+            return true;
         }
         if inner.agent_folders.len() >= MAX_AGENT_FOLDERS
             && let Some((oldest, claim)) = inner.agent_folders.pop_front()
@@ -392,6 +392,7 @@ impl Indexing for Indexer {
         if let Some(claim) = corpus::claim_agent_folder(&self.0.root, key) {
             inner.agent_folders.push_back((key, claim));
         }
+        true
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {

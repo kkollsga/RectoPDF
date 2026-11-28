@@ -123,7 +123,10 @@ pub(crate) fn readable<A: SessionAccess>(access: &A, path: &Path) -> Readable {
 /// Blocks read as stale or damaged after they opened: taken away, asked for again, and what the answer widens to meanwhile.
 pub(crate) fn throw_away_and_ask<A: SessionAccess>(access: &A, path: &Path) -> (&'static str, Option<&'static str>) {
     if let (Some(indexing), Ok(key)) = (access.indexing(), CorpusKey::of_file(path)) {
-        corpus::remove_blocks(indexing.root(), key);
+        // Refused while a removal holds the caches: the blocks are left, and `readable` is refused its key too.
+        if let Some(_throwing) = indexing.cache_use() {
+            corpus::remove_blocks(indexing.root(), key);
+        }
     }
     match readable(access, path) {
         Readable::Widen { why, note } => (why, note),

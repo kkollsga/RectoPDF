@@ -279,3 +279,54 @@ fn wait_blocks_ready_maps_each_state() {
         assert_ne!(reason_words(code), fallback, "{code} has no words");
     }
 }
+
+/// What the indexer says while a removal holds the caches: no key and no use of them, whatever else it does.
+struct HeldIndexer<'a>(&'a ReadOnlyCorpus);
+
+impl crate::index::Indexing for HeldIndexer<'_> {
+    fn root(&self) -> &Path {
+        self.0.root()
+    }
+    fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
+        None
+    }
+    fn cache_use(&self) -> Option<crate::index::CacheUse<'_>> {
+        None
+    }
+    fn want(&self, _path: &Path, _key: CorpusKey) {}
+    fn job(&self, _key: CorpusKey) -> crate::index::JobState {
+        crate::index::JobState::Idle
+    }
+    fn load(&self) -> (u32, u32) {
+        (0, 0)
+    }
+}
+
+/// The world seen while a removal holds the caches.
+struct HeldWorld<'a>(&'a World, HeldIndexer<'a>);
+
+impl SessionAccess for HeldWorld<'_> {
+    type Loader = Pdf;
+    fn with<R>(&self, step: impl FnOnce(&mut Session<Pdf>) -> R) -> R {
+        self.0.with(step)
+    }
+    fn indexing(&self) -> Option<&dyn crate::index::Indexing> {
+        Some(&self.1)
+    }
+    fn blocking(&self) -> Option<&dyn Blocking> {
+        self.0.blocking()
+    }
+}
+
+/// Failure: blocks found stale while a removal holds the caches are thrown away, so a delete lands in a corpus folder the walk has pinned. With no use of the caches given, the blocks' files stay, and the answer is that they aren't made.
+#[test]
+fn stale_blocks_found_during_a_removal_are_left() {
+    let world = a_world(true);
+    world.make_blocks();
+    let header = world.root.join(world.key.hex()).join("v4/app/blocks.sealed");
+    assert!(header.exists(), "the rig made no blocks");
+    let held = HeldWorld(&world, HeldIndexer(&world.indexing));
+    assert_eq!(throw_away_and_ask(&held, world.file.0.as_path()), (NOT_MADE, None));
+    assert!(header.exists(), "the blocks were thrown away during a removal");
+    assert_eq!(world.host.wants.load(Ordering::SeqCst), 0, "blocks were asked for");
+}

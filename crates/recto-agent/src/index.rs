@@ -32,7 +32,10 @@ pub trait Indexing: Send + Sync {
     /// A use of the caches for something that only deletes. It takes no key. `None` at once while a removal holds the caches. Hold it until the last delete.
     fn cache_use(&self) -> Option<CacheUse<'_>>;
     /// An agent's folder is being made for this file's corpus, which lives only for this session: it's kept from the sweep, and set aside when the session ends.
-    fn made_agent_folder(&self, _key: CorpusKey) {}
+    /// `false` when a removal holds the caches and nothing of this session's was marked or claimed: the folder isn't to be written then.
+    fn made_agent_folder(&self, _key: CorpusKey) -> bool {
+        true
+    }
     /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
     fn find_key_report(&self) -> Value {
         Value::Null
@@ -279,6 +282,16 @@ fn no_indexing() -> AgentError {
         .then("Start it with `recto serve --background`. `recto search` works without an index.")
 }
 
+/// A removal holds the caches, so `recto index clear` deleted nothing.
+fn removal_under_way_clear() -> AgentError {
+    AgentError::new(Code::REMOVAL_BUSY, "A removal is under way, so nothing was cleared.", exit::BUSY)
+}
+
+/// A removal holds the caches, so an agent's folder wasn't written.
+fn removal_under_way_folder() -> AgentError {
+    AgentError::new(Code::REMOVAL_BUSY, "A removal is under way, so the folder wasn't written.", exit::BUSY)
+}
+
 /// Most files listed in an answer. A tab can hold many added PDFs, and all the rest get the same treatment.
 const MAX_LISTED_FILES: usize = 32;
 
@@ -307,7 +320,9 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
         ));
     };
     // Before it's made: a sweep running meanwhile leaves it, and the session's end sets it aside.
-    indexing.made_agent_folder(key);
+    if !indexing.made_agent_folder(key) {
+        return Err(removal_under_way_folder());
+    }
     match corpus::ensure_agent_folder(&find_key, indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
         Err(corpus::AgentFolderError::Busy) => Err(AgentError::new(Code::BUSY, "This document's index is being written right now.", exit::BUSY)),
@@ -476,6 +491,10 @@ fn wait_until_stopped(indexing: &dyn Indexing, key: Option<CorpusKey>) {
 /// `recto index clear`: this tab's files, or everything, and whatever's on its way for them.
 pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &TabRef, all: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
+    // Held to the last delete, past the contents' clear: a removal waits for it, and none starts while it's out.
+    let Some(_clearing) = indexing.cache_use() else {
+        return Err(removal_under_way_clear());
+    };
     let failed = || AgentError::new(Code::WRITE_FAILED, "The index folder couldn't be cleared.", exit::FAILED);
     if all {
         indexing.cancel(None);
@@ -527,6 +546,9 @@ fn said_cleared(mut report: corpus::Cleared, contents: Option<corpus::Cleared>) 
     }
     Ok(json!({ "cleared": report.cleared, "contents_cleared": contents.cleared, "being_built": report.being_built }))
 }
+
+#[cfg(test)]
+mod clear_tests;
 
 #[cfg(test)]
 mod tests {

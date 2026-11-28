@@ -170,8 +170,8 @@ impl Indexing for KeyInHand<'_> {
     fn cache_use(&self) -> Option<recto_agent::index::CacheUse<'_>> {
         Indexing::cache_use(self.0)
     }
-    fn made_agent_folder(&self, key: recto_index::corpus::CorpusKey) {
-        self.0.made_agent_folder(key);
+    fn made_agent_folder(&self, key: recto_index::corpus::CorpusKey) -> bool {
+        self.0.made_agent_folder(key)
     }
     fn find_key_report(&self) -> serde_json::Value {
         self.0.find_key_report()
