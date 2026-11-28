@@ -256,7 +256,6 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
             "host.rs",
             "record_store.rs",
             "record_store/withheld.rs",
-            "removal_store/ledger.rs",
             "removal_store/leftovers/leases.rs",
             "removal_store/leftovers/run.rs"
         ],
@@ -311,10 +310,11 @@ fn old_backups_stay_while_a_record_is_there() {
     }
 }
 
-/// Failure (the gates' review): a save's note is appended to the ledger while an unfinished removal's record is there, so something is kept from a window that
-/// is to keep nothing, for a backup that was never made. With a record there nothing is written (the ledger isn't even created); with none, the note is.
+/// Failure (the gates' review, round 2): a save's note is skipped while an unfinished removal's record is there. The ledger records where copies are, not
+/// session memory, and anything it doesn't write must leave a gap so a removal refuses; a silent skip lets a save in the withheld window leave a temp file or
+/// a new version that a later `removal check` never sees. With a record there, as with none, the note is appended.
 #[test]
-fn a_saves_note_is_not_appended_while_a_record_is_there() {
+fn a_save_while_a_record_is_there_is_still_noted() {
     for pending in [true, false] {
         let dir = temp();
         let root = dir.join("state");
@@ -325,7 +325,6 @@ fn a_saves_note_is_not_appended_while_a_record_is_there() {
         let file = dir.join("a.pdf");
         std::fs::write(&file, b"%PDF-1.4 a").unwrap();
         let seen = recto_platform::file_stamp(&file).unwrap();
-        let before = tree(&root);
         crate::removal_store::ledger::note_save(
             &root.join("backups.noindex"),
             &recto_agent::saving::SaveNote::Starting {
@@ -334,6 +333,7 @@ fn a_saves_note_is_not_appended_while_a_record_is_there() {
                 destination: None,
             },
         );
-        assert_eq!(tree(&root) == before, pending, "record there {pending}");
+        let ledger = crate::removal_store::ledger::read(&root);
+        assert!(!ledger.links.is_empty(), "record there {pending}: nothing noted: {:?}", ledger.links);
     }
 }

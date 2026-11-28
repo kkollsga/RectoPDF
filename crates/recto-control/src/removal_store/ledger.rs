@@ -235,10 +235,6 @@ pub fn note_save(backups_folder: &Path, note: &SaveNote<'_>) {
 
 pub(crate) fn note_save_with(backups_folder: &Path, note: &SaveNote<'_>, config: &Config) {
     let Some(root) = backups_folder.parent() else { return };
-    // While an unfinished removal's record is there a save keeps no backup, so there's nothing for a note to place, and nothing is kept from this window.
-    if !super::gate::backups_may_change(root) {
-        return;
-    }
     let entries = entries_for(note);
     if !entries.is_empty() {
         append(root, config, entries);
