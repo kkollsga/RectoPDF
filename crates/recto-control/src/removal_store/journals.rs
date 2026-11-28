@@ -17,6 +17,7 @@ mod names;
 
 use super::backups::{self, Finder};
 use super::placing::Maps;
+use super::purge::HistoryPins;
 use names::Kind;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Sides, Store, Survey, TargetMode};
 use recto_platform::folder::{Entry, Folder, Opened};
@@ -35,9 +36,9 @@ use std::sync::Arc;
 /// The most of a journal's start read for its header line, in bytes. Also what the ledger's adoption reads.
 pub(super) const HEADER_BYTES: usize = 8 * 1024;
 /// The most entries looked at in one folder. Design limit, not a measurement.
-const MAX_ENTRIES: usize = 8_192;
+pub(super) const MAX_ENTRIES: usize = 8_192;
 /// The two sessions' folders.
-const FLAVORS: [&str; 2] = ["session", "session-windowless"];
+pub(super) const FLAVORS: [&str; 2] = ["session", "session-windowless"];
 
 #[cfg(test)]
 use super::testing::Hook;
@@ -78,23 +79,60 @@ pub fn survey_journals(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, sur
     survey_journals_with(root, lineage, mode, survey, &Caps::default())
 }
 
+/// `survey_journals`, and the identity (device, inode, kind) of every artifact added as the target's noted in `pins`, for the purge by pin (`purge`).
+pub fn survey_journals_pinned(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut HistoryPins) -> Result<(), Refusal> {
+    survey_journals_run(root, lineage, mode, survey, &Caps::default(), Some(pins))
+}
+
+/// A flavor's `journals` folder under the state root, opened once by descriptor with no link followed at any step and only if it is this user's. The
+/// survey and the purge both open it by this, so they can't disagree on which folder it is.
+pub(super) fn open_journals(root: &Path, flavor: &str) -> Opened {
+    match Folder::open(&root.join(flavor)) {
+        Opened::Folder(session) => session.open_in(OsStr::new("journals")),
+        other => other,
+    }
+}
+
+/// What every key of a flavor's `journals` folder starts with: the flavor and `/journals/`.
+pub(super) fn flavor_prefix(flavor: &str) -> Vec<u8> {
+    let mut prefix = flavor.as_bytes().to_vec();
+    prefix.extend_from_slice(b"/journals/");
+    prefix
+}
+
+/// The store a name in a `journals` folder is in, as the survey says.
+pub(super) fn entry_store(name: &OsStr) -> Store {
+    store_of(names::kind_of(name))
+}
+
+/// The key of a name in a `journals` folder: the folder's place and the name, in `store`. The survey's key, and the purge's.
+pub(super) fn journal_key(store: Store, prefix: &[u8], name: &OsStr) -> ArtifactKey {
+    let mut bytes = prefix.to_vec();
+    bytes.extend_from_slice(name.as_encoded_bytes());
+    ArtifactKey::of(store, &bytes)
+}
+
 pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, caps: &Caps) -> Result<(), Refusal> {
+    survey_journals_run(root, lineage, mode, survey, caps, None)
+}
+
+fn survey_journals_run(
+    root: &Path,
+    lineage: &Lineage<'_>,
+    mode: TargetMode,
+    survey: &mut Survey,
+    caps: &Caps,
+    mut pins: Option<&mut HistoryPins>,
+) -> Result<(), Refusal> {
     let maps = Maps::of(lineage);
     for flavor in FLAVORS {
-        let session_path = root.join(flavor);
-        let session = match Folder::open(&session_path) {
+        let folder = match open_journals(root, flavor) {
             Opened::Missing => continue,
             Opened::Other => return Ok(()),
             Opened::Folder(folder) => folder,
         };
-        let folder = match session.open_in(OsStr::new("journals")) {
-            Opened::Missing => continue,
-            Opened::Other => return Ok(()),
-            Opened::Folder(folder) => folder,
-        };
-        let mut prefix = flavor.as_bytes().to_vec();
-        prefix.extend_from_slice(b"/journals/");
-        if !survey_journals_folder(&folder, &prefix, None, &session_path.join("journals"), &maps, mode, caps, survey)? {
+        let at = root.join(flavor).join("journals");
+        if !survey_journals_pinned_folder(&folder, &flavor_prefix(flavor), None, &at, &maps, mode, caps, survey, pins.as_deref_mut())? {
             return Ok(());
         }
     }
@@ -120,6 +158,22 @@ pub(super) fn survey_journals_folder(
     caps: &Caps,
     survey: &mut Survey,
 ) -> Result<bool, Refusal> {
+    survey_journals_pinned_folder(folder, prefix, store, at, maps, mode, caps, survey, None)
+}
+
+/// `survey_journals_folder`, noting the target's artifacts in `pins`.
+#[allow(clippy::too_many_arguments)]
+fn survey_journals_pinned_folder(
+    folder: &Folder,
+    prefix: &[u8],
+    store: Option<Store>,
+    at: &Path,
+    maps: &Maps,
+    mode: TargetMode,
+    caps: &Caps,
+    survey: &mut Survey,
+    pins: Option<&mut HistoryPins>,
+) -> Result<bool, Refusal> {
     #[cfg(not(test))]
     let _ = at;
     let run = Run {
@@ -132,7 +186,7 @@ pub(super) fn survey_journals_folder(
         mode,
         caps,
     };
-    run.survey(survey, &mut Vec::new())
+    run.survey(survey, &mut Vec::new(), pins)
 }
 
 /// One folder's survey.
@@ -170,7 +224,7 @@ struct Gone;
 
 impl Run<'_> {
     /// Whether the folder was listed and every entry added; `false` leaves the stores unmarked.
-    fn survey(&self, survey: &mut Survey, buffer: &mut Vec<u8>) -> Result<bool, Refusal> {
+    fn survey(&self, survey: &mut Survey, buffer: &mut Vec<u8>, mut pins: Option<&mut HistoryPins>) -> Result<bool, Refusal> {
         let Some(listed) = self.list()? else { return Ok(false) };
         // Journals first: a sidecar takes its journal's owner.
         let mut journals: HashMap<String, Option<Sides>> = HashMap::new();
@@ -205,12 +259,20 @@ impl Run<'_> {
                     Some(sides) => sides.owner(self.mode),
                 };
                 let format = if owner == Owner::Unknown { placed.format } else { Format::Current };
+                let key = self.key(entry);
                 survey.add(Found {
                     store: self.store_of(kind),
-                    key: self.key(entry),
+                    key,
                     owner,
                     format,
                 })?;
+                // Only the target's: a file placed by its bytes was proved the listed one (its descriptor's device, inode and one link, `read`), and one placed by
+                // its name alone is pinned from the listing.
+                if owner == Owner::Target
+                    && let Some(pins) = pins.as_deref_mut()
+                {
+                    pins.note(key, entry.identity())?;
+                }
             }
         }
         Ok(true)
@@ -236,9 +298,7 @@ impl Run<'_> {
 
     /// Root-relative, with the folder's place: the same name in two folders is two artifacts.
     fn key(&self, entry: &Entry) -> ArtifactKey {
-        let mut name = self.prefix.to_vec();
-        name.extend_from_slice(entry.name.as_encoded_bytes());
-        ArtifactKey::of(self.store_of(names::kind_of(&entry.name)), &name)
+        journal_key(self.store_of(names::kind_of(&entry.name)), self.prefix, &entry.name)
     }
 
     fn store_of(&self, kind: Kind) -> Store {
@@ -353,4 +413,4 @@ fn store_of(kind: Kind) -> Store {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

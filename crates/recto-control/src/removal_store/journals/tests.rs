@@ -10,9 +10,9 @@ use recto_testpdf::TempDir;
 use recto_testpdf::returns_in_time;
 use std::path::PathBuf;
 
-const MINE: &str = "/pdfs/mine.pdf";
-const THEIRS: &str = "/pdfs/theirs.pdf";
-const FIVE: [Store; 5] = [Store::Journal, Store::JournalVariant, Store::PageIds, Store::SleepFile, Store::KeptPages];
+pub(in crate::removal_store) const MINE: &str = "/pdfs/mine.pdf";
+pub(in crate::removal_store) const THEIRS: &str = "/pdfs/theirs.pdf";
+pub(in crate::removal_store) const FIVE: [Store; 5] = [Store::Journal, Store::JournalVariant, Store::PageIds, Store::SleepFile, Store::KeptPages];
 
 fn stamp(inode: u64) -> FileStamp {
     FileStamp {
@@ -24,12 +24,12 @@ fn stamp(inode: u64) -> FileStamp {
 }
 
 /// The 16 digits the names of version `inode` carry.
-fn k(inode: u64) -> String {
+pub(in crate::removal_store) fn k(inode: u64) -> String {
     key_of(inode, 10, 1)
 }
 
 /// This document at `MINE` (inode 7), and another at `THEIRS` (inode 8), from the beginning of time.
-fn ledger() -> Ledger {
+pub(in crate::removal_store) fn ledger() -> Ledger {
     let at = |inode, path: &str| Link::At {
         version: version(inode),
         path: PathBuf::from(path),
@@ -48,7 +48,7 @@ fn ledger() -> Ledger {
 }
 
 /// A root with both sessions' journals folders.
-fn root() -> TempDir {
+pub(in crate::removal_store) fn root() -> TempDir {
     let dir = TempDir::new("recto-journals-");
     for flavor in FLAVORS {
         std::fs::create_dir_all(dir.join(flavor).join("journals")).unwrap();
@@ -56,11 +56,11 @@ fn root() -> TempDir {
     dir
 }
 
-fn folder(root: &Path) -> PathBuf {
+pub(in crate::removal_store) fn folder(root: &Path) -> PathBuf {
     root.join("session").join("journals")
 }
 
-fn windowless(root: &Path) -> PathBuf {
+pub(in crate::removal_store) fn windowless(root: &Path) -> PathBuf {
     root.join("session-windowless").join("journals")
 }
 
@@ -102,7 +102,7 @@ fn purged(p: &Plan, store: Store) -> usize {
 }
 
 /// A journal's bytes: its first line, for a tab with this file and path.
-fn journal(path: &str, inode: u64) -> Vec<u8> {
+pub(in crate::removal_store) fn journal(path: &str, inode: u64) -> Vec<u8> {
     journal_start(&JournalHeader::new(1, Path::new(path), Some(stamp(inode)), 3, 0), None)
 }
 
@@ -413,7 +413,7 @@ fn variants_are_placed_by_their_header_and_anything_unrecognised_refuses() {
 }
 
 /// A sidecar's bytes for `journal`, about version `inode`.
-fn sidecar_of(journal: &str, inode: u64) -> Vec<u8> {
+pub(in crate::removal_store) fn sidecar_of(journal: &str, inode: u64) -> Vec<u8> {
     sidecar::Header::new(journal, stamp(inode), 3).encode().unwrap()
 }
 
