@@ -100,7 +100,6 @@ fn a_changed_file_or_a_cancel_writes_nothing_and_a_good_answer_writes_the_header
     assert_eq!(made.stored[Shape::Table.index()], 0);
     assert_eq!(report["pages"], 3);
     assert_eq!(report["bytes"], made.bytes);
-    assert!(report["map_ms"].is_number(), "{report}");
     remove_blocks(&folder.0, key());
 }
 

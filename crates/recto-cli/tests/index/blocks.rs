@@ -66,6 +66,10 @@ fn an_agent_gets_blocks_made_on_its_first_paragraph_ask() {
         "the helper wasn't shown walled before it was given the document: {built}"
     );
     assert!(built["data"]["stored"].as_u64().is_some_and(|stored| stored > 0), "{built}");
+    assert!(
+        built["data"]["map_ms"].is_number() && built["data"]["elapsed_ms"].is_number(),
+        "the session's own numbers: {built}"
+    );
 
     let (cleared, code) = state.json(&["index", "clear"]);
     assert_eq!((code, cleared["data"]["cleared"].as_u64()), (0, Some(1)), "{cleared}");
@@ -83,8 +87,11 @@ fn blocks_measure() {
     for file in files.split(':').filter(|file| !file.is_empty()) {
         let state = State::at(Level::Control);
         let _serving = state.serve();
+        // A session of temp state opens only what is in a temp folder of its own: a copy.
+        let copy = TempPdf::new("measured.pdf", &std::fs::read(file).expect("a file to measure"));
         let opened = Instant::now();
-        state.json(&["open", file]);
+        let (said, code) = state.json(&["open", path(&copy)]);
+        assert_eq!(code, 0, "{said}");
         wait_done(&state, "active");
         let index_seconds = opened.elapsed().as_secs_f64();
         let mut events = Raw::connect(&state);

@@ -163,7 +163,6 @@ pub(crate) fn outcome_of(ended: Ended<BlocksAnswer<Store>>, unchanged: impl FnOn
             if stop.load(Ordering::SeqCst) || !unchanged() {
                 return Outcome::Changed;
             }
-            note_tally(report, &tally);
             match store.0.finish(&index_tally(&tally)) {
                 Ok(made) => {
                     note_made(report, &made);
@@ -192,10 +191,6 @@ fn object(report: &mut Value) -> &mut serde_json::Map<String, Value> {
         *report = json!({});
     }
     report.as_object_mut().expect("just made an object")
-}
-
-fn note_tally(report: &mut Value, tally: &BlocksTally) {
-    object(report).insert("map_ms".into(), json!(tally.map_ms));
 }
 
 /// What was stored, as the header says it: the session's own numbers.
