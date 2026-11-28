@@ -230,6 +230,10 @@ fn get_measure() {
         state.json(&["get", &reference, "--grain", "paragraph"]);
         let (ready, code) = wait_made(&state, "30m");
         assert_eq!(code, 0, "{ready}");
+        // A file with no outline of its own has sections from generated contents, made first (and waited for).
+        state.json(&["contents", "--generated"]);
+        let (_, code) = state.json(&["wait", "contents-generated", "--timeout", "30m"]);
+        assert_eq!(code, 0, "generated contents");
         for grain in ["paragraph", "section"] {
             let mut millis = Vec::new();
             let mut last = Value::Null;
