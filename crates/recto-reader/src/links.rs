@@ -31,7 +31,8 @@ struct Press {
 /// What's known of links on the tab showing.
 #[derive(Debug, Default)]
 pub struct Linking {
-    held: VecDeque<(u32, Arc<PageLinks>)>,
+    /// Each page's links, and whether that's the last word: a read cut short by the clock is shown but asked for once more.
+    held: VecDeque<(u32, Arc<PageLinks>, bool)>,
     /// A page the pointer's been over that hasn't been read.
     wanted: Option<u32>,
     /// The page being read now.
@@ -48,12 +49,17 @@ impl Linking {
 
     /// The link at a point, if the page's links are here. `None` either way if they're not, and then the page is wanted.
     pub fn at(&mut self, point: PagePoint) -> Option<LinkHit> {
-        match self.held.iter().find(|(page, _)| *page == point.page) {
-            Some((page, links)) => links.at(point.x, point.y).map(|link| LinkHit {
-                page: *page,
-                rect: link.rect,
-                target: link.target.clone(),
-            }),
+        match self.held.iter().find(|(page, ..)| *page == point.page) {
+            Some((page, links, settled)) => {
+                if !settled && self.asked != Some(point.page) {
+                    self.wanted = Some(point.page);
+                }
+                links.at(point.x, point.y).map(|link| LinkHit {
+                    page: *page,
+                    rect: link.rect,
+                    target: link.target.clone(),
+                })
+            }
             None => {
                 if self.asked != Some(point.page) {
                     self.wanted = Some(point.page);
@@ -65,7 +71,7 @@ impl Linking {
 
     /// Whether a page's links are here, read or found to have none.
     pub fn knows(&self, page: u32) -> bool {
-        self.held.iter().any(|(held, _)| *held == page)
+        self.held.iter().any(|(held, _, settled)| *held == page && *settled)
     }
 
     /// The page to read next, taken: it's being asked for now.
@@ -83,8 +89,12 @@ impl Linking {
         if self.asked == Some(page) {
             self.asked = None;
         }
-        self.held.retain(|(held, _)| *held != page);
-        self.held.push_back((page, links.unwrap_or_default()));
+        // A read cut short (`truncated`: it ran out of its time, as on a slow Mac) is shown but not final, so its missing links aren't missing till the file's reopened. It's asked once more, and that answer is held whole or not: a file that always cuts a read short is read twice, not on every look.
+        let again = self.held.iter().any(|(held, _, settled)| *held == page && !*settled);
+        let links = links.unwrap_or_default();
+        let settled = again || !links.truncated;
+        self.held.retain(|(held, ..)| *held != page);
+        self.held.push_back((page, links, settled));
         while self.held.len() > MAX_PAGES_HELD {
             self.held.pop_front();
         }
@@ -121,7 +131,7 @@ impl Linking {
         if press.clicks != 1 || press.moved {
             return None;
         }
-        self.clicked = self.held.iter().find(|(page, _)| *page == press.point.page).and_then(|(page, links)| {
+        self.clicked = self.held.iter().find(|(page, ..)| *page == press.point.page).and_then(|(page, links, _)| {
             links.at(press.point.x, press.point.y).map(|link| LinkHit {
                 page: *page,
                 rect: link.rect,
@@ -183,6 +193,30 @@ mod tests {
             linking.take(page, None);
         }
         assert_eq!(linking.pages_held(), MAX_PAGES_HELD);
+    }
+
+    /// Failure: a page whose links were cut short by the clock (a slow Mac) is held as final, so a person's links stay missing on it till the file's reopened; or a file that always cuts the read short is read again on every look.
+    #[test]
+    fn a_cut_short_read_is_asked_again_once() {
+        let cut = || {
+            let mut links = (*page_with_link()).clone();
+            links.truncated = true;
+            Arc::new(links)
+        };
+        let mut linking = Linking::default();
+        assert_eq!(linking.at(at(2, 20.0, 20.0)), None);
+        assert_eq!(linking.next_wanted(), Some(2));
+        linking.take(2, Some(cut()));
+        assert!(!linking.knows(2), "a cut-short read isn't final");
+        assert!(linking.at(at(2, 20.0, 20.0)).is_some(), "what was read is shown meanwhile");
+        assert_eq!(linking.next_wanted(), Some(2), "asked again");
+        linking.take(2, Some(cut()));
+        assert!(linking.knows(2), "the second answer is held, whole or not");
+        assert!(linking.at(at(2, 20.0, 20.0)).is_some());
+        assert_eq!(linking.next_wanted(), None, "not a third time");
+        linking.clear();
+        linking.take(2, Some(cut()));
+        assert!(!linking.knows(2), "a new open starts again");
     }
 
     /// Failure: a drag that starts on a link follows it when it ends, as does a double-click; or a plain click on one doesn't. And for an image picked
