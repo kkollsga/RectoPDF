@@ -1,7 +1,9 @@
 //! The gate that says every store a removal enumerates has a survey, and what a plan over real adapters does. When a store is added and nobody writes its survey
 //! the removal would read it as "nothing found"; here it fails the build instead.
 
+use super::caches::survey_caches_to_clear;
 use super::caches::tests::{OURS, World};
+use super::purge::Pins;
 use super::{survey_backups, survey_caches, survey_journals, survey_legacy_sessions, survey_library, survey_record, survey_update_copy, survey_writer_temps};
 use recto_core::removal::{
     DESIGN_LIMITS, Disposition, Kinds, LEDGER_LIMITS, Limits, Lineage, Plan, Refusal, Request, Store, Survey, Surveyed, TargetMode, lineage, plan,
@@ -61,7 +63,7 @@ fn surveyed(w: &World, both: bool, left_out: Option<usize>) -> Result<Surveyed, 
     survey.finish()
 }
 
-fn plan_of(s: &Surveyed) -> Result<Plan, Refusal> {
+pub(crate) fn plan_of(s: &Surveyed) -> Result<Plan, Refusal> {
     plan(
         &Request::new(Kinds::from_bits(Kinds::METADATA).unwrap(), TargetMode::Save, false),
         &s.inventory(),
@@ -125,15 +127,28 @@ fn each_survey_left_out_refuses_with_its_store() {
     }
 }
 
-/// Failure: the refusal changes by accident. Today another document's Find text, which nothing can prove is another's, refuses the removal, and names the
-/// corpus. Decided by the owner 2026-11-27 (a confirmed removal clears every document's index); this pin changes when D2e/D5 plan the clear-all.
+/// Failure: the clear-all isn't what plans, so another document's Find text still refuses a removal the owner decided clears every document's index
+/// (2026-11-27: "Yes, clear them all"). The real adapters, with the caches run as the clear-all (`survey_caches_to_clear`), plan a state holding two
+/// documents' corpora and contents, and the plan acts on both corpora. Seen failing with the clear-all's keeping D2d's "not placed is `Unknown`".
 #[test]
-fn another_documents_find_text_refuses_the_removal() {
+fn another_documents_find_text_is_cleared_with_the_removal() {
     let w = World::new();
     for path in [&w.mine, &w.theirs] {
         let key = w.index(path);
         w.keep_contents(path, key);
     }
-    let refused = plan_of(&surveyed(&w, true, None).unwrap()).unwrap_err();
-    assert_eq!(refused, Refusal::Incomplete(Store::CorpusText));
+    let ledger = w.ledger();
+    let lineage = lineage(&ledger, crate::removal_store::testing::version(7), &w.mine, &LEDGER_LIMITS).unwrap();
+    let mut survey = Survey::new(&limits());
+    survey.history(&lineage);
+    let caches = ADAPTERS.iter().position(|(name, _, _)| *name == "caches").unwrap();
+    for (at, (_, run, _)) in ADAPTERS.iter().enumerate() {
+        if at != caches {
+            run(&w, &lineage, TargetMode::Save, &mut survey).unwrap();
+        }
+    }
+    survey_caches_to_clear(&w.corpus, &w.contents, &mut survey, &mut Pins::default()).unwrap();
+    let p = plan_of(&survey.finish().unwrap()).expect("a plan, with the other document's text in it");
+    assert_eq!(p.line(Store::CorpusText).acted, 2, "both documents' corpora");
+    assert_eq!(p.line(Store::GeneratedContents).acted, 2, "both documents' contents");
 }

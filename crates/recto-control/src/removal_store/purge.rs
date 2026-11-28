@@ -2,7 +2,7 @@
 //! stores: `Backup`, `Journal`, `JournalVariant`, `KeptPages`, `PageIds` and `SleepFile`. **Not wired to any command, and takes no lease:** the walk, its
 //! quiescing (`record_store::hold`), the barrier, the words and the progress record belong to the command that calls it.
 //!
-//! - **Pins.** [`HistoryPins`] is filled by `survey_journals_pinned` and `survey_backups_pinned` with the identity (device, inode, kind) of every artifact
+//! - **Pins.** [`Pins`] is filled by `survey_journals_pinned` and `survey_backups_pinned` with the identity (device, inode, kind) of every artifact
 //!   added as the target's, and of nothing else (a Save As source is never acted on, and any other owner refuses the plan). A file placed by its name alone
 //!   is pinned from the listed entry; one placed by its bytes (a journal, a variant, a sidecar) from the entry too, which the survey proved is its opened
 //!   descriptor's own device, inode and single link. Turning an identity into the barrier's `Pin` (a volume's position) is the carrier's.
@@ -27,11 +27,11 @@ const MAX_PINS: usize = 8_192;
 
 /// What the history surveys saw of each artifact that is the target's: its device, inode and kind when it was listed. Never of another owner's.
 #[derive(Debug, Default)]
-pub struct HistoryPins {
+pub struct Pins {
     pins: BTreeMap<ArtifactKey, Identity>,
 }
 
-impl HistoryPins {
+impl Pins {
     pub fn get(&self, key: &ArtifactKey) -> Option<Identity> {
         self.pins.get(key).copied()
     }
@@ -45,13 +45,10 @@ impl HistoryPins {
         Ok(())
     }
 
-    /// Pins a target's artifact that was placed by its name alone, so never opened: only if the file is this user's, looked at by the folder's own place and
-    /// the entry's name, and the same file as the entry (device and inode). One that isn't is not pinned, so the barrier's encode refuses it.
-    pub(super) fn note_named(&mut self, key: ArtifactKey, identity: Identity, folder: &Folder, entry: &Entry) -> Result<(), Refusal> {
-        match owner_of(folder, entry) {
-            Some(uid) => self.note_owned_by(key, identity, uid),
-            None => Ok(()),
-        }
+    /// Pins a target's artifact that was placed by its name alone, so never opened: only if the listed entry is this user's (the owner is read from the
+    /// listing, not by a second look at the path). One that isn't is not pinned, so the barrier's encode refuses it.
+    pub(super) fn note_named(&mut self, key: ArtifactKey, identity: Identity, entry: &Entry) -> Result<(), Refusal> {
+        self.note_owned_by(key, identity, entry.uid)
     }
 
     /// [`Self::note_named`] once the file's owner is known: pinned only if it is the user this runs as.
@@ -61,19 +58,6 @@ impl HistoryPins {
         }
         Ok(())
     }
-}
-
-/// Who owns the file `entry` of `folder` is, if it can be told and it is the file that was listed.
-#[cfg(unix)]
-fn owner_of(folder: &Folder, entry: &Entry) -> Option<u32> {
-    use std::os::unix::fs::MetadataExt as _;
-    let meta = std::fs::symlink_metadata(folder.path().ok()?.join(&entry.name)).ok()?;
-    (meta.dev() == entry.dev && meta.ino() == entry.ino).then(|| meta.uid())
-}
-
-#[cfg(not(unix))]
-fn owner_of(_folder: &Folder, _entry: &Entry) -> Option<u32> {
-    None
 }
 
 /// Where the history stores are.
@@ -114,7 +98,7 @@ pub enum PurgeStop {
     FolderNotOurs,
     /// A folder couldn't be listed, or looked at, or an unlink failed.
     Listing,
-    /// A wanted name is a folder, a link or something else than a file.
+    /// A wanted name isn't the kind that was pinned: a folder, a link or a pipe where a file was pinned, or a file where a folder was.
     NotAFile,
     /// A wanted file has another name.
     Linked,
@@ -122,6 +106,10 @@ pub enum PurgeStop {
     NotThePinned,
     /// After the unlinks a wanted name was listed again.
     StillThere,
+    /// The store isn't one of the four cache stores (`caches::purge`).
+    NotCache,
+    /// A build or an agent session holds the lock of a corpus to go: it is in use, and nothing was unlinked for it.
+    Busy,
 }
 
 /// What a result is, as the walk acknowledges it.
@@ -150,11 +138,24 @@ pub(super) struct Seams {
 }
 
 /// One folder of the store: open by descriptor, with the place its keys start with and where it was opened (for a test's seams; never opened again).
-struct Place {
-    folder: Folder,
-    prefix: Vec<u8>,
+pub(super) struct Place {
+    pub(super) folder: Folder,
+    pub(super) prefix: Vec<u8>,
     #[cfg(test)]
-    at: PathBuf,
+    pub(super) at: PathBuf,
+}
+
+impl Place {
+    pub(super) fn new(folder: Folder, prefix: Vec<u8>, at: PathBuf) -> Self {
+        #[cfg(not(test))]
+        let _ = &at;
+        Self {
+            folder,
+            prefix,
+            #[cfg(test)]
+            at,
+        }
+    }
 }
 
 /// One wanted file that was listed.
@@ -182,16 +183,31 @@ pub fn purge_history(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Histor
 }
 
 pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &HistoryRoots<'_>, volume: VolumeNow, seams: &Seams) -> Result<Purged, PurgeStop> {
-    #[cfg(not(test))]
-    let _ = seams;
     if !is_history(store) {
         return Err(PurgeStop::NotHistory);
     }
+    let want = check_pins(wanted, volume, PinKind::File)?;
+    let places = open_places(store, roots)?;
+    let key_of = |place: &Place, entry: &Entry| {
+        if store == Store::Backup {
+            Some(backups::backup_key(entry.name.as_encoded_bytes()))
+        } else if journals::entry_store(&entry.name) == store {
+            Some(journals::journal_key(store, &place.prefix, &entry.name))
+        } else {
+            None
+        }
+    };
+    purge_files(&places, &want, &key_of, MAX_ENTRIES, volume, seams)
+}
+
+/// The batch (`DESIGN_LIMITS.max_batch`), then each pin: of `kind`, on this volume, and one pin to a key (a key twice is two pins that may disagree, and which
+/// one counts would be an accident of order).
+pub(super) fn check_pins(wanted: &[(ArtifactKey, Pin)], volume: VolumeNow, kind: PinKind) -> Result<BTreeMap<ArtifactKey, Pin>, PurgeStop> {
     if wanted.len() > usize::from(DESIGN_LIMITS.max_batch.get()) {
         return Err(PurgeStop::TooLarge);
     }
     for (_, pin) in wanted {
-        if pin.kind != PinKind::File {
+        if pin.kind != kind {
             return Err(PurgeStop::BadPin);
         }
         if pin.root != volume.root {
@@ -199,23 +215,40 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
         }
     }
     let want: BTreeMap<ArtifactKey, Pin> = wanted.iter().copied().collect();
-    // One pin to a key: a key twice is two pins that may disagree, and which one counts would be an accident of order.
     if want.len() != wanted.len() {
         return Err(PurgeStop::BadPin);
     }
-    let places = open_places(store, roots)?;
+    Ok(want)
+}
+
+/// The two passes over the files of `places` that are `want`'s, shared by the history purge and the caches' notes and contents: a listing of each place, capped at
+/// `cap` and keyed by `key_of`; a wanted key not listed is already gone; pass 1, every listed match is a plain file with one link and the pinned device and
+/// inode; pass 2, each looked at again just before its own unlink; every folder that lost a name synced, on every way out; a last listing that no wanted key
+/// is in.
+pub(super) fn purge_files(
+    places: &[Place],
+    want: &BTreeMap<ArtifactKey, Pin>,
+    key_of: &dyn Fn(&Place, &Entry) -> Option<ArtifactKey>,
+    cap: usize,
+    volume: VolumeNow,
+    seams: &Seams,
+) -> Result<Purged, PurgeStop> {
+    #[cfg(not(test))]
+    let _ = seams;
     let mut matches = Vec::new();
     for (at, place) in places.iter().enumerate() {
         #[cfg(test)]
         if let Some(hook) = &seams.before_list {
             hook(&place.at);
         }
-        list(store, place, |key, entry| {
+        list(place, key_of, cap, |key, entry| {
             if let Some(pin) = want.get(&key) {
                 matches.push(Match { place: at, entry, pin: *pin });
             }
         })?;
     }
+    // A fixed order (by place, then name), so a stop part way leaves the same files and a resume takes the same rest.
+    matches.sort_by(|a, b| (a.place, &a.entry.name).cmp(&(b.place, &b.entry.name)));
     let mut already_gone = (want.len() - matches.len()) as u32;
     // Pass 1: nothing is unlinked unless every file to go is what was pinned.
     for found in &matches {
@@ -226,7 +259,7 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
     // Pass 2: each looked at again just before its own unlink.
     let mut removed = 0u32;
     let mut lost = vec![false; places.len()];
-    let unlinked = unlink_all(&places, &matches, volume, seams, &mut removed, &mut already_gone, &mut lost);
+    let unlinked = unlink_all(places, &matches, volume, seams, &mut removed, &mut already_gone, &mut lost);
     // Every folder that lost a name is synced on every way out, a stop in pass 2 included. A name already gone may have been taken by a run that was killed
     // before its sync, so with any gone every folder is synced.
     if already_gone > 0 {
@@ -240,8 +273,8 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
     }
     unlinked?;
     let mut still_there = false;
-    for place in &places {
-        list(store, place, |key, _| still_there |= want.contains_key(&key))?;
+    for place in places {
+        list(place, key_of, cap, |key, _| still_there |= want.contains_key(&key))?;
     }
     if still_there {
         return Err(PurgeStop::StillThere);
@@ -306,7 +339,7 @@ fn differs(entry: &Entry, pin: &Pin, volume: VolumeNow) -> Option<PurgeStop> {
     (entry.dev != volume.dev || entry.ino != pin.inode).then_some(PurgeStop::NotThePinned)
 }
 
-fn synced(folder: &Folder, seams: &Seams) -> bool {
+pub(super) fn synced(folder: &Folder, seams: &Seams) -> bool {
     #[cfg(test)]
     {
         seams.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -324,18 +357,11 @@ fn synced(folder: &Folder, seams: &Seams) -> bool {
 fn open_places(store: Store, roots: &HistoryRoots<'_>) -> Result<Vec<Place>, PurgeStop> {
     let mut places = Vec::new();
     let mut take = |opened: Opened, prefix: Vec<u8>, at: PathBuf| -> Result<(), PurgeStop> {
-        #[cfg(not(test))]
-        let _ = &at;
         match opened {
             Opened::Missing => Ok(()),
             Opened::Other => Err(PurgeStop::FolderNotOurs),
             Opened::Folder(folder) => {
-                places.push(Place {
-                    folder,
-                    prefix,
-                    #[cfg(test)]
-                    at,
-                });
+                places.push(Place::new(folder, prefix, at));
                 Ok(())
             }
         }
@@ -354,21 +380,16 @@ fn open_places(store: Store, roots: &HistoryRoots<'_>) -> Result<Vec<Place>, Pur
     Ok(places)
 }
 
-/// Every entry of the folder that is one of `store`'s, with its key: listed as the survey lists (`journals::list_capped`), so one more than its cap is `TooLarge`.
-fn list(store: Store, place: &Place, mut each: impl FnMut(ArtifactKey, Entry)) -> Result<(), PurgeStop> {
-    let entries = journals::list_capped(&place.folder, MAX_ENTRIES).map_err(|failed| match failed {
+/// Every entry of the folder that `key_of` gives a key, listed as the survey lists (`journals::list_capped`), so one more than `cap` is `TooLarge`.
+fn list(place: &Place, key_of: &dyn Fn(&Place, &Entry) -> Option<ArtifactKey>, cap: usize, mut each: impl FnMut(ArtifactKey, Entry)) -> Result<(), PurgeStop> {
+    let entries = journals::list_capped(&place.folder, cap).map_err(|failed| match failed {
         journals::ListFailed::Unreadable => PurgeStop::Listing,
         journals::ListFailed::TooLarge => PurgeStop::TooLarge,
     })?;
     for entry in entries {
-        let key = if store == Store::Backup {
-            backups::backup_key(entry.name.as_encoded_bytes())
-        } else if journals::entry_store(&entry.name) == store {
-            journals::journal_key(store, &place.prefix, &entry.name)
-        } else {
-            continue;
-        };
-        each(key, entry);
+        if let Some(key) = key_of(place, &entry) {
+            each(key, entry);
+        }
     }
     Ok(())
 }
