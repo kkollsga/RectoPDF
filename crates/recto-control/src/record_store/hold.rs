@@ -43,6 +43,13 @@ pub enum HoldRefused {
     Loading,
 }
 
+impl RemovalHold {
+    /// The state folder this hold is on, for a proof that pairs it with the leases of the same folder (`removal_store::purge::HistoryQuiet`).
+    pub fn state_root(&self) -> &Path {
+        self.store.state_root()
+    }
+}
+
 impl RecordStore {
     /// Holds the store for a removal's walk. The return is the acknowledgment that no write is under way and none will start until the hold is dropped.
     /// On whatever thread the walk is on: it may look at the disk once, outside the lock.

@@ -176,7 +176,7 @@ impl BlocksBuild {
         if lock.try_lock().is_err() {
             return Begin::Busy;
         }
-        let ready = match ReadyCorpus::open(find_key, root, key) {
+        let ready = match ReadyCorpus::open_held(find_key, root, key) {
             Ok(Some(ready)) => ready,
             Ok(None) => return Begin::NotIndexed,
             Err(Damaged) => return Begin::Damaged,

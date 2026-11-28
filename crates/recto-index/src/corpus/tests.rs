@@ -2488,3 +2488,44 @@ fn edge_lines_that_overflow_are_not_stored_and_the_page_is_not_damaged() {
         assert!(stored.edges().is_none(), "{what}: unknown, not known and none");
     }
 }
+
+/// Failure: a reader's open notes the use while someone holds the corpus's `build.lock` (the caches' purge holds it from its look to the folder's end), so a `used` renamed into `app/`
+/// stops the walk and leaves the removal pending; or a caller that holds the lock itself (a build, an agent folder's making) can't note use with its own lock in the way, and eviction stops seeing it.
+/// With `build.lock` held on another descriptor, an open leaves no `used` and no temporary; once it's let go, an open writes `used`; and `open_held`, for the holder, writes it.
+#[test]
+fn a_corpus_opened_while_its_build_lock_is_held_notes_no_use() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = CorpusKey([1; 32]);
+    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let app = paths.used.parent().unwrap().to_path_buf();
+    let clean = |paths: &CorpusPaths| fs::remove_file(&paths.used).unwrap();
+    let temporaries = || {
+        fs::read_dir(&app)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("used."))
+            .count()
+    };
+    clean(&paths);
+    let held = local::append_private_file(&paths.lock).unwrap();
+    held.try_lock().expect("the test takes the lock");
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some(), "a held lock doesn't stop a read");
+    assert!(!paths.used.exists(), "an open noted use while the lock was held");
+    assert_eq!(temporaries(), 0, "an open left a temporary while the lock was held");
+    // The holder's own open notes it, as a build's and an agent folder's making do.
+    assert!(ReadyCorpus::open_held(tk(), &root, key).unwrap().is_some());
+    assert!(paths.used.exists(), "the holder's open didn't note use");
+    clean(&paths);
+    held.unlock().unwrap();
+    drop(held);
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some());
+    assert!(paths.used.exists(), "a reader with the lock free didn't note use");
+    assert_eq!(temporaries(), 0);
+    // And it never makes the lock: a purge that took the file away doesn't get one back.
+    clean(&paths);
+    fs::remove_file(&paths.lock).unwrap();
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some());
+    assert!(!paths.used.exists() && !paths.lock.exists(), "a reader made the lock, or wrote without it");
+}

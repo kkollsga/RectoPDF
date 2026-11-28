@@ -167,8 +167,11 @@ impl Indexing for KeyInHand<'_> {
     fn find_key(&self) -> Option<recto_agent::index::KeyUse<'_>> {
         self.0.find_key_in_hand()
     }
-    fn made_agent_folder(&self, key: recto_index::corpus::CorpusKey) {
-        self.0.made_agent_folder(key);
+    fn cache_use(&self) -> Option<recto_agent::index::CacheUse<'_>> {
+        Indexing::cache_use(self.0)
+    }
+    fn made_agent_folder(&self, key: recto_index::corpus::CorpusKey) -> bool {
+        self.0.made_agent_folder(key)
     }
     fn find_key_report(&self) -> serde_json::Value {
         self.0.find_key_report()
@@ -348,5 +351,26 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(indexer.find_key_in_hand().is_some(), "the key's taking didn't go on to the end");
+    }
+
+    /// Failure: Find's own view of the indexer (`KeyInHand`) forwards by hand, and a `cache_use` that answers plain there lets Find's throw-away of a damaged corpus run uncounted and unrefused during a removal. Over a held indexer it answers `None`, and over a free one a use the hold waits for.
+    #[test]
+    fn find_gives_no_cache_use_while_the_indexer_is_held() {
+        let indexer = Indexer::with_runner(
+            std::path::Path::new("/nowhere"),
+            Box::new(crate::indexing::HelperProcess {
+                priority: crate::helpers::HELPER_PRIORITY,
+            }),
+        );
+        let find_view = KeyInHand(&indexer);
+        let using = find_view.cache_use().expect("free: a use");
+        assert!(
+            indexer.hold_for_removal(Instant::now()).is_err(),
+            "the use Find's view took is counted by the indexer"
+        );
+        drop(using);
+        let hold = indexer.hold_for_removal(Instant::now()).expect("held");
+        assert!(find_view.cache_use().is_none());
+        drop(hold);
     }
 }

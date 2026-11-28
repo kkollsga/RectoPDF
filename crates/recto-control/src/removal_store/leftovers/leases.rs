@@ -115,6 +115,11 @@ impl Leases {
         })
     }
 
+    /// The state folder these leases are on, for a proof that pairs them with a hold on the same folder (`removal_store::purge::HistoryQuiet`).
+    pub fn state_root(&self) -> &Path {
+        &self.root
+    }
+
     /// Whether the installer's lock is held by this.
     pub fn holds_installer(&self) -> bool {
         self.installer.is_some()

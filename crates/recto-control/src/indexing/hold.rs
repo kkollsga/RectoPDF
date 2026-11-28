@@ -2,7 +2,7 @@
 //! of `Quiesce(AgentExports)`. While an [`IndexHold`] lives, no build starts, no sweep runs, no key is handed out and no agent's folder is claimed.
 //!
 //! **How.** [`Indexer::hold_for_removal`] does, under the queue's own lock: refuses a second hold, sets `on_hold`, clears what waits, stops what runs (the way `cancel`
-//! does), and waits on `ended` until the thread has gone (`!working`) and no use of the key is out (`uses == 0`), at most until `until`. The thread clears `working` under
+//! does), and waits on `ended` until the thread has gone (`!working`) and no use is out, of the key or a deleter's (`uses == 0`), at most until `until`. The thread clears `working` under
 //! that same lock, after the last thing it does, and a [`KeyUse`]'s end notifies the same condvar, so "quiet" is seen, never inferred from "cancel sent". Past `until` the
 //! hold is let go and the answer says what's still going. No thread, no timer, no poll, no buffer: one flag, one counter and a condvar the queue has anyway.
 //!
@@ -20,7 +20,7 @@ use recto_agent::index::UseEnded;
 pub enum NotQuiet {
     /// Another hold is on it.
     AlreadyHeld,
-    /// Something was still going at the bound: the queue's thread is there (`building`: a build, or a sweep or a clean-up that runs on it), or `uses` of the Find key are out. A build it stopped stays stopped.
+    /// Something was still going at the bound: the queue's thread is there (`building`: a build, or a sweep or a clean-up that runs on it), or `uses` are out (of the Find key, or of the caches by a deleter). A build it stopped stays stopped.
     StillRunning { building: bool, uses: u32 },
 }
 

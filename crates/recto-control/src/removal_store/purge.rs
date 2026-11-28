@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use super::testing::Hook;
 
+mod quiet;
+pub use quiet::HistoryQuiet;
+
 /// The most pins held: the survey's own cap on artifacts (design limit).
 const MAX_PINS: usize = 8_192;
 
@@ -110,6 +113,8 @@ pub enum PurgeStop {
     NotCache,
     /// A build or an agent session holds the lock of a corpus to go: it is in use, and nothing was unlinked for it.
     Busy,
+    /// The proof of quiet is another state folder's ([`HistoryQuiet`]): nothing was looked at.
+    OtherState,
 }
 
 /// What a result is, as the walk acknowledges it.
@@ -178,11 +183,30 @@ const fn is_history(store: Store) -> bool {
 /// folders the store lives in, opened as their survey opens them; a listing of each, capped, keyed as the survey keys; a wanted key not listed is already
 /// gone; pass 1, every listed match is a plain file with one link and the pinned device and inode; pass 2, each looked at again just before its own
 /// unlink; every folder that lost a name synced; a last listing that no wanted key is in.
-pub fn purge_history(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &HistoryRoots<'_>, volume: VolumeNow) -> Result<Purged, PurgeStop> {
-    purge_with(store, wanted, roots, volume, &Seams::default())
+///
+/// It can't be called without a [`HistoryQuiet`]: the proof that this process's record store writes nothing and no `recto serve` keeps a windowless record.
+/// A proof made for another state folder than `roots`' is `OtherState`, and nothing is looked at.
+pub fn purge_history(
+    store: Store,
+    wanted: &[(ArtifactKey, Pin)],
+    roots: &HistoryRoots<'_>,
+    volume: VolumeNow,
+    quiet: &HistoryQuiet<'_>,
+) -> Result<Purged, PurgeStop> {
+    purge_with(store, wanted, roots, volume, quiet, &Seams::default())
 }
 
-pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &HistoryRoots<'_>, volume: VolumeNow, seams: &Seams) -> Result<Purged, PurgeStop> {
+pub(super) fn purge_with(
+    store: Store,
+    wanted: &[(ArtifactKey, Pin)],
+    roots: &HistoryRoots<'_>,
+    volume: VolumeNow,
+    quiet: &HistoryQuiet<'_>,
+    seams: &Seams,
+) -> Result<Purged, PurgeStop> {
+    if !quiet.is_for(roots.state_root) {
+        return Err(PurgeStop::OtherState);
+    }
     if !is_history(store) {
         return Err(PurgeStop::NotHistory);
     }

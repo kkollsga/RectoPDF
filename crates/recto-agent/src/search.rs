@@ -245,6 +245,8 @@ fn corpus_for<'a>(open: &'a mut Option<(u16, ReadyCorpus)>, file: u16, key: Corp
 /// A corpus that doesn't add up is thrown away, and made again. Page by page is always right.
 fn throw_away_corpus(indexing: Option<&dyn Indexing>, source: &PlanFile, key: CorpusKey) {
     if let Some(indexing) = indexing {
+        // Held past the ask: a removal waits for it. Refused, the corpus is left and nothing is asked for; the search goes on page by page.
+        let Some(_throwing) = indexing.cache_use() else { return };
         let _ = recto_index::corpus::clear(indexing.root(), key);
         indexing.want(&source.path, key);
     }
@@ -1899,6 +1901,9 @@ mod tests {
         fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
             Some(crate::index::KeyUse::plain(&self.1))
         }
+        fn cache_use(&self) -> Option<crate::index::CacheUse<'_>> {
+            Some(crate::index::CacheUse::plain())
+        }
         fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
         fn job(&self, _key: CorpusKey) -> crate::index::JobState {
             crate::index::JobState::Failed("couldnt_read".to_string())
@@ -1921,6 +1926,9 @@ mod tests {
         }
         fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
             (self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0).then(|| crate::index::KeyUse::plain(&self.key))
+        }
+        fn cache_use(&self) -> Option<crate::index::CacheUse<'_>> {
+            Some(crate::index::CacheUse::plain())
         }
         fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
         fn job(&self, _key: CorpusKey) -> crate::index::JobState {
@@ -1957,6 +1965,73 @@ mod tests {
         assert!(
             recto_index::corpus::ReadyCorpus::open(&recto_platform::find_key::FindKey::for_tests(1), &once.root, key).is_ok_and(|corpus| corpus.is_some()),
             "a good corpus was thrown away for want of a key"
+        );
+    }
+
+    /// The right key for the first look at the index (it reads as ready), a key that doesn't open the corpus after (so it reads as damaged), and no use of the caches, as while a removal holds them. Counts the asks to build.
+    struct Held {
+        root: std::path::PathBuf,
+        key: recto_platform::find_key::FindKey,
+        wrong_key: recto_platform::find_key::FindKey,
+        asked: std::sync::atomic::AtomicU32,
+        wants: std::sync::atomic::AtomicU32,
+    }
+
+    impl Indexing for Held {
+        fn root(&self) -> &std::path::Path {
+            &self.root
+        }
+        fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
+            let first = self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            Some(crate::index::KeyUse::plain(if first { &self.key } else { &self.wrong_key }))
+        }
+        fn cache_use(&self) -> Option<crate::index::CacheUse<'_>> {
+            None
+        }
+        fn want(&self, _path: &std::path::Path, _key: CorpusKey) {
+            self.wants.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn job(&self, _key: CorpusKey) -> crate::index::JobState {
+            crate::index::JobState::Idle
+        }
+        fn load(&self) -> (u32, u32) {
+            (0, 0)
+        }
+        fn starts_builds(&self) -> bool {
+            false
+        }
+    }
+
+    /// Failure: a search that finds a damaged corpus while a removal holds the caches throws it away and asks for it again, so a delete lands among the walk's and a build is asked for in folders the removal is taking out. The caches refused, the corpus is left, nothing is asked for, and the search reads the pages.
+    #[test]
+    fn a_damaged_corpus_found_during_a_removal_is_left_and_not_asked_for() {
+        let fixture = fixture(
+            "held-damaged",
+            b"not a pdf at all",
+            vec![Some(("a page that says needleword".to_string(), true))],
+        );
+        let held = Held {
+            root: fixture.indexing.0.clone(),
+            key: recto_platform::find_key::FindKey::for_tests(1),
+            wrong_key: recto_platform::find_key::FindKey::for_tests(2),
+            asked: std::sync::atomic::AtomicU32::new(0),
+            wants: std::sync::atomic::AtomicU32::new(0),
+        };
+        let key = CorpusKey::of_file(&fixture.plan.files[0].path).unwrap();
+        let settings = Settings {
+            indexing: Some(&held),
+            ..settings(&fixture)
+        };
+        // Read live, this file isn't a PDF, so the search ends in an error: what matters is what it left.
+        let _ = run(&fixture.plan, &Query::Phrase("needleword".to_string()), "phrase", &settings);
+        assert!(
+            held.asked.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "the search never went to open the corpus"
+        );
+        assert_eq!(held.wants.load(std::sync::atomic::Ordering::SeqCst), 0, "a build was asked for");
+        assert!(
+            recto_index::corpus::ReadyCorpus::open(&recto_platform::find_key::FindKey::for_tests(1), &held.root, key).is_ok_and(|corpus| corpus.is_some()),
+            "the corpus was thrown away during a removal"
         );
     }
 

@@ -20,7 +20,7 @@ fn wait_for(what: impl Fn() -> bool, saw: impl Fn() -> String) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !what() {
         assert!(Instant::now() < deadline, "{}", saw());
-        std::thread::yield_now();
+        std::thread::park_timeout(Duration::from_millis(1));
     }
 }
 
@@ -196,6 +196,30 @@ fn a_key_use_out_keeps_the_hold_from_returning() {
     );
     drop(using);
     assert!(indexer.hold_for_removal(Instant::now()).is_ok(), "the use ended and the hold wasn't had");
+}
+
+/// Failure: a deleter (`recto index clear`, a throw-away of a damaged corpus) that is under way when the walk asks for the hold isn't waited for, so its deletes land among the walk's. A cache use that is out keeps the hold from returning, and once it's dropped the hold is had.
+#[test]
+fn a_cache_use_out_keeps_the_hold_from_returning() {
+    let indexer = Indexer::with_runner(Path::new("/nowhere"), Box::new(Counts(Arc::new(AtomicU32::new(0)))));
+    let deleting = Indexing::cache_use(&indexer).expect("a use of the caches while nothing holds them");
+    assert_eq!(
+        indexer.hold_for_removal(Instant::now()).unwrap_err(),
+        NotQuiet::StillRunning { building: false, uses: 1 }
+    );
+    drop(deleting);
+    assert!(indexer.hold_for_removal(Instant::now()).is_ok(), "the use ended and the hold wasn't had");
+}
+
+/// Failure: a deleter starts while the indexer is held, so a clear deletes in the folders the walk is taking out. Held, a cache use is `None` at once, and it leaves nothing counted.
+#[test]
+fn a_held_indexer_gives_no_cache_use() {
+    let indexer = Indexer::with_runner(Path::new("/nowhere"), Box::new(Counts(Arc::new(AtomicU32::new(0)))));
+    let hold = indexer.hold_for_removal(Instant::now()).expect("held");
+    assert!(Indexing::cache_use(&indexer).is_none());
+    assert_eq!(indexer.0.lock().uses, 0, "a refused use was left counted");
+    drop(hold);
+    assert!(Indexing::cache_use(&indexer).is_some(), "released, a use is had again");
 }
 
 /// Failure: the hold keeps this session's own agent folders locked, so the purge's probe reads them as another session's and stops the removal as busy; or it sets them aside by a rename the plan had pinned a different folder for. The claims are let go and nothing is moved.

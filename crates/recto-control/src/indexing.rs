@@ -4,7 +4,7 @@
 
 use crate::find_keys::{self, Loaded, Plan};
 use recto_agent::Event;
-use recto_agent::index::{Indexing, JobState, KeyUse};
+use recto_agent::index::{CacheUse, Indexing, JobState, KeyUse};
 use recto_index::corpus::{self, BuildLimits, CorpusKey};
 use recto_platform::find_key::FindKey;
 use recto_platform::helper::{Priority, Spawned};
@@ -63,7 +63,7 @@ struct Inner {
     unreadable_swept: bool,
     /// A removal holds the indexer: every starter refuses, and nothing is built. Cleared when the hold is dropped or refused.
     on_hold: bool,
-    /// Uses of the Find key handed out and not yet ended ([`KeyUse`]). Each one is an open of a corpus, which writes `app/used`, or an export that writes pages.
+    /// Uses handed out and not yet ended: of the Find key ([`KeyUse`]), each an open of a corpus, which writes `app/used`, or an export that writes pages, or of the caches by something that only deletes ([`CacheUse`]).
     uses: u32,
     /// For a test: how many times the queue's thread was started, so a starter that shouldn't start it is seen at once, not by a late look at `working`.
     #[cfg(test)]
@@ -364,19 +364,24 @@ impl Indexing for Indexer {
         Indexer::find_key(self)
     }
 
+    fn cache_use(&self) -> Option<CacheUse<'_>> {
+        self.0.begin_use()?;
+        Some(CacheUse::counted(&*self.0))
+    }
+
     fn find_key_report(&self) -> Value {
         Indexer::find_key_report(self)
     }
 
-    fn made_agent_folder(&self, key: CorpusKey) {
+    fn made_agent_folder(&self, key: CorpusKey) -> bool {
         let mut inner = self.0.lock();
-        // Held: no mark and no claim, so nothing of this session's is written for a removal to find. Both are under the lock the hold takes.
+        // Held: no mark and no claim, so nothing of this session's is written for a removal to find, and the folder isn't written either. Both are under the lock the hold takes.
         if inner.on_hold {
-            return;
+            return false;
         }
         corpus::note_agent_folder(&self.0.root);
         if inner.agent_folders.iter().any(|(held, _)| *held == key) {
-            return;
+            return true;
         }
         if inner.agent_folders.len() >= MAX_AGENT_FOLDERS
             && let Some((oldest, claim)) = inner.agent_folders.pop_front()
@@ -387,6 +392,7 @@ impl Indexing for Indexer {
         if let Some(claim) = corpus::claim_agent_folder(&self.0.root, key) {
             inner.agent_folders.push_back((key, claim));
         }
+        true
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {
