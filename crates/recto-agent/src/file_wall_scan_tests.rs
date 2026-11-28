@@ -100,6 +100,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the corpus root and the generated-contents root the caller of `survey_caches` names (`pub`, with no production caller yet; the design names the state's caches), opened through the folder helper (no link followed, this user's only) and listed, and the parent of a corpus root named `corpus.noindex`, opened the same way and only looked at (`fstatat` on its `corpus` entry, never listed); below the corpus root every folder is opened by descriptor (`open_in`), and a version note in `by-file` is read at most 2,080 bytes + 1 through that folder's descriptor (`open_private_in`, a plain private file only). A corpus's `app/` and `agent/` and a contents file are placed by name and never opened: never a document",
     ),
     (
+        "recto-control/src/removal_store/caches/purge.rs",
+        2,
+        "the cache stores' purge (`purge_caches`, `pub`, no production caller yet): the corpus root and the generated-contents root the caller names, and the folder beside a corpus root named `corpus.noindex` (the older build's `corpus`), opened through the folder helper (`Folder::open` in `open_ours`: no link followed, this user's only), every folder below by descriptor (`open_in`), never by a path; and one lock file at a time, a corpus's `build.lock` or an agent folder's `.session`, by a name in an open folder through `open_private_rw_in` (`lock_of`: no link followed, no wait on a pipe, a plain private file of this user's only), opened only to take its lock and let it go or hold it until its folder is gone, never read or written: never a document",
+    ),
+    (
         "recto-control/src/removal_store/journals.rs",
         2,
         "the `session` and `session-windowless` folders of the root the caller of `survey_journals` names (`pub`, with no production caller yet; the design names \
