@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::blocking;
@@ -21,6 +21,8 @@ use crate::structure::headings::{self, HeadingsAnswer};
 use crate::structure::{Ended, Pick, numbers_of};
 use recto_agent::blocks::BlocksAsk;
 
+#[cfg(test)]
+mod hold;
 mod ink;
 
 pub use crate::structure::{MEMORY_LIMIT, time_limit};
@@ -139,6 +141,8 @@ struct Shared {
     runner: Box<dyn Runner>,
     blocks: Box<dyn blocking::Runner>,
     inner: Mutex<Inner>,
+    /// Told, under `inner`'s lock, when the thread has ended (`working` went false). What a hold waits on.
+    ended: Condvar,
     notify: OnceLock<Notifier>,
 }
 
@@ -167,6 +171,7 @@ impl Generator {
             runner: contents,
             blocks,
             inner: Mutex::new(Inner::default()),
+            ended: Condvar::new(),
             notify: OnceLock::new(),
         }))
     }
@@ -357,12 +362,14 @@ impl Shared {
     }
 
     fn work(self: Arc<Self>) {
+        let _if_it_dies = IfItDies(&self);
         loop {
             let (job, stop) = {
                 let mut inner = self.lock();
                 let next = if inner.stopped { None } else { inner.waiting.pop_front() };
                 let Some(Waiting { job, .. }) = next else {
                     inner.working = false;
+                    self.ended.notify_all();
                     return;
                 };
                 let stop = Arc::new(AtomicBool::new(false));
@@ -427,6 +434,22 @@ impl Shared {
         let state = self.settled((What::Blocks, ask.key), cancelled, &outcome, |_| {});
         if let Some(built) = blocking::built(ask, state, &outcome, &report) {
             self.tell(built);
+        }
+    }
+}
+
+/// **What a queue thread that dies leaves behind, cleared.** A panic outside a job's own `catch_unwind` (the notifier, the write of the contents) would leave `working` true for the rest of the session, so no ask would start a thread again and a hold would wait out its time. It acts only while unwinding: the normal end clears `working` under the same lock as the empty pop, so an ask landing after it starts a thread.
+struct IfItDies<'a>(&'a Shared);
+
+impl Drop for IfItDies<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut inner = self.0.lock();
+            inner.working = false;
+            if let Some((_, _, stop, _)) = inner.running.take() {
+                stop.store(true, Ordering::SeqCst);
+            }
+            self.0.ended.notify_all();
         }
     }
 }

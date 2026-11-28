@@ -13,8 +13,11 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+mod hold;
 
 /// How the server hears of something that happened outside any command.
 pub type Notifier = Arc<dyn Fn(Vec<Event>) + Send + Sync>;
@@ -72,6 +75,8 @@ struct Shared {
     limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
+    /// Told, under `inner`'s lock, when the thread has ended (`working` went false) or a key use ended. What a hold waits on ([`hold`]).
+    ended: Condvar,
     notify: OnceLock<Notifier>,
 }
 
@@ -120,6 +125,7 @@ impl Indexer {
                 sweep_due: true,
                 ..Inner::default()
             }),
+            ended: Condvar::new(),
             notify: OnceLock::new(),
         }))
     }
@@ -224,6 +230,7 @@ impl Shared {
 
     /// Works through what's waiting, one at a time, and goes when there's nothing left.
     fn work(self: Arc<Self>) {
+        let _if_it_dies = IfItDies(&self);
         loop {
             // First, before anything's built, and on this thread because it walks a folder of any size.
             if std::mem::take(&mut self.lock().sweep_due) {
@@ -239,6 +246,7 @@ impl Shared {
                 let next = if inner.stopped { None } else { inner.waiting.pop_front() };
                 let Some(job) = next else {
                     inner.working = false;
+                    self.ended.notify_all();
                     return;
                 };
                 inner.running = Some(job.key);
@@ -300,6 +308,22 @@ impl Shared {
     fn failure(inner: &mut Inner, key: CorpusKey) -> Option<String> {
         inner.failures.retain(|(_, _, at)| at.elapsed() < FAILURE_PAUSE);
         inner.failures.iter().find(|(failed, ..)| *failed == key).map(|(_, code, _)| code.clone())
+    }
+}
+
+/// **What a queue thread that dies leaves behind, cleared.** A panic outside the job's own `catch_unwind` (the notifier, a sweep, `evict`) would leave `working` true for the rest of the session, so no ask would start a thread again and a hold would wait out its time. It acts only while unwinding: the normal end clears `working` under the same lock as the empty pop, so an ask landing after it starts a thread.
+struct IfItDies<'a>(&'a Shared);
+
+impl Drop for IfItDies<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut inner = self.0.lock();
+            inner.working = false;
+            inner.running = None;
+            inner.stop_running = None;
+            inner.cancelled = false;
+            self.0.ended.notify_all();
+        }
     }
 }
 
