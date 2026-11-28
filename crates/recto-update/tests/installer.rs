@@ -234,6 +234,11 @@ impl Bed {
         self.files.work.join(format!("ran-{version}")).exists()
     }
 
+    /// How many times this version's stand-in has started: it writes a line each time.
+    fn launches(&self, version: &str) -> usize {
+        std::fs::read_to_string(self.files.work.join(format!("ran-{version}"))).map_or(0, |text| text.lines().count())
+    }
+
     /// A launch of whichever version's in place, as it would say what became of things.
     fn launch(&self) -> (Status, AtLaunch) {
         let updater = Updater::new(
@@ -764,6 +769,29 @@ fn a_swap_macos_refuses_says_where_to_allow_it() {
     let report = updater.report();
     assert!(report["words"].as_str().unwrap().contains("App Management"), "{report}");
     assert_eq!(report["failed_versions"], serde_json::json!([]), "once it's allowed, it can go: {report}");
+}
+
+/// Failure (`--like-ci`, 2026-11-28, `an_update_in_the_middle_of_things_changes_nothing` at load 40 to 50): Launch Services' `open` didn't return within its 30 s, and the installer took that
+/// for an `open` that failed: it went back, and the person's update was rolled back though the swap had happened and the new app was valid and could still come up. `open`
+/// not returning isn't `open` failing: the new app's start is looked for within the installer's own bounds, and only an app that never comes up goes back. One launch, never two.
+#[test]
+fn an_open_that_hasnt_returned_waits_for_the_new_app_and_doesnt_go_back() {
+    let mut bed = Bed::new("slowopen", "ok");
+    let ended = bed.run_with(&[(recto_update::install::OPEN_UNRETURNED_ENV, "1")]);
+    let log = std::fs::read_to_string(&bed.files.log).unwrap();
+    assert!(ended.success(), "{ended:?}: {log}");
+    assert_eq!(bed.installed(), "0.2.0", "{log}");
+    assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "{log}");
+    assert!(log.contains("0.2.0 started"), "{log}");
+    assert!(!bed.ran("0.1.0"), "the old app wasn't opened again: {log}");
+    assert_eq!(bed.launches("0.2.0"), 1, "one launch of the new app, never a second: {log}");
+    // And an app that never comes up still goes back, by the start's own bound.
+    let mut bed = Bed::new("slowopen-exits", "exits");
+    bed.plan.start_limit_ms = 8_000;
+    let ended = bed.run_with(&[(recto_update::install::OPEN_UNRETURNED_ENV, "1")]);
+    assert!(!ended.success());
+    assert_eq!(bed.installed(), "0.1.0", "{}", std::fs::read_to_string(&bed.files.log).unwrap());
+    assert_eq!(bed.launches("0.2.0"), 1);
 }
 
 /// Failure: going back by itself puts back a kept copy signed ad hoc that the owner no longer allows, where releases are held to the team. The installer refuses, and opens what's in place again.

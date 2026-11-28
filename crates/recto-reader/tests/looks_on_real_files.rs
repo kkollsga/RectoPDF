@@ -199,20 +199,35 @@ fn a_real_scan_and_a_real_map_sheet_on_white_turn_over() {
         eprintln!("skipped: the benchmark files aren't here");
         return;
     };
-    let (corner, low_res) = corner_on_dark_paper(&scan, 8, 2, Policy::default());
+    let (corner, low_res) = corner_on_dark_paper(&scan, 8, 2, looks_policy());
     assert!(!low_res);
     assert_eq!(corner, DARK_PAPER, "the scan's paper is the paper's tone: {corner:06x}");
-    let (corner, low_res) = corner_on_dark_paper(&map, 1, 0, Policy::default());
+    let (corner, low_res) = corner_on_dark_paper(&map, 1, 0, looks_policy());
     assert!(!low_res);
     assert_eq!(corner, DARK_PAPER, "the sheet's white margin turns over round its map: {corner:06x}");
 }
 
-/// A renderer of a file, with the real worker.
-fn renderer(file: &Path) -> DocRenderer {
-    DocRenderer::new(file, None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap()
+/// How long a draw or a worker's start may take in these tests: **a hang guard, not a speed bound.** The product's own (a 5 s page deadline, a 10 s start) is what a
+/// starved Mac runs out of while the worker is still drawing: at load 40 to 114 on 2026-11-28 the real USGS sheet ran out all `MAX_BUSY` asks (three deadline kills),
+/// and the look these tests judge was never drawn. What a deadline does is held where it's the subject, with it set small
+/// (`recto-render-service`'s `a_page_that_never_finishes_is_killed_at_the_deadline`). Three asks of one draw stay within the harness's own limit on a test.
+const DRAW_HANG_GUARD: Duration = Duration::from_secs(30);
+
+/// The product's policy, with [`DRAW_HANG_GUARD`] for the time a draw and a start may take, as nothing here tests those.
+fn looks_policy() -> Policy {
+    Policy {
+        page_deadline: DRAW_HANG_GUARD,
+        start_timeout: DRAW_HANG_GUARD,
+        ..Policy::default()
+    }
 }
 
-/// **Asks as the product's callers do: again, while the Mac was too busy** (a build or a wake starving the worker). The renderer's contract is that a busy answer remembers nothing and asking again draws it, and only `MAX_BUSY` in a row is the page's own failure; the engine asks again at its next job. Asking once failed this file's tests on a loaded machine (2026-11-26, a draw that took 7.7 s: a start plus a deadline), with a bare `matches!` saying nothing. So at most `MAX_BUSY` asks, with no sleep (each ask costs the product's own start timeout and page deadline); one that still isn't answered panics with the last answer and the renderer's counts.
+/// A renderer of a file, with the real worker.
+fn renderer(file: &Path) -> DocRenderer {
+    DocRenderer::new(file, None, ServiceConfig::discover().unwrap(), looks_policy()).unwrap()
+}
+
+/// **Asks as the product's callers do: again, while the Mac was too busy** (a build or a wake starving the worker). The renderer's contract is that a busy answer remembers nothing and asking again draws it, and only `MAX_BUSY` in a row is the page's own failure; the engine asks again at its next job. Asking once failed this file's tests on a loaded machine (2026-11-26, a draw that took 7.7 s: a start plus a deadline), with a bare `matches!` saying nothing. So at most `MAX_BUSY` asks, with no sleep, each with [`DRAW_HANG_GUARD`] for its start and its draw (2026-11-28: three asks with the product's own 5 s deadline weren't enough at load 114); one that still isn't answered panics with the last answer and the renderer's counts.
 fn asked_again<T: std::fmt::Debug>(doc: &mut DocRenderer, what: &str, mut ask: impl FnMut(&mut DocRenderer) -> Result<T, RenderFailure>) -> T {
     let mut last = None;
     for _ in 0..MAX_BUSY {
@@ -390,7 +405,7 @@ fn a_page_at_a_lower_resolution_keeps_its_picture_and_turns_its_paper_over() {
         memory_limit_bytes: 20 * mib,
         heavy_limit_bytes: 20 * mib,
         heavy_min_free_percent: 0,
-        ..Policy::default()
+        ..looks_policy()
     };
     let window = Viewport {
         width: 1_400.0,
@@ -477,7 +492,7 @@ fn zoomed_out_past_a_preview_a_dark_page_is_never_shown_light() {
             ..view(0.0)
         };
         for (page, dark) in [(0, true), (1, false)] {
-            let (shown, report) = shown_on_dark_paper(&file.0, 2, page, Policy::default(), viewport);
+            let (shown, report) = shown_on_dark_paper(&file.0, 2, page, looks_policy(), viewport);
             assert_eq!(report["tiles"]["previews_attached"], 0, "at {magnification}: {report}");
             let seen = background_shown(&shown, page, 0.0);
             assert!(!seen.is_empty(), "page {} at {magnification}: nothing shown: {report}", page + 1);
@@ -507,7 +522,7 @@ fn a_white_page_whose_band_fills_its_first_tile_turns_over() {
         width: 1168.0 / 0.37,
         ..view(0.0)
     };
-    let (shown, report) = shown_on_dark_paper(&file.0, 1, 0, Policy::default(), viewport);
+    let (shown, report) = shown_on_dark_paper(&file.0, 1, 0, looks_policy(), viewport);
     assert_eq!(report["tiles"]["previews_attached"], 0, "{report}");
     assert_eq!(report["tiles"]["kept"], 0, "no preview drawn: {report}");
     assert!(
