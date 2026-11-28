@@ -66,14 +66,20 @@ impl RecordStore {
         {
             return 0;
         }
+        // Under the progress lock from here to the end, where a removal's hold is looked at again (`hold`).
+        let mut progress = self.progress();
+        if progress.withholds() {
+            return 0;
+        }
         // With no flush: losing one to a crash costs only the quick way, and a torn one's caught by its checksum, so it isn't worth the drive's time or wear.
         let temp = file.with_extension(format!("tmp{}", std::process::id()));
         if bytes.len() > MAX_SLEEP_FILE_BYTES || local::write_private_file_unsynced(&temp, &bytes).is_err() || std::fs::rename(&temp, &file).is_err() {
             let _ = std::fs::remove_file(&temp);
             return 0;
         }
-        self.progress().wrote_bytes += bytes.len() as u64;
+        progress.wrote_bytes += bytes.len() as u64;
         prune_sleep_files(&folder);
+        drop(progress);
         bytes.len() as u64
     }
 
@@ -82,7 +88,7 @@ impl RecordStore {
         if self.gate().is_some() {
             return;
         }
-        let _ = std::fs::remove_file(self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path)));
+        self.remove_unless_held(&self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path)));
     }
 
     /// A tab's sleep file, if there's one for this version of this file. The name goes by the stamp, so what's asked for is what's known of the file, and nothing here looks at the PDF, which may be on a disk that's gone away. Whoever's waking the tab looks at that on a thread of its own. **One that doesn't read is removed:** it can always be rebuilt.
@@ -97,7 +103,7 @@ impl RecordStore {
             Ok(bytes) => bytes?,
             // Past what a file of facts can be (an older format's, with pictures), or not a plain private file: it goes, as one that doesn't read does.
             Err(()) => {
-                let _ = std::fs::remove_file(&file);
+                self.remove_unless_held(&file);
                 return None;
             }
         };
@@ -106,7 +112,7 @@ impl RecordStore {
             // A newer app's, which isn't this one's to touch.
             Err(RecordError::Newer(_)) => None,
             _ => {
-                let _ = std::fs::remove_file(&file);
+                self.remove_unless_held(&file);
                 None
             }
         }
@@ -130,6 +136,11 @@ impl RecordStore {
     pub fn remove_older_sleep_files(&self, cap: usize) -> OlderSleepFiles {
         let mut done = OlderSleepFiles::default();
         if self.refuses_writes().is_some() {
+            return done;
+        }
+        // Under the progress lock, where a removal's hold is looked at again (`hold`); once after a launch, off the UI thread.
+        let progress = self.progress();
+        if progress.withholds() {
             return done;
         }
         sweep_older(&self.dir().join(JOURNALS), cap, &mut done);

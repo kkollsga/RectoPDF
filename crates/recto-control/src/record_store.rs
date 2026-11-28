@@ -18,6 +18,7 @@
 mod cold_start_tests;
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
 mod followed;
+mod hold;
 mod lock;
 mod page_ids;
 mod sleep_files;
@@ -25,6 +26,7 @@ mod went_back;
 mod withheld;
 use crate::removal_store::gate::{self, Withheld};
 use crate::state::StatePaths;
+pub use hold::{HoldRefused, RemovalHold};
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
 use recto_session::record::{
@@ -139,6 +141,8 @@ struct Progress {
     beside_newer: bool,
     /// What's here couldn't be read, so nothing's to be written over it.
     read_only: bool,
+    /// A removal's walk holds this store (`hold`): every write refuses, and `load` changes nothing.
+    held: bool,
     /// What an unfinished removal's record says of this folder: `None` before it's been looked at, then the answer, until the next load.
     gate: Option<Option<Withheld>>,
     /// Journals' sidecars read or written, by name (`page_ids`).
@@ -415,7 +419,14 @@ impl RecordStore {
         if !self.wait_for_lock() {
             return Loaded::OtherInstance;
         }
-        *self.progress() = Progress::default();
+        {
+            let mut progress = self.progress();
+            // A walk's hold keeps the folder as it is, and the reset below would forget it.
+            if progress.held {
+                return Loaded::Withheld(Withheld::Pending);
+            }
+            *progress = Progress::default();
+        }
         // Before anything is moved, copied, rotated or removed: each step can bring back what a removal is purging.
         if let Some(withheld) = self.gate() {
             return Loaded::Withheld(withheld);
@@ -536,6 +547,9 @@ impl RecordStore {
 
     fn finish_load(&self, dir: &Path, found: Option<(DecodedRecord, usize)>, notice: Option<&'static str>) -> Loaded {
         let mut progress = self.progress();
+        if let Some(withheld) = progress.gate.flatten() {
+            return Loaded::Withheld(withheld);
+        }
         let had_record = found.is_some();
         let mut record = match found {
             Some((decoded, slot)) => {
@@ -609,7 +623,13 @@ impl RecordStore {
         self.note_going_back(&dir);
         let mut failed = None;
         let mut closed_one = false;
+        #[cfg(test)]
+        hold::park::here(&self.root, false);
         let mut progress = self.progress();
+        if let Some(error) = progress.refusal() {
+            outcome.not_retired.clone_from(&work.retired);
+            return (outcome, Some(error));
+        }
         let folder = dir.join(JOURNALS);
         for name in &work.retired {
             if !is_journal_name(name) && !record::is_kept_name(name) && !record::is_sleep_name(name) {
@@ -765,8 +785,11 @@ impl RecordStore {
         Self::ensure_dirs(&dir).map_err(|_| io_failed("made"))?;
         self.note_going_back(&dir);
         let start = record::journal_start(header, Some(base));
-        replace(&dir.join(JOURNALS).join(name), &start, false).map_err(|_| io_failed("written to"))?;
         let mut progress = self.progress();
+        if let Some(error) = progress.refusal() {
+            return Err(error);
+        }
+        replace(&dir.join(JOURNALS).join(name), &start, false).map_err(|_| io_failed("written to"))?;
         progress.journal_bytes.insert(name.to_string(), start.len() as u64);
         progress.wrote_bytes += start.len() as u64;
         Ok(())
@@ -780,6 +803,9 @@ impl RecordStore {
         let dir = self.dir();
         let start = record::journal_start(header, Some(base));
         let mut progress = self.progress();
+        if progress.withholds() {
+            return Ok(false);
+        }
         if progress.journal_bytes.get(name).is_none_or(|bytes| start.len() as u64 * 2 > *bytes) {
             return Ok(false);
         }
@@ -798,6 +824,9 @@ impl RecordStore {
         Self::ensure_dirs(&dir).map_err(|_| io_failed("made"))?;
         self.note_going_back(&dir);
         let mut progress = self.progress();
+        if let Some(error) = progress.refusal() {
+            return Err(error);
+        }
         let whole = crc_of(record);
         if progress.whole_crc == Some(whole) {
             return Ok(0);
@@ -975,21 +1004,37 @@ impl RecordStore {
             .map(|taken| record::kept_file_name(target, taken))
             .find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())?;
         let kept = folder.join(&name);
-        recto_core::save::keep_pages(path, pages, &kept, recto_session::edit::MAX_HISTORY_BYTES as u64).ok()?;
-        // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
-        let made = (|| -> std::io::Result<FileStamp> {
-            local::make_private_file(&kept)?;
-            age_starts_now(&kept)?.sync_all()?;
-            local::sync_folder_of(&kept)?;
-            file_stamp(&kept)
-        })();
-        let stamp = match made {
-            Ok(stamp) if stamp.size <= recto_session::edit::MAX_HISTORY_BYTES as u64 => stamp,
-            _ => {
-                let _ = std::fs::remove_file(&kept);
-                return None;
-            }
+        // Copied under a name of the shape a crash's leftover has (`.append-<key>-<pid>-0.tmp`, which a removal's survey places as `Unknown`), without the
+        // progress lock: the copy can be 64 MiB, and a journal's write mustn't wait for it. It is renamed to its own name under the lock, which is where a
+        // removal's hold is looked at again (`hold`).
+        let key = name.strip_prefix("kept-").and_then(|rest| rest.get(..16)).unwrap_or("0000000000000000");
+        let temp = folder.join(format!(".append-{key}-{}-0.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&temp);
+        let copied = recto_core::save::keep_pages(path, pages, &temp, recto_session::edit::MAX_HISTORY_BYTES as u64).ok();
+        let stamp = copied.and_then(|_| {
+            // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
+            let made = (|| -> std::io::Result<FileStamp> {
+                local::make_private_file(&temp)?;
+                age_starts_now(&temp)?.sync_all()?;
+                file_stamp(&temp)
+            })();
+            made.ok().filter(|stamp| stamp.size <= recto_session::edit::MAX_HISTORY_BYTES as u64)
+        });
+        let Some(stamp) = stamp else {
+            let _ = std::fs::remove_file(&temp);
+            return None;
         };
+        #[cfg(test)]
+        hold::park::here(&self.root, true);
+        let progress = self.progress();
+        // A hold that came in during the copy: no kept file, and nothing of the copy left. Or the name taken meanwhile: not written over.
+        if progress.withholds() || std::fs::symlink_metadata(&kept).is_ok() || std::fs::rename(&temp, &kept).is_err() {
+            drop(progress);
+            let _ = std::fs::remove_file(&temp);
+            return None;
+        }
+        let _ = local::sync_folder_of(&kept);
+        drop(progress);
         let count = u32::try_from(pages.len()).ok()?;
         Some(AddedSource {
             path: kept.into_boxed_path(),
@@ -1021,8 +1066,11 @@ impl RecordStore {
         // Not while a removal is unfinished: a journal written for the target after the barrier is outside its plan.
         if self.gate().is_none() && (is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name)) {
             let folder = self.dir().join(JOURNALS);
-            let _ = std::fs::remove_file(folder.join(name));
             let mut progress = self.progress();
+            if progress.withholds() {
+                return;
+            }
+            let _ = std::fs::remove_file(folder.join(name));
             progress.journal_bytes.remove(name);
             page_ids::remove(&folder, name, &mut progress);
         }
@@ -1045,7 +1093,11 @@ impl HistorySource for RecordStore {
             return None;
         }
         restored.rolled_off = roll_off_what_isnt_kept(&mut restored.edits);
-        page_ids::take_in(&folder, name, &parsed.header, &mut restored.edits, &mut self.progress());
+        let mut progress = self.progress();
+        if progress.withholds() {
+            return None;
+        }
+        page_ids::take_in(&folder, name, &parsed.header, &mut restored.edits, &mut progress);
         Some(restored)
     }
 
@@ -1065,6 +1117,10 @@ impl HistorySource for RecordStore {
         if restored.lost_lines || std::fs::symlink_metadata(folder.join(&name)).is_ok() {
             return None;
         }
+        let mut progress = self.progress();
+        if progress.withholds() {
+            return None;
+        }
         std::fs::rename(folder.join(&closed), folder.join(&name)).ok()?;
         let mut bytes = parsed.good_bytes;
         if roll_off_what_isnt_kept(&mut restored.edits) {
@@ -1078,7 +1134,8 @@ impl HistorySource for RecordStore {
                 bytes = start.len() as u64;
             }
         }
-        self.progress().journal_bytes.insert(name.clone(), bytes);
+        progress.journal_bytes.insert(name.clone(), bytes);
+        drop(progress);
         Some(TakenHistory { name, restored })
     }
 }
