@@ -185,3 +185,35 @@ fn settling_a_refusal_keeps_the_copy_while_a_removal_is_pending_and_says_why() {
     let (kept, _) = notice_of(OutcomeKind::NotInstalled, "swap_failed", false);
     assert!(!kept, "another reason, no record: cleared as it always was");
 }
+
+/// Failure (the gates' review): a record that comes in between the look before the hand-off and the one after it (nothing looked again past the hand-off)
+/// has the app quit for an installer that will refuse. Handed off with the record arriving as it freezes: no plan, no installer, no quit, the app given back
+/// and the update failed with the installer's own words.
+#[test]
+fn a_record_arriving_at_the_hand_off_stops_the_quit() {
+    let bed = Bed::new("hand-record-late");
+    bed.publish("0.2.0");
+    bed.found("0.2.0");
+    *lock(&bed.fake.record_at_hand_off) = Some(bed.dir.join("state").join("removal").join("pending.v1"));
+    assert_eq!(bed.updater.install(Asked::ByHand), Ok("0.2.0".to_owned()));
+    bed.wait_for("the failure", |bed| matches!(bed.status(), Status::Failed { .. }));
+    assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 1);
+    assert_eq!(bed.fake.cancels.load(Ordering::SeqCst), 1, "given back");
+    assert_eq!(bed.fake.quits.load(Ordering::SeqCst), 0, "no quit");
+    assert!(lock(&bed.fake.installers).is_empty(), "no installer");
+    assert!(!Files::in_state(&bed.dir.join("state")).plan().exists(), "no plan left for an installer");
+}
+
+/// Failure (the gates' review): the notice that a going back was refused is wiped by the next thing an install attempt does when it doesn't go ahead (a
+/// failure, or going back on offer), so the person is told for a moment and never again. It stays through both, and goes only when they've read it.
+#[test]
+fn the_refused_going_back_notice_stays_through_a_later_attempt() {
+    let (_bed, _files, updater, _) = after_too_many_early_ends(false, true);
+    let said = updater.notice().expect("told").text;
+    updater.back_on_offer("0.3.0", None);
+    assert_eq!(updater.notice().map(|notice| notice.text), Some(said.clone()), "after going back on offer");
+    updater.failed(Asked::ByItself, "0.3.0", "it couldn't be put in place", false);
+    assert_eq!(updater.notice().map(|notice| notice.text), Some(said), "after a failure");
+    updater.dismiss_notice();
+    assert_eq!(updater.notice(), None, "read");
+}

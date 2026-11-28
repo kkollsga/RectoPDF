@@ -258,7 +258,7 @@ pub fn busy(why: Busy) -> &'static str {
         Busy::Windowless => "A recto session is running. Try again in a moment. Nothing was cleared.",
         Busy::Starting => "RectoPDF is still tidying up after starting. Try again in a moment. Nothing was cleared.",
         Busy::BesideNewer => "A newer version of RectoPDF has been used on this Mac. Clear leftovers from that version. Nothing was cleared.",
-        Busy::RemovalPending => "A removal of data from a document was left unfinished, and is finished first. Nothing was cleared.",
+        Busy::RemovalPending => "A removal of data from a document was left unfinished, and nothing is cleared while it is there. Nothing was cleared.",
     }
 }
 

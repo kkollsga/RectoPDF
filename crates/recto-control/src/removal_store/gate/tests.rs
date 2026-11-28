@@ -242,7 +242,7 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
     };
     assert_eq!(in_code(&["barrier::look("]), ["removal_store/gate.rs"], "where the record is looked at");
     assert_eq!(
-        in_code(&["gate::at(", "gate::state(", "gate::anything_there(", "removal_store::gate"]),
+        in_code(&["gate::at(", "gate::state(", "gate::anything_there(", "gate::backups_may_change(", "removal_store::gate"]),
         [
             "core/removal.rs",
             "core/saving.rs",
@@ -250,6 +250,7 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
             "host.rs",
             "record_store.rs",
             "record_store/withheld.rs",
+            "removal_store/ledger.rs",
             "removal_store/leftovers/leases.rs",
             "removal_store/leftovers/run.rs"
         ],
@@ -301,5 +302,32 @@ fn old_backups_stay_while_a_record_is_there() {
             root: paths.root.clone(),
         };
         assert_eq!(support.backups().is_some(), !pending, "pending {pending}: a save's backup folder");
+    }
+}
+
+/// Failure (the gates' review): a save's note is appended to the ledger while an unfinished removal's record is there, so something is kept from a window that
+/// is to keep nothing, for a backup that was never made. With a record there nothing is written (the ledger isn't even created); with none, the note is.
+#[test]
+fn a_saves_note_is_not_appended_while_a_record_is_there() {
+    for pending in [true, false] {
+        let dir = temp();
+        let root = dir.join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        if pending {
+            pending_at(&root, 1);
+        }
+        let file = dir.join("a.pdf");
+        std::fs::write(&file, b"%PDF-1.4 a").unwrap();
+        let seen = recto_platform::file_stamp(&file).unwrap();
+        let before = tree(&root);
+        crate::removal_store::ledger::note_save(
+            &root.join("backups.noindex"),
+            &recto_agent::saving::SaveNote::Starting {
+                path: &file,
+                from: Some(seen),
+                destination: None,
+            },
+        );
+        assert_eq!(tree(&root) == before, pending, "record there {pending}");
     }
 }

@@ -340,3 +340,23 @@ fn waiting_with_a_record_fails_before_hand_off() {
         }
     }
 }
+
+/// Failure (D3b's gates, the review): a record that came in between the look before the hand-off and the look after it isn't seen, so the app quits for an
+/// installer that will refuse. Just past a good hand-off with a record there, the step gives up (the plan isn't written, the app is given back); a quit under
+/// way still wins, and with none there it goes on to write the plan.
+#[test]
+fn handed_off_with_a_record_there_gives_up_before_the_plan() {
+    for development_build in [false, true] {
+        for asked in ASKED {
+            let to = going(development_build);
+            let mut look = seen(false, 60 * MIN, true, false);
+            assert_eq!(next(&to, Phase::HandedOff, &look, asked, false, 1_000), Step::WritePlan);
+            look.removal_pending = true;
+            assert!(
+                matches!(next(&to, Phase::HandedOff, &look, asked, false, 1_000), Step::GiveUp(why) if why.contains("left unfinished")),
+                "build {development_build}, {asked:?}"
+            );
+            assert!(matches!(next(&to, Phase::HandedOff, &look, asked, true, 1_000), Step::BackOnOffer { give_back: false, .. }));
+        }
+    }
+}

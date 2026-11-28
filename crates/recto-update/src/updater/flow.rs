@@ -44,9 +44,9 @@ pub(super) struct Seen {
     /// phases that look again: never so in a real app, whose updater ends with its process.
     pub gone: bool,
     /// An unfinished removal's record is in the state folder, or something unreadable at its name ([`crate::removal_record::anything_there`]). The installer
-    /// refuses to replace the app while it is there, so the app isn't handed off and quit for an install that will come to nothing. Looked at once, before the
-    /// hand-off: a record that appears after it is still refused by the installer, as before, and that costs one quit and reopening (bounded by
-    /// `QUITS_FOR_NOTHING`), so there's no second look.
+    /// refuses to replace the app while it is there, so the app isn't handed off and quit for an install that will come to nothing. Looked at before the
+    /// hand-off and again just after it (a record may have come in between): then the plan isn't written, the app is given back and the update fails. A record
+    /// that comes in after that is still refused by the installer, and costs one quit and reopening (bounded by `QUITS_FOR_NOTHING`).
     pub removal_pending: bool,
 }
 
@@ -158,6 +158,8 @@ pub(super) fn next(going: &Going<'_>, phase: Phase<'_>, look: &Seen, asked: Aske
             look_again_in_ms: None,
             give_back: false,
         },
+        // A record came in since the look before: the installer would refuse, so the app doesn't quit for it.
+        Phase::HandedOff if look.removal_pending => Step::GiveUp(super::outcome_words::why_not_installed("removal_pending").0),
         // The person may have touched it in the moment before it froze.
         Phase::HandedOff if come_back => Step::BackOnOffer {
             look_again_in_ms: Some(wait_left),
