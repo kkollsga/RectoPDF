@@ -20,7 +20,7 @@ impl<P: Fn(TabId, GeneratedView, Option<FileStamp>) + Clone + Send + 'static> Pu
 pub fn look_again(session: &SessionHost<DrawableLoader>, push: &impl Push) {
     let waiting = session.with_session(|session| session.generated().making());
     for id in waiting {
-        look(session, push, id, false);
+        look(session, push, id);
     }
 }
 
@@ -35,12 +35,12 @@ pub fn look_if_chosen(session: &SessionHost<DrawableLoader>, push: &impl Push) {
         chosen.then_some(id)
     });
     if let Some(id) = wanted {
-        look(session, push, id, false);
+        look(session, push, id);
     }
 }
 
-/// Looks at where one tab's generated contents stand, on a thread of its own, and asks for them to be made if `ask`.
-fn look(session: &SessionHost<DrawableLoader>, push: &impl Push, id: TabId, ask: bool) {
+/// Looks at where one tab's generated contents stand, on a thread of its own. It only looks: it never asks for them to be made (that is `contents show`, a command with its actor), so nothing here can ask as the person.
+fn look(session: &SessionHost<DrawableLoader>, push: &impl Push, id: TabId) {
     let Some(generator) = session.generator().cloned() else {
         push(id, GeneratedView::Failed("Generated contents aren't available here."), None);
         return;
@@ -56,7 +56,7 @@ fn look(session: &SessionHost<DrawableLoader>, push: &impl Push, id: TabId, ask:
         .name("recto-contents-look".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            if let Some(view) = generated::where_they_stand(&generator, &path, pages, ask.then_some(generated::Asker::Person)) {
+            if let Some(view) = generated::where_they_stand(&generator, &path, pages, None) {
                 answer(id, view, version);
             }
         });
