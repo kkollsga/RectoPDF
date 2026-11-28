@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
 mod hold;
+pub use hold::{IndexHold, NotQuiet};
 
 /// How the server hears of something that happened outside any command.
 pub type Notifier = Arc<dyn Fn(Vec<Event>) + Send + Sync>;
@@ -61,6 +61,10 @@ struct Inner {
     sweep_due: bool,
     /// Corpora this session's key can't read have been looked for, once the key was taken for a build.
     unreadable_swept: bool,
+    /// A removal holds the indexer: every starter refuses, and nothing is built. Cleared when the hold is dropped or refused.
+    on_hold: bool,
+    /// Uses of the Find key handed out and not yet ended ([`KeyUse`]). Each one is an open of a corpus, which writes `app/used`, or an export that writes pages.
+    uses: u32,
     /// The agents' folders this session holds, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once. One another live session holds isn't here: it's that session's to end.
     agent_folders: VecDeque<(CorpusKey, corpus::AgentClaim)>,
 }
@@ -132,14 +136,23 @@ impl Indexer {
 
     /// The Find key, taken the first time a thread that may wait asks for it: never the UI thread ([`Shared::find_key`]).
     pub fn find_key(&self) -> Option<KeyUse<'_>> {
-        self.0.find_key().map(KeyUse::plain)
+        self.0.begin_use()?;
+        let key = self.0.find_key();
+        self.0.counting(key)
     }
 
     /// **The key if it's in hand, never waiting for it:** for Find, which a person's search must never wait on the key for (the second review's item 5, 2026-11-15). Taking it checks this copy's whole bundle against its signature before the Keychain is asked: by `what_the_release_check_costs`, 578–652 ms in five runs on a 143 MB build of the app (2026-11-15, warm cache, the machine under load), as the review measured 0.62–0.71 s on the 141 MB release. The first ask while it isn't in hand starts its taking on its own thread and goes on without it, so that search reads its pages live and touches no corpus, and a later one has the key. Starts nothing on the UI thread.
     pub fn find_key_in_hand(&self) -> Option<KeyUse<'_>> {
+        self.0.begin_use()?;
+        let key = self.key_in_hand();
+        self.0.counting(key)
+    }
+
+    /// [`Self::find_key_in_hand`] without counting the use.
+    fn key_in_hand(&self) -> Option<&FindKey> {
         use std::sync::atomic::Ordering;
         if let Some(loaded) = self.0.key.get() {
-            return loaded.key.as_ref().map(KeyUse::plain);
+            return loaded.key.as_ref();
         }
         if !recto_platform::thread::is_main_thread() && !self.0.key_asked.swap(true, Ordering::SeqCst) {
             let shared = Arc::clone(&self.0);
@@ -181,7 +194,7 @@ impl Indexer {
     /// Asks for a build. Never blocks: the newest ask goes first, since that's whatever someone's looking at now, and past the cap the oldest gives way.
     pub fn ask(&self, job: IndexJob) {
         let mut inner = self.0.lock();
-        if inner.stopped || inner.running == Some(job.key) || Shared::failure(&mut inner, job.key).is_some() {
+        if inner.stopped || inner.on_hold || inner.running == Some(job.key) || Shared::failure(&mut inner, job.key).is_some() {
             return;
         }
         inner.waiting.retain(|waiting| waiting.key != job.key);
@@ -222,6 +235,12 @@ impl Shared {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether the first sweep is due and may run now, taken in the one look under the lock, with the hold's: a held indexer sweeps nothing, and the sweep stays due.
+    fn take_the_sweep(&self) -> bool {
+        let mut inner = self.lock();
+        !inner.on_hold && std::mem::take(&mut inner.sweep_due)
+    }
+
     fn tell(&self, event: Event) {
         if let Some(notify) = self.notify.get() {
             notify(vec![event]);
@@ -233,7 +252,7 @@ impl Shared {
         let _if_it_dies = IfItDies(&self);
         loop {
             // First, before anything's built, and on this thread because it walks a folder of any size.
-            if std::mem::take(&mut self.lock().sweep_due) {
+            if self.take_the_sweep() {
                 corpus::remove_old_folder(&self.root);
                 // Nothing here takes the key: a start that only has old folders to tidy never reaches the Keychain (the security review of slices 2 and 3, F7). What the key can't read goes when a build first needs it, below.
                 corpus::remove_plain_corpora(&self.root);
@@ -243,7 +262,7 @@ impl Shared {
             }
             let job = {
                 let mut inner = self.lock();
-                let next = if inner.stopped { None } else { inner.waiting.pop_front() };
+                let next = if inner.stopped || inner.on_hold { None } else { inner.waiting.pop_front() };
                 let Some(job) = next else {
                     inner.working = false;
                     self.ended.notify_all();
@@ -341,8 +360,12 @@ impl Indexing for Indexer {
     }
 
     fn made_agent_folder(&self, key: CorpusKey) {
-        corpus::note_agent_folder(&self.0.root);
         let mut inner = self.0.lock();
+        // Held: no mark and no claim, so nothing of this session's is written for a removal to find. Both are under the lock the hold takes.
+        if inner.on_hold {
+            return;
+        }
+        corpus::note_agent_folder(&self.0.root);
         if inner.agent_folders.iter().any(|(held, _)| *held == key) {
             return;
         }
@@ -393,7 +416,7 @@ impl Indexing for Indexer {
 
     fn note_asked(&self) {
         let mut inner = self.0.lock();
-        if inner.sweep_due && !inner.stopped {
+        if inner.sweep_due && !inner.stopped && !inner.on_hold {
             self.start_working(&mut inner);
         }
     }
