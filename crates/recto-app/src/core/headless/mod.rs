@@ -6,6 +6,7 @@ mod changed_under_edits;
 mod click_cost;
 mod closing;
 mod compare;
+mod compare_wake;
 mod contents;
 mod controls;
 mod copy_link;
