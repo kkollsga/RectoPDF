@@ -614,29 +614,131 @@ fn a_paragraph_that_continues_is_joined_with_its_rest_on_the_next_page() {
     assert_eq!((joined(&rest), rest.pages, rest.continues), ("twice in spring.".to_string(), 1, false));
 }
 
-/// Failure: only the first continuation is followed, so a paragraph over three pages is cut at the second; or a page with no blocks between them ends the chain; or a page the tab doesn't show is read into it.
-/// Three pieces on pages 0, 2 and 3, with page 1 empty and page 4 shown but not part of it: all three are given, in order, and the unit spans pages 0 to 3.
+/// Failure: only the first continuation is followed, so a paragraph over three pages is cut at the second; or a page the tab doesn't show is read into it. Pieces on pages 0, 2 and 3 with page 1 not shown (the tab
+/// removed it): all are given, in order, and the unit spans pages 0 to 3.
 #[test]
-fn a_paragraph_over_three_pages_is_joined_through_a_page_with_no_blocks() {
+fn a_paragraph_over_three_pages_is_joined_over_a_page_the_tab_doesnt_show() {
+    let mut doc = legs(&[
+        leg(0, "first part", true),
+        leg(1, "removed", true),
+        leg(2, "middle part", true),
+        leg(3, "last part", false),
+        leg(4, "another paragraph", false),
+    ]);
+    doc.pages[1].shown = false;
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
+    assert_eq!(joined(&one), "first part\nmiddle part\nlast part");
+    assert_eq!((one.pages, one.continues, one.counts.blocks), (4, false, 3));
+    assert_eq!(one.refs.next.map(|next| next.page), Some(4));
+    assert_eq!(as_markdown(&one.given), "first part\nmiddle part\nlast part");
+    assert!(!doc.reads.contains(&1));
+}
+
+/// Failure: a page with text and no stored blocks is passed over, so the chain joins pieces across text it can't place (a table, a figure's words) as if the paragraph ran through it. Page 1 has text and no blocks:
+/// the answer is the first piece alone, `continues` with `more` at the start of page 1, and `next` is the first block after.
+#[test]
+fn a_page_with_text_and_no_blocks_stops_the_join_and_names_where_it_goes_on() {
     let mut doc = legs(&[
         leg(0, "first part", true),
         ("nothing stored".to_string(), vec![]),
         leg(2, "middle part", true),
         leg(3, "last part", false),
-        leg(4, "another paragraph", false),
     ]);
     let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
-    assert_eq!(joined(&one), "first part\nmiddle part\nlast part");
-    assert_eq!((one.pages, one.continues, one.counts.blocks), (4, false, 3));
-    let next = one.refs.next.expect("the next paragraph after the unit");
-    assert_eq!(next.page, 4);
-    assert_eq!(as_markdown(&one.given), "first part\nmiddle part\nlast part");
-    // A page the tab doesn't show is passed over: pages 0 and 2 are joined, 1 isn't read into it.
-    let mut hidden = legs(&[leg(0, "first part", true), leg(1, "removed", true), leg(2, "last part", false)]);
-    hidden.pages[1].shown = false;
-    let two = unit(build(&mut hidden, &ask(Grain::Paragraph, 0, None, None, 1000)));
-    assert_eq!(joined(&two), "first part\nlast part");
-    assert!(!hidden.reads.contains(&1));
+    assert_eq!(joined(&one), "first part");
+    assert_eq!((one.pages, one.chars, one.continues, one.truncated), (1, 10, true, false));
+    let more = one.refs.more.expect("where it goes on");
+    assert_eq!((more.page, more.range.offsets().0), (1, 0));
+    assert_eq!(one.refs.next.map(|next| next.page), Some(2));
+}
+
+/// Failure: the text between a joined paragraph's pieces vanishes unsaid. Page 0 ends with a footer after the paragraph and page 1 begins with a running head before its rest: neither is given, both are counted
+/// in `chars_outside_blocks` (the footer's and the head's characters, no more).
+#[test]
+fn the_text_between_a_joined_paragraphs_pieces_is_counted_and_not_given() {
+    let mut doc = Doc::new(vec![
+        (
+            "the quay\nfooter 1",
+            vec![Block {
+                continues: true,
+                ..block(Kind::Paragraph, 0, (0, 8), 100)
+            }],
+        ),
+        ("HEAD\nwas measured", vec![block(Kind::Paragraph, 1, (5, 17), 100)]),
+    ]);
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
+    assert_eq!(joined(&one), "the quay\nwas measured");
+    assert_eq!(
+        one.counts.chars_outside_blocks,
+        "\nfooter 1".chars().count() as u32 + "HEAD\n".chars().count() as u32
+    );
+}
+
+/// Failure: a paragraph with another block after it on its page is joined with the next page's first block anyway, so an agent is given text that isn't its rest. Page 0 holds A (continues) then B; page 1
+/// holds A' then C: the answer is A alone, `continues`, `more` names where it goes on, and `next` is B.
+#[test]
+fn a_paragraph_that_isnt_its_pages_last_block_is_given_alone() {
+    let mut doc = Doc::new(vec![
+        (
+            "aaaaa bbbbb",
+            vec![
+                Block {
+                    continues: true,
+                    ..block(Kind::Paragraph, 0, (0, 5), 100)
+                },
+                block(Kind::Paragraph, 0, (6, 11), 300),
+            ],
+        ),
+        (
+            "rest ccccc",
+            vec![block(Kind::Paragraph, 1, (0, 4), 100), block(Kind::Paragraph, 1, (5, 10), 300)],
+        ),
+    ]);
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
+    assert_eq!((joined(&one).as_str(), one.pages, one.continues), ("aaaaa", 1, true));
+    let next = one.refs.next.expect("the block after it");
+    assert_eq!((next.page, next.range.offsets()), (0, (6, 11)));
+    let more = one.refs.more.expect("where it goes on");
+    assert_eq!(more.page, 0);
+}
+
+/// Failure: a block of a kind that isn't joined (code) with `continues` stored says it goes on and names nowhere, so an agent can't follow it. It is given alone, `continues`, with `more` where text goes on.
+#[test]
+fn a_kind_that_isnt_joined_with_continues_set_still_says_where_it_goes_on() {
+    let mut doc = legs(&[leg(0, "let x = 1;", true), leg(1, "more code", false)]);
+    doc.pages[0].blocks[0].kind = Kind::Code;
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
+    assert_eq!((joined(&one).as_str(), one.pages, one.continues), ("let x = 1;", 1, true));
+    assert_eq!(one.refs.more.map(|more| more.page), Some(1));
+}
+
+/// Failure: after the blank-page limit `continues` stays set with no `more` (or is dropped while the paragraph goes on). Nine blank pages (the index says no text) between the pieces, then a page with text: the
+/// first piece is given alone, `continues`, and `more` is on the page that has text.
+#[test]
+fn a_stop_past_the_blank_page_limit_names_where_it_goes_on() {
+    let mut pages = vec![leg(0, "first part", true)];
+    pages.extend((1..=9).map(|_| (String::new(), vec![])));
+    pages.push(leg(10, "after the blanks", false));
+    let mut doc = legs(&pages);
+    for page in 1..=9 {
+        doc.pages[page].readable = false;
+    }
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
+    assert_eq!((joined(&one).as_str(), one.continues), ("first part", true));
+    assert_eq!(one.refs.more.map(|more| more.page), Some(10));
+}
+
+/// Failure: a long join uses up the page reads, so the paragraph before it can't be named (`prev` empty) though a single page would have named it. A forged chain of 70 pages asked from page 5: `prev` is the last
+/// block of page 4 while the join still stops at the page cap.
+#[test]
+fn a_long_join_leaves_the_reads_that_prev_needs() {
+    let pages: Vec<(String, Vec<Block>)> = (0..70).map(|page| leg(page, &format!("part {page:02}"), true)).collect();
+    let mut doc = legs(&pages);
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 5, None, None, 65_536)));
+    let prev = one.refs.prev.expect("the block before it");
+    assert_eq!(prev.page, 4);
+    assert!(one.counts.pages_read <= MAX_PAGES_READ + 1, "{}", one.counts.pages_read);
+    assert!(one.truncated && one.continues);
 }
 
 /// Failure: a store that sets `continues` on every page is followed to its end, so one `get` reads a whole book; or the chain is cut at the cap with no `more`, so an agent can't go on. A 70-page file whose every
@@ -662,16 +764,16 @@ fn a_store_that_forges_continues_on_every_page_is_followed_only_to_the_page_cap(
 }
 
 /// Failure: the caller's character cap is ignored once a paragraph is joined, so an answer is longer than asked; or it's cut with no `more`, or a piece is split. Three pages of 10 characters each with a cap of
-/// 25: the first two pieces fit, the third doesn't come in part, the answer is `truncated` and `more` is the start of the third page's piece, which is the paragraph's last (its own `continues` is off).
+/// 25: the first two pieces fit, the third doesn't come in part, the answer is `truncated` and `continues`, `more` is the start of the third page's piece, and `pages` and `chars` count the two given.
 #[test]
 fn a_joined_paragraph_is_cut_at_the_callers_cap_with_a_way_on() {
     let mut doc = legs(&[leg(0, "aaaaaaaaaa", true), leg(1, "bbbbbbbbbb", true), leg(2, "cccccccccc", false)]);
     let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 25)));
     assert_eq!(joined(&one), "aaaaaaaaaa\nbbbbbbbbbb");
-    assert!(one.truncated && !one.continues);
+    assert!(one.truncated && one.continues, "it goes on past what was given");
     let more = one.refs.more.expect("where it goes on");
     assert_eq!((more.page, more.range.offsets()), (2, (0, 10)));
-    assert_eq!(one.chars, 30);
+    assert_eq!((one.pages, one.chars), (2, 20), "only what was given is counted");
 }
 
 /// Failure: a paragraph is joined with whatever is at the top of the next page, so a heading is read as the rest of a sentence. A `continues` paragraph whose next page begins with a heading is the paragraph alone,

@@ -236,6 +236,20 @@ pub(crate) fn take_steps() -> u64 {
     STEPS.with(|steps| steps.replace(0))
 }
 
+/// A page's stored blocks as a unit reads them: those that are empty or reach past a page of `chars` characters left out, the rest in character order.
+#[must_use]
+pub fn in_reading_order(mut blocks: Vec<Block>, chars: u32) -> Vec<Block> {
+    blocks.retain(|block| block.start < block.end && block.end <= chars);
+    blocks.sort_unstable_by_key(|block| (block.start, block.end));
+    blocks
+}
+
+/// The index of the block holding character `first`, in blocks from [`in_reading_order`]: the paragraph grain's own search.
+#[must_use]
+pub fn block_holding(blocks: &[Block], first: u32) -> Option<usize> {
+    blocks.iter().position(|block| block.start <= first && first < block.end)
+}
+
 /// Where the text is cut when one piece is over the cap: at the last line end inside the cap, and at the cap if there is none.
 #[must_use]
 pub fn cut_at(chars: &[char], max: usize) -> usize {
@@ -341,6 +355,8 @@ struct Tail {
     page: u32,
     next: Option<Mark>,
     has_next: bool,
+    /// The characters of `page` after the last piece given from it: running heads, footers, page numbers.
+    rest: u32,
 }
 
 /// What a paragraph's walk has taken in so far.
@@ -356,6 +372,8 @@ enum Found {
     At(u32),
     /// No page after it has blocks.
     End,
+    /// This page has text and no stored blocks: the chain stops before it.
+    Gap(u32),
     /// Reading stopped (the page cap, the live time, or too many pages with no text) at this page.
     Stopped(u32),
 }
@@ -409,9 +427,7 @@ impl<'a, P: Pages> Walk<'a, P> {
             return Ok(false);
         }
         let length = u32::try_from(self.chars.len()).unwrap_or(u32::MAX);
-        let mut blocks = self.pages.blocks(page, length)?;
-        blocks.retain(|block| block.start < block.end && block.end <= length);
-        blocks.sort_unstable_by_key(|block| (block.start, block.end));
+        let blocks = in_reading_order(self.pages.blocks(page, length)?, length);
         let frame = self.pages.frame(page);
         if frame.is_none() && !blocks.is_empty() {
             self.counts.pages_without_frame += 1;
@@ -655,7 +671,7 @@ impl<'a, P: Pages> Walk<'a, P> {
         }
         let held = match ask.start {
             None => (!self.blocks.is_empty()).then_some(0),
-            Some(first) => self.blocks.iter().position(|block| block.start <= first && first < block.end),
+            Some(first) => block_holding(&self.blocks, first),
         };
         let Some(index) = held else { return Ok(Outcome::Page(Why::NoBlockHere)) };
         let block = self.blocks[index];
@@ -687,6 +703,7 @@ impl<'a, P: Pages> Walk<'a, P> {
             page: ask.page,
             next: after.and_then(|next| self.mark(next.start, next.end)),
             has_next: after.is_some(),
+            rest: self.len() - block.end,
         };
         let mut walked = Walked {
             chars: block.end - from,
@@ -694,12 +711,22 @@ impl<'a, P: Pages> Walk<'a, P> {
             continues: block.continues,
             truncated: taken.cut.is_some(),
         };
-        if block.continues && taken.cut.is_none() && joins_across_pages(block.kind) {
-            self.join_on(ask, &block, &mut taken, &mut tail, &mut walked, &mut refs)?;
+        // It is joined only when it is the last block of its page: with another after it, the paragraph's rest isn't the next page's first block.
+        let joinable = block.continues && taken.cut.is_none() && joins_across_pages(block.kind) && index + 1 == self.blocks.len();
+        let last_page = self.pages.pages().saturating_sub(1);
+        if block.continues && taken.cut.is_none() && !joinable {
+            // Given alone, and says where it goes on (while its page is loaded).
+            refs.more = self.mark_from(ask.page, block.end, last_page, true)?;
         }
+        // Before the join, so a long join can't use up the reads this needs.
         if before.is_none() {
             refs.prev = self.neighbour_block(ask.page, false)?;
         }
+        if joinable {
+            self.join_on(ask, &block, &mut taken, &mut tail, &mut walked, &mut refs)?;
+        }
+        // One rule: it goes on exactly where a place to go on to is named.
+        walked.continues &= refs.more.is_some();
         // After the last piece reached: the block after it on its page, else the first block of a later page.
         refs.next = if tail.has_next { tail.next } else { self.neighbour_block(tail.page, true)? };
         Ok(Outcome::Unit(Box::new(Unit {
@@ -716,9 +743,12 @@ impl<'a, P: Pages> Walk<'a, P> {
         })))
     }
 
-    /// Follows a paragraph that goes on at the top of a later page, piece by piece, until its last piece, the end of what's read (the cap on pages read, the live time, the caller's characters) or a page that
-    /// doesn't go on with the same kind of block. **Bounded by the reads, not by what a store says:** a store that sets `continues` on every page is followed only as far as the page cap lets pages be read.
+    /// Follows a paragraph that goes on at the top of a later page, piece by piece, until its last piece, the end of what's read (the cap on pages read, the live time, the caller's characters), a page with
+    /// text and no stored blocks, or a page that doesn't go on with the same kind of block. **Bounded by the reads, not by what a store says:** a store that sets `continues` on every page is followed only
+    /// as far as the page cap lets pages be read. Every stop but the paragraph's real end leaves `walked.continues` set and `refs.more` naming where it goes on; the text between the pieces (running heads,
+    /// footers, page numbers) isn't given and is counted in `chars_outside_blocks`.
     fn join_on(&mut self, ask: &Ask<'_>, block: &Block, taken: &mut Taken, tail: &mut Tail, walked: &mut Walked, refs: &mut Refs) -> Result<(), Fault> {
+        let last_page = self.pages.pages().saturating_sub(1);
         loop {
             let at = match self.page_after_with_blocks(tail.page)? {
                 Found::At(at) => at,
@@ -726,13 +756,21 @@ impl<'a, P: Pages> Walk<'a, P> {
                     walked.continues = false;
                     return Ok(());
                 }
+                Found::Gap(page) => {
+                    refs.more = self.mark_from(page, 0, last_page, true)?;
+                    return Ok(());
+                }
                 Found::Stopped(page) => {
                     // The next piece isn't read: its place is named, with the one read past the cap that naming is allowed.
                     walked.truncated = true;
-                    refs.more = if self.load_to_name(page)? {
+                    let first = if self.pages.has_text(page) && self.load_to_name(page)? {
                         self.blocks.first().copied().and_then(|first| self.mark(first.start, first.end))
                     } else {
                         None
+                    };
+                    refs.more = match first {
+                        Some(mark) => Some(mark),
+                        None => self.mark_from(page, 0, last_page, true)?,
                     };
                     return Ok(());
                 }
@@ -742,14 +780,6 @@ impl<'a, P: Pages> Walk<'a, P> {
                 walked.continues = false;
                 return Ok(());
             };
-            *tail = Tail {
-                page: at,
-                next: self.blocks.get(1).and_then(|next| self.mark(next.start, next.end)),
-                has_next: self.blocks.len() > 1,
-            };
-            walked.pages = at - ask.page + 1;
-            walked.chars = walked.chars.saturating_add(first.end - first.start);
-            walked.continues = first.continues;
             let before = taken.given.len();
             let depths = vec![None; self.blocks.len()];
             let specs = [Spec {
@@ -760,21 +790,44 @@ impl<'a, P: Pages> Walk<'a, P> {
                 block: Some(0),
             }];
             self.give(taken, &specs, &depths, ask.max_chars as usize);
+            if taken.given.len() == before {
+                // Not taken in: the cap is reached before this piece. What is counted is what was given.
+                walked.truncated = true;
+                refs.more = taken.cut.and_then(|(_, cut)| self.mark_from_here(cut));
+                return Ok(());
+            }
             if let Some(joined) = taken.given.get_mut(before) {
                 joined.joins = true;
             }
+            self.counts.chars_outside_blocks = self.counts.chars_outside_blocks.saturating_add(tail.rest).saturating_add(first.start);
+            let alone = self.blocks.len() == 1;
+            *tail = Tail {
+                page: at,
+                next: self.blocks.get(1).and_then(|next| self.mark(next.start, next.end)),
+                has_next: !alone,
+                rest: self.len() - first.end,
+            };
+            walked.pages = at - ask.page + 1;
+            walked.chars = walked.chars.saturating_add(first.end - first.start);
+            walked.continues = first.continues;
             if let Some((_, cut)) = taken.cut {
                 walked.truncated = true;
+                walked.continues = true;
                 refs.more = self.mark_from_here(cut);
                 return Ok(());
             }
             if !first.continues {
                 return Ok(());
             }
+            if !alone {
+                // It goes on, but another block follows it on its page: not joined further.
+                refs.more = self.mark_from(at, first.end, last_page, true)?;
+                return Ok(());
+            }
         }
     }
 
-    /// The next page after `page` that has stored blocks, loaded: pages the tab doesn't show and pages with no text are passed over, and the cap on pages read and the live time stop it.
+    /// The next page after `page` that has stored blocks, loaded: pages the tab doesn't show and pages with no text are passed over (8 at most), a page with text and no blocks stops it, and so do the cap on pages read and the live time.
     fn page_after_with_blocks(&mut self, page: u32) -> Result<Found, Fault> {
         let count = self.pages.pages();
         let (mut at, mut blank) = (page, 0);
@@ -798,8 +851,13 @@ impl<'a, P: Pages> Walk<'a, P> {
                     return Ok(Found::Stopped(at));
                 }
             }
-            if self.load(at)? && !self.blocks.is_empty() {
-                return Ok(Found::At(at));
+            if self.load(at)? {
+                if !self.blocks.is_empty() {
+                    return Ok(Found::At(at));
+                }
+                if !self.chars.is_empty() {
+                    return Ok(Found::Gap(at));
+                }
             }
         }
     }

@@ -140,10 +140,8 @@ pub(super) fn headings_of_page<A: SessionAccess>(access: &A, file: &TabFile, key
 fn block_place<A: SessionAccess>(access: &A, key: CorpusKey, anchor: &Anchor<'_>) -> Option<Place> {
     let (first, chars) = anchor.hit?;
     let stored = crate::blocks::stored_now(access, key)?;
-    let mut blocks = stored.page(anchor.file_page, chars).ok()?.blocks;
-    blocks.retain(|block| block.start < block.end && block.end <= chars);
-    blocks.sort_unstable_by_key(|block| (block.start, block.end));
-    let block = blocks.iter().find(|block| block.start <= first && first < block.end)?;
+    let blocks = unit::in_reading_order(stored.page(anchor.file_page, chars).ok()?.blocks, chars);
+    let block = &blocks[unit::block_holding(&blocks, first)?];
     let frame = recto_core::page_id::page_frame(anchor.opened.reader(), anchor.opened.map(), anchor.file_page);
     Some(frame.map_or(Place::middle(anchor.file_page), |frame| Place::of_block(block, frame)))
 }
