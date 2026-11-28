@@ -30,7 +30,9 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 /// The most characters a page may have in a corpus (2,000,000): more than a block may point into (`MAX_PAGE_CHARS`, 1 Mi), which maps nothing, but the session still holds them as a buffer of 8 MB.
-const PAGE_CHARS: usize = 2_000_000;
+const CORPUS_CAP_CHARS: usize = 2_000_000;
+/// The most characters a block may point into (the index's `MAX_PAGE_CHARS`, 1 Mi): the largest page for which `map_page` builds its `key` and `origin` tables, so the dearest page that is mapped.
+const MAP_CAP_CHARS: usize = 1 << 20;
 
 /// A store with a page of this many characters, that keeps nothing.
 struct Text(usize);
@@ -65,12 +67,15 @@ fn peak_over(said: &[u8], chars: usize) -> isize {
 }
 
 /// Failure: one hostile line (a page line of 512 KiB of empty blocks, or of the shortest blocks that map) takes more of the session's memory than a job may: the whole line parsed into a tree, the page's
-/// characters held twice, or a buffer that grows with the line. The peak over the session's own is held under 32 MiB (measured: see `docs/engineering/blocks.md`).
+/// characters held twice, or a buffer that grows with the line. Run at the page size where `map_page` builds its `key` and `origin` (1 Mi characters) and at the corpus cap (2,000,000, where it returns early):
+/// the peak over the session's own is held under 32 MiB at each (measured: see `docs/engineering/blocks.md`).
 #[test]
 fn a_hostile_page_line_costs_the_session_little() {
-    for (name, filler) in [("empty blocks", "[],"), ("short objects", r#"{"kind":"para","text":"a"},"#)] {
-        let peak = peak_over(&said(filler, 0), PAGE_CHARS);
-        println!("BLOCKS_COST {name}: {:.1} MiB over", peak as f64 / 1048576.0);
-        assert!(peak < 32 * 1024 * 1024, "{name}: {peak} bytes over");
+    for (chars_name, chars) in [("1 Mi chars", MAP_CAP_CHARS), ("2,000,000 chars", CORPUS_CAP_CHARS)] {
+        for (name, filler) in [("empty blocks", "[],"), ("short objects", r#"{"kind":"para","text":"a"},"#)] {
+            let peak = peak_over(&said(filler, 0), chars);
+            println!("BLOCKS_COST {name} at {chars_name}: {:.1} MiB over", peak as f64 / 1048576.0);
+            assert!(peak < 32 * 1024 * 1024, "{name} at {chars_name}: {peak} bytes over");
+        }
     }
 }
