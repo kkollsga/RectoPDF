@@ -128,7 +128,7 @@ const REASONS: &[(&str, &str)] = &[
     ),
     ("busy", "the file's index is being written right now"),
     ("index_not_ready", "the file's index isn't finished"),
-    ("index_damaged", "the file's index didn't add up, so it's being built again"),
+    ("index_damaged", "the file's index didn't add up; `recto index` builds it again"),
     ("write_failed", "they couldn't be kept on disk"),
 ];
 
