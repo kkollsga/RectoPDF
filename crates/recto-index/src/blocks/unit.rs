@@ -453,12 +453,25 @@ impl<'a, P: Pages> Walk<'a, P> {
         let starts: Vec<Place> = entries.iter().map(|(place, _)| *place).collect();
         let (cuts, _) = sweep(&self.places, &starts);
         let at = |cut: usize| self.blocks.get(cut).map_or_else(|| self.len(), |block| block.start);
-        entries
+        let held = entries
             .iter()
             .zip(cuts)
             .take_while(|(_, cut)| at(*cut) <= first)
             .last()
-            .map_or(top, |((place, _), _)| *place)
+            .map(|((place, _), _)| *place);
+        // A character before the page's first cut is in the section just before that entry, which may have started on an earlier page.
+        held.or_else(|| {
+            let (first_entry, _) = entries.first()?;
+            match (first_entry.top, page) {
+                (0, 0) => None,
+                (0, _) => Some(Place {
+                    page: page - 1,
+                    top: recto_core::TOP_SCALE,
+                }),
+                (up, _) => Some(Place { page, top: up - 1 }),
+            }
+        })
+        .unwrap_or(top)
     }
 
     /// The loaded page's pieces over characters `[from, to)`: blocks, and the text between them as paragraphs.
@@ -748,7 +761,7 @@ impl<'a, P: Pages> Walk<'a, P> {
             chars_given: taken.chars_given,
             given: taken.given,
             chars: unit_chars,
-            pages: spans.saturating_sub(start.page) + 1,
+            pages: spans.saturating_sub(start.page).saturating_add(1),
             truncated,
             continues: false,
             entry: Some(entry),

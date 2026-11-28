@@ -227,6 +227,14 @@ fn following_more_gives_the_whole_unit_once() {
             one.from_here = place.2;
             let answer = unit(build(&mut doc, &one));
             assert!(answer.chars_given <= max, "cap {max}: {} given", answer.chars_given);
+            // Until the answer goes on into the nested section's page, where the reference's own section is the nested one (see the hand-back: a `more` inside a nested entry is that entry's section).
+            if place.0 == 0 {
+                assert_eq!(
+                    answer.entry,
+                    Some(1),
+                    "cap {max}: the same section while the reference is before the nested entry"
+                );
+            }
             let text: String = answer.given.iter().flat_map(|piece| piece.text.iter()).collect();
             got.push_str(&text);
             if !answer.truncated {
@@ -483,4 +491,22 @@ fn a_blank_page_after_the_cap_still_gives_a_more() {
         doc.reads.iter().filter(|page| **page == 64).count() == 0,
         "a page known blank isn't read to be named"
     );
+}
+
+/// Failure (review round 2): a character before its page's first cut is put in the section that starts on that page (the page's top), though it comes before the section's first character. It is in the section
+/// just before that entry, which started on an earlier page.
+#[test]
+fn a_character_before_the_first_cut_on_its_page_is_in_the_section_before() {
+    let mut doc = Doc::new(vec![
+        ("first page words", vec![block(Kind::Paragraph, 0, (0, 16), 100)]),
+        (
+            "stray gap\nHeading\nbody",
+            vec![block(Kind::Heading, 1, (10, 17), 100), block(Kind::Paragraph, 1, (18, 22), 200)],
+        ),
+    ]);
+    let sections = Sections::new(toc(&[(0, 0, 0), (1, 0, 0)]).entries());
+    let answer = unit(build(&mut doc, &ask(Grain::Section, 1, Some(2), Some(&sections), 10_000)));
+    assert_eq!(answer.entry, Some(0), "the stray text before the heading belongs to the first section");
+    let answer = unit(build(&mut doc, &ask(Grain::Section, 1, Some(11), Some(&sections), 10_000)));
+    assert_eq!(answer.entry, Some(1));
 }

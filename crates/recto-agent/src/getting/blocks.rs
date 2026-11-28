@@ -178,7 +178,17 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
     fn over(&mut self) -> bool {
         self.live_spent >= LIVE_BUDGET
     }
+
+    /// False only for a page the index recorded as having no characters at all. A page that failed to index, or whose record doesn't open, is still read: nothing is passed over for not having been looked at.
+    fn has_text(&mut self, page: u32) -> bool {
+        let blank = matches!(self.corpus.page(page, &mut self.buffer), Ok(stored) if stored.kind == PageKind::NoText);
+        self.wipe();
+        !blank
+    }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// A reference to a run of characters of a page, as `get`'s references are: the page's own, with these characters.
 pub(super) fn token(referrer: &mut Referrer<'_>, mark: Option<Mark>) -> Value {
