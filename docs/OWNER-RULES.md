@@ -2,6 +2,10 @@
 
 The owner's product rules and one-off decisions, in their words, with the date. Moved here from `AGENTS.md` on 2026-11-13 so that file stays short: it is loaded into every session and read by every worker. Read the section that touches your task; behaviour as built is in `SPEC.md`. A newer rule that replaces an older one says so.
 
+## Decisions of 2026-11-28 (put with recommendations; owner: "I agree with your recommendations")
+- **A removal that meets work that won't stop** (removal step 4): if a search index or contents being made doesn't stop within 3 seconds when a removal starts, the removal changes nothing, stops, and says: "RectoPDF couldn't finish the removal just now because it is still working on a document. Nothing was changed. Try again in a moment." It never force-kills the work.
+- **While a removal runs** (a few seconds): Find reads the pages directly (the same results, a little slower) and the person isn't told; a request for a document's contents or an agent's folder is turned away, and the contents offer is left as it is, so it works again once the removal ends.
+
 ## Decisions of 2026-11-26 (put with recommendations; the recommended option chosen each time)
 
 - **Copy Link (locator 8.4) puts the full file address on the clipboard**, with the standard page number: `file:///…/manual.pdf#page=42`, so it works pasted anywhere on this Mac. Before 8.4 is built it is tried from Notes and Mail into Preview; if the page is lost there, the owner hears before it's built. (Agents still get the file's name only: `recto link`.) Then, told that no rule-abiding check can see Preview's page (it would mean driving another app or reading the screen) and that Preview very likely opens at its first page: "Build it, say so" — Copy Link is built as decided, its description says Preview may open the file at its first page, and RectoPDF honours the page once it opens links (8.4's other half).
