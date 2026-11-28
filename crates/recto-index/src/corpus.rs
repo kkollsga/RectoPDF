@@ -52,6 +52,8 @@ pub use blocks::{BLOCKS_RULES, Begin, BlocksBuild, BlocksMade, BlocksTally, PutE
 pub use identities::{FileIdentities, Identities, IdentityInfo, RECORD_BYTES, remove_identities};
 mod retry;
 use retry::retry_failed_pages;
+mod used;
+use used::{note_used, note_used_held};
 mod versions;
 #[cfg(test)]
 use versions::MAX_KEYS_PER_ALIAS;
@@ -118,8 +120,6 @@ const MAX_BLOB_BYTES: usize = 16 * 1024 * 1024;
 const SAMPLE_BYTES: u64 = 64 * 1024;
 /// Pages between looks at whether the file is still the same one.
 const IDENTITY_CHECK_EVERY: u32 = 64;
-/// How stale `used` may get, so a search needn't write anything.
-const USED_RESOLUTION: Duration = Duration::from_secs(60 * 60);
 
 /// Which version of which file a corpus belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -533,7 +533,17 @@ pub struct Damaged;
 
 impl ReadyCorpus {
     /// Opens a finished corpus. `Ok(None)` if there isn't one, and `Err` if there is but it doesn't add up.
+    /// A reader's open: it notes the use only if the corpus's `build.lock` is free ([`used::note_used`]).
     pub fn open(find_key: &FindKey, root: &Path, key: CorpusKey) -> Result<Option<Self>, Damaged> {
+        Self::open_noting(find_key, root, key, note_used)
+    }
+
+    /// The open of a caller that holds the corpus's `build.lock` on its own descriptor (a build, an agent folder's making), which notes the use as it always did.
+    pub(crate) fn open_held(find_key: &FindKey, root: &Path, key: CorpusKey) -> Result<Option<Self>, Damaged> {
+        Self::open_noting(find_key, root, key, note_used_held)
+    }
+
+    fn open_noting(find_key: &FindKey, root: &Path, key: CorpusKey, note: fn(&CorpusPaths)) -> Result<Option<Self>, Damaged> {
         let paths = CorpusPaths::new(root, key);
         if !paths.folders_are_private(root) {
             return Err(Damaged);
@@ -560,7 +570,7 @@ impl ReadyCorpus {
         if pack_len < summary.pack_bytes {
             return Err(Damaged);
         }
-        note_used(&paths);
+        note(&paths);
         Ok(Some(Self {
             table,
             seal,
@@ -595,18 +605,6 @@ impl ReadyCorpus {
             aux,
             edges,
         })
-    }
-}
-
-/// Notes that a corpus has been used, for eviction, at most once an hour so a search needn't write.
-fn note_used(paths: &CorpusPaths) {
-    let fresh = fs::metadata(&paths.used)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|at| at.elapsed().ok())
-        .is_some_and(|age| age < USED_RESOLUTION);
-    if !fresh {
-        let _ = local::write_private_file_unsynced(&paths.used, b"");
     }
 }
 
@@ -1239,7 +1237,7 @@ fn finish(paths: &CorpusPaths, seal: &CorpusSeal, pages: u32, width: usize, pack
     write_sealed(seal, &paths.meta, Purpose::Meta, meta_json.as_bytes(), false)?;
     summary.corpus_bytes = bytes + disk_size((meta_json.len() + seal::OVERHEAD) as u64) + disk_size(seal::HEADER_BYTES as u64);
     write_sealed(seal, &paths.ready, Purpose::Summary, summary.to_json(paths.key).to_string().as_bytes(), true)?;
-    note_used(paths);
+    note_used_held(paths);
     Ok(summary)
 }
 
@@ -1294,7 +1292,7 @@ enum Making {
 }
 
 fn make_agent_folder(find_key: &FindKey, paths: &CorpusPaths, limits: &BuildLimits, making: Making) -> Result<AgentFolder, AgentFolderError> {
-    let corpus = match ReadyCorpus::open(find_key, &paths.root, paths.key) {
+    let corpus = match ReadyCorpus::open_held(find_key, &paths.root, paths.key) {
         Ok(Some(corpus)) => corpus,
         Ok(None) => return Err(AgentFolderError::NotReady),
         Err(Damaged) => return Err(AgentFolderError::Damaged),

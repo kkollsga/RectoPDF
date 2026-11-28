@@ -649,3 +649,31 @@ fn the_last_walk_finds_what_came_back() {
         Err(PurgeStop::StillThere)
     );
 }
+
+/// Failure: a reader opening a corpus while the purge holds its `build.lock` writes `app/used` into the folder the walk is taking out, so the walk stops after the barrier and the removal
+/// stays pending. The real purge of three corpora, one whose `used` is gone before the survey (so a new one is a stray), with a reader's `ReadyCorpus::open` of it at the walk's first
+/// name: every step is `Ok` and the caches are clear.
+#[test]
+fn a_corpus_opened_mid_purge_doesnt_stop_the_walk() {
+    let w = World::new();
+    let keys = three_corpora(&w);
+    fs::remove_file(w.corpus.join(keys[0].hex()).join("v4").join("app").join("used")).unwrap();
+    let steps = plan_steps(&w);
+    let (corpus_root, key_file, key) = (w.corpus.clone(), w.dir.join("find.key"), keys[0]);
+    let opened = Arc::new(AtomicU32::new(0));
+    let counted = opened.clone();
+    let seams = seams_with(|s| {
+        s.gate = Some(Arc::new(move |_: &OsStr| {
+            if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                let find_key = recto_platform::find_key::FindKey::from_state_file(&key_file).unwrap();
+                assert!(corpus::ReadyCorpus::open(&find_key, &corpus_root, key).unwrap().is_some(), "the reader's open");
+            }
+            true
+        }));
+    });
+    for result in purge_all(&w, &steps, &seams) {
+        assert!(result.unwrap().durable);
+    }
+    assert!(opened.load(Ordering::SeqCst) > 0, "the gate never ran, so no reader opened anything");
+    assert_eq!(super::super::caches_are_clear(&w.corpus, &w.contents), Ok(true));
+}
