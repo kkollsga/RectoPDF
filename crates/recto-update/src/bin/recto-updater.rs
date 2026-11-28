@@ -72,7 +72,10 @@ fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 
         .and_then(|exe| Some(exe.parent()?.parent()?.parent()?.to_path_buf()))
         .and_then(|app| recto_update::stage::app_version(&app))
         .unwrap_or_default();
-    let _ = std::fs::write(work.join(format!("ran-{own}")), "");
+    // One line a launch, so a test can tell one launch from two.
+    if let Ok(mut ran) = std::fs::OpenOptions::new().create(true).append(true).open(work.join(format!("ran-{own}"))) {
+        let _ = std::io::Write::write_all(&mut ran, format!("{}\n", std::process::id()).as_bytes());
+    }
     let behaviour = if own == version { behaviour } else { "ok" };
     match behaviour {
         "ok" => {

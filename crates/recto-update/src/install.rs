@@ -39,6 +39,10 @@ const STOP_PATIENCE: Duration = Duration::from_secs(5);
 pub const DIE_AT_ENV: &str = "RECTO_UPDATER_DIE_AT";
 /// A test's way to hold the installer right after a step, as a racer would need it held, until a file says go on. Only in a build that isn't a release.
 pub const PAUSE_AT_ENV: &str = "RECTO_UPDATER_PAUSE_AT";
+/// A test's way to have `open` not return within its limit, as Launch Services can take on a starved Mac (2026-11-28, load 40 to 50): the test's direct launch starts, and the installer is told what a timed-out `open` tells it. Only in a build that isn't a release.
+pub const OPEN_UNRETURNED_ENV: &str = "RECTO_UPDATER_OPEN_UNRETURNED";
+/// How long `open` gets to return.
+const OPEN_LIMIT: Duration = Duration::from_secs(30);
 
 fn die_if_told(step: &str) {
     if !RELEASE_BUILD && std::env::var(DIE_AT_ENV).is_ok_and(|at| at == step) {
@@ -128,20 +132,41 @@ impl Run<'_> {
     }
 
     /// Opens the app at the plan's path: `open`, or `open -g` if it wasn't frontmost. A test's run says what to add. Whether it's a release decides whether any of that's looked at.
-    fn open_app(&self) -> bool {
+    fn open_app(&self) -> Opening {
+        let opened = self.ask_to_open();
+        if opened == Opening::NotReturned {
+            self.say(&format!(
+                "installer: open hadn't returned in {} s; looking for the app to come up",
+                OPEN_LIMIT.as_secs()
+            ));
+        }
+        opened
+    }
+
+    fn ask_to_open(&self) -> Opening {
         let test = if RELEASE_BUILD { None } else { self.plan.test.as_ref() };
         if let Some(test) = test
             && test.direct
         {
             let mut args = test.args.clone();
             args.extend(self.plan.open.iter().map(|path| path.display().to_string()));
-            return self.launched.start(&self.plan.executable(), &args, &test.env, &self.files.log).is_ok();
+            if self.launched.start(&self.plan.executable(), &args, &test.env, &self.files.log).is_err() {
+                return Opening::Failed;
+            }
+            if !RELEASE_BUILD && std::env::var(OPEN_UNRETURNED_ENV).is_ok_and(|value| value == "1") {
+                let timed_out = crate::process::Ran {
+                    timed_out: true,
+                    ..Default::default()
+                };
+                return opening(&Ok((false, Vec::new(), timed_out)));
+            }
+            return Opening::Opened;
         }
         // Even an error/timeout from open can leave a launch pending in Launch Services.
         self.launched.requested();
         let args = open_arguments(self.plan, test);
         let words: Vec<&str> = args.iter().map(String::as_str).collect();
-        tool(OPEN, &words, Duration::from_secs(30), 64 * 1024).is_ok_and(|(fine, _, _)| fine)
+        opening(&tool(OPEN, &words, OPEN_LIMIT, 64 * 1024))
     }
 
     /// Waits for the new app to say it's come up. Comes back early if it says it hasn't, or it's gone and stays gone. A process that's never been seen gets a good while before that counts, as the system can spend some time checking an app it hasn't run before, and it isn't a failure.
@@ -312,7 +337,7 @@ impl Run<'_> {
         let _ = std::fs::remove_file(self.files.launch_failed());
         let _ = std::fs::remove_file(self.files.helper_pid());
         drop(writer); // Release the record before the previous app tries to acquire it.
-        if !self.open_app() {
+        if self.open_app() == Opening::Failed {
             self.say("installer: the previous app couldn't be opened");
             return Ended::Stuck;
         }
@@ -499,7 +524,8 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the old app couldn't be moved to be kept");
     }
     run.step("old_app_kept");
-    if !run.open_app() {
+    // Only an `open` that said no goes back here. One that hasn't returned may still be starting the app, which the start's own bounds look for.
+    if run.open_app() == Opening::Failed {
         return run.go_back("couldnt_open");
     }
     run.step("opened");
@@ -551,6 +577,25 @@ pub fn switch_file(plan: &Plan, release_build: bool, real_root: Option<&Path>) -
         real_root.map(|root| Files::in_state(root).saved)
     } else {
         Some(Files::in_state(&plan.root).saved)
+    }
+}
+
+/// What asking for the app to be opened came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Opening {
+    Opened,
+    /// `open` didn't return within [`OPEN_LIMIT`] and was stopped. The launch it asked for can still be pending in Launch Services, so whether the app comes up is looked for, as for any launch.
+    NotReturned,
+    /// `open` said no, or couldn't be run.
+    Failed,
+}
+
+/// What `open`'s run comes to. Only an answer is a failure: on a starved Mac `open` can take longer than its limit to return while the launch goes ahead (2026-11-28).
+fn opening(result: &std::io::Result<(bool, Vec<u8>, crate::process::Ran)>) -> Opening {
+    match result {
+        Ok((true, _, _)) => Opening::Opened,
+        Ok((false, _, ran)) if ran.timed_out => Opening::NotReturned,
+        Ok(_) | Err(_) => Opening::Failed,
     }
 }
 
@@ -795,6 +840,17 @@ pub fn looks_like_app(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: an `open` that hasn't returned in its time is taken for one that said no, so an update whose new app is valid and on its way is rolled back (2026-11-28, a starved Mac). A real tool that runs past its limit is "not returned"; one that answers no, or can't be run, has failed.
+    #[cfg(unix)]
+    #[test]
+    fn an_open_that_runs_past_its_limit_hasnt_failed() {
+        let ran = |program: &str, args: &[&str]| opening(&tool(program, args, Duration::from_millis(100), 1024));
+        assert_eq!(ran("/bin/sleep", &["30"]), Opening::NotReturned);
+        assert_eq!(ran("/bin/sh", &["-c", "exit 1"]), Opening::Failed);
+        assert_eq!(ran("/nonexistent/open", &[]), Opening::Failed);
+        assert_eq!(ran("/usr/bin/true", &[]), Opening::Opened);
+    }
 
     pub(super) fn plan() -> Plan {
         Plan {
