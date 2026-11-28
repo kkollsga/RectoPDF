@@ -52,3 +52,21 @@ NASA's candidates: paragraph 3,045, heading 1,119, list item 83, caption 13, foo
 **The queue** (`recto-control`): blocks share the generator's one queue and its one helper with generated contents (`What::{Contents, Blocks}`, `Job`): newest ask first across both kinds, `MAX_WAITING` counting both, one helper at a time, utility priority, 512 MiB, `time_limit(pages)`. Remembered per `(What, CorpusKey)`: a refusal, or a limit (`over_memory`, `out_of_time`, `too_large`, `pages_differ`), is that version's own and never run again; any other failure pauses 60 s. A cancel of one kind touches only that kind; a closed tab stops both. `Walled::run` begins the build (`NotIndexed` is `index_not_ready`, `Busy` is `busy`, `Damaged` is `index_damaged`, `Made` is `AlreadyMade` and starts no helper), runs the helper, and `outcome_of` writes the header **only for an answer believed to its end, of the file asked for (looked at by path as well as by descriptor), not stopped since**; every other end drops the build. A job killed for `cancelled` or `out_of_time` can still have put pages from what its pipe held: they're staged in the bin and thrown away with the build. Events: `blocks_building` and `blocks_built` (group `blocks`), numbers only and all the session's own.
 
 **The surface** (`recto-agent`): `Blocking` (`want`, `state`, `cancel_files`, `making`), `blocks::why_page` (one key, one ready-file read, one header open, nothing that waits), `wait blocks-ready` (numbers only: `stored`, `dropped`, `bytes`, `bytes_per_page`, `by_kind`; `blocks_refused` and `blocks_failed` with Rust's words), and `index clear` stopping a blocks build before it clears.
+
+**Measured (S4),** 2026-11-28, release `recto`, `recto-indexer`, render service and structure helper, one run each, `blocks_measure` (`cargo test --release -p recto-cli --test index blocks_measure -- --ignored`, `RECTO_BLOCKS_FILES`, a copy of each file in temp state), the Mac with other agents building (load 9 to 10 on 10 cores, so the times are for a busy machine; the helper at utility priority). The serving process's own peak footprint was not measured (its pid isn't in reach of the test). `elapsed_ms`, `map_ms` and the helper's peak are the session's own numbers from the `blocks_built` event.
+
+| | Pages | Index | Blocks wall (ask to ready) | `elapsed_ms` | `map_ms` | Helper peak | Bytes on disk | Bytes a page |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| GDPR (EN) | 88 | 0.7 s | 0.8 s | 786 | 5 | 7.6 MiB | 27,059 | 307 |
+| `un_sdg2024` | 51 | 1.2 s | 1.0 s | 1,006 | 7 | 39.9 MiB | 18,155 | 355 |
+| NASA `ntrs20240002628` | 383 | 6.3 s | 4.7 s | 4,679 | 15 | 33.8 MiB | 78,733 | 205 |
+
+**Pass rate** (stored / (stored + dropped), tables and figures left out), the first run of the same files (counts don't depend on the load):
+
+| | paragraph | heading | list item | caption | footnote | all |
+|---|---:|---:|---:|---:|---:|---:|
+| GDPR | 705 of 725 (97.2%) | 127 of 127 | 366 of 366 | none | 11 of 13 (84.6%) | 1,209 of 1,232 (98.1%) |
+| `un_sdg2024` | 630 of 1,172 (53.8%) | 99 of 99 | 78 of 119 (65.5%) | none | 21 of 27 (77.8%) | 828 of 1,417 (58.4%) |
+| NASA | 2,021 of 3,045 (66.4%) | 1,070 of 1,119 (95.6%) | 81 of 83 (97.6%) | 12 of 13 | 46 of 139 (33.1%) | 3,230 of 4,399 (73.4%) |
+
+Bytes a page is 205 to 355 against S0's estimate of 76 to 259: GDPR and the UN report are over its top because their pages hold many short blocks (18 bytes a block, plus the 28 and the 6 of the seal and the table), a block count S0 didn't have for them. Eight hundred 18-byte blocks cost 13 MB for a 200,000-page document at the very top of the range, well inside the 512 MiB a document may take. **What one hostile page line costs the session** (`recto-control/tests/blocks_cost.rs`, a counting allocator, a debug build, a 512 KiB page line of `[],` or of short objects against a page of a million characters): 12.5 and 13.4 MiB over the session's own, against the S3 review's estimate of 6 to 10 MiB (the million characters of the page are 4 MiB of it). The buffer of a page past a megabyte of room is given back at the next page.
