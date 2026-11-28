@@ -130,6 +130,42 @@ fn the_old_folder_is_where_the_app_looks_for_it() {
     assert_eq!(paths.generated.file_name().unwrap(), "contents.noindex");
 }
 
+/// Failure: the app renames a file or folder the clear-all and the purge name (the format folder, the lock a build holds, the lock an agent's session holds,
+/// the mark of a finished corpus or agent folder), so a purge looks for the old name: it finds no lock to probe and takes a folder that is being built, or
+/// takes a corpus's last file late so a stop leaves one that still searches. Each restated name is held against what the real writer makes; every mismatch
+/// is listed, so changing any one of them alone fails here with its own line. (`ready.json` of the older format has no writer left and isn't pinned.)
+#[test]
+fn the_names_the_purge_acts_by_are_what_the_writers_make() {
+    let w = World::new();
+    let key = w.index(&w.mine);
+    let paths = CorpusPaths::new(&w.corpus, key);
+    let claim = corpus::claim_agent_folder(&w.corpus, key).expect("claimed");
+    let mut wrong = Vec::new();
+    let mut check = |what: &str, ok: bool| {
+        if !ok {
+            wrong.push(what.to_owned());
+        }
+    };
+    check(
+        "the format folder",
+        paths.dir.file_name().is_some_and(|name| name == names::FORMAT_FOLDER) && corpus::FORMAT == names::FORMAT_FOLDER,
+    );
+    check("the app folder", paths.app.file_name().is_some_and(|name| name == names::APP_FOLDER));
+    check("the build lock", names_in(&paths.app).contains(&names::BUILD_LOCK.to_owned()));
+    check("the mark of a finished corpus", names_in(&paths.app).contains(&names::READY[0].to_owned()));
+    check("the agent's session lock", names_in(&paths.agent).contains(&names::SESSION_FILE.to_owned()));
+    check(
+        "the agent folder's manifest",
+        paths.manifest.file_name().is_some_and(|name| name == names::MANIFEST),
+    );
+    drop(claim);
+    assert!(wrong.is_empty(), "restated names the writers no longer make: {wrong:?}");
+    for first in [names::MANIFEST, names::READY[0], names::READY[1]] {
+        assert!(names::is_first_to_go(OsStr::new(first)), "{first}");
+    }
+    assert!(!names::is_first_to_go(OsStr::new("text.pack")), "the text goes after the mark");
+}
+
 fn hex_key(byte: u8) -> String {
     format!("{byte:02x}").repeat(32)
 }

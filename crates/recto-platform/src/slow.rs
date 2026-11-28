@@ -73,10 +73,12 @@ pub enum Seam {
     /// patience), before it acts on it: late, as a starved machine schedules the thread late after its timer; and held by a test, so "due now and not yet
     /// done" can be looked at every time.
     Due,
+    /// An agent's `get`, between its read and its end check of the file's version and index key: where a test changes the file under it, and a busy disk makes the read long.
+    Get,
 }
 
 impl Seam {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::State,
         Self::Remake,
         Self::Worker,
@@ -92,6 +94,7 @@ impl Seam {
         Self::RecordLock,
         Self::FirstFrame,
         Self::Due,
+        Self::Get,
     ];
 
     /// Its name in the switch and the report.
@@ -112,6 +115,7 @@ impl Seam {
             Self::RecordLock => "record_lock",
             Self::FirstFrame => "first_frame",
             Self::Due => "due",
+            Self::Get => "get",
         }
     }
 
@@ -143,6 +147,8 @@ impl Seam {
             Self::FirstFrame => 100,
             // A thread woken by its timer and scheduled late: a little, as a deadline comes due a few times a minute at most.
             Self::Due => 20,
+            // A read that ran long on a busy disk, with the end check after it.
+            Self::Get => 50,
         }
     }
 

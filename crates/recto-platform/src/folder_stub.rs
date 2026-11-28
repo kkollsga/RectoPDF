@@ -29,6 +29,8 @@ pub struct Entry {
     pub dev: u64,
     pub ino: u64,
     pub kind: Kind,
+    /// The owner's user number, as `fstatat` says.
+    pub uid: u32,
 }
 
 /// Nothing is local off the Mac.

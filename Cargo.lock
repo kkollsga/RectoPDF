@@ -979,6 +979,7 @@ version = "0.1.3"
 dependencies = [
  "crc32fast",
  "flate2",
+ "libc",
  "recto-platform",
  "recto-testpdf",
  "serde",

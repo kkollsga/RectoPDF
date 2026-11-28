@@ -18,6 +18,7 @@ On 2026-11-11 `main` went red on CI three pushes running, each time on a path on
 | `sleep_read`, `sleep_write` | `RecordStore::read_sleep` and `write_sleep` | the reading or writing thread waits | 150, 300 ms |
 | `session` | the session thread, after the state's taken in and the host told | what it does next is late, as on a starved machine | 300 ms |
 | `launch` | `Updater::launched`, on the restore thread, before the state's read | what this copy is (its bundle, its version) is known late | 300 ms |
+| `get` | an agent's `get`, between its read and its end check of the file's version and index key | the end check comes late; a test changes the file there | 50 ms |
 
 `launch` and `state` wait on the same thread, one after the other, so they add up: in `ci`, 300 ms and 1.2 s are the state at 1.5 s, as before `launch` was there.
 

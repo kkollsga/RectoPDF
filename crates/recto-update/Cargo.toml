@@ -24,5 +24,7 @@ sha2.workspace = true
 [dev-dependencies]
 # Test-only: `find_key::audit`, the look at a built program for the Keychain's code.
 recto-platform = { workspace = true, features = ["test-seams"] }
+# Test-only: the installer harness reads processes through libproc.
+libc.workspace = true
 # Test-only: fresh temp folders.
 recto-testpdf.workspace = true
