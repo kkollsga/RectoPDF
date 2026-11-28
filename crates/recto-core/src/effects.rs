@@ -53,11 +53,25 @@ pub fn page_effects_bytes(bytes: std::sync::Arc<[u8]>, page: u32) -> Option<Page
 }
 
 fn effects_in(reader: &IndexedReader, page: u32) -> Option<PageEffects> {
-    effects_within(reader, page, MAX_DRAWING_BYTES)
+    effects_within(reader, page, BOUNDS)
 }
 
-/// [`effects_in`] with the limit on drawing read given, so a test can reach it with a small one.
-fn effects_within(reader: &IndexedReader, page: u32, drawing_bytes: u64) -> Option<PageEffects> {
+/// What ends one look: how much of the drawing is read, how long that may take, and how long the whole look may.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    drawing_bytes: u64,
+    drawing_time: Duration,
+    look_time: Duration,
+}
+
+const BOUNDS: Bounds = Bounds {
+    drawing_bytes: MAX_DRAWING_BYTES,
+    drawing_time: MAX_DRAWING_TIME,
+    look_time: MAX_TIME,
+};
+
+/// [`effects_in`] with its bounds given, so a test can reach each with a small one, or take time out of a look that a starved machine would run out of.
+fn effects_within(reader: &IndexedReader, page: u32, bounds: Bounds) -> Option<PageEffects> {
     let map = reader.page_map().ok()?;
     let entry = map.get(page as usize)?;
     let owner = entry.inherited().resources().unwrap_or(entry.id());
@@ -65,7 +79,7 @@ fn effects_within(reader: &IndexedReader, page: u32, drawing_bytes: u64) -> Opti
     let resources = page_dict.get(b"Resources").ok()?;
     let mut walk = Walk {
         reader,
-        deadline: Instant::now() + MAX_TIME,
+        deadline: Instant::now() + bounds.look_time,
         visits: 0,
         effects: PageEffects::default(),
         waiting: Vec::new(),
@@ -90,7 +104,7 @@ fn effects_within(reader: &IndexedReader, page: u32, drawing_bytes: u64) -> Opti
             walk.resources(next)?;
         }
     }
-    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(reader, &drawings, drawing_bytes);
+    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(reader, &drawings, bounds);
     Some(walk.effects)
 }
 
@@ -110,9 +124,9 @@ fn page_contents(reader: &IndexedReader, page: ObjectId) -> Vec<ObjectId> {
 }
 
 /// Whether any of these streams has a filter named DCT, which is what an image written in place has to have. A string saying the same only costs a page's JPEGs their bytes. One that can't be read through counts.
-fn writes_a_jpeg_in_place(reader: &IndexedReader, streams: &[ObjectId], drawing_bytes: u64) -> bool {
-    let deadline = Instant::now() + MAX_DRAWING_TIME;
-    let mut budget = drawing_bytes;
+fn writes_a_jpeg_in_place(reader: &IndexedReader, streams: &[ObjectId], bounds: Bounds) -> bool {
+    let deadline = Instant::now() + bounds.drawing_time;
+    let mut budget = bounds.drawing_bytes;
     streams.iter().any(|id| mentions_dct(reader, *id, deadline, &mut budget).unwrap_or(true))
 }
 
@@ -754,7 +768,10 @@ mod tests {
         );
     }
 
-    /// Failure: compressed drawing that says it's huge is read to the end on a job's thread. It stops at the limit, and counts as writing a JPEG. Shown at a limit of 1 MiB with 2 MiB of drawing, which reads in a few milliseconds, so it's the limit that ends it and not the time.
+    /// Failure: compressed drawing that says it's huge is read to the end on a job's thread. It stops at the limit, and counts as writing a JPEG. Shown at a
+    /// limit of 1 MiB with 2 MiB of drawing on the real deadlines, which can only end it sooner. The same drawing within a larger limit is read through, with
+    /// the time taken out: on a starved machine (2026-11-28, load 44 to 88, 0.675 s against 0.038 s alone) the 500 ms deadline ended it, and the test failed
+    /// on the machine's speed. And the deadline ends a look on its own: at none, the same drawing within the larger limit counts.
     #[test]
     fn a_bomb_of_drawing_ends_the_look() {
         const LIMIT: u64 = 1024 * 1024;
@@ -770,11 +787,19 @@ mod tests {
             &pages_with(&[Page::new(text_lines(&["Words"]))], &format!("/XObject << /F {form} 0 R >>"), vec![bomb]),
         );
         let reader = open_reader(&file.0).unwrap();
-        assert!(effects_within(&reader, 0, LIMIT).unwrap().jpeg_read_differently, "past the limit");
-        assert!(
-            !effects_within(&reader, 0, 4 * LIMIT).unwrap().jpeg_read_differently,
-            "the same drawing within a limit is read through"
-        );
+        // The walk over the page's dictionaries isn't what's looked at here, so its own deadline is taken out too.
+        let unhurried = Duration::from_secs(3600);
+        let within = |drawing_bytes: u64, drawing_time: Duration| {
+            let bounds = Bounds {
+                drawing_bytes,
+                drawing_time,
+                look_time: unhurried,
+            };
+            effects_within(&reader, 0, bounds).unwrap().jpeg_read_differently
+        };
+        assert!(within(LIMIT, MAX_DRAWING_TIME), "past the limit");
+        assert!(!within(4 * LIMIT, unhurried), "the same drawing within a limit is read through");
+        assert!(within(4 * LIMIT, Duration::ZERO), "past the deadline");
     }
 
     /// Failure: something that can't be read reads as "uses nothing", which would be a claim about what it hasn't seen. There's no answer, and the caller assumes anything.
