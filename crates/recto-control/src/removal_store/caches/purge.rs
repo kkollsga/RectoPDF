@@ -17,9 +17,9 @@
 //! - **The older build's `corpus`** is a level deeper than a pin holds, so it goes child by child: each child by its own tree (a file by a look and an unlink),
 //!   then `corpus` itself, looked at again, as a folder.
 
-use super::{TREE_ENTRIES, is_plain_cache_entry, names, plain_tree_in};
-use crate::removal_store::journals::{self, ListFailed, MAX_ENTRIES};
-use crate::removal_store::purge::{Place, PurgeStop, Purged, Seams, VolumeNow, check_pins, purge_files, synced};
+use super::{CacheCaps, TREE_ENTRIES, is_plain_cache_entry, names, plain_tree_in};
+use crate::removal_store::journals;
+use crate::removal_store::purge::{Place, PurgeStop, Purged, Seams, VolumeNow, check_pins, differs, purge_files, stop_of, synced};
 use recto_core::removal::{ArtifactKey, Pin, PinKind, Refusal, Store};
 use recto_platform::folder::remove::{Failure, Walk, remove_tree_in};
 use recto_platform::folder::{Entry, Folder, Kind, Opened};
@@ -77,11 +77,23 @@ pub(in crate::removal_store) struct CacheSeams {
     /// The most entries one tree holds, in place of [`TREE_ENTRIES`].
     #[cfg(test)]
     pub tree_entries: Option<usize>,
+    /// The survey's other caps, in place of the production ones.
+    #[cfg(test)]
+    pub caps: Option<CacheCaps>,
     #[cfg(test)]
     pub uid_of: Option<super::UidOf>,
 }
 
 impl CacheSeams {
+    /// The caps the survey lists by: the production ones (design limits), or a test's smaller ones.
+    fn caps(&self) -> CacheCaps {
+        #[cfg(test)]
+        if let Some(caps) = &self.caps {
+            return caps.clone();
+        }
+        CacheCaps::default()
+    }
+
     fn tree_cap(&self) -> usize {
         #[cfg(test)]
         if let Some(cap) = self.tree_entries {
@@ -183,10 +195,7 @@ fn open_in_ours(parent: &Folder, name: &OsStr) -> Result<Option<Folder>, PurgeSt
 }
 
 fn list(folder: &Folder, cap: usize) -> Result<Vec<Entry>, PurgeStop> {
-    journals::list_capped(folder, cap).map_err(|failed| match failed {
-        ListFailed::Unreadable => PurgeStop::Listing,
-        ListFailed::TooLarge => PurgeStop::TooLarge,
-    })
+    journals::list_capped(folder, cap).map_err(stop_of)
 }
 
 fn key_in(store: Store, parts: &[&OsStr]) -> ArtifactKey {
@@ -209,7 +218,7 @@ fn purge_notes(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, volume
         places.push(Place::new(folder, Vec::new(), roots.corpus.join(names::VERSIONS)));
     }
     let key_of = |_: &Place, entry: &Entry| names::alias_stem(&entry.name).map(|_| key_in(Store::CorpusAliases, &[OsStr::new(names::VERSIONS), &entry.name]));
-    purge_files(&places, want, &key_of, MAX_ENTRIES, volume, &seams.files)
+    purge_files(&places, want, &key_of, seams.caps().alias_entries, volume, &seams.files)
 }
 
 /// A generated contents file, by its name.
@@ -219,16 +228,7 @@ fn purge_contents(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, vol
         places.push(Place::new(folder, Vec::new(), roots.contents.to_path_buf()));
     }
     let key_of = |_: &Place, entry: &Entry| names::contents_name(&entry.name).map(|_| key_in(Store::GeneratedContents, &[&entry.name]));
-    purge_files(&places, want, &key_of, MAX_ENTRIES, volume, &seams.files)
-}
-
-/// Why a listed or looked-at entry isn't the folder that was pinned, if it isn't: a folder pin to a file, a link or a pipe is `NotAFile` (the kind that was
-/// pinned isn't there), another device or inode `NotThePinned`.
-fn differs_folder(entry: &Entry, pin: &Pin, volume: VolumeNow) -> Option<PurgeStop> {
-    if entry.kind != Kind::Folder {
-        return Some(PurgeStop::NotAFile);
-    }
-    (entry.dev != volume.dev || entry.ino != pin.inode).then_some(PurgeStop::NotThePinned)
+    purge_files(&places, want, &key_of, seams.caps().contents_entries, volume, &seams.files)
 }
 
 /// What `look` found at `name`, `None` if nothing is there.
@@ -278,12 +278,12 @@ fn not_there(stop: PurgeStop) -> Result<Option<Folder>, PurgeStop> {
 }
 
 /// Every agent session lock under a corpus is free: each `.session` of an agent folder in any format folder is taken and let go at once, one at a time.
-fn sessions_free(key_folder: &Folder) -> Result<(), PurgeStop> {
-    for format in list(key_folder, 64)?.iter().filter(|entry| entry.kind == Kind::Folder) {
+fn sessions_free(key_folder: &Folder, caps: &CacheCaps) -> Result<(), PurgeStop> {
+    for format in list(key_folder, caps.key_entries)?.iter().filter(|entry| entry.kind == Kind::Folder) {
         let Some(format) = open_in_ours(key_folder, &format.name).or_else(not_there)? else {
             continue;
         };
-        for agent in list(&format, 256)?
+        for agent in list(&format, caps.sub_entries)?
             .iter()
             .filter(|entry| entry.kind == Kind::Folder && names::is_agent_folder(&entry.name))
         {
@@ -304,11 +304,11 @@ enum Locks<'a> {
 
 impl Locks<'_> {
     /// Whether nothing holds what the folder `folder` (open) is held by, and the build lock if there is one, held until the caller drops it.
-    fn take(&self, folder: &Folder) -> Result<Option<File>, PurgeStop> {
+    fn take(&self, folder: &Folder, caps: &CacheCaps) -> Result<Option<File>, PurgeStop> {
         match self {
             Locks::Corpus => {
                 let held = build_lock(folder)?;
-                sessions_free(folder)?;
+                sessions_free(folder, caps)?;
                 Ok(held)
             }
             Locks::Agent { corpus } => {
@@ -338,7 +338,7 @@ fn take_folder(
     touched: &Cell<bool>,
 ) -> Result<Taken, PurgeStop> {
     let Some(entry) = look(parent, name)? else { return Ok(Taken::Gone) };
-    if let Some(stop) = differs_folder(&entry, pin, volume) {
+    if let Some(stop) = differs(&entry, pin, volume, Kind::Folder) {
         return Err(stop);
     }
     // The folder's descriptor, and the held lock, live in this block only: the walk below opens each level itself. The lock is held until the folder is gone,
@@ -352,18 +352,18 @@ fn take_folder(
         if folder.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
             return Err(PurgeStop::NotThePinned);
         }
-        let held = locks.take(&folder)?;
+        let held = locks.take(&folder, &seams.caps())?;
         (held, plain_tree(&folder, seams)?)
     };
     walk_away(parent, name, &tree, seams, touched).map(|_| Taken::Removed)
 }
 
-/// The tree of an open folder under the survey's rule, as a purge's refusal.
 /// Closes a folder now (a named step, so the descriptor bound is read in the code).
 fn drop_folder(folder: Folder) {
     let _ = folder;
 }
 
+/// The tree of an open folder under the survey's rule, as a purge's refusal.
 fn plain_tree(folder: &Folder, seams: &CacheSeams) -> Result<recto_platform::folder::Tree, PurgeStop> {
     match plain_tree_in(folder, seams.tree_cap(), &|entry| seams.uid(entry)) {
         Ok(Some(tree)) => Ok(tree),
@@ -406,7 +406,7 @@ fn purge_corpora(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, volu
     let root = open_ours(roots.corpus)?;
     let mut matches = Vec::new();
     if let Some(root) = &root {
-        for entry in list(root, MAX_ENTRIES)? {
+        for entry in list(root, seams.caps().root_entries)? {
             if matches!(names::root_name(&entry.name), names::RootName::Key(_))
                 && let Some(pin) = want.get(&key_in(Store::CorpusText, &[&entry.name]))
             {
@@ -466,7 +466,7 @@ fn purge_corpora(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, volu
     }
     // A last listing in which no wanted key is found.
     if let Some(root) = &root {
-        for entry in list(root, MAX_ENTRIES)? {
+        for entry in list(root, seams.caps().root_entries)? {
             if want.contains_key(&key_in(Store::CorpusText, &[&entry.name])) {
                 return Err(PurgeStop::StillThere);
             }
@@ -495,7 +495,7 @@ fn corpora_pass_one(
     seams: &CacheSeams,
 ) -> Result<(), PurgeStop> {
     for (entry, pin) in matches {
-        if let Some(stop) = differs_folder(entry, pin, volume) {
+        if let Some(stop) = differs(entry, pin, volume, Kind::Folder) {
             return Err(stop);
         }
         let Some(root) = root else { break };
@@ -503,10 +503,10 @@ fn corpora_pass_one(
         if folder.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
             return Err(PurgeStop::NotThePinned);
         }
-        Locks::Corpus.take(&folder)?;
+        Locks::Corpus.take(&folder, &seams.caps())?;
     }
     if let (Some((entry, pin)), Some(parent)) = (old, beside) {
-        if let Some(stop) = differs_folder(entry, pin, volume) {
+        if let Some(stop) = differs(entry, pin, volume, Kind::Folder) {
             return Err(stop);
         }
         take_old(parent, pin, volume, seams, None)?;
@@ -525,18 +525,18 @@ fn beside_the_root(root: &Path) -> Result<Option<Folder>, PurgeStop> {
     }
 }
 
-/// The older build's `corpus` in `parent`: a check (`check_only`: each child is plain, nothing taken) or the act, child by child and then itself.
+/// The older build's `corpus` in `parent`: a check (`act` is `None`: each child is plain, nothing taken) or the act (`act` is the cell that says something was unlinked), child by child and then itself.
 fn take_old(parent: &Folder, pin: &Pin, volume: VolumeNow, seams: &CacheSeams, act: Option<&Cell<bool>>) -> Result<Taken, PurgeStop> {
     let name = OsStr::new(names::OLD_FOLDER);
     let Some(entry) = look(parent, name)? else { return Ok(Taken::Gone) };
-    if let Some(stop) = differs_folder(&entry, pin, volume) {
+    if let Some(stop) = differs(&entry, pin, volume, Kind::Folder) {
         return Err(stop);
     }
     let Some(old) = open_in_ours(parent, name)? else { return Ok(Taken::Gone) };
     if old.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
         return Err(PurgeStop::NotThePinned);
     }
-    for child in list(&old, MAX_ENTRIES)? {
+    for child in list(&old, seams.caps().root_entries)? {
         match child.kind {
             Kind::Folder => {
                 let Some(inner) = open_in_ours(&old, &child.name)? else { continue };
@@ -560,7 +560,7 @@ fn take_old(parent: &Folder, pin: &Pin, volume: VolumeNow, seams: &CacheSeams, a
     let Some(touched) = act else { return Ok(Taken::Removed) };
     // Looked at again, and unlinked as a folder.
     let Some(now) = look(parent, name)? else { return Ok(Taken::Gone) };
-    if let Some(stop) = differs_folder(&now, pin, volume) {
+    if let Some(stop) = differs(&now, pin, volume, Kind::Folder) {
         return Err(stop);
     }
     match parent.unlink_in(name, true) {
@@ -604,26 +604,26 @@ struct Agent {
 
 /// Every agent folder of every corpus that is one of `want`'s, keyed as the survey keys them (`<corpus>/<format>/<agent>`). Listed as the survey lists: the
 /// root's entries, a corpus's, and each format folder's, all capped. A corpus or format folder that isn't there holds none.
-fn find_agents(root: &Folder, want: &BTreeMap<ArtifactKey, Pin>) -> Result<Vec<Agent>, PurgeStop> {
+fn find_agents(root: &Folder, want: &BTreeMap<ArtifactKey, Pin>, caps: &CacheCaps) -> Result<Vec<Agent>, PurgeStop> {
     let mut found = Vec::new();
-    for corpus in list(root, MAX_ENTRIES)?
+    for corpus in list(root, caps.root_entries)?
         .iter()
         .filter(|entry| entry.kind == Kind::Folder && matches!(names::root_name(&entry.name), names::RootName::Key(_)))
     {
         let Some(key_folder) = open_in_ours(root, &corpus.name).or_else(not_there)? else {
             continue;
         };
-        let formats = list(&key_folder, 64)?;
+        let formats = list(&key_folder, caps.key_entries)?;
         let mut opened = 0;
         for format in formats.iter().filter(|entry| entry.kind == Kind::Folder) {
             opened += 1;
-            if opened > 8 {
+            if opened > caps.subfolders {
                 return Err(PurgeStop::TooLarge);
             }
             let Some(folder) = open_in_ours(&key_folder, &format.name).or_else(not_there)? else {
                 continue;
             };
-            for agent in list(&folder, 256)? {
+            for agent in list(&folder, caps.sub_entries)? {
                 if !names::is_agent_folder(&agent.name) {
                     continue;
                 }
@@ -665,9 +665,9 @@ fn open_chain(root: &Folder, agent: &Agent) -> Result<Chain, PurgeStop> {
 }
 
 /// Pass 1 of an agent step: each is the folder that was pinned and no session or build holds it.
-fn agents_pass_one(root: &Folder, agents: &[Agent], volume: VolumeNow) -> Result<(), PurgeStop> {
+fn agents_pass_one(root: &Folder, agents: &[Agent], volume: VolumeNow, caps: &CacheCaps) -> Result<(), PurgeStop> {
     for agent in agents {
-        if let Some(stop) = differs_folder(&agent.entry, &agent.pin, volume) {
+        if let Some(stop) = differs(&agent.entry, &agent.pin, volume, Kind::Folder) {
             return Err(stop);
         }
         let Chain::Whole { corpus, format } = open_chain(root, agent)? else {
@@ -677,7 +677,7 @@ fn agents_pass_one(root: &Folder, agents: &[Agent], volume: VolumeNow) -> Result
         if folder.identity().map_err(|_| PurgeStop::Listing)? != agent.entry.identity() {
             return Err(PurgeStop::NotThePinned);
         }
-        Locks::Agent { corpus: &corpus }.take(&folder)?;
+        Locks::Agent { corpus: &corpus }.take(&folder, caps)?;
     }
     Ok(())
 }
@@ -691,11 +691,11 @@ fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>
             durable: true,
         });
     };
-    let agents = find_agents(&root, want)?;
+    let agents = find_agents(&root, want, &seams.caps())?;
     let mut already_gone = (want.len() - agents.len()) as u32;
     // Pass 1 and pass 2 share their way out below: a stop in pass 1 syncs the root too, when a name was already gone.
     let (mut removed, touched_root) = (0u32, Cell::new(false));
-    let mut stop = agents_pass_one(&root, &agents, volume).err();
+    let mut stop = agents_pass_one(&root, &agents, volume, &seams.caps()).err();
     if stop.is_none() {
         seams.between_passes(roots.corpus);
     }
@@ -751,7 +751,7 @@ fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>
     if let Some(stop) = stop {
         return Err(stop);
     }
-    if !find_agents(&root, want)?.is_empty() {
+    if !find_agents(&root, want, &seams.caps())?.is_empty() {
         return Err(PurgeStop::StillThere);
     }
     Ok(Purged {

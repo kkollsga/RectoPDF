@@ -254,7 +254,7 @@ pub(super) fn purge_files(
     // (taken by a run killed before its sync) is synced either way.
     let mut removed = 0u32;
     let mut lost = vec![false; places.len()];
-    let unlinked = match matches.iter().find_map(|found| differs(&found.entry, &found.pin, volume)) {
+    let unlinked = match matches.iter().find_map(|found| differs(&found.entry, &found.pin, volume, Kind::File)) {
         Some(stop) => Err(stop),
         // Pass 2: each looked at again just before its own unlink.
         None => unlink_all(places, &matches, volume, seams, &mut removed, &mut already_gone, &mut lost),
@@ -305,7 +305,7 @@ fn unlink_all(
         }
         match folder.look(&found.entry.name) {
             Ok(now) => {
-                if let Some(stop) = differs(&now, &found.pin, volume) {
+                if let Some(stop) = differs(&now, &found.pin, volume, Kind::File) {
                     return Err(stop);
                 }
             }
@@ -327,15 +327,25 @@ fn unlink_all(
     Ok(())
 }
 
-/// Why a listed or looked-at entry isn't the pinned file, if it isn't.
-fn differs(entry: &Entry, pin: &Pin, volume: VolumeNow) -> Option<PurgeStop> {
-    if entry.kind != Kind::File {
+/// Why a listed or looked-at entry isn't the pinned `kind` (a file or a folder), if it isn't: another kind (a link, a pipe, a folder where a file was
+/// pinned and the reverse) is `NotAFile`; a file with another name is `Linked` (a folder's count isn't one and says nothing); another device or inode is
+/// `NotThePinned`.
+pub(super) fn differs(entry: &Entry, pin: &Pin, volume: VolumeNow, kind: Kind) -> Option<PurgeStop> {
+    if entry.kind != kind {
         return Some(PurgeStop::NotAFile);
     }
-    if entry.links != 1 {
+    if kind == Kind::File && entry.links != 1 {
         return Some(PurgeStop::Linked);
     }
     (entry.dev != volume.dev || entry.ino != pin.inode).then_some(PurgeStop::NotThePinned)
+}
+
+/// A capped listing's failure as a purge's stop.
+pub(super) fn stop_of(failed: journals::ListFailed) -> PurgeStop {
+    match failed {
+        journals::ListFailed::Unreadable => PurgeStop::Listing,
+        journals::ListFailed::TooLarge => PurgeStop::TooLarge,
+    }
 }
 
 pub(super) fn synced(folder: &Folder, seams: &Seams) -> bool {
@@ -381,10 +391,7 @@ fn open_places(store: Store, roots: &HistoryRoots<'_>) -> Result<Vec<Place>, Pur
 
 /// Every entry of the folder that `key_of` gives a key, listed as the survey lists (`journals::list_capped`), so one more than `cap` is `TooLarge`.
 fn list(place: &Place, key_of: &dyn Fn(&Place, &Entry) -> Option<ArtifactKey>, cap: usize, mut each: impl FnMut(ArtifactKey, Entry)) -> Result<(), PurgeStop> {
-    let entries = journals::list_capped(&place.folder, cap).map_err(|failed| match failed {
-        journals::ListFailed::Unreadable => PurgeStop::Listing,
-        journals::ListFailed::TooLarge => PurgeStop::TooLarge,
-    })?;
+    let entries = journals::list_capped(&place.folder, cap).map_err(stop_of)?;
     for entry in entries {
         if let Some(key) = key_of(place, &entry) {
             each(key, entry);
