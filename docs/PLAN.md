@@ -737,7 +737,6 @@ After the locator and redaction/Remove Hidden Data, as the owner decided 2026-11
 - A tab hot in two page views for one look while a comparison shifts (kept under the pane-reorder item).
 - Contents compartment: refusals pointing to `permission request full`, pins updated (wording).
 - "Not reviewed" list of the night's review (the standing review rule covers it).
-- After a crash takeover, the reading page and trail not mapped.
 - Image-bounds edge cases of the dark-look test (form bounds, clip, 64 pixels); none in the survey.
 - Redo not enabled while an undo is queued behind a landing edit, as on `main`.
 - A step of several highlights dropping some past a Save without counting them.
@@ -940,6 +939,7 @@ Owner, 2026-11-12: "all features should be implemented once. That's the rule. Cl
       - [x] Its second review's fixes (2026-11-15, each its own commit, failing first): M1 a page at its old object number is taken by that alone only with the same `/ID[0]`, else the scan's rules (a file with no `/ID` loses the shortcut and follows by neighbours); M2 two lists of one version: the newer by its steps wins; a list set aside with edits not all in the one kept, other than the old one a follow superseded, says `edits_set_aside_after_quit` on its tab (the coordinator's words, pending the owner; never in the record); N1 a follow not yet told is said over a record's "changed", and once told isn't said again after a restart; N2 a highlight is found again from a cut-short read only at its own place, and the follow's read of highlights is bounded by counts, not time; the store's fuzz target judges linked pairs of journals from the input.
       - [ ] Generic crash-follow recovery (not the fixed downgrade case): the set-aside notice isn't in the record: a launch that sets a journal aside, then a quit before the person visits the tab, loses the notice (the journal stays on disk under `.not-merged`). Accepted for 0.1.1. While the kept list is held (its file changed), the notice is behind "changed on disk", as the two-tab one is.
       - [ ] `.not-merged` files are never pruned, bounded only by crashes times a journal's size cap: a count or an age cap.
+      - [ ] After a crash takeover the record's reading page and trail are the old list's positions, not mapped: `rebase::moved_position` needs the follow's positions, which no sidecar keeps (it would mean keeping the mapping beside the identities).
       - [ ] A person editing without a pause restarts a follow at each step (a job is dropped when the list changes between its steps).
       - [ ] An update's hand-off waits for a whole follow: the follow's steps don't release the "identifying" busy state between them.
       - [ ] What the single-match rule is and isn't: it guards against accidents (a stock or blank page two documents share), not against someone who can write the file, who can copy a neighbour, the `/ID` and the object numbers. The residual: the person's edit lands on a page whose content and drawn images match theirs inside a document someone else supplied, and they're told it was changed by another program.
