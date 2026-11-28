@@ -46,3 +46,25 @@ fn a_bounded_sampler_failure_is_valid_failure_evidence() {
     assert!(missing.starts_with("sample failed") && missing.contains("fixture timed out"), "{missing}");
     assert!(awake::stack_summary(&message).starts_with("sample failed"));
 }
+
+/// Failure: the evidence `sample` is spawned as a plain child of the test, so it inherits the tests' `taskpolicy -c background` clamp and under real load runs past its byte/time bound (2026-11-28: all three recent app-test failures said "capture exceeded its byte/time bound" and nothing else).
+#[test]
+fn the_evidence_sample_does_not_inherit_the_background_clamp() {
+    let command = native_sample::sample_command(4242, 3).unwrap();
+    let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+    assert_eq!(command.get_program(), "/usr/sbin/taskpolicy");
+    assert_eq!(args[..3], ["-c", "utility", "/usr/bin/sample"], "{args:?}");
+    assert_eq!(args[3..5], ["4242", "3"], "{args:?}");
+    assert!(native_sample::sample_command(1, 3).is_err() && native_sample::sample_command(4242, 11).is_err());
+}
+
+/// Failure: the clamp lift is a command the OS refuses, so every sample fails; a one-second sample of a short-lived child still comes back as a report.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_lifted_sample_command_still_reports() {
+    let mut child = std::process::Command::new("/bin/sleep").arg("20").spawn().unwrap();
+    let report = native_sample::sample(child.id(), 1, std::time::Duration::from_secs(60));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(report.contains("Call graph") || report.contains("Sampling process"), "{report}");
+}
