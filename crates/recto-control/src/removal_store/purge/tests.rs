@@ -247,6 +247,23 @@ fn a_run_that_finds_names_gone_syncs_every_folder() {
     assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 2, "both sessions' folders");
 }
 
+/// Failure: a step that stops in pass 1 (a wanted file that differs) leaves its folders unsynced though a name it wanted was already gone: the killed run that
+/// took it may have died before its own sync, as pass 2's exits assume. One wanted file is gone and the other has a second name: the step stops `Linked`,
+/// nothing is unlinked, and both sessions' folders are synced.
+#[test]
+fn a_stop_in_pass_one_still_syncs_when_a_wanted_name_was_already_gone() {
+    let rig = Rig::new();
+    let (wanted, _) = journal_step(&rig);
+    let name = format!("journal-{}.log", k(7));
+    std::fs::remove_file(windowless(&rig.dir).join(&name)).unwrap();
+    std::fs::hard_link(folder(&rig.dir).join(&name), rig.dir.join("another-name")).unwrap();
+    let seams = Seams::default();
+    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
+    assert_eq!(result, Err(PurgeStop::Linked));
+    assert!(folder(&rig.dir).join(&name).exists(), "nothing was unlinked");
+    assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 2, "both sessions' folders were synced on the way out");
+}
+
 /// Failure: a step that stops in pass 2 leaves the names it did take out unsynced, so a power cut brings back history a walk was told was gone. The
 /// windowless journal is swapped between the two passes; the session's, already unlinked, is synced on the way out.
 #[test]
