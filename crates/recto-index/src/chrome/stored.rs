@@ -4,7 +4,7 @@
 //!
 //! **One rule.** Nothing here decides what is chrome: [`StoredChrome`] hands the stored pieces to [`chrome_spans`], the one rule `recto text` marks pages with. It gives nothing for a page when it or any page it is compared with has no stored pieces: a page taken as empty could set off the lone page number rule and drop a figure.
 //!
-//! **Hostile bytes.** The region is inside an authenticated chunk, and is still checked as if it weren't ([`check`]): the count, the exact length, finite places, and `start <= end <= ` the page's characters. A region that fails makes its page damaged.
+//! **Hostile bytes.** The region is inside an authenticated chunk, and is still checked as if it weren't ([`check`]): the count, the exact length, finite places, and `start <= end <= ` the page's characters. A region whose length doesn't fit makes its page damaged when the page is opened ([`length_fits`], so Find, which doesn't decode the region, still sees it); one whose content fails reads as unknown from [`read`], and the page is still good. The writer runs the same [`check`] on what it would store, and stores nothing a reader would refuse.
 //!
 //! **Cost.** At most `1 + 70 * 16 = 1,121` B a page; [`StoredChrome`] holds at most `2 * NEIGHBOURS + 1` pages' pieces and asks for each page's once as pages are walked in order.
 

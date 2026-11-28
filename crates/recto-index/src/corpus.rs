@@ -509,7 +509,7 @@ impl<'a> StoredPage<'a> {
         Aux::read(self.aux).map_or_else(Vec::new, |aux| aux.spans)
     }
 
-    /// The page's edge pieces, for chrome: `None` if the page was kept without them (an index built before they were, or a page that failed).
+    /// The page's edge pieces, for chrome: `None` if the page was kept without them (an index built before they were, or a page that failed), or if the region's content doesn't check (the count, finite places, spans inside the page): that is "unknown", never a damaged page, since Find reads pages without decoding the region. The content is checked here once, as it's decoded; the region's length is checked when the page is opened.
     pub fn edges(&self) -> Option<Vec<EdgeLine>> {
         let characters = u32::try_from(self.text.chars().count()).unwrap_or(u32::MAX);
         stored::read(self.edges?, characters)
@@ -584,12 +584,6 @@ impl ReadyCorpus {
         let (aux, edges) = rest.split_at(record.aux_len as usize);
         let text = std::str::from_utf8(text).map_err(|_| Damaged)?;
         let edges = (record.flags & FLAG_EDGES != 0).then_some(edges);
-        // Checked here, where the page's text is: a region that isn't whole makes a page damaged, as any record that doesn't add up does.
-        if let Some(edges) = edges
-            && !stored::check(edges, u32::try_from(text.chars().count()).unwrap_or(u32::MAX))
-        {
-            return Err(Damaged);
-        }
         Ok(StoredPage {
             kind: record.kind,
             text,

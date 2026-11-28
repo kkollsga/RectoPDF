@@ -2334,9 +2334,9 @@ fn a_page_beside_one_without_stored_edges_leaves_nothing_out() {
     assert_eq!(left_out, ["2"]);
 }
 
-/// Failure: a region a hostile or damaged chunk holds is read as edges, or panics: a count over the cap, a length one byte off, a span past the page, a NaN, the flag with no region, or trailing bytes with no flag. Each makes the page damaged, and a chunk put back as it was still opens.
+/// Failure: a region of the wrong size is read as edges, or panics: a count over the cap, a length one byte off, the flag with no region, or trailing bytes with no flag. Each makes the page damaged (Find reads the page's text and checks only the region's length), and a chunk put back as it was still opens.
 #[test]
-fn edges_that_dont_add_up_make_the_page_damaged() {
+fn edges_of_the_wrong_size_make_the_page_damaged() {
     let temp = Temp::new();
     let (root, key) = built_from(&temp, (0..3).map(|page| (report_page(page), true)).collect());
     let region_at = |inside: &[u8]| {
@@ -2373,24 +2373,48 @@ fn edges_that_dont_add_up_make_the_page_damaged() {
             inside.extend_from_slice(&record);
         }
     });
-    damaged_with("a count the bytes don't have", &|inside, at| inside[at] += 1);
     damaged_with("a region one byte short", &|inside, _| {
         inside.pop();
     });
     damaged_with("a region one byte long", &|inside, _| inside.push(0));
-    damaged_with("a span past the page's characters", &|inside, at| {
-        // `end` is bytes 60 to 64 of a record (see `chrome::stored::write`), and the first record follows the count.
-        inside[at + 1 + 60..at + 1 + 64].copy_from_slice(&u32::MAX.to_le_bytes());
-    });
-    damaged_with("a NaN where a place is", &|inside, at| {
-        inside[at + 1 + 2..at + 1 + 6].copy_from_slice(&f32::NAN.to_le_bytes())
-    });
     damaged_with("the flag with no region", &|inside, at| inside.truncate(at));
     damaged_with("trailing bytes where the flag isn't set", &|inside, at| {
         inside[1] &= !FLAG_EDGES;
         inside.truncate(at);
         // One zero byte: what an empty region looks like.
         inside.push(0);
+    });
+}
+
+/// Failure: a region of the right size and wrong content makes its page damaged, so Find throws the index away and builds it again for a page whose text is fine, or the content is read as edges: a count that the bytes don't have, a span past the page, a NaN, a start after its end. Find reads the page (it doesn't decode the region); `edges()` gives "unknown" for each, the page's text and its neighbours still read, and the corpus is not rebuilt.
+#[test]
+fn edges_with_bad_content_are_unknown_and_the_page_is_not_damaged() {
+    let bad_with = |what: &str, edit: &dyn Fn(&mut Vec<u8>, usize)| {
+        let temp = Temp::new();
+        let (root, key) = built_from(&temp, (0..3).map(|page| (report_page(page), true)).collect());
+        reseal_page(&root, key, 1, |inside| {
+            let word = |at: usize| u32::from_le_bytes(inside[at..at + 4].try_into().unwrap()) as usize;
+            let at = 16 + word(8) + word(12);
+            edit(inside, at);
+        });
+        let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+        let mut buffer = Vec::new();
+        let page = corpus.page(1, &mut buffer).unwrap_or_else(|_| panic!("{what}: the page reads as damaged"));
+        assert!(page.text.starts_with("Annual report"), "{what}: {}", page.text);
+        assert!(page.edges().is_none(), "{what}: unknown");
+        assert!(corpus.page(0, &mut Vec::new()).unwrap().edges().is_some(), "{what}: the others keep theirs");
+    };
+    bad_with("a count the bytes don't have", &|inside, at| inside[at] += 1);
+    bad_with("a span past the page's characters", &|inside, at| {
+        // `end` is bytes 60 to 64 of a record (see `chrome::stored::write`), and the first record follows the count.
+        inside[at + 1 + 60..at + 1 + 64].copy_from_slice(&u32::MAX.to_le_bytes());
+    });
+    bad_with("a NaN where a place is", &|inside, at| {
+        inside[at + 1 + 2..at + 1 + 6].copy_from_slice(&f32::NAN.to_le_bytes())
+    });
+    bad_with("a start after its end", &|inside, at| {
+        // `start` is bytes 56 to 60.
+        inside[at + 1 + 56..at + 1 + 60].copy_from_slice(&u32::MAX.to_le_bytes());
     });
 }
 
