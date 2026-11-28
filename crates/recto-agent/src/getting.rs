@@ -217,6 +217,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
     drop(opened);
 
     // The same version of the file, and of the index it was read from, to the end.
+    recto_platform::slow::pause(recto_platform::slow::Seam::Get);
     crate::locating::still_located(access, &found)?;
     if let Some(key) = read.key
         && CorpusKey::of_file(file.path()).ok() != Some(key)
@@ -246,15 +247,4 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::index_is_enough;
-
-    /// Failure: a stored page is given though the index never checked it for hidden text, or dropped some of its stretches, so its hidden words show as
-    /// plain text. Only a checked page with no dropped stretch is enough.
-    #[test]
-    fn only_a_checked_page_with_no_dropped_stretch_is_taken_from_the_index() {
-        assert!(index_is_enough(true, false));
-        assert!(!index_is_enough(false, false));
-        assert!(!index_is_enough(true, true));
-    }
-}
+mod tests;
