@@ -25,13 +25,13 @@ const SIX: [Store; 6] = [
 
 /// A state root with both sessions' journals folders and a backups folder, holding the six stores' files of two documents: the target (`MINE`, version 7) and
 /// another (`THEIRS`, version 8).
-struct Rig {
-    dir: TempDir,
-    backups: PathBuf,
+pub(super) struct Rig {
+    pub(super) dir: TempDir,
+    pub(super) backups: PathBuf,
 }
 
 impl Rig {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = root();
         let backups = dir.join("backups.noindex");
         std::fs::create_dir(&backups).unwrap();
@@ -48,14 +48,14 @@ impl Rig {
         Self { dir, backups }
     }
 
-    fn roots(&self) -> HistoryRoots<'_> {
+    pub(super) fn roots(&self) -> HistoryRoots<'_> {
         HistoryRoots {
             state_root: self.dir.path(),
             backups: &self.backups,
         }
     }
 
-    fn volume(&self) -> VolumeNow {
+    pub(super) fn volume(&self) -> VolumeNow {
         VolumeNow {
             root: 0,
             dev: std::fs::metadata(self.dir.path()).unwrap().dev(),
@@ -63,7 +63,7 @@ impl Rig {
     }
 
     /// What is left of the six stores, as `<folder>/<name>`.
-    fn files(&self) -> BTreeSet<String> {
+    pub(super) fn files(&self) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
         for (label, path) in [
             ("session", folder(&self.dir)),
@@ -142,14 +142,14 @@ fn purge_all(rig: &Rig, s: &Surveyed, p: &Plan, pins: &Pins) -> Vec<Result<Purge
     let mut results = Vec::new();
     for store in SIX {
         for step in steps(s, p, pins, store) {
-            results.push(purge_history(store, &step, &rig.roots(), rig.volume()));
+            results.push(purge_history(store, &step, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()));
         }
     }
     results
 }
 
 /// The target's journal step, which holds both sessions' journals.
-fn journal_step(rig: &Rig) -> (Vec<(ArtifactKey, Pin)>, Surveyed) {
+pub(super) fn journal_step(rig: &Rig) -> (Vec<(ArtifactKey, Pin)>, Surveyed) {
     let (s, pins) = surveyed(rig, TargetMode::Save);
     let p = plan_of(&s);
     let mut found = steps(&s, &p, &pins, Store::Journal);
@@ -225,9 +225,9 @@ fn purge_removes_exactly_the_planned_files() {
 fn a_repeated_purge_succeeds_and_counts_what_is_gone() {
     let rig = Rig::new();
     let (wanted, _) = journal_step(&rig);
-    let first = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()).unwrap();
+    let first = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()).unwrap();
     assert_eq!((first.removed, first.already_gone, first.durable), (2, 0, true));
-    let again = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()).unwrap();
+    let again = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()).unwrap();
     assert_eq!((again.removed, again.already_gone, again.durable), (0, 2, true));
 }
 
@@ -237,12 +237,12 @@ fn a_repeated_purge_succeeds_and_counts_what_is_gone() {
 fn a_run_that_finds_names_gone_syncs_every_folder() {
     let rig = Rig::new();
     let (wanted, _) = journal_step(&rig);
-    purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()).unwrap();
+    purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()).unwrap();
     let seams = Seams {
         fail_sync: true,
         ..Seams::default()
     };
-    let again = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams).unwrap();
+    let again = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests(), &seams).unwrap();
     assert_eq!((again.removed, again.already_gone, again.durable), (0, 2, false));
     assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 2, "both sessions' folders");
 }
@@ -258,7 +258,7 @@ fn a_stop_in_pass_one_still_syncs_when_a_wanted_name_was_already_gone() {
     std::fs::remove_file(windowless(&rig.dir).join(&name)).unwrap();
     std::fs::hard_link(folder(&rig.dir).join(&name), rig.dir.join("another-name")).unwrap();
     let seams = Seams::default();
-    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
+    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests(), &seams);
     assert_eq!(result, Err(PurgeStop::Linked));
     assert!(folder(&rig.dir).join(&name).exists(), "nothing was unlinked");
     assert_eq!(
@@ -288,7 +288,7 @@ fn a_stop_in_pass_two_still_syncs_the_folder_that_lost_a_name() {
         before_unlink: Some(swap),
         ..Seams::default()
     };
-    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
+    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests(), &seams);
     assert_eq!(result, Err(PurgeStop::NotThePinned));
     assert!(!folder(&rig.dir).join(&name).exists(), "the first was taken out");
     assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 1, "and its folder was synced");
@@ -300,7 +300,10 @@ fn a_key_twice_in_a_step_is_a_bad_pin() {
     let rig = Rig::new();
     let (mut wanted, _) = journal_step(&rig);
     wanted.push(wanted[0]);
-    assert_eq!(purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()), Err(PurgeStop::BadPin));
+    assert_eq!(
+        purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
+        Err(PurgeStop::BadPin)
+    );
     assert!(folder(&rig.dir).join(format!("journal-{}.log", k(7))).exists());
 }
 
@@ -337,7 +340,7 @@ fn a_file_replaced_after_the_survey_stops_the_step_before_any_unlink() {
     let name = format!("journal-{}.log", k(7));
     std::fs::remove_file(windowless(&rig.dir).join(&name)).unwrap();
     put(&windowless(&rig.dir), &name, &journal(MINE, 7));
-    let result = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume());
+    let result = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests());
     assert_eq!(result, Err(PurgeStop::NotThePinned));
     assert_eq!(ack(&result), Ack::Failed);
     assert!(folder(&rig.dir).join(&name).exists(), "nothing was unlinked");
@@ -351,7 +354,10 @@ fn a_second_link_made_after_the_survey_stops_the_step() {
     let (wanted, _) = journal_step(&rig);
     let name = format!("journal-{}.log", k(7));
     std::fs::hard_link(folder(&rig.dir).join(&name), rig.dir.join("another-name")).unwrap();
-    assert_eq!(purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()), Err(PurgeStop::Linked));
+    assert_eq!(
+        purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
+        Err(PurgeStop::Linked)
+    );
     assert!(folder(&rig.dir).join(&name).exists() && windowless(&rig.dir).join(&name).exists());
 }
 
@@ -372,7 +378,7 @@ fn a_link_or_folder_at_a_wanted_name_stops_the_step() {
         } else {
             std::os::unix::fs::symlink(&precious, &at).unwrap();
         }
-        let result = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume());
+        let result = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests());
         assert_eq!(result, Err(PurgeStop::NotAFile), "folder: {as_folder}");
         assert!(precious.exists() && std::fs::symlink_metadata(&at).is_ok());
         assert!(windowless(&rig.dir).join(&name).exists(), "nothing was unlinked");
@@ -392,7 +398,7 @@ fn a_journals_folder_swapped_for_a_link_is_not_ours() {
     std::fs::rename(folder(&rig.dir), rig.dir.join("moved")).unwrap();
     std::os::unix::fs::symlink(outside.path(), folder(&rig.dir)).unwrap();
     assert_eq!(
-        purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()),
+        purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
         Err(PurgeStop::FolderNotOurs)
     );
     assert!(precious.exists());
@@ -415,7 +421,7 @@ fn a_journals_folder_swapped_for_a_link_is_not_ours() {
         before_list: Some(swap),
         ..Seams::default()
     };
-    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
+    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests(), &seams);
     assert!(result.is_ok(), "{result:?}");
     assert!(precious.exists(), "what the link led to is untouched");
     assert!(!rig.dir.join("moved").join(&name).exists(), "the folder that was opened lost its file");
@@ -429,16 +435,22 @@ fn a_pin_for_another_volume_or_a_folder_does_nothing() {
     let name = format!("journal-{}.log", k(7));
     let other_root: Vec<_> = wanted.iter().map(|(key, pin)| (*key, Pin { root: 1, ..*pin })).collect();
     assert_eq!(
-        purge_history(Store::Journal, &other_root, &rig.roots(), rig.volume()),
+        purge_history(Store::Journal, &other_root, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
         Err(PurgeStop::OtherVolume)
     );
     let folders: Vec<_> = wanted.iter().map(|(key, pin)| (*key, Pin { kind: PinKind::Folder, ..*pin })).collect();
-    assert_eq!(purge_history(Store::Journal, &folders, &rig.roots(), rig.volume()), Err(PurgeStop::BadPin));
+    assert_eq!(
+        purge_history(Store::Journal, &folders, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
+        Err(PurgeStop::BadPin)
+    );
     let other_disk = VolumeNow {
         dev: rig.volume().dev.wrapping_add(1),
         ..rig.volume()
     };
-    assert_eq!(purge_history(Store::Journal, &wanted, &rig.roots(), other_disk), Err(PurgeStop::NotThePinned));
+    assert_eq!(
+        purge_history(Store::Journal, &wanted, &rig.roots(), other_disk, &HistoryQuiet::assumed_for_tests()),
+        Err(PurgeStop::NotThePinned)
+    );
     assert!(folder(&rig.dir).join(&name).exists() && windowless(&rig.dir).join(&name).exists());
 }
 
@@ -457,7 +469,7 @@ fn a_store_that_isnt_history_or_a_batch_over_the_cap_does_nothing() {
         Store::LegacySession,
     ] {
         assert_eq!(
-            purge_history(store, &wanted, &rig.roots(), rig.volume()),
+            purge_history(store, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
             Err(PurgeStop::NotHistory),
             "{store:?}"
         );
@@ -478,9 +490,12 @@ fn a_store_that_isnt_history_or_a_batch_over_the_cap_does_nothing() {
             })
             .collect()
     };
-    let at_cap = purge_history(Store::Journal, &many(128), &rig.roots(), rig.volume()).unwrap();
+    let at_cap = purge_history(Store::Journal, &many(128), &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()).unwrap();
     assert_eq!((at_cap.removed, at_cap.already_gone), (0, 128));
-    assert_eq!(purge_history(Store::Journal, &many(129), &rig.roots(), rig.volume()), Err(PurgeStop::TooLarge));
+    assert_eq!(
+        purge_history(Store::Journal, &many(129), &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()),
+        Err(PurgeStop::TooLarge)
+    );
     assert_eq!(rig.files(), before);
 }
 
@@ -494,12 +509,12 @@ fn an_unsynced_folder_is_done_not_durable() {
         fail_sync: true,
         ..Seams::default()
     };
-    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
+    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests(), &seams);
     assert_eq!(result.as_ref().map(|purged| (purged.removed, purged.durable)), Ok((2, false)));
     assert_eq!(ack(&result), Ack::DoneNotDurable);
     let rig = Rig::new();
     let (wanted, _) = journal_step(&rig);
-    let good = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume());
+    let good = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests());
     assert_eq!(ack(&good), Ack::Done);
 }
 
@@ -550,7 +565,7 @@ fn purge_of_the_most_a_plan_holds_costs() {
         assert_eq!(batches.len(), 64);
         let began = std::time::Instant::now();
         for batch in &batches {
-            assert!(purge_history(Store::Journal, batch, &rig.roots(), rig.volume()).is_ok());
+            assert!(purge_history(Store::Journal, batch, &rig.roots(), rig.volume(), &HistoryQuiet::assumed_for_tests()).is_ok());
         }
         times.push(began.elapsed());
     }
