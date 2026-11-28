@@ -23,7 +23,14 @@ pub const MAX_REMOVED_PER_SWEEP: usize = 64;
 
 /// A session's hold on an agent's folder: a lock on its `.session` file, let go when this is dropped or the process ends.
 #[derive(Debug)]
-pub struct AgentClaim(#[allow(dead_code)] File);
+pub struct AgentClaim(File);
+
+impl AgentClaim {
+    /// Lets the session's hold go and moves nothing: unlocked, then closed (a lock belongs to the open description, so closing alone could leave it held while a copy of the descriptor lives; `record_store/lock.rs` says why). The folder stays where it is, and what looks at its `.session` finds it free.
+    pub fn release(self) {
+        let _ = self.0.unlock();
+    }
+}
 
 /// The folders on the way to a corpus's agent folder, if each is really a private folder of this user's, with no link: the only state in which anything here is renamed or removed.
 fn checked(root: &Path, key: CorpusKey) -> Option<CorpusPaths> {

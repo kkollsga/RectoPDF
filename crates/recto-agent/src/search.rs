@@ -236,7 +236,7 @@ fn corpus_for<'a>(open: &'a mut Option<(u16, ReadyCorpus)>, file: u16, key: Corp
         *open = None;
         let indexing = indexing.ok_or(Unusable::NoKey)?;
         let find_key = indexing.find_key().ok_or(Unusable::NoKey)?;
-        let corpus = ReadyCorpus::open(find_key, indexing.root(), key).map_err(|Damaged| Unusable::Damaged)?;
+        let corpus = ReadyCorpus::open(&find_key, indexing.root(), key).map_err(|Damaged| Unusable::Damaged)?;
         *open = Some((file, corpus.ok_or(Unusable::Damaged)?));
     }
     open.as_ref().map(|(_, corpus)| corpus).ok_or(Unusable::Damaged)
@@ -1896,8 +1896,8 @@ mod tests {
         fn root(&self) -> &std::path::Path {
             &self.0
         }
-        fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
-            Some(&self.1)
+        fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
+            Some(crate::index::KeyUse::plain(&self.1))
         }
         fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
         fn job(&self, _key: CorpusKey) -> crate::index::JobState {
@@ -1919,8 +1919,8 @@ mod tests {
         fn root(&self) -> &std::path::Path {
             &self.root
         }
-        fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
-            (self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0).then_some(&self.key)
+        fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
+            (self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0).then(|| crate::index::KeyUse::plain(&self.key))
         }
         fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
         fn job(&self, _key: CorpusKey) -> crate::index::JobState {

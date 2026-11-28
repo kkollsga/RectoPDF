@@ -9,6 +9,9 @@ use recto_platform::find_key::FindKey;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+mod key_use;
+pub use key_use::{KeyUse, UseEnded};
+
 /// What's being done about one file's corpus, as far as whoever builds them knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobState {
@@ -24,8 +27,8 @@ pub enum JobState {
 pub trait Indexing: Send + Sync {
     /// Where corpora live.
     fn root(&self) -> &Path;
-    /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built.
-    fn find_key(&self) -> Option<&FindKey>;
+    /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built. **Hold the use for as long as what's opened with it can write:** a removal waits for every use to end.
+    fn find_key(&self) -> Option<KeyUse<'_>>;
     /// An agent's folder is being made for this file's corpus, which lives only for this session: it's kept from the sweep, and set aside when the session ends.
     fn made_agent_folder(&self, _key: CorpusKey) {}
     /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
@@ -55,8 +58,8 @@ impl Indexing for ReadOnlyCorpus {
     fn root(&self) -> &Path {
         &self.0
     }
-    fn find_key(&self) -> Option<&FindKey> {
-        self.1.as_ref()
+    fn find_key(&self) -> Option<KeyUse<'_>> {
+        self.1.as_ref().map(KeyUse::plain)
     }
     fn want(&self, _path: &Path, _key: CorpusKey) {}
     fn job(&self, _key: CorpusKey) -> JobState {
@@ -196,7 +199,7 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
     let Some(find_key) = indexing.find_key() else {
         return (Some(key), FileIndex::Refused("no_find_key".to_string()));
     };
-    let disk = corpus::disk_state(find_key, indexing.root(), key);
+    let disk = corpus::disk_state(&find_key, indexing.root(), key);
     let pages_done = match &disk {
         DiskState::Ready(summary) => {
             // What it holds is good to use meanwhile: this only reads again pages that failed for a temporary reason.
@@ -300,7 +303,7 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
     };
     // Before it's made: a sweep running meanwhile leaves it, and the session's end sets it aside.
     indexing.made_agent_folder(key);
-    match corpus::ensure_agent_folder(find_key, indexing.root(), key, &corpus::BuildLimits::default()) {
+    match corpus::ensure_agent_folder(&find_key, indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
         Err(corpus::AgentFolderError::Busy) => Err(AgentError::new(Code::BUSY, "This document's index is being written right now.", exit::BUSY)),
         Err(corpus::AgentFolderError::TooLarge) => {
