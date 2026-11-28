@@ -52,7 +52,8 @@ fn a_queue_thread_that_panics_outside_its_job_lets_the_next_ask_run() {
         0,
         "the job whose start was announced ran after the notifier panicked"
     );
-    indexer.ask(job(2));
+    // The same file: the job whose start was announced is no longer "running", or this ask is turned away as one already on its way.
+    indexer.ask(job(1));
     wait_for(
         || runs.load(Ordering::SeqCst) == 1,
         || format!("the next ask didn't run: {} runs", runs.load(Ordering::SeqCst)),
