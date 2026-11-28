@@ -433,8 +433,10 @@ fn purge_of_the_most_a_plan_holds_costs() {
     let mut times = Vec::new();
     for _ in 0..5 {
         let rig = Rig::new();
-        for entry in std::fs::read_dir(folder(&rig.dir)).unwrap().flatten() {
-            std::fs::remove_file(entry.path()).unwrap();
+        for at in [folder(&rig.dir), windowless(&rig.dir), rig.backups.clone()] {
+            for entry in std::fs::read_dir(at).unwrap().flatten() {
+                std::fs::remove_file(entry.path()).unwrap();
+            }
         }
         for at in 0..8_192u32 {
             let name = if at == 0 {
