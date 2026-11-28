@@ -17,7 +17,7 @@ mod names;
 
 use super::backups::{self, Finder};
 use super::placing::Maps;
-use super::purge::HistoryPins;
+use super::purge::Pins;
 use names::Kind;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Sides, Store, Survey, TargetMode};
 use recto_platform::folder::{Entry, Folder, Opened};
@@ -81,7 +81,7 @@ pub fn survey_journals(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, sur
 }
 
 /// `survey_journals`, and the identity (device, inode, kind) of every artifact added as the target's noted in `pins`, for the purge by pin (`purge`).
-pub fn survey_journals_pinned(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut HistoryPins) -> Result<(), Refusal> {
+pub fn survey_journals_pinned(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut Pins) -> Result<(), Refusal> {
     survey_journals_run(root, lineage, mode, survey, &Caps::default(), Some(pins))
 }
 
@@ -145,7 +145,7 @@ fn survey_journals_run(
     mode: TargetMode,
     survey: &mut Survey,
     caps: &Caps,
-    mut pins: Option<&mut HistoryPins>,
+    mut pins: Option<&mut Pins>,
 ) -> Result<(), Refusal> {
     let maps = Maps::of(lineage);
     for flavor in FLAVORS {
@@ -195,7 +195,7 @@ fn survey_journals_pinned_folder(
     mode: TargetMode,
     caps: &Caps,
     survey: &mut Survey,
-    pins: Option<&mut HistoryPins>,
+    pins: Option<&mut Pins>,
 ) -> Result<bool, Refusal> {
     #[cfg(not(test))]
     let _ = at;
@@ -247,7 +247,7 @@ struct Gone;
 
 impl Run<'_> {
     /// Whether the folder was listed and every entry added; `false` leaves the stores unmarked.
-    fn survey(&self, survey: &mut Survey, buffer: &mut Vec<u8>, mut pins: Option<&mut HistoryPins>) -> Result<bool, Refusal> {
+    fn survey(&self, survey: &mut Survey, buffer: &mut Vec<u8>, mut pins: Option<&mut Pins>) -> Result<bool, Refusal> {
         let Some(listed) = self.list()? else { return Ok(false) };
         // Journals first: a sidecar takes its journal's owner.
         let mut journals: HashMap<String, Option<Sides>> = HashMap::new();

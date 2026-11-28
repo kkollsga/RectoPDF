@@ -238,6 +238,18 @@ impl Pins {
 /// level together, than `budget`, has an entry on another device than `device` (the copy's own: a volume mounted inside it), (which counts down as it goes: the copy's, not each folder's), can't be listed, or a folder was swapped between its
 /// listing and its opening.
 pub(super) fn tree_of(folder: &Folder, depth: usize, budget: &mut usize, device: u64) -> Option<Tree> {
+    tree_accepting(folder, depth, budget, device, &|_| true)
+}
+
+/// [`tree_of`] that also stops (`None`) at the first entry `accept` refuses, before it is counted against `budget`: the caches' pin takes only plain files
+/// of this user's with one link and this user's folders (`removal_store::caches`), and the leftovers' takes everything.
+pub(in crate::removal_store) fn tree_accepting(
+    folder: &Folder,
+    depth: usize,
+    budget: &mut usize,
+    device: u64,
+    accept: &dyn Fn(&Entry) -> bool,
+) -> Option<Tree> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -245,6 +257,9 @@ pub(super) fn tree_of(folder: &Folder, depth: usize, budget: &mut usize, device:
     let mut entries = Vec::new();
     for entry in folder.entries().ok()? {
         let entry = entry.ok()?;
+        if !accept(&entry) {
+            return None;
+        }
         *budget = budget.checked_sub(1)?;
         // A volume mounted inside a copy is another device: it is never part of the copy, and the copy is not pinned.
         if entry.dev != device {
@@ -255,7 +270,7 @@ pub(super) fn tree_of(folder: &Folder, depth: usize, budget: &mut usize, device:
             if inner.identity().ok()? != entry.identity() {
                 return None;
             }
-            Some(tree_of(&inner, depth + 1, budget, device)?)
+            Some(tree_accepting(&inner, depth + 1, budget, device, accept)?)
         } else {
             None
         };

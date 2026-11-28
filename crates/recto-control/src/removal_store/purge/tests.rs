@@ -92,7 +92,7 @@ fn limits() -> Limits {
 }
 
 /// A real survey of the rig by the pinned adapters (every other store marked complete), the plan of a removal over it, and the pins.
-fn surveyed(rig: &Rig, mode: TargetMode) -> (Surveyed, HistoryPins) {
+fn surveyed(rig: &Rig, mode: TargetMode) -> (Surveyed, Pins) {
     let links = ledger();
     let lineage = lineage(&links, version(7), Path::new(MINE), &LEDGER_LIMITS).unwrap();
     let mut survey = Survey::new(&limits());
@@ -100,7 +100,7 @@ fn surveyed(rig: &Rig, mode: TargetMode) -> (Surveyed, HistoryPins) {
         survey.mark_complete(store);
     }
     survey.history(&lineage);
-    let mut pins = HistoryPins::default();
+    let mut pins = Pins::default();
     survey_journals_pinned(rig.dir.path(), &lineage, mode, &mut survey, &mut pins).unwrap();
     survey_backups_pinned(&rig.backups, &lineage, mode, &mut survey, &mut pins).unwrap();
     (survey.finish().unwrap(), pins)
@@ -112,7 +112,7 @@ fn plan_of(s: &Surveyed) -> Plan {
 }
 
 /// The wanted lists of every `Purge(store)` step of the plan, with the pins the barrier would record for them (this volume is root 0).
-fn steps(s: &Surveyed, p: &Plan, pins: &HistoryPins, store: Store) -> Vec<Vec<(ArtifactKey, Pin)>> {
+fn steps(s: &Surveyed, p: &Plan, pins: &Pins, store: Store) -> Vec<Vec<(ArtifactKey, Pin)>> {
     p.steps()
         .iter()
         .filter(|step| step.effect() == Effect::Purge(store))
@@ -120,7 +120,7 @@ fn steps(s: &Surveyed, p: &Plan, pins: &HistoryPins, store: Store) -> Vec<Vec<(A
         .collect()
 }
 
-fn wanted(s: &Surveyed, pins: &HistoryPins, ids: &[ArtifactId]) -> Vec<(ArtifactKey, Pin)> {
+fn wanted(s: &Surveyed, pins: &Pins, ids: &[ArtifactId]) -> Vec<(ArtifactKey, Pin)> {
     ids.iter()
         .map(|id| {
             let (_, key) = s.key(*id).unwrap();
@@ -138,7 +138,7 @@ fn wanted(s: &Surveyed, pins: &HistoryPins, ids: &[ArtifactId]) -> Vec<(Artifact
 }
 
 /// Every step of the plan's six stores, in the plan's order, through the purge.
-fn purge_all(rig: &Rig, s: &Surveyed, p: &Plan, pins: &HistoryPins) -> Vec<Result<Purged, PurgeStop>> {
+fn purge_all(rig: &Rig, s: &Surveyed, p: &Plan, pins: &Pins) -> Vec<Result<Purged, PurgeStop>> {
     let mut results = Vec::new();
     for store in SIX {
         for step in steps(s, p, pins, store) {
@@ -173,7 +173,7 @@ fn pins_are_exactly_the_targets_artifacts() {
         let links = ledger();
         let lineage = lineage(&links, version(7), Path::new(MINE), &LEDGER_LIMITS).unwrap();
         let mut survey = Survey::new(&limits());
-        let mut pins = HistoryPins::default();
+        let mut pins = Pins::default();
         survey_journals_pinned(rig.dir.path(), &lineage, mode, &mut survey, &mut pins).unwrap();
         survey_backups_pinned(&rig.backups, &lineage, mode, &mut survey, &mut pins).unwrap();
         let s = survey.finish().unwrap();
@@ -293,7 +293,7 @@ fn a_name_placed_file_is_pinned_only_if_it_is_this_users() {
         ino: 2,
         kind: Kind::File,
     };
-    let mut pins = HistoryPins::default();
+    let mut pins = Pins::default();
     let me = recto_platform::local::current_uid();
     pins.note_owned_by(key, identity, me.wrapping_add(1)).unwrap();
     assert!(pins.get(&key).is_none(), "another user's");

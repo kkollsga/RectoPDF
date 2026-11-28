@@ -467,6 +467,10 @@ fn entries_say_their_owner() {
     let me = crate::local::current_uid();
     let folder = opened(dir.path());
     let owners: Vec<u32> = folder.entries().unwrap().map(|e| e.unwrap().uid).collect();
-    assert_eq!(owners, vec![me; 3], "a file, a link (its own, not its target's) and a folder are all this user's");
+    assert_eq!(
+        owners,
+        vec![me; 3],
+        "a file, a link (its own, not its target's) and a folder are all this user's"
+    );
     assert_eq!(folder.look(OsStr::new("plain")).unwrap().uid, me, "a look says it too");
 }

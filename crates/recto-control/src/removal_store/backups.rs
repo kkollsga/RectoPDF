@@ -1,6 +1,6 @@
 //! The original-backup folder (`Store::Backup`): which of its files are the target's, by name only. A backup is never opened or read.
 
-use super::purge::HistoryPins;
+use super::purge::Pins;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Sides, Store, Survey, TargetMode};
 use recto_core::save::backup_name;
 use recto_platform::folder::{Folder, Opened};
@@ -20,7 +20,7 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
 }
 
 /// `survey_backups`, and the identity (device, inode, kind) of every artifact added as the target's noted in `pins`, for the purge by pin (`purge`).
-pub fn survey_backups_pinned(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut HistoryPins) -> Result<(), Refusal> {
+pub fn survey_backups_pinned(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut Pins) -> Result<(), Refusal> {
     survey_backups_run(folder, lineage, mode, survey, &|_| {}, Some(pins))
 }
 
@@ -52,7 +52,7 @@ fn survey_backups_run(
     mode: TargetMode,
     survey: &mut Survey,
     before_list: &dyn Fn(&Path),
-    mut pins: Option<&mut HistoryPins>,
+    mut pins: Option<&mut Pins>,
 ) -> Result<(), Refusal> {
     let folder_path = folder;
     let folder = match open_backups(folder_path) {

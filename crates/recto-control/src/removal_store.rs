@@ -30,7 +30,7 @@ pub use caches::{CacheTarget, survey_caches};
 pub use journals::{survey_journals, survey_journals_pinned};
 pub use legacy_session::survey_legacy_sessions;
 pub use library::survey_library;
-pub use purge::{HistoryPins, HistoryRoots, PurgeStop, Purged, VolumeNow, ack, purge_history};
+pub use purge::{HistoryRoots, Pins, PurgeStop, Purged, VolumeNow, ack, purge_history};
 pub use record::survey_record;
 pub use update_copy::survey_update_copy;
 pub use writer_temps::survey_writer_temps;

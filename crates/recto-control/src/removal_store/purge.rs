@@ -2,7 +2,7 @@
 //! stores: `Backup`, `Journal`, `JournalVariant`, `KeptPages`, `PageIds` and `SleepFile`. **Not wired to any command, and takes no lease:** the walk, its
 //! quiescing (`record_store::hold`), the barrier, the words and the progress record belong to the command that calls it.
 //!
-//! - **Pins.** [`HistoryPins`] is filled by `survey_journals_pinned` and `survey_backups_pinned` with the identity (device, inode, kind) of every artifact
+//! - **Pins.** [`Pins`] is filled by `survey_journals_pinned` and `survey_backups_pinned` with the identity (device, inode, kind) of every artifact
 //!   added as the target's, and of nothing else (a Save As source is never acted on, and any other owner refuses the plan). A file placed by its name alone
 //!   is pinned from the listed entry; one placed by its bytes (a journal, a variant, a sidecar) from the entry too, which the survey proved is its opened
 //!   descriptor's own device, inode and single link. Turning an identity into the barrier's `Pin` (a volume's position) is the carrier's.
@@ -27,11 +27,11 @@ const MAX_PINS: usize = 8_192;
 
 /// What the history surveys saw of each artifact that is the target's: its device, inode and kind when it was listed. Never of another owner's.
 #[derive(Debug, Default)]
-pub struct HistoryPins {
+pub struct Pins {
     pins: BTreeMap<ArtifactKey, Identity>,
 }
 
-impl HistoryPins {
+impl Pins {
     pub fn get(&self, key: &ArtifactKey) -> Option<Identity> {
         self.pins.get(key).copied()
     }
