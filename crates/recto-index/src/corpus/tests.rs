@@ -2386,6 +2386,7 @@ fn edges_that_dont_add_up_make_the_page_damaged() {
     damaged_with("trailing bytes where the flag isn't set", &|inside, at| {
         inside[1] &= !FLAG_EDGES;
         inside.truncate(at);
-        inside.extend_from_slice(&[0; 3]);
+        // One zero byte: what an empty region looks like.
+        inside.push(0);
     });
 }
