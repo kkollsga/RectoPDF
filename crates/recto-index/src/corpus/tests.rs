@@ -2393,3 +2393,60 @@ fn edges_that_dont_add_up_make_the_page_damaged() {
         inside.push(0);
     });
 }
+
+/// A feed of one page whose characters sit where the test says, in a frame it says.
+struct PlacedPage(FedPage);
+
+impl PageFeed for PlacedPage {
+    fn page_count(&mut self) -> Result<u32, FeedError> {
+        Ok(1)
+    }
+
+    fn read(&mut self, _page: u32) -> Result<FedPage, FeedError> {
+        Ok(self.0.clone())
+    }
+
+    fn still_the_same_file(&mut self) -> bool {
+        true
+    }
+}
+
+/// Failure: a hostile file whose edge lines overflow made every Find rebuild the index. A glyph and a frame near the largest finite float give an edge piece with an infinite size or place; the writer stored it, the reader refused it, and the page read as damaged on every open, so `throw_away_corpus` dropped and rebuilt the index each time. The writer stores no region a reader refuses: the page reads whole, and its edges are unknown (not "known, none").
+#[test]
+fn edge_lines_that_overflow_are_not_stored_and_the_page_is_not_damaged() {
+    let frame = |right: f32, top: f32| recto_proto::PageFrame { turns: 0, left: 0.0, bottom: 0.0, right, top };
+    // A line of plain text, then a page number whose box is `number`.
+    let cases = [
+        ("a box far to the left, so the distance from the right edge overflows", [-3.3e38, 20.0, 5.0, 30.0], frame(f32::MAX, 792.0)),
+        ("a box far to the right, so its middle overflows", [3.3e38, 20.0, 3.39e38, 30.0], frame(f32::MAX, 792.0)),
+    ];
+    for (what, number, frame) in cases {
+        let temp = Temp::new();
+        let key = key_of(&temp, b"a file");
+        let root = temp.0.join("corpus");
+        let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+        for (at, ch) in "Hello".chars().enumerate() {
+            chars.push(CharRecord::new(ch as u32, 0));
+            boxes.push([at as f32 * 6.0, 150.0, at as f32 * 6.0 + 5.0, 160.0]);
+        }
+        for generated in ['\r', '\n'] {
+            chars.push(CharRecord::new(generated as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+        }
+        chars.push(CharRecord::new('7' as u32, 0));
+        boxes.push(number);
+        let page = FedPage {
+            chars,
+            boxes,
+            hidden_checked: true,
+            frame: Some(frame),
+        };
+        let outcome = build(tk(), &root, key, &mut PlacedPage(page), &DocMeta::default(), &BuildLimits::default()).unwrap();
+        assert!(matches!(outcome, BuildOutcome::Ready { .. }), "{what}: {outcome:?}");
+        let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+        let mut buffer = Vec::new();
+        let stored = corpus.page(0, &mut buffer).unwrap_or_else(|_| panic!("{what}: the page reads as damaged"));
+        assert!(stored.text.starts_with("Hello"), "{what}: {}", stored.text);
+        assert!(stored.edges().is_none(), "{what}: unknown, not known and none");
+    }
+}
