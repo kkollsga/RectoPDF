@@ -160,6 +160,7 @@ fn a_held_indexer_starts_nothing() {
     // A sweep is due on a fresh indexer: asking for one starts the thread.
     assert!(indexer.0.lock().sweep_due);
     indexer.note_asked();
+    assert_eq!(indexer.0.lock().thread_starts, 0, "a sweep's thread was started");
     assert!(indexer.find_key().is_none(), "a held indexer handed out the key");
     assert!(indexer.find_key_in_hand().is_none(), "a held indexer handed out the key it had in hand");
     Indexing::made_agent_folder(&indexer, key(1));
@@ -235,4 +236,13 @@ fn dropping_the_hold_lets_asks_run_again_and_a_second_hold_is_refused() {
     assert!(!indexer.0.lock().working, "dropping the hold started a thread");
     indexer.ask(job(1));
     wait_for(|| runs.load(Ordering::SeqCst) == 1, || "the ask after the hold didn't run".into());
+}
+
+/// Failure: before the key is in hand `find_key_in_hand` counts a use and, with no key, must take it back, or every hold after Find's first search answers `StillRunning { uses: 1 }` for good and no removal can ever walk. A fresh indexer has no key in hand, and is quiet.
+#[test]
+fn a_look_for_a_key_not_in_hand_leaves_no_use_behind() {
+    let indexer = Indexer::with_runner(Path::new("/nowhere"), Box::new(Counts(Arc::new(AtomicU32::new(0)))));
+    assert!(indexer.find_key_in_hand().is_none(), "the key can't be in hand on the first look");
+    assert_eq!(indexer.0.lock().uses, 0, "a use was left counted");
+    assert!(indexer.hold_for_removal(Instant::now()).is_ok(), "the hold was refused for a use nobody holds");
 }

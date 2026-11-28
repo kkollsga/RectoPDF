@@ -65,6 +65,9 @@ struct Inner {
     on_hold: bool,
     /// Uses of the Find key handed out and not yet ended ([`KeyUse`]). Each one is an open of a corpus, which writes `app/used`, or an export that writes pages.
     uses: u32,
+    /// For a test: how many times the queue's thread was started, so a starter that shouldn't start it is seen at once, not by a late look at `working`.
+    #[cfg(test)]
+    thread_starts: u32,
     /// The agents' folders this session holds, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once. One another live session holds isn't here: it's that session's to end.
     agent_folders: VecDeque<(CorpusKey, corpus::AgentClaim)>,
 }
@@ -215,7 +218,13 @@ impl Indexer {
             .stack_size(256 * 1024)
             .spawn(move || shared.work());
         match spawned {
-            Ok(_) => inner.working = true,
+            Ok(_) => {
+                inner.working = true;
+                #[cfg(test)]
+                {
+                    inner.thread_starts += 1;
+                }
+            }
             // Asked again next time. A failed search would be worse than a late index.
             Err(_) => inner.waiting.clear(),
         }
