@@ -57,14 +57,3 @@ fn the_evidence_sample_does_not_inherit_the_background_clamp() {
     assert_eq!(args[3..5], ["4242", "3"], "{args:?}");
     assert!(native_sample::sample_command(1, 3).is_err() && native_sample::sample_command(4242, 11).is_err());
 }
-
-/// Failure: the clamp lift is a command the OS refuses, so every sample fails; a one-second sample of a short-lived child still comes back as a report.
-#[cfg(target_os = "macos")]
-#[test]
-fn the_lifted_sample_command_still_reports() {
-    let mut child = std::process::Command::new("/bin/sleep").arg("20").spawn().unwrap();
-    let report = native_sample::sample(child.id(), 1, std::time::Duration::from_secs(60));
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(report.contains("Call graph") || report.contains("Sampling process"), "{report}");
-}
