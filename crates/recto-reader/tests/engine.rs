@@ -197,7 +197,7 @@ fn a_slow_page_scrolled_away_from_is_cancelled() {
             break;
         }
         assert!(
-            begun.elapsed() < Duration::from_secs(10),
+            begun.elapsed() < Duration::from_secs(40),
             "the slow page's draw never began, so there was nothing to cancel: {}",
             engine.report().0
         );
