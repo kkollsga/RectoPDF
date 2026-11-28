@@ -21,11 +21,11 @@ use crate::structure::headings::{self, HeadingsAnswer};
 use crate::structure::{Ended, Pick, numbers_of};
 use recto_agent::blocks::BlocksAsk;
 
-#[cfg(test)]
 mod hold;
 mod ink;
 
 pub use crate::structure::{MEMORY_LIMIT, time_limit};
+pub use hold::GenHold;
 
 /// Documents waiting their turn. Past this the oldest ask gives way: whoever still wants them asks again.
 pub const MAX_WAITING: usize = 8;
@@ -134,6 +134,8 @@ struct Inner {
     held: VecDeque<(CorpusKey, Arc<Generated>)>,
     working: bool,
     stopped: bool,
+    /// A removal holds the generator: every ask is refused, and nothing is made. Cleared when the hold is dropped or refused.
+    on_hold: bool,
 }
 
 struct Shared {
@@ -144,6 +146,9 @@ struct Shared {
     /// Told, under `inner`'s lock, when the thread has ended (`working` went false). What a hold waits on.
     ended: Condvar,
     notify: OnceLock<Notifier>,
+    /// A test's hold on a contents job's moment between its end and its write ([`Shared::run_contents`]). Absent from a shipping build.
+    #[cfg(test)]
+    between_end_and_write: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// Whoever holds a session holds one of these. A handle: the one thread, while there's one, holds the rest. A clone is the same generator.
@@ -173,6 +178,8 @@ impl Generator {
             inner: Mutex::new(Inner::default()),
             ended: Condvar::new(),
             notify: OnceLock::new(),
+            #[cfg(test)]
+            between_end_and_write: OnceLock::new(),
         }))
     }
 
@@ -211,6 +218,7 @@ impl Generator {
         let mut inner = self.0.lock();
         let (what, key) = (job.what(), job.key());
         if inner.stopped
+            || inner.on_hold
             || inner
                 .running
                 .as_ref()
@@ -366,7 +374,7 @@ impl Shared {
         loop {
             let (job, stop) = {
                 let mut inner = self.lock();
-                let next = if inner.stopped { None } else { inner.waiting.pop_front() };
+                let next = if inner.stopped || inner.on_hold { None } else { inner.waiting.pop_front() };
                 let Some(Waiting { job, .. }) = next else {
                     inner.working = false;
                     self.ended.notify_all();
@@ -398,6 +406,10 @@ impl Shared {
             file: job.key.short(),
         });
         let (outcome, report, cancelled) = guarded(stop, Outcome::Failed("helper_stopped".into()), || self.runner.run(job, stop));
+        #[cfg(test)]
+        if let Some(between) = self.between_end_and_write.get() {
+            between();
+        }
         // Kept on disk where its key can be believed. Held here for this session where it can't be, or where it couldn't be written.
         let held = match &outcome {
             Outcome::Ready(made) if !cancelled => {
