@@ -421,10 +421,19 @@ fn the_purge_holds_at_most_eight_descriptors() {
         fs::write(agent.join("0001.md"), b"p").unwrap();
         fs::write(w.corpus.join(&key).join("v4").join("app").join("ready.sealed"), b"r").unwrap();
     }
+    let peak = Arc::new(AtomicU32::new(0));
     let steps = plan_steps(&w);
     let baseline = open_descriptors();
-    let peak = Arc::new(AtomicU32::new(0));
+    // The deepest holds are while a tree is built: the survey's rule asks who owns every entry it meets, so that question is where they are counted too.
+    let in_tree = {
+        let peak = peak.clone();
+        Arc::new(move |_: &OsStr| {
+            peak.fetch_max(open_descriptors() as u32, Ordering::SeqCst);
+            None
+        })
+    };
     let seams = seams_with(|s| {
+        s.uid_of = Some(in_tree);
         let at_gate = peak.clone();
         s.gate = Some(Arc::new(move |_| {
             at_gate.fetch_max(open_descriptors() as u32, Ordering::SeqCst);

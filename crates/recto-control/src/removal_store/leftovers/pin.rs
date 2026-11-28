@@ -255,8 +255,10 @@ pub(in crate::removal_store) fn tree_accepting(
     }
     let id = folder.identity().ok()?;
     let mut entries = Vec::new();
-    for entry in folder.entries().ok()? {
-        let entry = entry.ok()?;
+    // The listing is read to its end (at most `budget` + 1 entries: one over is refused below) and closed before any folder below is opened, so a tree four
+    // folders deep holds one descriptor for a folder at each level and one listing at a time, not a listing at each level as well.
+    let listed = folder.entries().ok()?.take(budget.saturating_add(1)).collect::<Result<Vec<_>, _>>().ok()?;
+    for entry in listed {
         if !accept(&entry) {
             return None;
         }
