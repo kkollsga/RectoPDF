@@ -432,7 +432,8 @@ impl Sleeper {
 
     /// **The sleep files a flush writes** (a quit's, a hand-off's, `session save`'s), the state already written. **The tab on screen's first**, the next launch's
     /// first frame, waiting for another being written only until `until` and counted as skipped past it (a quit waited its 5 s behind sleep files queued for a
-    /// slow disk and went without the state, slow mode 2026-11-11); **then what's waiting in the cool-down**, hurried and waited for within what's left of the
+    /// slow disk and went without the state, slow mode 2026-11-11); **then each other tab side by side**, as the same, so every pane of a comparison comes up on
+    /// its paper; **then what's waiting in the cool-down**, hurried and waited for within what's left of the
     /// time, a writer started for it by `start_writer` if there's none. The other way round, on a slow disk the queued files used the limit and the one file the
     /// next launch needs was skipped (review, 2026-11-13).
     /// **Asked for by an agent** (`session save`), the cool-down is left alone (what waits stays waiting) and the tab on screen's file is held to the agent's
@@ -448,11 +449,18 @@ impl Sleeper {
         start_writer: StartsWriter<'_>,
     ) {
         let agent = asked.filter(|asked| asked.by.is_agent());
-        if let Some(id) = on_hand.session.with_session(|session| session.tabs().active()) {
-            let outcome = self.write_sleep_for(on_hand, store, keeps, id, agent.map_or(By::Flush, |asked| By::Asked(asked.by)), Some(until));
+        let by = agent.map_or(By::Flush, |asked| By::Asked(asked.by));
+        let (active, on_screen) = on_hand.session.with_session(|session| (session.tabs().active(), session.panes()));
+        if let Some(id) = active {
+            let outcome = self.write_sleep_for(on_hand, store, keeps, id, by, Some(until));
             if let Some(asked) = agent {
                 self.answer(asked, outcome);
             }
+        }
+        // Then every other tab side by side, at most a pane each: the next launch's first frame has each pane, not only the one read (2026-11-28: pane 0's
+        // tab, warm all along, had no sleep file, and came up blank at the cap after an update). After the active tab's, so it's the one kept if time runs out.
+        for id in on_screen.into_iter().filter(|id| Some(*id) != active) {
+            let _ = self.write_sleep_for(on_hand, store, keeps, id, by, Some(until));
         }
         if agent.is_none() {
             self.drain_leaving(until, start_writer);
