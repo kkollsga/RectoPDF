@@ -236,6 +236,17 @@ fn a_journal_swapped_between_listing_and_open_is_unknown() {
     );
 }
 
+/// Failure: a kept copy's temporary (what a kill mid-copy leaves, until the next launch's sweep) is a name nobody can place, so every removal refuses
+/// until it is gone. It is placed by the version in its name, as the kept copy is: the target's, purged with it.
+#[test]
+fn a_kept_copys_temp_is_placed_by_its_version() {
+    let dir = root();
+    put(&folder(&dir), &format!("kept-{}.tmp4242", k(7)), b"%PDF-1.4");
+    put(&folder(&dir), &format!("kept-{}.tmp4242", k(8)), b"%PDF-1.4");
+    let p = plan(&dir, TargetMode::Save).unwrap();
+    assert_eq!(purged(&p, Store::KeptPages), 1, "the target's temp is the target's; another document's is left");
+}
+
 /// Failure: another document's history is purged with this one's, or the target's own is left behind; a Save As deletes the source's history.
 #[test]
 fn the_targets_journal_is_purged_anothers_left_and_a_save_as_source_kept() {

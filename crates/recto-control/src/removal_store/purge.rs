@@ -44,6 +44,36 @@ impl HistoryPins {
         self.pins.insert(key, identity);
         Ok(())
     }
+
+    /// Pins a target's artifact that was placed by its name alone, so never opened: only if the file is this user's, looked at by the folder's own place and
+    /// the entry's name, and the same file as the entry (device and inode). One that isn't is not pinned, so the barrier's encode refuses it.
+    pub(super) fn note_named(&mut self, key: ArtifactKey, identity: Identity, folder: &Folder, entry: &Entry) -> Result<(), Refusal> {
+        match owner_of(folder, entry) {
+            Some(uid) => self.note_owned_by(key, identity, uid),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Self::note_named`] once the file's owner is known: pinned only if it is the user this runs as.
+    pub(super) fn note_owned_by(&mut self, key: ArtifactKey, identity: Identity, file_uid: u32) -> Result<(), Refusal> {
+        if file_uid == recto_platform::local::current_uid() {
+            self.note(key, identity)?;
+        }
+        Ok(())
+    }
+}
+
+/// Who owns the file `entry` of `folder` is, if it can be told and it is the file that was listed.
+#[cfg(unix)]
+fn owner_of(folder: &Folder, entry: &Entry) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::symlink_metadata(folder.path().ok()?.join(&entry.name)).ok()?;
+    (meta.dev() == entry.dev && meta.ino() == entry.ino).then(|| meta.uid())
+}
+
+#[cfg(not(unix))]
+fn owner_of(_folder: &Folder, _entry: &Entry) -> Option<u32> {
+    None
 }
 
 /// Where the history stores are.
@@ -111,6 +141,12 @@ pub(super) struct Seams {
     pub before_list: Option<Hook>,
     #[cfg(test)]
     pub fail_sync: bool,
+    /// Called with a file's path just before it is looked at again in pass 2.
+    #[cfg(test)]
+    pub before_unlink: Option<Hook>,
+    /// How many folders were synced.
+    #[cfg(test)]
+    pub syncs: std::sync::atomic::AtomicU32,
 }
 
 /// One folder of the store: open by descriptor, with the place its keys start with and where it was opened (for a test's seams; never opened again).
@@ -163,6 +199,10 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
         }
     }
     let want: BTreeMap<ArtifactKey, Pin> = wanted.iter().copied().collect();
+    // One pin to a key: a key twice is two pins that may disagree, and which one counts would be an accident of order.
+    if want.len() != wanted.len() {
+        return Err(PurgeStop::BadPin);
+    }
     let places = open_places(store, roots)?;
     let mut matches = Vec::new();
     for (at, place) in places.iter().enumerate() {
@@ -186,28 +226,11 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
     // Pass 2: each looked at again just before its own unlink.
     let mut removed = 0u32;
     let mut lost = vec![false; places.len()];
-    for found in &matches {
-        let folder = &places[found.place].folder;
-        match folder.look(&found.entry.name) {
-            Ok(now) => {
-                if let Some(stop) = differs(&now, &found.pin, volume) {
-                    return Err(stop);
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                already_gone += 1;
-                continue;
-            }
-            Err(_) => return Err(PurgeStop::Listing),
-        }
-        match folder.unlink_in(&found.entry.name, false) {
-            Ok(()) => {
-                removed += 1;
-                lost[found.place] = true;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => already_gone += 1,
-            Err(_) => return Err(PurgeStop::Listing),
-        }
+    let unlinked = unlink_all(&places, &matches, volume, seams, &mut removed, &mut already_gone, &mut lost);
+    // Every folder that lost a name is synced on every way out, a stop in pass 2 included. A name already gone may have been taken by a run that was killed
+    // before its sync, so with any gone every folder is synced.
+    if already_gone > 0 {
+        lost.fill(true);
     }
     let mut durable = true;
     for (place, lost) in places.iter().zip(&lost) {
@@ -215,6 +238,7 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
             durable = false;
         }
     }
+    unlinked?;
     let mut still_there = false;
     for place in &places {
         list(store, place, |key, _| still_there |= want.contains_key(&key))?;
@@ -227,6 +251,48 @@ pub(super) fn purge_with(store: Store, wanted: &[(ArtifactKey, Pin)], roots: &Hi
         already_gone,
         durable,
     })
+}
+
+/// Pass 2: each match looked at again just before its own unlink. What went before a stop stays gone.
+fn unlink_all(
+    places: &[Place],
+    matches: &[Match],
+    volume: VolumeNow,
+    seams: &Seams,
+    removed: &mut u32,
+    already_gone: &mut u32,
+    lost: &mut [bool],
+) -> Result<(), PurgeStop> {
+    #[cfg(not(test))]
+    let _ = seams;
+    for found in matches {
+        let folder = &places[found.place].folder;
+        #[cfg(test)]
+        if let Some(hook) = &seams.before_unlink {
+            hook(&places[found.place].at.join(&found.entry.name));
+        }
+        match folder.look(&found.entry.name) {
+            Ok(now) => {
+                if let Some(stop) = differs(&now, &found.pin, volume) {
+                    return Err(stop);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                *already_gone += 1;
+                continue;
+            }
+            Err(_) => return Err(PurgeStop::Listing),
+        }
+        match folder.unlink_in(&found.entry.name, false) {
+            Ok(()) => {
+                *removed += 1;
+                lost[found.place] = true;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => *already_gone += 1,
+            Err(_) => return Err(PurgeStop::Listing),
+        }
+    }
+    Ok(())
 }
 
 /// Why a listed or looked-at entry isn't the pinned file, if it isn't.
@@ -242,8 +308,11 @@ fn differs(entry: &Entry, pin: &Pin, volume: VolumeNow) -> Option<PurgeStop> {
 
 fn synced(folder: &Folder, seams: &Seams) -> bool {
     #[cfg(test)]
-    if seams.fail_sync {
-        return false;
+    {
+        seams.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if seams.fail_sync {
+            return false;
+        }
     }
     #[cfg(not(test))]
     let _ = seams;
@@ -285,14 +354,13 @@ fn open_places(store: Store, roots: &HistoryRoots<'_>) -> Result<Vec<Place>, Pur
     Ok(places)
 }
 
-/// Every entry of the folder that is one of `store`'s, with its key: capped at the survey's 8,192 entries (one more is `TooLarge`).
+/// Every entry of the folder that is one of `store`'s, with its key: listed as the survey lists (`journals::list_capped`), so one more than its cap is `TooLarge`.
 fn list(store: Store, place: &Place, mut each: impl FnMut(ArtifactKey, Entry)) -> Result<(), PurgeStop> {
-    let entries = place.folder.entries().map_err(|_| PurgeStop::Listing)?;
-    for (seen, entry) in entries.enumerate() {
-        let entry = entry.map_err(|_| PurgeStop::Listing)?;
-        if seen >= MAX_ENTRIES {
-            return Err(PurgeStop::TooLarge);
-        }
+    let entries = journals::list_capped(&place.folder, MAX_ENTRIES).map_err(|failed| match failed {
+        journals::ListFailed::Unreadable => PurgeStop::Listing,
+        journals::ListFailed::TooLarge => PurgeStop::TooLarge,
+    })?;
+    for entry in entries {
         let key = if store == Store::Backup {
             backups::backup_key(entry.name.as_encoded_bytes())
         } else if journals::entry_store(&entry.name) == store {

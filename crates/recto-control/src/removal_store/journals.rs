@@ -101,6 +101,28 @@ pub(super) fn flavor_prefix(flavor: &str) -> Vec<u8> {
     prefix
 }
 
+/// Why a folder wasn't listed.
+pub(super) enum ListFailed {
+    /// It, or an entry of it, couldn't be read.
+    Unreadable,
+    /// It holds more entries than the cap.
+    TooLarge,
+}
+
+/// A folder's entries, at most `cap`; one more is `TooLarge`. The survey's listing and the purge's, so they stop at the same place.
+pub(super) fn list_capped(folder: &Folder, cap: usize) -> Result<Vec<Entry>, ListFailed> {
+    let entries = folder.entries().map_err(|_| ListFailed::Unreadable)?;
+    let mut listed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| ListFailed::Unreadable)?;
+        if listed.len() >= cap {
+            return Err(ListFailed::TooLarge);
+        }
+        listed.push(entry);
+    }
+    Ok(listed)
+}
+
 /// The store a name in a `journals` folder is in, as the survey says.
 pub(super) fn entry_store(name: &OsStr) -> Store {
     store_of(names::kind_of(name))
@@ -272,7 +294,11 @@ impl Run<'_> {
                 if owner == Owner::Target
                     && let Some(pins) = pins.as_deref_mut()
                 {
-                    pins.note(key, entry.identity())?;
+                    // Placed by its name alone (sleep, kept): pinned only if this user's, which the open of a journal or a sidecar has proved of its own.
+                    match kind {
+                        Kind::SleepFile | Kind::KeptPages => pins.note_named(key, entry.identity(), self.folder, entry)?,
+                        _ => pins.note(key, entry.identity())?,
+                    }
                 }
             }
         }
@@ -285,16 +311,11 @@ impl Run<'_> {
         if let Some(hook) = &self.caps.before_list {
             hook(&self.path);
         }
-        let Ok(entries) = self.folder.entries() else { return Ok(None) };
-        let mut listed = Vec::new();
-        for entry in entries {
-            let Ok(entry) = entry else { return Ok(None) };
-            if listed.len() >= self.caps.entries {
-                return Err(Refusal::TooLarge);
-            }
-            listed.push(entry);
+        match list_capped(self.folder, self.caps.entries) {
+            Ok(listed) => Ok(Some(listed)),
+            Err(ListFailed::Unreadable) => Ok(None),
+            Err(ListFailed::TooLarge) => Err(Refusal::TooLarge),
         }
-        Ok(Some(listed))
     }
 
     /// Root-relative, with the folder's place: the same name in two folders is two artifacts.

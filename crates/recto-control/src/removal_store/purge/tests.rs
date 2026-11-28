@@ -4,6 +4,7 @@ use super::*;
 use crate::removal_store::backups::survey_backups_pinned;
 use crate::removal_store::journals::survey_journals_pinned;
 use crate::removal_store::journals::tests::{MINE, THEIRS, folder, journal, k, ledger, root, sidecar_of, windowless};
+use crate::removal_store::testing::Hook;
 use crate::removal_store::testing::{put, version};
 use recto_core::removal::{ArtifactId, Effect, Kinds, LEDGER_LIMITS, Limits, Owner, Plan, Request, Survey, Surveyed, TargetMode, lineage, plan};
 use recto_core::save::backup_name;
@@ -227,7 +228,83 @@ fn a_repeated_purge_succeeds_and_counts_what_is_gone() {
     let first = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()).unwrap();
     assert_eq!((first.removed, first.already_gone, first.durable), (2, 0, true));
     let again = purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()).unwrap();
-    assert_eq!((again.removed, again.already_gone), (0, 2));
+    assert_eq!((again.removed, again.already_gone, again.durable), (0, 2, true));
+}
+
+/// Failure: a repeat after a kill is counted durable though nothing was synced: the killed run may have unlinked and died before its sync, so the names a
+/// repeat finds gone are not on the drive. With names gone, every opened folder is synced, and a failure to is not durable.
+#[test]
+fn a_run_that_finds_names_gone_syncs_every_folder() {
+    let rig = Rig::new();
+    let (wanted, _) = journal_step(&rig);
+    purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()).unwrap();
+    let seams = Seams {
+        fail_sync: true,
+        ..Seams::default()
+    };
+    let again = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams).unwrap();
+    assert_eq!((again.removed, again.already_gone, again.durable), (0, 2, false));
+    assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 2, "both sessions' folders");
+}
+
+/// Failure: a step that stops in pass 2 leaves the names it did take out unsynced, so a power cut brings back history a walk was told was gone. The
+/// windowless journal is swapped between the two passes; the session's, already unlinked, is synced on the way out.
+#[test]
+fn a_stop_in_pass_two_still_syncs_the_folder_that_lost_a_name() {
+    let rig = Rig::new();
+    let (wanted, _) = journal_step(&rig);
+    let name = format!("journal-{}.log", k(7));
+    let swap: Hook = {
+        let at = windowless(&rig.dir).join(&name);
+        Arc::new(move |path| {
+            if path == at {
+                std::fs::remove_file(path).unwrap();
+                put(path.parent().unwrap(), path.file_name().unwrap().to_str().unwrap(), &journal(MINE, 7));
+            }
+        })
+    };
+    let seams = Seams {
+        before_unlink: Some(swap),
+        ..Seams::default()
+    };
+    let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
+    assert_eq!(result, Err(PurgeStop::NotThePinned));
+    assert!(!folder(&rig.dir).join(&name).exists(), "the first was taken out");
+    assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 1, "and its folder was synced");
+}
+
+/// Failure: a key given twice (two pins that may disagree) is taken with the last one winning, by an accident of order.
+#[test]
+fn a_key_twice_in_a_step_is_a_bad_pin() {
+    let rig = Rig::new();
+    let (mut wanted, _) = journal_step(&rig);
+    wanted.push(wanted[0]);
+    assert_eq!(purge_history(Store::Journal, &wanted, &rig.roots(), rig.volume()), Err(PurgeStop::BadPin));
+    assert!(folder(&rig.dir).join(format!("journal-{}.log", k(7))).exists());
+}
+
+/// Failure: a file placed by its name alone (sleep, kept, backup) is pinned though it is another user's, so a walk could unlink what this user doesn't own.
+/// Only the file's owner being this user pins it.
+#[test]
+fn a_name_placed_file_is_pinned_only_if_it_is_this_users() {
+    let key = ArtifactKey::of(Store::SleepFile, b"x");
+    let identity = Identity {
+        dev: 1,
+        ino: 2,
+        kind: Kind::File,
+    };
+    let mut pins = HistoryPins::default();
+    let me = recto_platform::local::current_uid();
+    pins.note_owned_by(key, identity, me.wrapping_add(1)).unwrap();
+    assert!(pins.get(&key).is_none(), "another user's");
+    pins.note_owned_by(key, identity, me).unwrap();
+    assert!(pins.get(&key).is_some(), "this user's");
+    // And the real survey pins the rig's name-placed files, which are this user's.
+    let rig = Rig::new();
+    let (s, pins) = surveyed(&rig, TargetMode::Save);
+    let targets: Vec<_> = s.inventory().artifacts().iter().filter(|artifact| artifact.owner == Owner::Target).collect();
+    assert!(targets.iter().any(|artifact| artifact.store == Store::SleepFile));
+    assert!(targets.iter().all(|artifact| pins.get(&s.key(artifact.id).unwrap().1).is_some()));
 }
 
 /// Failure: a step half done on a swapped file: the first of two wanted files is unlinked before the second is found to be another file. A file replaced after

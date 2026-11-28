@@ -88,6 +88,16 @@ fn files(root: &Path) -> BTreeMap<PathBuf, String> {
     look(root).into_iter().filter(|(_, what)| !what.contains("is_dir: true")).collect()
 }
 
+/// A sleep file of an older format, which the pass after a launch removes.
+fn older_sleep_bytes(stamp: FileStamp) -> Vec<u8> {
+    let good = encode_sleep(&sleep_of(stamp, 3));
+    let facts = std::str::from_utf8(&good[good.iter().position(|byte| *byte == b'\n').unwrap() + 1..]).unwrap();
+    let now = format!("{{\"sleep_format\":{},", recto_session::sleep::SLEEP_FORMAT);
+    let mut bytes = facts.trim_end().replacen(&now, "{\"sleep_format\":0,", 1).into_bytes();
+    bytes.push(b'\n');
+    record::seal(recto_session::sleep::SLEEP_KIND, 0, &bytes)
+}
+
 /// A state folder with every kind of history the store writes, and the names a test acts on.
 struct World {
     dir: TempDir,
@@ -137,12 +147,7 @@ impl World {
             inode: 44,
         };
         let older_sleep_path = folder.join(record::sleep_file_name(older, Path::new("/d/older.pdf")));
-        let good = encode_sleep(&sleep_of(older, 3));
-        let facts = std::str::from_utf8(&good[good.iter().position(|byte| *byte == b'\n').unwrap() + 1..]).unwrap();
-        let now = format!("{{\"sleep_format\":{},", recto_session::sleep::SLEEP_FORMAT);
-        let mut bytes = facts.trim_end().replacen(&now, "{\"sleep_format\":0,", 1).into_bytes();
-        bytes.push(b'\n');
-        std::fs::write(&older_sleep_path, record::seal(recto_session::sleep::SLEEP_KIND, 0, &bytes)).unwrap();
+        std::fs::write(&older_sleep_path, older_sleep_bytes(older)).unwrap();
         // A sidecar that doesn't read, beside the journal.
         let sidecar = page_ids::name_of(&journal).unwrap();
         std::fs::write(folder.join(sidecar), b"not a sidecar").unwrap();
@@ -260,7 +265,7 @@ fn a_write_that_checked_before_the_hold_refuses_after_it() {
     let (parked_tx, go_rx) = (Mutex::new(parked_tx), Mutex::new(go_rx));
     park::set(
         &w.store.root,
-        false,
+        "journals",
         Arc::new(move || {
             parked_tx.lock().unwrap().send(()).unwrap();
             go_rx.lock().unwrap().recv_timeout(Duration::from_secs(20)).unwrap();
@@ -370,7 +375,7 @@ fn a_hold_that_lands_mid_copy_leaves_no_kept_pages_and_no_temp() {
     let held = Mutex::new(None);
     park::set(
         &w.store.root,
-        true,
+        "kept",
         Arc::new(move || {
             *held.lock().unwrap() = store.hold_for_removal().ok();
             assert!(held.lock().unwrap().is_some(), "held between the copy and its place");
@@ -379,4 +384,117 @@ fn a_hold_that_lands_mid_copy_leaves_no_kept_pages_and_no_temp() {
     assert!(w.store.keep_pages_of(&w.file, target, &[1, 3]).is_none());
     park::clear(&w.store.root);
     assert_eq!(files(w.root()), before, "no kept copy, and no temporary");
+}
+
+/// Failure: a person's Save waits behind a sweep holding the progress lock across thousands of file opens, or a hold that comes in during the sweep isn't
+/// seen until the end. The lock is taken per file, after a look at the hold: the sweep of older sleep files and the prune after a sleep write each stop
+/// partway when a hold comes in, and the lock is free between files (the hook, which runs between them, can take it).
+#[test]
+fn a_hold_that_comes_in_during_a_sweep_stops_it_partway() {
+    // The sweep of older formats: six files, the hold comes before the third goes.
+    let w = World::new();
+    let folder = w.root().join("session").join(JOURNALS);
+    let old: Vec<PathBuf> = (0..6u64)
+        .map(|at| {
+            let stamp = FileStamp {
+                size: 5,
+                mtime_ns: 5,
+                device: 1,
+                inode: 500 + at,
+            };
+            let path = folder.join(record::sleep_file_name(stamp, Path::new("/d/swept.pdf")));
+            std::fs::write(&path, older_sleep_bytes(stamp)).unwrap();
+            path
+        })
+        .collect();
+    let seen = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let held = Arc::new(Mutex::new(None));
+    park::set(
+        &w.store.root,
+        "sweep",
+        Arc::new({
+            let (store, seen, held) = (Arc::clone(&w.store), Arc::clone(&seen), Arc::clone(&held));
+            move || {
+                assert!(store.progress.try_lock().is_ok(), "the lock isn't held across the loop");
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                    *held.lock().unwrap() = Some(store.hold_for_removal().expect("held mid-sweep"));
+                }
+            }
+        }),
+    );
+    // The sweep also meets the rig's own older sleep file, so what it took is counted from the six.
+    let done = w.store.remove_older_sleep_files(100);
+    let left = old.iter().filter(|path| path.exists()).count();
+    assert!(left >= 4 && left < 6, "stopped partway: {left} of 6 left, {done:?}");
+    park::clear(&w.store.root);
+    drop(held.lock().unwrap().take());
+
+    // The prune after a sleep write: old files go one at a time, and a hold stops it.
+    let w = World::new();
+    let folder = w.root().join("session").join(JOURNALS);
+    let long_ago = std::time::SystemTime::now() - Duration::from_secs((CLOSED_JOURNAL_DAYS + 20) * 86_400);
+    let aged: Vec<PathBuf> = (0..5u64)
+        .map(|at| {
+            let stamp = FileStamp {
+                size: 6,
+                mtime_ns: 6,
+                device: 1,
+                inode: 600 + at,
+            };
+            let path = folder.join(record::sleep_file_name(stamp, Path::new("/d/aged.pdf")));
+            std::fs::write(&path, b"a sleep file").unwrap();
+            std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(long_ago).unwrap();
+            path
+        })
+        .collect();
+    let seen = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let held = Arc::new(Mutex::new(None));
+    park::set(
+        &w.store.root,
+        "sweep",
+        Arc::new({
+            let (store, seen, held) = (Arc::clone(&w.store), Arc::clone(&seen), Arc::clone(&held));
+            move || {
+                assert!(store.progress.try_lock().is_ok(), "the lock isn't held across the loop");
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                    *held.lock().unwrap() = Some(store.hold_for_removal().expect("held mid-prune"));
+                }
+            }
+        }),
+    );
+    assert!(w.store.write_sleep(&w.file, &sleep_of(w.stamp, 3)) > 0);
+    let left = aged.iter().filter(|path| path.exists()).count();
+    assert!(left >= 2 && left < 5, "stopped partway: {left} of 5 left");
+    park::clear(&w.store.root);
+    drop(held.lock().unwrap().take());
+}
+
+/// Failure: a hold is taken while a `load` is moving, copying and deleting history (`recto restore` loads a live session), so it acknowledges quiet writers
+/// that aren't; or a `load` asked during a hold forgets it. A hold asked during a load is refused as `Loading`, and a load asked during a hold is `Withheld`.
+#[test]
+fn a_hold_asked_during_a_load_is_refused_and_a_load_during_a_hold_is_withheld() {
+    let w = World::new();
+    let (parked_tx, parked_rx) = mpsc::channel::<()>();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let (parked_tx, go_rx) = (Mutex::new(parked_tx), Mutex::new(go_rx));
+    park::set(
+        &w.store.root,
+        "load",
+        Arc::new(move || {
+            parked_tx.lock().unwrap().send(()).unwrap();
+            go_rx.lock().unwrap().recv_timeout(Duration::from_secs(20)).unwrap();
+        }),
+    );
+    let loader = {
+        let store = Arc::clone(&w.store);
+        std::thread::spawn(move || store.load())
+    };
+    parked_rx.recv_timeout(Duration::from_secs(20)).expect("the load got as far as its mark");
+    assert_eq!(w.store.hold_for_removal().unwrap_err(), HoldRefused::Loading);
+    go_tx.send(()).unwrap();
+    loader.join().unwrap();
+    park::clear(&w.store.root);
+    let hold = w.store.hold_for_removal().expect("once the load has ended");
+    assert!(matches!(w.store.load(), Loaded::Withheld(Withheld::Pending)));
+    drop(hold);
 }

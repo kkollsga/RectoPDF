@@ -144,6 +144,8 @@ struct Progress {
     read_only: bool,
     /// A removal's walk holds this store (`hold`): every write refuses, and `load` changes nothing.
     held: bool,
+    /// A `load` is under way (`hold`): from before its first write to after its tails, so a hold is refused while it runs.
+    loading: bool,
     /// What an unfinished removal's record says of this folder: `None` before it's been looked at, then the answer, until the next load.
     gate: Option<Option<Withheld>>,
     /// Journals' sidecars read or written, by name (`page_ids`).
@@ -417,17 +419,11 @@ impl RecordStore {
 
     /// Looks at what's here, on a thread that can wait. See the crate's rules for what becomes of what.
     pub fn load(&self) -> Loaded {
-        if !self.wait_for_lock() {
-            return Loaded::OtherInstance;
-        }
-        {
-            let mut progress = self.progress();
-            // A walk's hold keeps the folder as it is, and the reset below would forget it.
-            if progress.held {
-                return Loaded::Withheld(Withheld::Pending);
-            }
-            *progress = Progress::default();
-        }
+        self.while_loading(Self::load_folder)
+    }
+
+    /// What `load` does once it has the record and has marked itself (`hold::while_loading`).
+    fn load_folder(&self) -> Loaded {
         // Before anything is moved, copied, rotated or removed: each step can bring back what a removal is purging.
         if let Some(withheld) = self.gate() {
             return Loaded::Withheld(withheld);
@@ -622,7 +618,7 @@ impl RecordStore {
         self.note_going_back(&dir);
         let mut failed = None;
         let mut closed_one = false;
-        hold::parked(&self.root, false);
+        hold::parked(&self.root, "journals");
         let mut progress = self.progress();
         if let Some(error) = progress.refusal() {
             return hold::refused_journals(work, error);

@@ -11,10 +11,13 @@
 //! **Release looks again.** Dropping the hold clears the cached gate, so the next ask reads the disk: a barrier begun since reads `Pending` and goes on
 //! refusing; one never begun, abandoned or retired reads `Nothing`, and writes go on. A `load` while held returns `Withheld(Pending)` and touches nothing.
 //!
+//! **A load and a hold exclude each other.** `recto restore` loads a live session, so a `load` can run while a walk wants the hold. `load` sets `loading`
+//! under the progress lock before its first write and clears it after its tails (`prune_sleep_files`, `prune_history`); a hold asked meanwhile is refused
+//! (`HoldRefused::Loading`), and a `load` asked while held returns `Withheld(Pending)` and touches nothing.
+//!
 //! **What is not covered.** `note_going_back`'s `went-back` marker may still be written between a write's first check and its lock: it holds no document
-//! data (design §10, D2c-3). `load`'s tails (`prune_sleep_files`, `prune_history`) run after its lock is dropped: a hold is only asked of a live session,
-//! after the restoring `load` has returned. `write_record`'s ledger note (`ledger::note_tabs`) is the ledger's, not a history store's. The hold refuses
-//! every write, the carrier's own included: `CleanSession`'s and `ClearFindText`'s writes through a hold are the command slice's to build.
+//! data (design §10, D2c-3). `write_record`'s ledger note (`ledger::note_tabs`) is the ledger's, not a history store's. The hold refuses every write, the
+//! carrier's own included: `CleanSession`'s and `ClearFindText`'s writes through a hold are the command slice's to build.
 
 use super::*;
 use std::sync::Arc;
@@ -36,6 +39,8 @@ pub enum HoldRefused {
     Unreadable,
     /// Another hold is on this store.
     AlreadyHeld,
+    /// A `load` is under way (`recto restore` loads a live session), and it moves, copies and deletes history until it ends.
+    Loading,
 }
 
 impl RecordStore {
@@ -56,6 +61,10 @@ impl RecordStore {
         if progress.read_only {
             return Err(HoldRefused::Unreadable);
         }
+        if progress.loading {
+            return Err(HoldRefused::Loading);
+        }
+        // Looked at above already; here it only keeps the reason right when two holds race for the lock. Safety is the gate check below.
         if progress.held {
             return Err(HoldRefused::AlreadyHeld);
         }
@@ -65,6 +74,26 @@ impl RecordStore {
         progress.held = true;
         progress.gate = Some(Some(Withheld::Pending));
         Ok(RemovalHold { store: Arc::clone(self) })
+    }
+
+    /// `load`'s frame: the record taken, a hold's refusal (`Withheld(Pending)`: the reset of the store's state below would forget the hold), the state reset and
+    /// `loading` set before the first write, and `loading` cleared after the last (the tails included).
+    pub(super) fn while_loading(&self, load: impl FnOnce(&Self) -> Loaded) -> Loaded {
+        if !self.wait_for_lock() {
+            return Loaded::OtherInstance;
+        }
+        {
+            let mut progress = self.progress();
+            if progress.held {
+                return Loaded::Withheld(Withheld::Pending);
+            }
+            *progress = Progress::default();
+            progress.loading = true;
+        }
+        parked(&self.root, "load");
+        let loaded = load(self);
+        self.progress().loading = false;
+        loaded
     }
 
     /// Removes a file of the store's folder unless a hold (or an unfinished removal) is on it, under the lock every write holds.
@@ -107,16 +136,16 @@ pub(super) fn refused_journals(work: &JournalWork, error: StoreError) -> (Journa
     (outcome, Some(error))
 }
 
-/// Where a test may stop a write (`park`): between a journal write's first check and its lock (`kept` false), or a kept copy and its rename.
-pub(super) fn parked(root: &Path, kept: bool) {
+/// Where a test may stop a store (`park`): `"journals"`, between a journal write's first check and its lock; `"kept"`, between a kept copy and its rename;
+/// `"load"`, in a `load` after it has marked itself; `"sweep"`, before each file a sweep of sleep files removes.
+pub(super) fn parked(root: &Path, place: &'static str) {
     #[cfg(test)]
-    park::here(root, kept);
+    park::here(root, place);
     #[cfg(not(test))]
-    let _ = (root, kept);
+    let _ = (root, place);
 }
 
-/// A test's way to stop a write at a named place, by the store's folder: between a journal write's first check and its lock, or between a kept copy and its
-/// rename.
+/// A test's way to stop a store at a named place, by the store's folder.
 #[cfg(test)]
 pub(super) mod park {
     use std::collections::HashMap;
@@ -124,10 +153,10 @@ pub(super) mod park {
     use std::sync::{Arc, Mutex};
 
     type Park = Arc<dyn Fn() + Send + Sync>;
-    static PARKS: Mutex<Option<HashMap<(PathBuf, bool), Park>>> = Mutex::new(None);
+    static PARKS: Mutex<Option<HashMap<(PathBuf, &'static str), Park>>> = Mutex::new(None);
 
-    pub(in super::super) fn set(root: &Path, kept: bool, park: Park) {
-        PARKS.lock().unwrap().get_or_insert_with(HashMap::new).insert((root.to_path_buf(), kept), park);
+    pub(in super::super) fn set(root: &Path, place: &'static str, park: Park) {
+        PARKS.lock().unwrap().get_or_insert_with(HashMap::new).insert((root.to_path_buf(), place), park);
     }
 
     pub(in super::super) fn clear(root: &Path) {
@@ -136,9 +165,12 @@ pub(super) mod park {
         }
     }
 
-    /// Runs the park for this place, if a test set one.
-    pub(in super::super) fn here(root: &Path, kept: bool) {
-        let park = PARKS.lock().unwrap().as_ref().and_then(|parks| parks.get(&(root.to_path_buf(), kept)).cloned());
+    pub(super) fn here(root: &Path, place: &'static str) {
+        let park = PARKS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|parks| parks.get(&(root.to_path_buf(), place)).cloned());
         if let Some(park) = park {
             park();
         }

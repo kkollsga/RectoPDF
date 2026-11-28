@@ -100,7 +100,7 @@ fn survey_backups_run(
         if owner == Owner::Target
             && let Some(pins) = pins.as_deref_mut()
         {
-            pins.note(key, entry.identity())?;
+            pins.note_named(key, entry.identity(), &folder, &entry)?;
         }
     }
     if lineage.complete() {
