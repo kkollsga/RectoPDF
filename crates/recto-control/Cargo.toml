@@ -32,6 +32,8 @@ sha2.workspace = true
 recto-control = { path = ".", features = ["test-seams"] }
 # Test-only: `FindKey::for_tests`.
 recto-platform = { workspace = true, features = ["test-seams"] }
+# Test-only: a corpus made from page texts (`corpus::build_text_corpus`), for the blocks' tests.
+recto-index = { workspace = true, features = ["test-seams"] }
 # Tests read a refusal's code as the wire does.
 recto-agent = { workspace = true, features = ["test-words"] }
 recto-testpdf.workspace = true

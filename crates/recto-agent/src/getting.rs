@@ -7,8 +7,8 @@
 //! - **Text of record.** When the file's `CorpusKey` still matches a finished index, the page's text is read from it and the reference's characters are
 //!   checked against it; otherwise the page is read live, as `text` reads it. The key and the file's version are checked again at the end, as
 //!   `HitRefs::finish` does: an answer is about one version of the file or about none.
-//! - **No blocks yet.** `paragraph`, `section` and `chapter` need blocks (S5), so they answer the page and say `widened: { to: "page", why:
-//!   "blocks_not_made" }`. A `hit` of a reference to a page answers the page, `why: "ref_is_page"`.
+//! - **No blocks read yet.** `paragraph`, `section` and `chapter` need blocks (S5), so they answer the page and say `widened: { to: "page", why:
+//!   "blocks_building" }` while the blocks this ask started are on their way, and `"blocks_not_made"` otherwise (`crate::blocks::why_page`). A `hit` of a reference to a page answers the page, `why: "ref_is_page"`.
 //! - **No path** is ever in an answer: the link is the file's name and `#page=N`, under `untrusted` with the text.
 
 use crate::commands::getting::{Form, Grain};
@@ -155,7 +155,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         (Grain::Hit, Some((start, end))) => (start.min(end.min(total)), end.min(total), "hit", Value::Null),
         (Grain::Hit, None) => (0, total, "page", json!({ "to": "page", "why": "ref_is_page" })),
         (Grain::Page, _) => (0, total, "page", Value::Null),
-        (_, _) => (0, total, "page", json!({ "to": "page", "why": "blocks_not_made" })),
+        (_, _) => (0, total, "page", json!({ "to": "page", "why": crate::blocks::why_page(access, file.path()) })),
     };
     let unit = &page_chars[from as usize..to as usize];
     let given = cut_at(unit, asked.max_chars as usize);

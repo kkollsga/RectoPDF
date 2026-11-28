@@ -545,7 +545,7 @@ pub(crate) const CLI_BUDGET_TABS: &[Spec] = &[
 ];
 
 /// What `watch --events` can ask for.
-pub const EVENT_GROUPS: &[&str] = &["tabs", "pages", "edits", "draws", "indexing", "contents", "access", "view", "find"];
+pub const EVENT_GROUPS: &[&str] = &["tabs", "pages", "edits", "draws", "indexing", "contents", "blocks", "access", "view", "find"];
 
 /// Every event a session tells watchers of, with the `watch --events` group it's in, in the order of [`EVENT_GROUPS`]. **No default** (review C6): the `Event` type names every event's group in an exhaustive `match`, and a test holds this list to the type.
 pub const EVENTS: &[(&str, &str)] = &[
@@ -562,6 +562,8 @@ pub const EVENTS: &[(&str, &str)] = &[
     ("indexing_finished", "indexing"),
     ("contents_generating", "contents"),
     ("contents_generated", "contents"),
+    ("blocks_building", "blocks"),
+    ("blocks_built", "blocks"),
     ("level_changed", "access"),
     ("view_changed", "view"),
     ("find_changed", "find"),

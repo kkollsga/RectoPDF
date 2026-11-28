@@ -46,7 +46,9 @@ pub fn about(event: &Event) -> About<'_> {
         Event::IndexingStarted { path, .. }
         | Event::IndexingFinished { path, .. }
         | Event::ContentsGenerating { path, .. }
-        | Event::ContentsGenerated { path, .. } => About::File(path),
+        | Event::ContentsGenerated { path, .. }
+        | Event::BlocksBuilding { path, .. }
+        | Event::BlocksBuilt { path, .. } => About::File(path),
         Event::LevelChanged { .. } | Event::ViewSettingsChanged { .. } | Event::ComparisonChanged { .. } => About::Nothing,
     }
 }

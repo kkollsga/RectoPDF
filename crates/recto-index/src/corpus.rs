@@ -8,6 +8,8 @@
 //!     text.pack           Each page's chunk: its record (kind, flags, lengths), then its exact normalised text and what it needs beside that
 //!     ids.bin             Each page's identity, a sealed record a page, as its text is built: `corpus::identities`
 //!     ids.sealed          The identities' header, written after the last record and before `ready.sealed`
+//!     blocks.bin          Each page's blocks, a sealed record a page, made only when an agent asks for a blocks grain: `corpus::blocks`
+//!     blocks.sealed       The blocks' header, written after the last record
 //!     meta.sealed         The file's title and outline, cleaned and capped, for the manifest, sealed
 //!     ready.sealed        The summary, sealed, written last. Without it the corpus isn't used
 //!     refused.json        Why this version of the file won't be indexed. It holds no text
@@ -41,8 +43,12 @@
 use crate::seal::{self, CorpusSeal, Purpose};
 mod agent_life;
 mod aux;
+mod blocks;
 mod identities;
 use aux::Aux;
+#[cfg(any(test, feature = "test-seams"))]
+pub use blocks::build_text_corpus;
+pub use blocks::{BLOCKS_RULES, Begin, BlocksBuild, BlocksMade, BlocksTally, PutError, StoredBlocks, remove_blocks, rules_tag as blocks_rules_tag};
 pub use identities::{FileIdentities, Identities, IdentityInfo, RECORD_BYTES, remove_identities};
 mod retry;
 use retry::retry_failed_pages;
@@ -981,6 +987,7 @@ fn clear_text(paths: &CorpusPaths) {
     let _ = fs::remove_file(&paths.meta);
     let _ = fs::remove_file(&paths.ready);
     identities::remove_files(paths);
+    blocks::remove_files(paths);
     let _ = fs::remove_file(paths.seal());
 }
 

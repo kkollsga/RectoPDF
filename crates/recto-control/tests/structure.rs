@@ -4,13 +4,15 @@
 //! The helper is laid out where `tools/check.sh` lays it (`target/Helpers`), and a test that can't find it says so and stops: there is no fallback to a bare one, in a test or anywhere.
 #![cfg(target_os = "macos")]
 
+use recto_agent::blocks as agent_blocks;
+use recto_agent::blocks::BlocksAsk;
 use recto_agent::generated::{GenState, Generating};
 use recto_control::generating::{GenJob, Generator, Outcome, Runner, Walled};
 use recto_control::structure::blocks::{self, BlocksAnswer, PageStore};
 use recto_control::structure::{Answer, Ended, Said, Structure, headings};
 use recto_index::blocks::PageBlocks;
 use recto_index::blocks::map::Shape;
-use recto_index::corpus::CorpusKey;
+use recto_index::corpus::{CorpusKey, ReadyCorpus, StoredBlocks, build_text_corpus};
 use recto_index::generated::{self, Generated};
 use recto_testpdf::TempPdf;
 use serde_json::Value;
@@ -265,6 +267,154 @@ fn a_file_swapped_by_a_rename_while_it_is_read_is_changed() {
         std::fs::rename(&other, path).unwrap();
     });
     assert!(matches!(ended, Ended::Changed), "{ended:?}");
+}
+
+/// A finished corpus under `key` whose pages' text is `texts`, in a folder of its own, and the key it's sealed under.
+fn corpus_of(key: CorpusKey, texts: &[Option<String>]) -> (recto_testpdf::TempDir, recto_platform::find_key::FindKey) {
+    let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-structure-blocks-");
+    recto_platform::local::ensure_private_dir(&root).unwrap();
+    let find_key = recto_platform::find_key::FindKey::for_tests(3);
+    build_text_corpus(&find_key, &root, (key, None), texts).unwrap();
+    (root, find_key)
+}
+
+fn blocks_ask(pdf: &TempPdf, key: CorpusKey, root: &std::path::Path, find_key: &recto_platform::find_key::FindKey) -> BlocksAsk {
+    BlocksAsk {
+        path: pdf.0.clone(),
+        key,
+        corpus_root: root.to_path_buf(),
+        grant: recto_index::seal::grant_for(find_key, key).unwrap(),
+    }
+}
+
+/// A generator whose blocks run in the real walled helper.
+fn blocks_generator(root: &std::path::Path) -> Generator {
+    Generator::with_runners(
+        root,
+        Box::new(Walled::at(walled_helper())),
+        Box::new(recto_control::blocking::Walled::at(walled_helper())),
+    )
+}
+
+/// Waits for the job to be over: it's queued the moment it's asked for, so idle again is its end.
+fn until_idle(generator: &Generator, key: CorpusKey) {
+    let until = Instant::now() + Duration::from_secs(120);
+    while agent_blocks::Blocking::state(generator, key) != GenState::Idle {
+        assert!(
+            Instant::now() < until,
+            "blocks never ended: {:?}",
+            agent_blocks::Blocking::state(generator, key)
+        );
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+}
+
+/// Failure: the real helper's blocks aren't stored (the header never written, or the answer not mapped onto the corpus's own text), tables are stored as if they were text (a page that is a table answers
+/// as blocks it hasn't), or some page has no blocks though its text has paragraphs. On the three-page blocks document, whose corpus is made from its drawn text: paragraphs, headings and list items are stored,
+/// no table is, and every page has some.
+#[test]
+fn blocks_of_a_made_document_are_stored_and_tables_never() {
+    let pdf = TempPdf::new("blocks.pdf", &recto_testpdf::blocks::blocks_document());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let texts: Vec<Option<String>> = recto_testpdf::blocks::BLOCKS_TEXT.iter().map(|lines| Some(lines.join("\n"))).collect();
+    let (root, find_key) = corpus_of(key, &texts);
+    let generator = blocks_generator(&root);
+    agent_blocks::Blocking::want(&generator, blocks_ask(&pdf, key, &root, &find_key));
+    until_idle(&generator, key);
+    let stored = StoredBlocks::open(&find_key, &root, key).unwrap().expect("blocks were made");
+    let made = stored.made();
+    for shape in [Shape::Paragraph, Shape::Heading, Shape::ListItem] {
+        assert!(made.stored[shape.index()] > 0, "{} stored in {made:?}", shape.name());
+    }
+    assert_eq!((made.stored[Shape::Table.index()], made.stored[Shape::Figure.index()]), (0, 0), "{made:?}");
+    assert!(made.dropped[Shape::Table.index()] >= 1, "the table was seen and not kept: {made:?}");
+    assert!(made.bytes > 0 && made.pages == 3);
+    let corpus = ReadyCorpus::open(&find_key, &root, key).unwrap().unwrap();
+    for page in 0..3 {
+        let mut buffer = Vec::new();
+        let chars = corpus.page(page, &mut buffer).unwrap().text.chars().count() as u32;
+        let blocks = stored.page(page, chars).unwrap_or_else(|error| panic!("page {page}: {error:?}"));
+        assert!(!blocks.blocks.is_empty(), "page {page} has no blocks");
+    }
+}
+
+/// The helper's own child, if any, of this test process.
+fn children() -> String {
+    String::from_utf8_lossy(
+        &std::process::Command::new("/usr/bin/pgrep")
+            .args(["-P", &std::process::id().to_string()])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string()
+}
+
+/// Waits until the blocks job runs and its helper is there.
+fn helper_running(generator: &Generator, key: CorpusKey) {
+    let until = Instant::now() + Duration::from_secs(30);
+    while agent_blocks::Blocking::state(generator, key) != GenState::Running || children().is_empty() {
+        assert!(Instant::now() < until, "the helper never started");
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+}
+
+/// Failure: a blocks job cancelled part way leaves a bin that's believed, or its helper running to the end of its time. The form bomb keeps the helper busy for seconds; the job is cancelled once the helper is
+/// there, and no file of blocks is left and the process has no child.
+#[test]
+fn blocks_cancelled_part_way_nothing_is_written() {
+    let pdf = TempPdf::new("bomb.pdf", &recto_testpdf::form_bomb());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let (root, find_key) = corpus_of(key, &[None]);
+    let generator = blocks_generator(&root);
+    agent_blocks::Blocking::want(&generator, blocks_ask(&pdf, key, &root, &find_key));
+    helper_running(&generator, key);
+    agent_blocks::Blocking::cancel_files(&generator, Some(std::slice::from_ref(&pdf.0)));
+    let until = Instant::now() + Duration::from_secs(30);
+    while agent_blocks::Blocking::making(&generator, None) {
+        assert!(Instant::now() < until, "it didn't stop when cancelled");
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+    assert!(
+        StoredBlocks::open(&find_key, &root, key).unwrap().is_none(),
+        "blocks were made for a cancelled job"
+    );
+    assert!(!root.join(key.hex()).join("v4/app/blocks.bin").exists(), "a bin was left");
+    assert_eq!(children(), "", "children left");
+}
+
+/// Failure: a file swapped by a rename while its blocks are made gets blocks made of the old file's text (the helper holds the old file, so only a look at the path shows the swap): blocks are stored under the
+/// key of a file that is no longer there. The helper is kept busy before it reads (debug builds), the file is swapped once it's there, and the job ends changed with nothing stored.
+#[test]
+fn a_file_rewritten_while_blocks_are_made_gets_none() {
+    let pdf = TempPdf::new("swap.pdf", &recto_testpdf::blocks::blocks_document());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let texts: Vec<Option<String>> = recto_testpdf::blocks::BLOCKS_TEXT.iter().map(|lines| Some(lines.join("\n"))).collect();
+    let (root, find_key) = corpus_of(key, &texts);
+    let generator = Generator::with_runners(
+        &root,
+        Box::new(Walled::at(walled_helper())),
+        Box::new(recto_control::blocking::Walled::at(walled_helper()).busy_for(1500)),
+    );
+    let asked = Instant::now();
+    agent_blocks::Blocking::want(&generator, blocks_ask(&pdf, key, &root, &find_key));
+    helper_running(&generator, key);
+    let other = pdf.0.with_extension("new");
+    std::fs::write(&other, recto_testpdf::text_lines(&["a different file"])).unwrap();
+    std::fs::rename(&other, &pdf.0).unwrap();
+    until_idle(&generator, key);
+    // Only a debug helper spins before it reads (`test_busy_ms`): with a release one laid out the job is over before the file is swapped, and this proves nothing.
+    assert!(
+        asked.elapsed() >= Duration::from_millis(1500),
+        "R3 needs the debug helper in target/Helpers: the job took {:?}",
+        asked.elapsed()
+    );
+    assert!(
+        StoredBlocks::open(&find_key, &root, key).unwrap().is_none(),
+        "blocks were made for a file that was swapped"
+    );
+    assert!(!root.join(key.hex()).join("v4/app/blocks.bin").exists(), "a bin was left");
 }
 
 /// A store with no text for any page, that keeps the pages it was handed.

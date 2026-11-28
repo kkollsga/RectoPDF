@@ -155,6 +155,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn generating(&self) -> Option<&dyn recto_agent::generated::Generating> {
         self.generator.map(|generator| generator as &dyn recto_agent::generated::Generating)
     }
+    fn blocking(&self) -> Option<&dyn recto_agent::blocks::Blocking> {
+        self.generator.map(|generator| generator as &dyn recto_agent::blocks::Blocking)
+    }
     fn finding(&self) -> Option<&dyn recto_agent::find::Finding> {
         Some(self.finder as &dyn recto_agent::find::Finding)
     }
@@ -511,6 +514,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         // What agents asked for stops. What the reader asked for in the sidebar does too, and they can ask again: the helper can't tell whose ask it was.
         if let Some(generator) = &self.generator {
             recto_agent::generated::Generating::cancel(generator, None);
+            recto_agent::blocks::Blocking::cancel_files(generator, None);
         }
     }
 

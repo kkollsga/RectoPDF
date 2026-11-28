@@ -221,6 +221,12 @@ pub fn page_links(path: &Path, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, O
 
 /// [`page_links`] through a file already open, with the password it was opened with if it's protected: the file a page view is drawing, whatever is at its path now.
 pub fn page_links_in(file: std::fs::File, password: Option<&[u8]>, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, OpenError> {
+    page_links_in_within(file, password, pages, MAX_READ_TIME)
+}
+
+/// [`page_links_in`] with a time of its own for the walk, for tests.
+#[doc(hidden)]
+pub fn page_links_in_within(file: std::fs::File, password: Option<&[u8]>, pages: &[u32], time: Duration) -> Result<Vec<(u32, PageLinks)>, OpenError> {
     let source = lopdf::FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)?;
     let options = lopdf::IndexedReaderOptions {
         password: password.map(<[u8]>::to_vec),
@@ -231,7 +237,7 @@ pub fn page_links_in(file: std::fs::File, password: Option<&[u8]>, pages: &[u32]
         options,
         lopdf::IndexedReaderCacheOptions::new(crate::READ_CACHE_BYTES, crate::READ_CACHE_ENTRIES),
     ))?;
-    Ok(links_of(&reader, pages))
+    Ok(links_within(&reader, pages, time))
 }
 
 /// [`page_links`] on bytes in memory: the same walk, for the fuzzer.
@@ -240,10 +246,17 @@ pub fn page_links_bytes(bytes: Arc<[u8]>, pages: &[u32]) -> Result<Vec<(u32, Pag
 }
 
 fn links_of(reader: &IndexedReader, pages: &[u32]) -> Vec<(u32, PageLinks)> {
-    links_within(reader, pages, Budget::new())
+    links_within(reader, pages, MAX_READ_TIME)
 }
 
-fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u32, PageLinks)> {
+/// [`page_links`] with a time of its own for the walk: for tests, which give the kinds of link room on a busy machine and test the cut with a short one.
+#[doc(hidden)]
+pub fn page_links_within(path: &Path, pages: &[u32], time: Duration) -> Result<Vec<(u32, PageLinks)>, OpenError> {
+    Ok(links_within(&open_reader_cached(path)?, pages, time))
+}
+
+/// The time counts from when the walk of the annotations begins, after the page map and the root are read: a slow disk or a big file's map must not use it up before one link is read.
+fn links_within(reader: &IndexedReader, pages: &[u32], time: Duration) -> Vec<(u32, PageLinks)> {
     let (old_dests, names_tree) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
     let Ok(map) = reader.page_map() else {
         return pages.iter().take(MAX_PAGES_PER_READ).map(|page| (*page, PageLinks::default())).collect();
@@ -260,6 +273,7 @@ fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u
         .flatten()
         .and_then(|root| root.as_dict().ok().cloned())
         .unwrap_or_default();
+    let budget = Budget::lasting(time);
     let mut out = Vec::new();
     for &page in pages.iter().take(MAX_PAGES_PER_READ) {
         let Some(entry) = map.get(page as usize) else {
@@ -1019,7 +1033,7 @@ mod tests {
             media: (612.0, 792.0),
         }]);
         let reader = open_bytes(Arc::from(bytes)).unwrap();
-        let read = links_within(&reader, &[0], Budget::lasting(Duration::from_secs(120)));
+        let read = links_within(&reader, &[0], Duration::from_secs(120));
         assert_eq!(read[0].1.links.len(), MAX_PAGE_LINKS);
         assert!(read[0].1.truncated);
         let pages = MAX_LABEL_RANGES + 1;
