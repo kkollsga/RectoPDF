@@ -351,6 +351,56 @@ fn every_way_out_syncs_what_lost_a_name_and_a_repeated_step_succeeds() {
     assert!(!purge(&w, Store::CorpusText, &corpora, &failing).unwrap().durable);
 }
 
+/// Moves the folder at `dir` aside and puts a new one at its name: the name no longer leads to the folder that was pinned.
+fn swap_for_a_new_folder(dir: &Path) {
+    fs::rename(dir, dir.with_file_name("aside-of-the-pinned")).unwrap();
+    fs::create_dir(dir).unwrap();
+}
+
+/// Failure: a corpora step that stops in pass 1 (a folder that is no longer the pinned one) leaves the root unsynced though a wanted name was already gone,
+/// which a run killed before its sync may have taken. One wanted corpus is removed and another replaced by a new folder at its name: the step stops
+/// `NotThePinned`, the third is untouched, and the root is synced on the way out.
+#[test]
+fn a_corpora_stop_in_pass_one_still_syncs_the_root_when_a_wanted_name_was_already_gone() {
+    let w = World::new();
+    let keys = three_corpora(&w);
+    let corpora = step_of(&plan_steps(&w), Store::CorpusText);
+    fs::remove_dir_all(w.corpus.join(keys[0].hex())).unwrap();
+    swap_for_a_new_folder(&w.corpus.join(keys[1].hex()));
+    let seams = CacheSeams::default();
+    assert_eq!(purge(&w, Store::CorpusText, &corpora, &seams), Err(PurgeStop::NotThePinned));
+    assert!(w.corpus.join(keys[2].hex()).exists(), "nothing was unlinked");
+    assert!(syncs(&seams) >= 1, "the root is synced when a name was already gone");
+}
+
+/// Failure: an agent-pages step that stops in pass 1 leaves the root unsynced though a wanted agent folder was already gone. One is removed and another replaced
+/// by a new folder at its name: the step stops `NotThePinned`, the replaced one is untouched, and the root is synced on the way out.
+#[test]
+fn an_agent_pages_stop_in_pass_one_still_syncs_the_root_when_a_wanted_name_was_already_gone() {
+    let w = World::new();
+    let keys = three_corpora(&w);
+    for key in &keys {
+        let claim = corpus::claim_agent_folder(&w.corpus, *key).unwrap();
+        corpus::retire_agent_folder(&w.corpus, *key, claim);
+    }
+    let agents = step_of(&plan_steps(&w), Store::CorpusAgentPages);
+    assert_eq!(agents.len(), 3);
+    let agent_dir = |key: CorpusKey| {
+        fs::read_dir(w.corpus.join(key.hex()).join("v4"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().is_some_and(names::is_agent_folder))
+            .unwrap()
+    };
+    fs::remove_dir_all(agent_dir(keys[0])).unwrap();
+    let swapped = agent_dir(keys[1]);
+    swap_for_a_new_folder(&swapped);
+    let seams = CacheSeams::default();
+    assert_eq!(purge(&w, Store::CorpusAgentPages, &agents, &seams), Err(PurgeStop::NotThePinned));
+    assert!(swapped.exists());
+    assert!(syncs(&seams) >= 1, "the root is synced when a name was already gone");
+}
+
 /// Failure: a step runs with a pin that isn't its store's kind, a pin on another volume, a key twice, a batch over the limit, or for a store that isn't a cache,
 /// and unlinks something. Each is refused whole, and every file stays.
 #[test]

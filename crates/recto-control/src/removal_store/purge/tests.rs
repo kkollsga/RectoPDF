@@ -261,7 +261,11 @@ fn a_stop_in_pass_one_still_syncs_when_a_wanted_name_was_already_gone() {
     let result = purge_with(Store::Journal, &wanted, &rig.roots(), rig.volume(), &seams);
     assert_eq!(result, Err(PurgeStop::Linked));
     assert!(folder(&rig.dir).join(&name).exists(), "nothing was unlinked");
-    assert_eq!(seams.syncs.load(std::sync::atomic::Ordering::SeqCst), 2, "both sessions' folders were synced on the way out");
+    assert_eq!(
+        seams.syncs.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "both sessions' folders were synced on the way out"
+    );
 }
 
 /// Failure: a step that stops in pass 2 leaves the names it did take out unsynced, so a power cut brings back history a walk was told was gone. The

@@ -416,38 +416,22 @@ fn purge_corpora(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, volu
         _ => None,
     };
     let mut already_gone = (want.len() - matches.len() - usize::from(old.is_some())) as u32;
-    // Pass 1: nothing is unlinked unless every folder to go is what was pinned and nothing holds it.
-    for (entry, pin) in &matches {
-        if let Some(stop) = differs_folder(entry, pin, volume) {
-            return Err(stop);
-        }
-        let Some(root) = &root else { break };
-        let Some(folder) = open_in_ours(root, &entry.name)? else { continue };
-        if folder.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
-            return Err(PurgeStop::NotThePinned);
-        }
-        Locks::Corpus.take(&folder)?;
-    }
-    if let (Some((entry, pin)), Some(parent)) = (&old, &beside) {
-        if let Some(stop) = differs_folder(entry, pin, volume) {
-            return Err(stop);
-        }
-        take_old(parent, pin, volume, seams, None)?;
-    }
-    seams.between_passes(roots.corpus);
-    // Pass 2.
-    // `touched`: something was unlinked in the root's folders, so the root is synced on every way out, a stop inside a tree included.
+    // Pass 1 and pass 2 share their way out below: a stop in pass 1 syncs too, when a name was already gone (a run killed before its sync took it).
     let (mut removed, touched_root, touched_beside) = (0u32, Cell::new(false), Cell::new(false));
-    let mut stop = None;
-    for (entry, pin) in &matches {
-        let Some(root) = &root else { break };
-        seams.folder_looked_at(|| roots.corpus.join(&entry.name));
-        match take_folder(root, &entry.name, pin, volume, &Locks::Corpus, seams, &touched_root) {
-            Ok(Taken::Removed) => removed += 1,
-            Ok(Taken::Gone) => already_gone += 1,
-            Err(failed) => {
-                stop = Some(failed);
-                break;
+    let mut stop = corpora_pass_one(&root, &matches, &old, &beside, volume, seams).err();
+    if stop.is_none() {
+        seams.between_passes(roots.corpus);
+        // Pass 2. `touched`: something was unlinked in the root's folders, so the root is synced on every way out, a stop inside a tree included.
+        for (entry, pin) in &matches {
+            let Some(root) = &root else { break };
+            seams.folder_looked_at(|| roots.corpus.join(&entry.name));
+            match take_folder(root, &entry.name, pin, volume, &Locks::Corpus, seams, &touched_root) {
+                Ok(Taken::Removed) => removed += 1,
+                Ok(Taken::Gone) => already_gone += 1,
+                Err(failed) => {
+                    stop = Some(failed);
+                    break;
+                }
             }
         }
     }
@@ -493,6 +477,35 @@ fn purge_corpora(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, volu
         already_gone,
         durable,
     })
+}
+
+/// Pass 1 of a corpus step: nothing is unlinked unless every folder to go is what was pinned and nothing holds it, the older build's `corpus` included.
+fn corpora_pass_one(
+    root: &Option<Folder>,
+    matches: &[(Entry, Pin)],
+    old: &Option<(Entry, Pin)>,
+    beside: &Option<Folder>,
+    volume: VolumeNow,
+    seams: &CacheSeams,
+) -> Result<(), PurgeStop> {
+    for (entry, pin) in matches {
+        if let Some(stop) = differs_folder(entry, pin, volume) {
+            return Err(stop);
+        }
+        let Some(root) = root else { break };
+        let Some(folder) = open_in_ours(root, &entry.name)? else { continue };
+        if folder.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
+            return Err(PurgeStop::NotThePinned);
+        }
+        Locks::Corpus.take(&folder)?;
+    }
+    if let (Some((entry, pin)), Some(parent)) = (old, beside) {
+        if let Some(stop) = differs_folder(entry, pin, volume) {
+            return Err(stop);
+        }
+        take_old(parent, pin, volume, seams, None)?;
+    }
+    Ok(())
 }
 
 /// The folder beside the corpus root, if the root is named as the app names it (where the older build's `corpus` is).
@@ -633,6 +646,22 @@ fn open_chain(root: &Folder, agent: &Agent) -> Result<Option<(Folder, Folder)>, 
     Ok(Some((corpus, format)))
 }
 
+/// Pass 1 of an agent step: each is the folder that was pinned and no session or build holds it.
+fn agents_pass_one(root: &Folder, agents: &[Agent], volume: VolumeNow) -> Result<(), PurgeStop> {
+    for agent in agents {
+        if let Some(stop) = differs_folder(&agent.entry, &agent.pin, volume) {
+            return Err(stop);
+        }
+        let Some((corpus, format)) = open_chain(root, agent)? else { continue };
+        let Some(folder) = open_in_ours(&format, &agent.entry.name)? else { continue };
+        if folder.identity().map_err(|_| PurgeStop::Listing)? != agent.entry.identity() {
+            return Err(PurgeStop::NotThePinned);
+        }
+        Locks::Agent { corpus: &corpus }.take(&folder)?;
+    }
+    Ok(())
+}
+
 /// The agent folders of `CorpusAgentPages`: normally found already gone, because their corpus went with the `CorpusText` step before this one.
 fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>, volume: VolumeNow, seams: &CacheSeams) -> Result<Purged, PurgeStop> {
     let Some(root) = open_ours(roots.corpus)? else {
@@ -644,22 +673,14 @@ fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>
     };
     let agents = find_agents(&root, want)?;
     let mut already_gone = (want.len() - agents.len()) as u32;
-    // Pass 1.
-    for agent in &agents {
-        if let Some(stop) = differs_folder(&agent.entry, &agent.pin, volume) {
-            return Err(stop);
-        }
-        let Some((corpus, format)) = open_chain(&root, agent)? else { continue };
-        let Some(folder) = open_in_ours(&format, &agent.entry.name)? else { continue };
-        if folder.identity().map_err(|_| PurgeStop::Listing)? != agent.entry.identity() {
-            return Err(PurgeStop::NotThePinned);
-        }
-        Locks::Agent { corpus: &corpus }.take(&folder)?;
+    // Pass 1 and pass 2 share their way out below: a stop in pass 1 syncs the root too, when a name was already gone.
+    let (mut removed, touched_root) = (0u32, Cell::new(false));
+    let mut stop = agents_pass_one(&root, &agents, volume).err();
+    if stop.is_none() {
+        seams.between_passes(roots.corpus);
     }
-    seams.between_passes(roots.corpus);
     // Pass 2.
-    let (mut removed, mut stop, touched_root) = (0u32, None, Cell::new(false));
-    for agent in &agents {
+    for agent in agents.iter().filter(|_| stop.is_none()) {
         seams.folder_looked_at(|| roots.corpus.join(&agent.corpus).join(&agent.format).join(&agent.entry.name));
         let (corpus, format) = match open_chain(&root, agent) {
             Ok(Some(chain)) => chain,

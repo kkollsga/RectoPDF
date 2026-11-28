@@ -223,7 +223,7 @@ pub(super) fn check_pins(wanted: &[(ArtifactKey, Pin)], volume: VolumeNow, kind:
 
 /// The two passes over the files of `places` that are `want`'s, shared by the history purge and the caches' notes and contents: a listing of each place, capped at
 /// `cap` and keyed by `key_of`; a wanted key not listed is already gone; pass 1, every listed match is a plain file with one link and the pinned device and
-/// inode; pass 2, each looked at again just before its own unlink; every folder that lost a name synced, on every way out; a last listing that no wanted key
+/// inode; pass 2, each looked at again just before its own unlink; every folder that lost a name synced, on every way out (a stop in pass 1 included, when a name was already gone); a last listing that no wanted key
 /// is in.
 pub(super) fn purge_files(
     places: &[Place],
@@ -250,16 +250,15 @@ pub(super) fn purge_files(
     // A fixed order (by place, then name), so a stop part way leaves the same files and a resume takes the same rest.
     matches.sort_by(|a, b| (a.place, &a.entry.name).cmp(&(b.place, &b.entry.name)));
     let mut already_gone = (want.len() - matches.len()) as u32;
-    // Pass 1: nothing is unlinked unless every file to go is what was pinned.
-    for found in &matches {
-        if let Some(stop) = differs(&found.entry, &found.pin, volume) {
-            return Err(stop);
-        }
-    }
-    // Pass 2: each looked at again just before its own unlink.
+    // Pass 1: nothing is unlinked unless every file to go is what was pinned. A stop here takes the same way out as one in pass 2, so a name already gone
+    // (taken by a run killed before its sync) is synced either way.
     let mut removed = 0u32;
     let mut lost = vec![false; places.len()];
-    let unlinked = unlink_all(places, &matches, volume, seams, &mut removed, &mut already_gone, &mut lost);
+    let unlinked = match matches.iter().find_map(|found| differs(&found.entry, &found.pin, volume)) {
+        Some(stop) => Err(stop),
+        // Pass 2: each looked at again just before its own unlink.
+        None => unlink_all(places, &matches, volume, seams, &mut removed, &mut already_gone, &mut lost),
+    };
     // Every folder that lost a name is synced on every way out, a stop in pass 2 included. A name already gone may have been taken by a run that was killed
     // before its sync, so with any gone every folder is synced.
     if already_gone > 0 {
