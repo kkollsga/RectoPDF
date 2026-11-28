@@ -1504,7 +1504,10 @@ mod tests {
     }
 
     /// The switches that only go with another, each with its refusal when it's given alone: `find --jump` needs a step.
-    const SWITCHES_THAT_GO_WITH_ANOTHER: &[(&str, &str, &str)] = &[("find", "jump", crate::commands::finding::JUMP_WITH_A_STEP)];
+    const SWITCHES_THAT_GO_WITH_ANOTHER: &[(&str, &str, &str)] = &[
+        ("find", "jump", crate::commands::finding::JUMP_WITH_A_STEP),
+        ("get", "from_here", crate::commands::getting::FROM_HERE_NEEDS_A_GRAIN),
+    ];
 
     /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field; or a word a row
     /// offers is refused by its command's type (R2.5); or a switch alone is refused for some other switch's combination (second review of R2.5, S3: a

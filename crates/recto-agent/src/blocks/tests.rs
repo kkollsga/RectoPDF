@@ -10,6 +10,9 @@ use recto_session::{DocLoader, Session};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+/// What `why()` says when the blocks can be read.
+const READY: &str = "ready";
+
 #[derive(Clone)]
 struct Pdf;
 
@@ -138,7 +141,10 @@ impl World {
     }
 
     fn why(&self) -> &'static str {
-        why_page(self, self.file.0.as_path())
+        match readable(self, self.file.0.as_path()) {
+            Readable::Widen { why, .. } => why,
+            Readable::Ready(_) => READY,
+        }
     }
 
     fn wait(&self) -> ConditionState {
@@ -167,12 +173,12 @@ fn get_says_blocks_building_while_queued_or_running_and_asks_once() {
     assert_eq!(bare.host.wants.load(Ordering::SeqCst), 0, "nothing is asked of a file with no index");
 }
 
-/// Failure: `get` goes on saying blocks are building once they are made (until S5 reads them it says `blocks_not_made`), or asks for them again; or a stored set that doesn't add up is kept.
+/// Failure: `get` goes on saying blocks are building once they are made (they are read back), or asks for them again; or a stored set that doesn't add up is kept.
 #[test]
 fn made_blocks_are_not_asked_for_again() {
     let world = a_world(true);
     world.make_blocks();
-    assert_eq!(world.why(), NOT_MADE);
+    assert_eq!(world.why(), READY, "made: read back, not widened");
     assert_eq!(world.host.wants.load(Ordering::SeqCst), 0);
     let header = world.root.join(world.key.hex()).join("v4/app/blocks.sealed");
     std::fs::write(&header, b"not a header").unwrap();

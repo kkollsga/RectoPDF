@@ -383,6 +383,16 @@ fn toc(lines: &[(u32, u8, u16)]) -> Toc {
     Toc::from_lines(&entries, false).with_tops(&tops)
 }
 
+fn upright(height: f32) -> recto_core::nav::Frame {
+    recto_core::nav::Frame {
+        turns: 0,
+        left: 0.0,
+        bottom: 0.0,
+        right: 612.0,
+        top: height,
+    }
+}
+
 fn at(page: u32, top: u16) -> Place {
     Place { page, top }
 }
@@ -429,11 +439,11 @@ fn text_before_any_entry_is_in_no_section() {
     high.page = 2;
     high.bbox = [0, 0, 100, 700];
     assert_eq!(
-        Place::of_block(&high, 800.0),
+        Place::of_block(&high, upright(800.0)),
         at(2, 563),
         "the middle of its box: 450 of 800 points down, 562.5 thousandths"
     );
-    assert_eq!(Place::of_block(&high, f32::NAN), at(2, 0));
+    assert_eq!(Place::of_block(&high, upright(f32::NAN)), at(2, 500), "no usable frame: the middle");
 }
 
 fn piece(kind: Kind, text: &[char]) -> Piece<'_> {
@@ -606,7 +616,7 @@ fn a_heading_block_is_in_the_section_it_starts() {
     heading.page = 0;
     // The heading's top is really 699.2 points on an 800-point page (thousandths: 126), and the box says 700 once rounded.
     heading.bbox = [50, 690, 200, 700];
-    let place = Place::of_block(&heading, 800.0);
+    let place = Place::of_block(&heading, upright(800.0));
     assert_eq!(sections.section_of(place), Some(1), "{place:?}");
 }
 

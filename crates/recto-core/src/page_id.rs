@@ -235,6 +235,11 @@ pub fn read_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> P
     }
 }
 
+/// How page `page` (zero-based) is shown: its crop box and its turn. `None` for a page the map doesn't have.
+pub fn page_frame(reader: &IndexedReader, map: &PageMap, page: u32) -> Option<crate::nav::Frame> {
+    map.get(page as usize).map(|entry| crate::nav::frame_of(reader, entry))
+}
+
 /// The document's `/ID` pair, if it has one of two strings.
 pub fn document_ids(reader: &IndexedReader) -> Option<DocumentIds> {
     let ids = reader.trailer_entry_owned(b"ID").ok()??;

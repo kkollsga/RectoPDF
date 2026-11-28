@@ -7,7 +7,7 @@
 use crate::generated::GenState;
 use crate::{AgentError, Code, ConditionState, SessionAccess, TabRef, exit};
 use recto_index::blocks::map::Shape;
-use recto_index::corpus::{self, CorpusKey, DiskState, StoredBlocks};
+use recto_index::corpus::{self, CorpusKey, DiskState, ReadyCorpus, StoredBlocks};
 use recto_platform::find_key::FindKey;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -44,15 +44,21 @@ pub(crate) fn stop(blocking: &dyn Blocking, paths: Option<&[PathBuf]>) {
     crate::index::wait_while(|| blocking.making(paths));
 }
 
-/// What a corpus has of blocks, for a file whose index is ready: the stored ones, if they open. A set that doesn't add up is thrown away.
-fn stored(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<StoredBlocks> {
-    match StoredBlocks::open(find_key, root, key) {
-        Ok(found) => found,
+/// What a corpus has of blocks, for a file whose index is ready: the stored ones made against this corpus as it stands now (its pages and its retries), if they open. A set that doesn't add up is
+/// thrown away.
+fn stored_pair(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<(ReadyCorpus, StoredBlocks)> {
+    let ready = ReadyCorpus::open(find_key, root, key).ok()??;
+    match StoredBlocks::open_matching(find_key, root, key, &ready.summary) {
+        Ok(found) => found.map(|found| (ready, found)),
         Err(_) => {
             corpus::remove_blocks(root, key);
             None
         }
     }
+}
+
+fn stored(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<StoredBlocks> {
+    stored_pair(find_key, root, key).map(|(_, found)| found)
 }
 
 /// Asks for blocks if nobody has, and says where they stand.
@@ -72,20 +78,53 @@ fn ask(blocking: &dyn Blocking, find_key: &FindKey, root: &Path, path: &Path, ke
     blocking.state(key)
 }
 
-/// **The `why` of a blocks grain answered as a page:** asks for the blocks if this is the first ask, and says [`BUILDING`] while they're on their way. Until blocks are read back (S5),
-/// everything else is [`NOT_MADE`], made or not.
-pub(crate) fn why_page<A: SessionAccess>(access: &A, path: &Path) -> &'static str {
+/// What a blocks grain has to read from: the finished corpus and its blocks, or why the page is answered.
+pub(crate) enum Readable {
+    Ready(Box<(ReadyCorpus, StoredBlocks)>),
+    /// The page is answered, with this `why` and, when blocks were refused or failed, Rust's words for it.
+    Widen {
+        why: &'static str,
+        note: Option<&'static str>,
+    },
+}
+
+/// **What a blocks grain can read:** the stored blocks if there are some for this file as it is now. Otherwise the `why` it widens to, and the first ask asks for them to be made: [`BUILDING`] while
+/// they're on their way, [`NOT_MADE`] otherwise, with the words for why when they were refused or failed. A set found stale or damaged is thrown away and asked for again.
+pub(crate) fn readable<A: SessionAccess>(access: &A, path: &Path) -> Readable {
+    let not_made = Readable::Widen { why: NOT_MADE, note: None };
     let (Some(indexing), Some(blocking)) = (access.indexing(), access.blocking()) else {
-        return NOT_MADE;
+        return not_made;
     };
-    let Some(find_key) = indexing.find_key() else { return NOT_MADE };
-    let Ok(key) = CorpusKey::of_file(path) else { return NOT_MADE };
-    if !matches!(corpus::disk_state(find_key, indexing.root(), key), DiskState::Ready(_)) || stored(find_key, indexing.root(), key).is_some() {
-        return NOT_MADE;
+    let Some(find_key) = indexing.find_key() else { return not_made };
+    let Ok(key) = CorpusKey::of_file(path) else { return not_made };
+    if !matches!(corpus::disk_state(find_key, indexing.root(), key), DiskState::Ready(_)) {
+        return not_made;
+    }
+    if let Some(pair) = stored_pair(find_key, indexing.root(), key) {
+        return Readable::Ready(Box::new(pair));
     }
     match ask(blocking, find_key, indexing.root(), path, key) {
-        GenState::Queued | GenState::Running => BUILDING,
-        _ => NOT_MADE,
+        GenState::Queued | GenState::Running => Readable::Widen { why: BUILDING, note: None },
+        GenState::Refused(code) | GenState::Failed(code) => Readable::Widen {
+            why: NOT_MADE,
+            note: Some(reason_words(&code)),
+        },
+        GenState::Idle => not_made,
+    }
+}
+
+/// Blocks read as stale or damaged after they opened: taken away, asked for again, and what the answer widens to meanwhile.
+pub(crate) fn throw_away_and_ask<A: SessionAccess>(access: &A, path: &Path) -> (&'static str, Option<&'static str>) {
+    if let (Some(indexing), Ok(key)) = (access.indexing(), CorpusKey::of_file(path)) {
+        corpus::remove_blocks(indexing.root(), key);
+    }
+    match readable(access, path) {
+        Readable::Widen { why, note } => (why, note),
+        // They read after all (the removal was skipped, as a build holds the folder): they are on their way if that build is queued or running, and otherwise not made.
+        Readable::Ready(_) => match (access.blocking(), CorpusKey::of_file(path)) {
+            (Some(blocking), Ok(key)) if matches!(blocking.state(key), GenState::Queued | GenState::Running) => (BUILDING, None),
+            _ => (NOT_MADE, None),
+        },
     }
 }
 

@@ -240,6 +240,18 @@ pub(crate) fn every_command() -> Vec<Command> {
             grain: crate::commands::getting::Grain::Page,
             form: crate::commands::getting::Form::Text,
             max_chars: 100,
+            from_here: false,
+            entry: None,
+        }),
+        // A reference to characters, at a blocks grain, in Markdown and going on from a `more`: the walk must see what it can tell an agent of a protected document, as for a page.
+        Command::from(crate::commands::getting::Get {
+            reference: locator_characters(),
+            tab: tab(),
+            grain: crate::commands::getting::Grain::Section,
+            form: crate::commands::getting::Form::Markdown,
+            max_chars: 100,
+            from_here: true,
+            entry: Some(0),
         }),
         Command::from(crate::commands::page_link::Link {
             page: 1,

@@ -1,11 +1,12 @@
 //! **Sections from a tab's contents.** An entry's section runs from the entry to the next entry of the same or shallower depth (or the document's end).
 //! A chapter is a top-level entry (depth 0). A place is a page and how far down it (thousandths of the page from its top, as a contents entry says it),
-//! because that is where a contents entry is: a block's place is [`Place::of_block`].
+//! because that is where a contents entry is: a block's place is [`Place::of_block`], as the page is shown.
 //!
 //! Entries with no place (`top` 0) sit at their page's top, as `Toc::section_at_place` reads them. Entries are taken in the order the contents gives them;
 //! the page of an entry that the file left out ([`recto_core::NONE`]) makes the entry unplaced, so it holds nothing.
 
 use super::Block;
+use recto_core::nav::Frame;
 use recto_core::{TOP_SCALE, TocEntry};
 
 /// Most entries read. A hostile outline is capped by the reader long before this; this keeps a query's cost bounded whatever it's given.
@@ -19,20 +20,31 @@ pub struct Place {
 }
 
 impl Place {
-    /// Where a block is: the middle of its box (a box is whole points and a contents entry's place is a thousandth of the page, so an edge can fall half a point off an entry's own place and a heading into the section before it), on a page `page_height` points high (the box is in the page's own coordinates, from the bottom). A height that
-    /// isn't a positive number puts the block at the page's top.
+    /// Where a page's blocks are put when the page has no frame to place them by, or a box can't be placed: the middle of the page.
+    pub const MIDDLE: u16 = 500;
+
+    /// Where a block is: the middle of its box (a box is whole points and a contents entry's place is a thousandth of the page, so an edge can fall half a point off an entry's own place and a heading
+    /// into the section before it), **as the page is shown** (`Frame::to_shown`: the page's turn, and a crop box that doesn't start at 0, which the box's own coordinates are not in), as a thousandth of
+    /// the shown height from the top. A frame with no area, or a box that can't be placed, is [`Self::MIDDLE`].
     #[must_use]
-    pub fn of_block(block: &Block, page_height: f32) -> Self {
-        let middle = (f32::from(block.bbox[1]) + f32::from(block.bbox[3])) / 2.0;
-        let down = if page_height.is_finite() && page_height > 0.0 {
-            (page_height - middle) / page_height
-        } else {
-            0.0
+    pub fn of_block(block: &Block, frame: Frame) -> Self {
+        let rect = [
+            f32::from(block.bbox[0]),
+            f32::from(block.bbox[1]),
+            f32::from(block.bbox[2]),
+            f32::from(block.bbox[3]),
+        ];
+        let top = match (frame.shown_size(), frame.to_shown(rect)) {
+            (Some((_, height)), Some(shown)) => recto_core::thousandths(f64::from(((shown[1] + shown[3]) / 2.0) / height)),
+            _ => Self::MIDDLE,
         };
-        Self {
-            page: block.page,
-            top: recto_core::thousandths(f64::from(down)),
-        }
+        Self { page: block.page, top }
+    }
+
+    /// A block on a page with no frame.
+    #[must_use]
+    pub const fn middle(page: u32) -> Self {
+        Self { page, top: Self::MIDDLE }
     }
 }
 
@@ -41,6 +53,8 @@ impl Place {
 pub struct Sections {
     /// Each entry's start, depth, and where its section ends (`None`: at the document's end). `None` for the start when the entry has no page.
     rows: Vec<Row>,
+    /// The placed entries' starts and numbers, sorted by place and then number: what a page's entries are found in (one binary search), so no walk of every entry is made for a page or a block.
+    by_start: Vec<(Place, u32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,13 +68,19 @@ impl Sections {
     /// Ranges from the entries, in contents order. Past [`MAX_ENTRIES`] the rest are left out.
     #[must_use]
     pub fn new(entries: &[TocEntry]) -> Self {
+        Self::with_tops(entries, |entry| entry.top)
+    }
+
+    /// [`Self::new`] with each entry's place down its page as `top_of` says: a page whose places mean nothing (an unsaved turn, or the view turned) has every entry at its top, as `contents` says.
+    #[must_use]
+    pub fn with_tops(entries: &[TocEntry], top_of: impl Fn(&TocEntry) -> u16) -> Self {
         let mut rows: Vec<Row> = entries
             .iter()
             .take(MAX_ENTRIES)
             .map(|entry| Row {
                 start: (entry.page != recto_core::NONE).then_some(Place {
                     page: entry.page,
-                    top: entry.top.min(TOP_SCALE),
+                    top: top_of(entry).min(TOP_SCALE),
                 }),
                 depth: entry.depth,
                 end: None,
@@ -79,7 +99,30 @@ impl Sections {
                 }
             }
         }
-        Self { rows }
+        let mut by_start: Vec<(Place, u32)> = rows.iter().enumerate().filter_map(|(index, row)| Some((row.start?, index as u32))).collect();
+        by_start.sort_unstable();
+        Self { rows, by_start }
+    }
+
+    /// The entries that start on `page`, by place and then number: `(place, entry)`.
+    #[must_use]
+    pub fn starting_on(&self, page: u32) -> &[(Place, u32)] {
+        let first = self.by_start.partition_point(|(place, _)| place.page < page);
+        let end = self.by_start.partition_point(|(place, _)| place.page <= page);
+        &self.by_start[first..end]
+    }
+
+    /// The next and the previous entry to go to from `entry`: the next placed entry after it, and the nearest placed one before it, whose depth is not deeper, in the contents' order. For a chapter that is
+    /// the next and the previous chapter. `None` where there is none.
+    #[must_use]
+    pub fn neighbours(&self, entry: usize) -> (Option<usize>, Option<usize>) {
+        let Some(depth) = self.rows.get(entry).map(|row| row.depth) else {
+            return (None, None);
+        };
+        let fits = |index: &usize| self.rows[*index].start.is_some() && self.rows[*index].depth <= depth;
+        let next = (entry + 1..self.rows.len()).find(fits);
+        let prev = (0..entry).rev().find(fits);
+        (next, prev)
     }
 
     #[must_use]
@@ -111,6 +154,8 @@ impl Sections {
     pub fn section_of(&self, place: Place) -> Option<usize> {
         let mut best: Option<(Place, usize)> = None;
         for (index, row) in self.rows.iter().enumerate() {
+            #[cfg(test)]
+            super::unit::count_step();
             if let Some(start) = row.start
                 && self.holds(index, place)
                 && best.is_none_or(|(seen, _)| start >= seen)

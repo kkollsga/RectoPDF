@@ -86,3 +86,20 @@ A: yes, wall the helper off first. B: blocks made when an agent first asks. C: a
 - A fresh read-only `File` per spawn (the fd shares its offset with the host's open file).
 - The headings job by descriptor stays off paths (fonts, CMaps); its render-worker ink check moves to the session (the walled helper can't spawn).
 - Sign the app after both helpers.
+
+## S5, settled 2026-11-28 (`recto get` reads the stored blocks back)
+
+1. **Characters come from `recto text`, in its order.** A unit is a run of the page text's own characters, page by page, never in distillPDF's reading order. Refs, cuts and `--from-here` are character offsets, so "the rest after the cut" is exact.
+2. **Nothing between blocks is dropped.** Text no stored block covers inside a unit's range is given as a plain paragraph piece, escaped as any is, and counted (`counts.chars_outside_blocks`). Running heads stay in the text for now (S5c).
+3. **Paragraph:** the stored block holding the reference's first character; for a page reference the page's first block in character order; with none, the page with `widened.why = no_block_here` (decision C). One block on one page; `unit.continues` says it goes on, `refs.next` is where.
+4. **Where a block is:** the middle of its box through `Frame::to_shown` (the page's turn and crop box), as thousandths of the shown height. A page with no frame puts its blocks in the middle and counts it.
+5. **Sections and chapters come from the tab's contents:** the file's own when the verdict is `Fine`, else generated ones if already made (`get` starts nothing), else the page with `why = no_contents`.
+6. **A section's edges:** on a page the cut for a place is the start of the first stored block, in character order, at or after it; a boundary page with no stored blocks is given whole and counted; inner pages whole; pages the tab doesn't show, or that can't be read, are left out and counted.
+7. **One sweep a page** (`Sections::starting_on` and a merge with the page's blocks), never a scan of every entry for each block.
+8. **Markdown:** a heading block that is an entry's cut block takes the entry's depth; others their own level; hidden text is marked from the page's own spans. **The cap counts the document's characters** for text and Markdown alike, so `refs.more` and `counts.chars_given` are the same for both.
+9. **The cut:** the end of the last whole piece that fits; a first piece over the cap alone at its last line end; else at the cap.
+10. **Refs:** a paragraph's `self`, `next`, `prev` are whole blocks; a section's or chapter's are its first 32 characters, and the next and previous entry's cut; `more` is up to 32 characters from the cut; `up` is the ref for the coarser grain, named by `up_grain`.
+11. **`--from-here`** starts at the reference's first character, with no cursor and no state. Refused with `hit`.
+12. **Caps:** 64 pages read for an answer (neighbours included; exactly one more, read only to name where it goes on), live reads for 5 s, one page's text held at a time.
+13. **Stale blocks are never believed:** the header carries the corpus's `retries` (`recto-blocks/2`), `StoredBlocks::open_matching` and `BlocksBuild::begin` compare pages and retries, and `remove_blocks` leaves a folder a build holds.
+14. **`why` words:** `blocks_building`, `blocks_not_made`, `ref_is_page`, `no_block_here`, `no_contents`, `no_section_here`; `widened.note` carries Rust's words when blocks were refused or failed.

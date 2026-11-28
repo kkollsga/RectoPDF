@@ -4,7 +4,7 @@
 //! ```text
 //! blocks.bin      one sealed record for each page, end to end, in order, each `blocks::codec::seal_page`: `Purpose::Blocks(page)`
 //! blocks.sealed   the header, `Purpose::BlocksHeader`, written last:
-//!                 [rules tag (16)] [pages u32] [pages without text u32] [unreadable u32] [stored 8 x u32, by `Shape::index`] [dropped 8 x u32] [bin bytes u64]
+//!                 [rules tag (16)] [pages u32] [pages without text u32] [unreadable u32] [stored 8 x u32, by `Shape::index`] [dropped 8 x u32] [bin bytes u64] [retries u32]
 //!                 then for each page [offset u32] [length u16]
 //! ```
 //!
@@ -33,9 +33,9 @@ use std::path::{Path, PathBuf};
 /// What made the candidates the blocks were mapped from: the pinned distillPDF and the scan. `recto-headings`'s `lockfile` test holds that the pin still starts with this revision.
 pub const BLOCKS_RULES: &str = "distillpdf fbf5b22 typography";
 /// What stands for the mapping rule and the record format in the header's tag.
-const FORMAT_NAME: &str = "recto-blocks/1";
-/// What the header holds before its table: the tag, three counts, two tallies of eight and the bin's length.
-const HEADER_FIXED: usize = 16 + 4 * 3 + 4 * 8 * 2 + 8;
+const FORMAT_NAME: &str = "recto-blocks/2";
+/// What the header holds before its table: the tag, three counts, two tallies of eight, the bin's length and the corpus's retries.
+const HEADER_FIXED: usize = 16 + 4 * 3 + 4 * 8 * 2 + 8 + 4;
 /// A page's entry in the header's table.
 const ENTRY: usize = 4 + 2;
 /// The most a header takes on disk.
@@ -75,6 +75,8 @@ pub struct BlocksMade {
     pub dropped: [u32; Shape::COUNT],
     /// What the two files take: the records and the header.
     pub bytes: u64,
+    /// How many times the corpus's failed pages had been read again when these were made. Blocks are made against one reading of the text: a corpus read again since has other text, and these are made again.
+    pub retries: u32,
 }
 
 /// What a build's mapping counted over all its pages, which the header says.
@@ -181,6 +183,7 @@ impl BlocksBuild {
         };
         if let Ok(Some(found)) = parse(&ready.seal, &paths)
             && found.made.pages == ready.pages()
+            && found.made.retries == ready.summary.retries
         {
             return Begin::Made(found.made);
         }
@@ -276,6 +279,7 @@ impl BlocksBuild {
             plain.extend_from_slice(&count.to_le_bytes());
         }
         plain.extend_from_slice(&self.bin_bytes.to_le_bytes());
+        plain.extend_from_slice(&self.ready.summary.retries.to_le_bytes());
         for (offset, len) in &self.table {
             plain.extend_from_slice(&offset.to_le_bytes());
             plain.extend_from_slice(&len.to_le_bytes());
@@ -290,6 +294,7 @@ impl BlocksBuild {
             stored: tally.stored,
             dropped: tally.dropped,
             bytes: self.bin_bytes + (plain.len() + seal::OVERHEAD) as u64,
+            retries: self.ready.summary.retries,
         };
         let _ = super::evict(&self.root, &self.limits, Some(self.key));
         Ok(made)
@@ -314,12 +319,27 @@ pub struct StoredBlocks {
 }
 
 impl StoredBlocks {
-    /// Opens a corpus's blocks. `Ok(None)` when there are none to use: none made, or made under other rules. `Err` when there are and they don't add up, which is for the caller to throw away ([`remove_blocks`]).
+    /// **For a test:** [`Self::open_matching`] without the match, so it can look at what is stored whatever the corpus says. Opens a corpus's blocks. `Ok(None)` when there are none to use: none made, or made under other rules. `Err` when there are and they don't add up, which is for the caller to throw away ([`remove_blocks`]).
     ///
     /// # Errors
     ///
     /// [`Damaged`].
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn open(find_key: &FindKey, root: &Path, key: CorpusKey) -> Result<Option<Self>, Damaged> {
+        Self::open_for(find_key, root, key, None)
+    }
+
+    /// [`Self::open`] for blocks to be read now: `Ok(None)` too when they were made for a corpus of another page count, or one read again since (`expect.retries`), which `begin` makes again. Without this a
+    /// retried failed page would read `Stale` for ever, and a header for another page count would be believed.
+    ///
+    /// # Errors
+    ///
+    /// [`Damaged`].
+    pub fn open_matching(find_key: &FindKey, root: &Path, key: CorpusKey, expect: &super::Summary) -> Result<Option<Self>, Damaged> {
+        Self::open_for(find_key, root, key, Some(expect))
+    }
+
+    fn open_for(find_key: &FindKey, root: &Path, key: CorpusKey, expect: Option<&super::Summary>) -> Result<Option<Self>, Damaged> {
         let paths = CorpusPaths::new(root, key);
         match folders(&paths, root) {
             Folders::Private => {}
@@ -333,12 +353,15 @@ impl StoredBlocks {
             return Ok(None);
         }
         let seal = read_seal(find_key, &paths).ok_or(Damaged)?;
-        Ok(parse(&seal, &paths)?.map(|found| Self {
-            seal,
-            file: found.file,
-            made: found.made,
-            table: found.table,
-        }))
+        let found = parse(&seal, &paths)?;
+        Ok(found
+            .filter(|found| expect.is_none_or(|expect| found.made.pages == expect.pages && found.made.retries == expect.retries))
+            .map(|found| Self {
+                seal,
+                file: found.file,
+                made: found.made,
+                table: found.table,
+            }))
     }
     /// What the header says.
     #[must_use]
@@ -384,13 +407,14 @@ fn parse(seal: &CorpusSeal, paths: &CorpusPaths) -> Result<Option<Parsed>, Damag
         pages: word(16),
         pages_without_text: word(20),
         unreadable: word(24),
+        retries: word(HEADER_FIXED - 4),
         ..BlocksMade::default()
     };
     for shape in 0..Shape::COUNT {
         made.stored[shape] = word(28 + shape * 4);
         made.dropped[shape] = word(28 + Shape::COUNT * 4 + shape * 4);
     }
-    let bin_bytes = u64::from_le_bytes(plain[HEADER_FIXED - 8..HEADER_FIXED].try_into().map_err(|_| Damaged)?);
+    let bin_bytes = u64::from_le_bytes(plain[HEADER_FIXED - 12..HEADER_FIXED - 4].try_into().map_err(|_| Damaged)?);
     let stored_total: u64 = made.stored.iter().map(|count| u64::from(*count)).sum();
     // Tables and figures have no text to point at, and a page holds only so many blocks.
     let impossible = made.pages > MAX_PAGES
@@ -421,10 +445,15 @@ fn parse(seal: &CorpusSeal, paths: &CorpusPaths) -> Result<Option<Parsed>, Damag
     Ok(Some(Parsed { made, table, file }))
 }
 
-/// Takes a corpus's blocks away: the header first, then the bin. A corpus without them is answered as one that never had them.
+/// Takes a corpus's blocks away: the header first, then the bin. A corpus without them is answered as one that never had them. **A folder a build holds is left alone:** a reader cleaning up
+/// damaged blocks must not unlink the bin a new build is writing, or the finished build would read as damaged.
 pub fn remove_blocks(root: &Path, key: CorpusKey) {
     let paths = CorpusPaths::new(root, key);
-    if paths.folders_are_private(root) {
+    if !paths.folders_are_private(root) {
+        return;
+    }
+    let Ok(lock) = local::append_private_file(&paths.lock) else { return };
+    if lock.try_lock().is_ok() {
         remove_files(&paths);
     }
 }

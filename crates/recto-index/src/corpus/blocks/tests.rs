@@ -431,3 +431,53 @@ fn begin_says_what_it_found_and_a_page_without_text_has_none() {
     let _ = made(&temp.0, 3);
     assert!(matches!(BlocksBuild::begin(tk(), &temp.0, KEY, &BuildLimits::default()), Begin::Made(made) if made.pages == 3));
 }
+
+/// Failure (S4's review): a failed page that was read again leaves its blocks believed for ever (read `Stale`, never made again), or a header made for a corpus of another page count is believed. A set whose
+/// pages or retries differ from the corpus's isn't opened by `open_matching`, and `begin` starts a new build instead of saying `Made`.
+#[test]
+fn blocks_of_another_page_count_or_retry_are_not_used() {
+    let temp = Temp::new();
+    corpus(&temp.0, 3);
+    made(&temp.0, 3);
+    let summary = ReadyCorpus::open(tk(), &temp.0, KEY).unwrap().unwrap().summary;
+    assert!(
+        StoredBlocks::open_matching(tk(), &temp.0, KEY, &summary).unwrap().is_some(),
+        "the same corpus: used"
+    );
+    let more_pages = super::super::Summary {
+        pages: summary.pages + 1,
+        ..summary
+    };
+    assert!(
+        StoredBlocks::open_matching(tk(), &temp.0, KEY, &more_pages).unwrap().is_none(),
+        "another page count"
+    );
+    let read_again = super::super::Summary {
+        retries: summary.retries + 1,
+        ..summary
+    };
+    assert!(
+        StoredBlocks::open_matching(tk(), &temp.0, KEY, &read_again).unwrap().is_none(),
+        "the corpus was read again since"
+    );
+    // The header says the corpus had been read again; the corpus says it hadn't.
+    rewrite_header(&temp.0, |plain| plain[HEADER_FIXED - 4..HEADER_FIXED].copy_from_slice(&7u32.to_le_bytes()));
+    assert!(StoredBlocks::open_matching(tk(), &temp.0, KEY, &summary).unwrap().is_none());
+    assert!(matches!(BlocksBuild::begin(tk(), &temp.0, KEY, &BuildLimits::default()), Begin::Building(_)));
+}
+
+/// Failure: a reader's cleanup of damaged blocks unlinks the bin a new build is writing, so the finished build reads as damaged.
+#[test]
+fn removing_damaged_blocks_leaves_a_build_in_progress_alone() {
+    let temp = Temp::new();
+    corpus(&temp.0, 2);
+    let mut build = building(&temp.0);
+    put_pages(&mut build, 0..1);
+    remove_blocks(&temp.0, KEY);
+    assert!(files(&temp.0).1, "the bin being written is still there");
+    put_pages(&mut build, 1..2);
+    build.finish(&tally(2)).unwrap();
+    assert!(StoredBlocks::open(tk(), &temp.0, KEY).unwrap().is_some(), "the finished build reads");
+    remove_blocks(&temp.0, KEY);
+    assert_eq!(files(&temp.0), (false, false), "with no build holding the folder it is taken");
+}

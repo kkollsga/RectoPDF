@@ -8,12 +8,14 @@
 //! - [`codec`]: a page's list as one sealed record, refused whole when damaged, foreign or over a cap.
 //! - [`map`]: distillPDF's candidate blocks mapped onto the page's text by one settled rule.
 //! - [`sections`]: a contents' entries as ranges, and what holds a place.
+//! - [`unit`]: the paragraph, section or chapter an agent asks for, from the page text and the stored blocks.
 //! - [`markdown`]: a run of blocks as Markdown that a document can't forge structure in.
 
 pub mod codec;
 pub mod map;
 pub mod markdown;
 pub mod sections;
+pub mod unit;
 
 #[cfg(test)]
 mod tests;

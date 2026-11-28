@@ -211,6 +211,21 @@ pub(crate) struct Located {
     unchecked: Option<CharacterRange>,
 }
 
+#[cfg(test)]
+impl Located {
+    /// **For a test:** a page found in a tab, with the characters its reference names (not yet checked), as a resolved reference is.
+    pub(crate) fn for_a_test(tab: recto_session::TabId, file_page: u32, stamp: recto_platform::FileStamp, chars: Option<CharacterRange>) -> Self {
+        Self {
+            tab,
+            page: file_page + 1,
+            file_page,
+            stamp,
+            said: serde_json::json!({ "status": "found" }),
+            unchecked: chars,
+        }
+    }
+}
+
 /// When a reference to characters has them checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CharsChecked {
