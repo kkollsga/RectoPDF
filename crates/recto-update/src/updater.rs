@@ -1223,14 +1223,19 @@ mod tests {
 
     mod record_copy;
 
+    /// What the hand-off does when it's made: refuses, and a record that comes into the state folder as it freezes (the file to write).
+    #[derive(Default)]
+    struct HandOffScript {
+        refuse: Option<HandOffRefused>,
+        record_comes_in: Option<PathBuf>,
+    }
+
     #[derive(Default)]
     struct Fake {
         busy: Mutex<Vec<String>>,
         since_input_ms: Mutex<u64>,
-        refuse_with: Mutex<Option<HandOffRefused>>,
+        hand_off_is: Mutex<HandOffScript>,
         hand_offs: AtomicU32,
-        /// A record that comes into the state folder as the hand-off is made: the file to write.
-        record_at_hand_off: Mutex<Option<PathBuf>>,
         quits: AtomicU32,
         cancels: AtomicU32,
         installers: Mutex<Vec<(InstallerMode, PathBuf)>>,
@@ -1255,11 +1260,11 @@ mod tests {
         }
         fn hand_off(&self, _limit: Duration) -> Result<HandedOff, HandOffRefused> {
             self.hand_offs.fetch_add(1, Ordering::SeqCst);
-            if let Some(record) = lock(&self.record_at_hand_off).take() {
+            if let Some(record) = lock(&self.hand_off_is).record_comes_in.take() {
                 std::fs::create_dir_all(record.parent().unwrap()).unwrap();
                 std::fs::write(record, b"anything at the name").unwrap();
             }
-            match lock(&self.refuse_with).clone() {
+            match lock(&self.hand_off_is).refuse.clone() {
                 Some(refused) => Err(refused),
                 None => Ok(HandedOff { tabs: Some(2) }),
             }
@@ -1558,7 +1563,7 @@ mod tests {
         bed.publish("0.2.0");
         bed.found("0.2.0");
         // A refusal: the state couldn't be written. The app's frozen only inside the hand-off, which undid it.
-        *lock(&bed.fake.refuse_with) = Some(HandOffRefused::NotSaved("the disk is full".into()));
+        lock(&bed.fake.hand_off_is).refuse = Some(HandOffRefused::NotSaved("the disk is full".into()));
         bed.updater.install(Asked::ByHand).unwrap();
         bed.wait_for("the failure", |bed| matches!(bed.status(), Status::Failed { .. }));
         assert_eq!(bed.fake.quits.load(Ordering::SeqCst), 0, "no quit, or the state would be lost");
@@ -1574,7 +1579,7 @@ mod tests {
             "this may pass, so it's not held against the version"
         );
         // A good hand-off and no installer: this one has to be undone.
-        *lock(&bed.fake.refuse_with) = None;
+        lock(&bed.fake.hand_off_is).refuse = None;
         bed.fake.installer_fails.store(true, Ordering::SeqCst);
         bed.found("0.2.0");
         bed.updater.install(Asked::ByHand).unwrap();

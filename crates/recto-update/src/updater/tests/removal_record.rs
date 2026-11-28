@@ -194,7 +194,7 @@ fn a_record_arriving_at_the_hand_off_stops_the_quit() {
     let bed = Bed::new("hand-record-late");
     bed.publish("0.2.0");
     bed.found("0.2.0");
-    *lock(&bed.fake.record_at_hand_off) = Some(bed.dir.join("state").join("removal").join("pending.v1"));
+    lock(&bed.fake.hand_off_is).record_comes_in = Some(bed.dir.join("state").join("removal").join("pending.v1"));
     assert_eq!(bed.updater.install(Asked::ByHand), Ok("0.2.0".to_owned()));
     bed.wait_for("the failure", |bed| matches!(bed.status(), Status::Failed { .. }));
     assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 1);
