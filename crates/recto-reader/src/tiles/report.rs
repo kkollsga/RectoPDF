@@ -76,6 +76,8 @@ impl Reader {
                 "blank_seen_steps": self.counts.blank_seen_steps,
                 "discards_lost": self.counts.discards_lost,
             },
+            // The job the worker has now, for a test that must scroll only once a draw is under way (`jobs` counts finished ones).
+            "running": self.work.running.as_ref().map(|running| json!({ "tab": running.tab, "page": running.position + 1, "draw": running.rect.is_some() })),
             "documents_held": self.docs.views.len(),
             "last_wake": self.wake.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_facts, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames, "had": wake.had.word(), "ended": wake.ended.word() })),
             "window_open": self.window_open,
