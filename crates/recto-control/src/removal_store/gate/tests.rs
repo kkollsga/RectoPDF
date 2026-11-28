@@ -242,7 +242,13 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
     };
     assert_eq!(in_code(&["barrier::look("]), ["removal_store/gate.rs"], "where the record is looked at");
     assert_eq!(
-        in_code(&["gate::at(", "gate::state(", "gate::anything_there(", "gate::backups_may_change(", "removal_store::gate"]),
+        in_code(&[
+            "gate::at(",
+            "gate::state(",
+            "gate::anything_there(",
+            "gate::backups_may_change(",
+            "removal_store::gate"
+        ]),
         [
             "core/removal.rs",
             "core/saving.rs",

@@ -356,7 +356,10 @@ fn handed_off_with_a_record_there_gives_up_before_the_plan() {
                 matches!(next(&to, Phase::HandedOff, &look, asked, false, 1_000), Step::GiveUp(why) if why.contains("left unfinished")),
                 "build {development_build}, {asked:?}"
             );
-            assert!(matches!(next(&to, Phase::HandedOff, &look, asked, true, 1_000), Step::BackOnOffer { give_back: false, .. }));
+            assert!(matches!(
+                next(&to, Phase::HandedOff, &look, asked, true, 1_000),
+                Step::BackOnOffer { give_back: false, .. }
+            ));
         }
     }
 }
