@@ -14,6 +14,22 @@ pub(super) const MARKERS: [&str; 2] = ["sealed", "agent-folders"];
 pub(super) const OLD_FOLDER: &str = "corpus";
 /// The corpus root's own name, which is what the older folder is beside.
 pub(super) const CORPUS_ROOT_NAME: &str = "corpus.noindex";
+/// A corpus's format folder, which the clear-all and the purge open for its lock files (`corpus::FORMAT`; pinned by `pins.rs`).
+pub(super) const FORMAT_FOLDER: &str = "v4";
+/// The folder of what a search reads, in a corpus's format folder, and the lock a build holds in it for as long as it builds.
+pub(super) const APP_FOLDER: &str = "app";
+pub(super) const BUILD_LOCK: &str = "build.lock";
+/// An agent's folder's lock, held by its session, and the file that says it is finished.
+pub(super) const SESSION_FILE: &str = ".session";
+pub(super) const MANIFEST: &str = "manifest.json";
+/// What makes a corpus usable: written last, so the first thing the purge takes out of a corpus, and made durable before any other (`ready.json` is the same
+/// mark of the older format, which no writer makes any more, so it isn't pinned: only the order depends on it).
+pub(super) const READY: [&str; 2] = ["ready.sealed", "ready.json"];
+/// The first thing to go from a corpus's tree, which makes it unusable (`rank` 0 of the purge's walk).
+pub(super) fn is_first_to_go(name: &OsStr) -> bool {
+    READY.iter().any(|ready| name == *ready) || name == MANIFEST
+}
+
 /// Most keys one alias file holds, and the most bytes it is read for (a key and its line break).
 pub(super) const MAX_ALIAS_KEYS: usize = 32;
 pub(super) const ALIAS_BYTES: usize = MAX_ALIAS_KEYS * 65;

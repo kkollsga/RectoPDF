@@ -154,6 +154,22 @@ impl World {
         survey.finish()
     }
 
+    /// The clear-all survey of this state, every other store marked complete, with its pins, as `survey_caches_to_clear_with` makes them.
+    pub fn clear_survey(&self, caps: &CacheCaps) -> Result<(Surveyed, Pins), Refusal> {
+        let ledger = self.ledger();
+        let lineage = lineage(&ledger, version(7), &self.mine, &LEDGER_LIMITS).unwrap();
+        let mut survey = Survey::new(&limits(4096));
+        for store in Store::ALL.into_iter().filter(|s| s.enumerated()) {
+            if !OURS.contains(&store) {
+                survey.mark_complete(store);
+            }
+        }
+        survey.history(&lineage);
+        let mut pins = Pins::default();
+        survey_caches_to_clear_with(&self.corpus, &self.contents, &mut survey, Some(&mut pins), caps)?;
+        Ok((survey.finish()?, pins))
+    }
+
     pub fn seen(&self, mode: TargetMode) -> Seen {
         Seen::of(&self.survey(mode, &CacheCaps::default(), 4096).unwrap())
     }
@@ -180,6 +196,11 @@ impl Seen {
             found,
             complete: inventory.complete(),
         }
+    }
+
+    /// Every artifact, with its key.
+    pub fn all(&self) -> &[(Artifact, ArtifactKey)] {
+        &self.found
     }
 
     pub fn complete(&self, store: Store) -> bool {
@@ -210,7 +231,7 @@ impl Seen {
     }
 }
 
-fn hex_key(byte: u8) -> String {
+pub(crate) fn hex_key(byte: u8) -> String {
     format!("{byte:02x}").repeat(32)
 }
 
@@ -218,14 +239,14 @@ fn names_of(store: Store, names: impl IntoIterator<Item = String>) -> BTreeSet<A
     names.into_iter().map(|name| ArtifactKey::of(store, name.as_bytes())).collect()
 }
 
-fn small(change: impl FnOnce(&mut CacheCaps)) -> CacheCaps {
+pub(crate) fn small(change: impl FnOnce(&mut CacheCaps)) -> CacheCaps {
     let mut caps = CacheCaps::default();
     change(&mut caps);
     caps
 }
 
 /// A World with both documents indexed, each with contents and an agent's folder set aside: a state with two documents' material in it.
-fn two_documents() -> (World, CorpusKey, CorpusKey) {
+pub(crate) fn two_documents() -> (World, CorpusKey, CorpusKey) {
     let w = World::new();
     let (mine, theirs) = (w.index(&w.mine), w.index(&w.theirs));
     w.keep_contents(&w.mine, mine);
@@ -362,27 +383,27 @@ fn expect(what: &str, make: impl FnOnce(&World), store: Store, name: &str, want:
     assert_eq!(seen, want, "{what}");
 }
 
-fn dir(path: &Path) {
+pub(crate) fn dir(path: &Path) {
     fs::create_dir_all(path).unwrap();
 }
 
-fn plain(path: &Path) {
+pub(crate) fn plain(path: &Path) {
     dir(path.parent().unwrap());
     fs::write(path, b"x").unwrap();
 }
 
-fn link(path: &Path) {
+pub(crate) fn link(path: &Path) {
     dir(path.parent().unwrap());
     symlink("/nonexistent-target", path).unwrap();
 }
 
-fn pipe(path: &Path) {
+pub(crate) fn pipe(path: &Path) {
     dir(path.parent().unwrap());
     mkfifo(path);
 }
 
 /// A second name for `path`, which is made as a plain file first.
-fn two_links(path: &Path) {
+pub(crate) fn two_links(path: &Path) {
     plain(path);
     fs::hard_link(path, path.with_file_name("a-second-name")).unwrap();
 }

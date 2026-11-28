@@ -16,6 +16,8 @@
 //! **Marked complete** only after every folder was listed to the end and nothing failed: a root, `by-file` or contents folder that is a link, a file or another
 //! user's, a listing error, or an entry that vanishes between the listing and its opening leaves its stores unmarked. A missing folder is complete and empty.
 
+#[cfg(test)]
+mod clear_tests;
 mod names;
 #[cfg(test)]
 mod pins;
@@ -24,9 +26,11 @@ mod pins;
 pub(crate) mod tests;
 
 use super::backups::{self, Finder};
-use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
+use super::leftovers::pin::tree_accepting;
+use super::purge::Pins;
+use recto_core::removal::{ArtifactKey, DESIGN_LIMITS, Format, Found, Lineage, Owner, Refusal, Side, Sides, Store, Survey, TargetMode};
 use recto_index::corpus::CorpusKey;
-use recto_platform::folder::{Entry, Folder, Kind, Opened};
+use recto_platform::folder::{Entry, Folder, Identity, Kind, Opened, Tree};
 use std::ffi::OsStr;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -40,6 +44,24 @@ pub struct CacheTarget {
     pub key: Option<CorpusKey>,
     /// The device and inode of that descriptor, as an inode note is named; `None` if unknown.
     pub device_inode: Option<(u64, u64)>,
+}
+
+/// The most entries in one corpus's tree.
+pub(super) const TREE_ENTRIES: usize = 16_384;
+
+/// A test's way to say who owns an entry by its name.
+#[cfg(test)]
+pub(crate) type UidOf = std::sync::Arc<dyn Fn(&OsStr) -> Option<u32> + Send + Sync>;
+
+/// Whether an entry of a cache's tree is one the clear-all takes: a plain file of this user's with one link, or a folder of this user's (its device is
+/// checked by the walk). Written once: the survey (`tree_of`'s `accept`) and the purge ask this same question, so what was proved plain is what is acted on.
+pub(super) fn is_plain_cache_entry(entry: &Entry, uid: u32) -> bool {
+    uid == recto_platform::local::current_uid()
+        && match entry.kind {
+            Kind::File => entry.links == 1,
+            Kind::Folder => true,
+            Kind::Link | Kind::Other => false,
+        }
 }
 
 /// The caps (design limits, not measurements), so a test can make them small. One over any is `TooLarge`, and nothing is marked.
@@ -57,6 +79,12 @@ pub(crate) struct CacheCaps {
     pub contents_entries: usize,
     /// The keys the target's notes may name in all: its own and 32 under each of two notes.
     pub target_keys: usize,
+    /// Entries in one corpus's tree (or one of the older folder's children's), every level together: a design limit, so a 10,000-page document's agent pages
+    /// fit. One over is `TooLarge`. The purge builds the same tree with the same cap.
+    pub tree_entries: usize,
+    /// What a test says a named entry's owner is, to stand for another user's: a test can't `chown`.
+    #[cfg(test)]
+    pub uid_of: Option<UidOf>,
     /// Called with a path just before it is opened: a test's way to change the folder under the survey.
     #[cfg(test)]
     pub before_open: Option<Hook>,
@@ -75,6 +103,9 @@ impl Default for CacheCaps {
             alias_entries: 8_192,
             contents_entries: 8_192,
             target_keys: 1 + 2 * names::MAX_ALIAS_KEYS,
+            tree_entries: TREE_ENTRIES,
+            #[cfg(test)]
+            uid_of: None,
             #[cfg(test)]
             before_open: None,
             #[cfg(test)]
@@ -120,6 +151,58 @@ pub fn survey_caches(
     survey_caches_with(corpus_root, contents_root, lineage, target, mode, survey, &CacheCaps::default())
 }
 
+/// The clear-all survey of the four cache stores (owner, 2026-11-27: a confirmed removal clears every document's search index and generated contents).
+/// Every name the app writes, as this user's plain single-link file or this user's folder holding only such things, is `Owner::Target` (for a Save and a Save As
+/// alike) and pinned in `pins`; anything else stays `Unknown`, a file with another name `Shared`, and the plan refuses. It needs no lineage, target or mode, and it
+/// **never opens a note or a contents file**: every key will go, so what a note says changes nothing (they are `Format::Current`, and a deletion handles any
+/// bytes). The older per-document survey, [`survey_caches`], is kept as it was.
+pub fn survey_caches_to_clear(corpus_root: &Path, contents_root: &Path, survey: &mut Survey, pins: &mut Pins) -> Result<(), Refusal> {
+    survey_caches_to_clear_with(corpus_root, contents_root, survey, Some(pins), &CacheCaps::default())
+}
+
+/// Whether the caches are clear now: a clear-all survey into a fresh survey that has every store complete and found nothing. A corpus made after the plan, a
+/// root that was missing at survey time included, makes it `false`: it is the carrier's check after the last step.
+pub fn caches_are_clear(corpus_root: &Path, contents_root: &Path) -> Result<bool, Refusal> {
+    caches_are_clear_with(corpus_root, contents_root, &CacheCaps::default())
+}
+
+pub(crate) fn caches_are_clear_with(corpus_root: &Path, contents_root: &Path, caps: &CacheCaps) -> Result<bool, Refusal> {
+    let mut survey = Survey::new(&DESIGN_LIMITS);
+    survey_caches_to_clear_with(corpus_root, contents_root, &mut survey, None, caps)?;
+    let surveyed = survey.finish()?;
+    let inventory = surveyed.inventory();
+    let (complete, artifacts) = (inventory.complete(), inventory.artifacts());
+    Ok(artifacts.is_empty()
+        && [Store::CorpusText, Store::CorpusAgentPages, Store::CorpusAliases, Store::GeneratedContents]
+            .into_iter()
+            .all(|store| complete.contains(store)))
+}
+
+pub(crate) fn survey_caches_to_clear_with(
+    corpus_root: &Path,
+    contents_root: &Path,
+    survey: &mut Survey,
+    pins: Option<&mut Pins>,
+    caps: &CacheCaps,
+) -> Result<(), Refusal> {
+    let mut run = Run {
+        caps,
+        mode: TargetMode::Save,
+        clear: true,
+        path_alias: String::new(),
+        inode_alias: None,
+        tag: String::new(),
+        keys: Vec::new(),
+        marks: Marks::default(),
+        pins,
+        survey,
+    };
+    run.corpus(corpus_root)?;
+    run.contents(contents_root)?;
+    run.finish();
+    Ok(())
+}
+
 pub(crate) fn survey_caches_with(
     corpus_root: &Path,
     contents_root: &Path,
@@ -133,6 +216,8 @@ pub(crate) fn survey_caches_with(
     let mut run = Run {
         caps,
         mode,
+        clear: false,
+        pins: None,
         path_alias: names::path_alias(current.as_os_str().as_encoded_bytes()),
         inode_alias: target.device_inode.map(|(device, inode)| names::inode_alias(device, inode)),
         tag: names::contents_tag(current.as_os_str().as_encoded_bytes()),
@@ -168,6 +253,9 @@ impl Default for Marks {
 struct Run<'a> {
     caps: &'a CacheCaps,
     mode: TargetMode,
+    /// The clear-all: every name the app writes is the target's if it is plain and this user's, and is pinned.
+    clear: bool,
+    pins: Option<&'a mut Pins>,
     /// The names of the notes that are the target's: by its current path and by its inode.
     path_alias: String,
     inode_alias: Option<String>,
@@ -218,6 +306,58 @@ impl Run<'_> {
             owner,
             format,
         })
+    }
+
+    /// As [`Self::add`], and under the clear-all the pin of an artifact that is the target's: its identity as it was listed, by the key it was added under.
+    fn add_pinned(&mut self, store: Store, key: &[u8], owner: Owner, identity: Identity) -> Result<(), Refusal> {
+        self.add(store, key, owner, Format::Current)?;
+        if owner == Owner::Target
+            && let Some(pins) = self.pins.as_deref_mut()
+        {
+            pins.note(ArtifactKey::of(store, key), identity)?;
+        }
+        Ok(())
+    }
+
+    /// The owner of an entry as the listing says it, or a test's stand-in.
+    fn uid_of(&self, entry: &Entry) -> u32 {
+        #[cfg(test)]
+        if let Some(uid) = self.caps.uid_of.as_ref().and_then(|of| of(&entry.name)) {
+            return uid;
+        }
+        entry.uid
+    }
+
+    /// Under the clear-all, a note or a contents file by what its listing says alone: a plain file of this user's is the target's with one link and shared with
+    /// more; anything else (a link, a pipe, a folder, another user's) is `Unknown`.
+    fn cleared_file_owner(&self, entry: &Entry) -> Owner {
+        if entry.kind != Kind::File || self.uid_of(entry) != recto_platform::local::current_uid() {
+            Owner::Unknown
+        } else if entry.links == 1 {
+            Owner::Target
+        } else {
+            Owner::Shared
+        }
+    }
+
+    /// The tree of an app folder that is open, if everything in it is a plain thing of this user's ([`is_plain_cache_entry`]): `None` if not, `TooLarge` if it holds
+    /// more entries than the cap.
+    fn plain_tree(&self, folder: &Folder) -> Result<Option<Tree>, Refusal> {
+        let Some(device) = folder.identity().ok().map(|id| id.dev) else {
+            return Ok(None);
+        };
+        let (mut budget, refused) = (self.caps.tree_entries, std::cell::Cell::new(false));
+        let accept = |entry: &Entry| {
+            let ok = is_plain_cache_entry(entry, self.uid_of(entry));
+            refused.set(refused.get() || !ok);
+            ok
+        };
+        match tree_accepting(folder, 0, &mut budget, device, &accept) {
+            Some(tree) => Ok(Some(tree)),
+            // The walk stopped with nothing left to count and nothing refused: one entry too many.
+            None if budget == 0 && !refused.get() => Err(Refusal::TooLarge),
+            None => Ok(None),
+        }
     }
 
     /// The owner of something proven the target's: the target's for a Save, the source's for a Save As; a file with other names is shared.
@@ -282,7 +422,7 @@ impl Run<'_> {
             return Ok(());
         };
         let mut buffer = Vec::new();
-        for entry in listed.iter().filter(|entry| entry.is_file) {
+        for entry in listed.iter().filter(|entry| entry.is_file && !self.clear) {
             if !names::alias_stem(&entry.name).is_some_and(|stem| self.is_target_alias(stem)) {
                 continue;
             }
@@ -312,6 +452,10 @@ impl Run<'_> {
             let (mut owner, mut format) = (Owner::Unknown, Format::Current);
             if let Some(Finder::Owner(found)) = finder {
                 owner = found;
+            } else if self.clear {
+                if names::alias_stem(&entry.name).is_some() {
+                    owner = self.cleared_file_owner(entry);
+                }
             } else if let Some(stem) = names::alias_stem(&entry.name).filter(|_| entry.is_file) {
                 match self.read_note(&folder, root_path, entry, &mut buffer) {
                     Err(Gone) => {
@@ -335,7 +479,11 @@ impl Run<'_> {
             let mut key = names::VERSIONS.as_bytes().to_vec();
             key.push(b'/');
             key.extend_from_slice(entry.name.as_encoded_bytes());
-            self.add(Store::CorpusAliases, &key, owner, format)?;
+            if self.clear {
+                self.add_pinned(Store::CorpusAliases, &key, owner, entry.identity())?;
+            } else {
+                self.add(Store::CorpusAliases, &key, owner, format)?;
+            }
         }
         Ok(())
     }
@@ -398,9 +546,24 @@ impl Run<'_> {
             Opened::Other => return self.add(Store::CorpusText, name, Owner::Unknown, Format::Current),
             Opened::Folder(folder) => folder,
         };
-        let owner = if self.keys.contains(&key) { self.placed(1) } else { Owner::Unknown };
-        self.add(Store::CorpusText, name, owner, Format::Current)?;
+        let owner = if self.clear {
+            self.cleared_folder_owner(&folder, entry)?
+        } else if self.keys.contains(&key) {
+            self.placed(1)
+        } else {
+            Owner::Unknown
+        };
+        self.add_pinned(Store::CorpusText, name, owner, entry.identity())?;
         self.agent_pages(&folder, root_path, entry, owner)
+    }
+
+    /// Under the clear-all, a corpus's folder (or a child of the older build's) is the target's if it is the folder that was listed and its whole tree is plain
+    /// and this user's.
+    fn cleared_folder_owner(&self, folder: &Folder, entry: &Entry) -> Result<Owner, Refusal> {
+        if self.uid_of(entry) != recto_platform::local::current_uid() || folder.identity().ok() != Some(entry.identity()) {
+            return Ok(Owner::Unknown);
+        }
+        Ok(self.plain_tree(folder)?.map_or(Owner::Unknown, |_| Owner::Target))
     }
 
     /// Each format folder of a corpus (`v4`, and `v1` to `v3` from before the text was sealed): its `agent` and `agent.gone.*` entries, never opened.
@@ -441,7 +604,7 @@ impl Run<'_> {
                     key.extend_from_slice(part.as_encoded_bytes());
                 }
                 let owner = if agent.kind == Kind::Folder { owner } else { Owner::Unknown };
-                self.add(Store::CorpusAgentPages, &key, owner, Format::Current)?;
+                self.add_pinned(Store::CorpusAgentPages, &key, owner, agent.identity())?;
             }
         }
         Ok(())
@@ -460,6 +623,10 @@ impl Run<'_> {
                 Ok(())
             }
             Opened::Folder(parent) => match parent.look(OsStr::new(names::OLD_FOLDER)) {
+                Ok(entry) if self.clear => {
+                    let owner = self.old_folder_owner(&parent, &entry)?;
+                    self.add_pinned(Store::CorpusText, b"old/corpus", owner, entry.identity())
+                }
                 Ok(_) => self.add(Store::CorpusText, b"old/corpus", Owner::Unknown, Format::Current),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(_) => {
@@ -468,6 +635,36 @@ impl Run<'_> {
                 }
             },
         }
+    }
+
+    /// Under the clear-all, the older build's `corpus` is the target's if it is a folder of this user's, the one that was looked at, and every child of it is a
+    /// plain file of this user's or a folder whose tree is plain (the older layout is one level deeper than a pin holds, so each child is its own tree).
+    fn old_folder_owner(&self, parent: &Folder, entry: &Entry) -> Result<Owner, Refusal> {
+        if entry.kind != Kind::Folder || self.uid_of(entry) != recto_platform::local::current_uid() {
+            return Ok(Owner::Unknown);
+        }
+        let Opened::Folder(old) = parent.open_in(&entry.name) else {
+            return Ok(Owner::Unknown);
+        };
+        if old.identity().ok() != Some(entry.identity()) {
+            return Ok(Owner::Unknown);
+        }
+        let Some(children) = self.list(&old, self.caps.root_entries, || PathBuf::from(names::OLD_FOLDER))? else {
+            return Ok(Owner::Unknown);
+        };
+        for child in &children {
+            let plain = match child.kind {
+                Kind::Folder => match old.open_in(&child.name) {
+                    Opened::Folder(inner) => self.cleared_folder_owner(&inner, child)? == Owner::Target,
+                    _ => false,
+                },
+                _ => is_plain_cache_entry(child, self.uid_of(child)),
+            };
+            if !plain {
+                return Ok(Owner::Unknown);
+            }
+        }
+        Ok(Owner::Target)
     }
 
     /// Step 5: the generated contents, each classified by its name alone.
@@ -490,6 +687,11 @@ impl Run<'_> {
             let owner = match names::contents_name(&entry.name) {
                 _ if finder == Some(Finder::Skip) => continue,
                 _ if let Some(Finder::Owner(owner)) = finder => owner,
+                Some(_) if self.clear => {
+                    let owner = self.cleared_file_owner(entry);
+                    self.add_pinned(Store::GeneratedContents, name, owner, entry.identity())?;
+                    continue;
+                }
                 Some((tag, key)) if entry.is_file && (tag == self.tag || self.keys.contains(&key)) => self.placed(entry.links),
                 _ => Owner::Unknown,
             };
