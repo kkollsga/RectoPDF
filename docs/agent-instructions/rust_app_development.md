@@ -1548,6 +1548,8 @@ workers with its own dates said to the owner.
 - **Any change to the queue passes the queue's own test,** with a case for what it fixes: it's shared with other
   projects.
 - **Look for strays when builds feel slow.** Three test scripts from another project sat at 100% CPU for six days.
+- **The queue sees only its own jobs.** On 2026-11-28 three workers plus one full check took a 10-core Mac to a load of 40, then 90: another project's release build outside the queue, Spotlight indexing and a simulator added what the queue couldn't count, and app tests failed on their 10 s start bound (each passed alone at load 13). The user cut to one worker. When the Mac is shared, the worker count, not the queue's slots, is what keeps it usable; a timing failure under that load is read from `machine.txt`'s load line and rerun alone before anything is changed.
+- **Stopping an agent doesn't stop what it detached.** A stopped worker's full check, started with `&` and orphaned to process 1, was still queued; it was found with `heavy.sh --status` and the process's working folder (`lsof -d cwd`), and stopped by pid. After stopping an agent, look at the queue and its worktree for its processes.
 - The lock is for memory only. QA scripts, renders, reviews and git don't wait for it, and **nobody waits for a "quiet
   machine"**: load doesn't let an error go uncaught.
 - **Disk:** each worker worktree's build folder is 10–35 GB; 33 of them filled 496 GB in one day. Remove a worktree as
