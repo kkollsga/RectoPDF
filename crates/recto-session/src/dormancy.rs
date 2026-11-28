@@ -151,9 +151,14 @@ impl crate::parts::PartMut<'_, Dormancy> {
         std::mem::take(&mut self.0.woken_from_file)
     }
 
-    /// The sleep file a tab was just woken from, for its first frame.
+    /// The sleep file a tab was just woken from, for its first frame. Another tab's is left for it: in a comparison the panes are shown one after another.
+    /// One at most is kept, replaced by the next tab woken from a file.
     pub fn take_sleep_read(&mut self, id: TabId) -> Option<SleepFile> {
-        self.0.just_read.take().and_then(|(tab, sleep)| (tab == id).then_some(sleep))
+        if self.0.just_read.as_ref().is_some_and(|(tab, _)| *tab == id) {
+            self.0.just_read.take().map(|(_, sleep)| sleep)
+        } else {
+            None
+        }
     }
 }
 
@@ -231,5 +236,20 @@ mod tests {
             PartMut(&mut dormancy).take_sleep_read(TabId(9)).is_some(),
             "the latest one's sleep file is kept for its first frame"
         );
+    }
+
+    /// Failure (2026-11-28, a comparison restored after an update): asked for another tab's sleep read, the one kept was taken and dropped, so a launch that
+    /// showed pane 0's tab first threw away the read of the tab in pane 1, which then read its sleep file from disk a second time. Kept for the tab it's of
+    /// until that tab asks, once.
+    #[test]
+    fn a_sleep_read_is_kept_for_its_own_tab_when_another_asks_first() {
+        let mut dormancy = Dormancy::new();
+        dormancy.woke_from_file(TabId(2), sleep_file());
+        assert!(PartMut(&mut dormancy).take_sleep_read(TabId(1)).is_none(), "another tab's read");
+        assert!(
+            PartMut(&mut dormancy).take_sleep_read(TabId(2)).is_some(),
+            "its read, dropped as another tab asked"
+        );
+        assert!(PartMut(&mut dormancy).take_sleep_read(TabId(2)).is_none(), "taken once");
     }
 }
