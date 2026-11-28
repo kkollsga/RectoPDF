@@ -22,6 +22,8 @@ mod lock;
 mod page_ids;
 mod sleep_files;
 mod went_back;
+mod withheld;
+use crate::removal_store::gate::{self, Withheld};
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
@@ -104,6 +106,8 @@ pub enum Loaded {
     Newer,
     /// Another process keeps this folder's record.
     OtherInstance,
+    /// An unfinished removal's record is there (or what can't be read is): nothing was touched, and nothing will be written until it's finished (`gate`).
+    Withheld(Withheld),
 }
 
 #[derive(Debug)]
@@ -135,6 +139,8 @@ struct Progress {
     beside_newer: bool,
     /// What's here couldn't be read, so nothing's to be written over it.
     read_only: bool,
+    /// What an unfinished removal's record says of this folder: `None` before it's been looked at, then the answer, until the next load.
+    gate: Option<Option<Withheld>>,
     /// Journals' sidecars read or written, by name (`page_ids`).
     sidecars: page_ids::Known,
 }
@@ -410,6 +416,10 @@ impl RecordStore {
             return Loaded::OtherInstance;
         }
         *self.progress() = Progress::default();
+        // Before anything is moved, copied, rotated or removed: each step can bring back what a removal is purging.
+        if let Some(withheld) = self.gate() {
+            return Loaded::Withheld(withheld);
+        }
         let main = self.fold_root();
         *self.dir.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = main.clone();
         let own = self.version_folder(&main, self.version);
@@ -731,16 +741,6 @@ impl RecordStore {
         (outcome, failed)
     }
 
-    /// Why this won't write, if it won't.
-    fn refuses_writes(&self) -> Option<StoreError> {
-        if !self.holds_the_record() {
-            return Some(self.other_instance());
-        }
-        self.progress()
-            .read_only
-            .then(|| StoreError::new("record_unreadable", record::notices::words(record::notices::UNREADABLE).unwrap_or_default()))
-    }
-
     /// Working beside a newer app's record, this folder is what going forward has to bring with it.
     fn note_going_back(&self, dir: &Path) {
         if self.progress().beside_newer && !dir.join(WENT_BACK_NAME).exists() {
@@ -1018,7 +1018,8 @@ impl RecordStore {
 
     /// Removes a journal found to be stale.
     pub fn remove_journal(&self, name: &str) {
-        if is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name) {
+        // Not while a removal is unfinished: a journal written for the target after the barrier is outside its plan.
+        if self.gate().is_none() && (is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name)) {
             let folder = self.dir().join(JOURNALS);
             let _ = std::fs::remove_file(folder.join(name));
             let mut progress = self.progress();
@@ -1034,7 +1035,7 @@ impl HistorySource for RecordStore {
     }
 
     fn read_list(&self, name: &str) -> Option<RestoredEdits> {
-        if !is_journal_name(name) {
+        if !is_journal_name(name) || self.gate().is_some() {
             return None;
         }
         let folder = self.dir().join(JOURNALS);
@@ -1484,6 +1485,7 @@ pub fn notice_for(loaded: &Loaded) -> Option<&'static str> {
         Loaded::Unreadable => Some(record::notices::UNREADABLE),
         Loaded::Newer => Some(record::notices::NEWER),
         Loaded::OtherInstance => Some(record::notices::OTHER_INSTANCE),
+        Loaded::Withheld(withheld) => Some(withheld.code()),
     }
 }
 

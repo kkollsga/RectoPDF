@@ -20,11 +20,12 @@ impl Inner {
             self.core.push(CoreCall::Reconcile);
             return Some(Ok(Some(serde_json::json!({ "emptied": emptied }))));
         }
-        if let Some(answer) = self
-            .tools
-            .removal()
-            .qa_verb(verb, value, || super::super::removal::outside(&self.saver, &self.on_disk, &self.life))
-        {
+        if let Some(answer) = self.tools.removal().qa_verb(
+            verb,
+            value,
+            || super::super::removal::outside(&self.saver, &self.on_disk, &self.life),
+            || super::super::removal::record_state(&self.saver),
+        ) {
             return Some(answer);
         }
         let usage = |words: String| AgentError::new(Code::USAGE, words, recto_agent::exit::USAGE);

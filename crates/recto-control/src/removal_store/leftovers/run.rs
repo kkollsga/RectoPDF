@@ -233,6 +233,8 @@ pub enum CheckError {
     Changed,
     /// The plan couldn't be kept.
     Offer(ConfirmRefusal),
+    /// An unfinished removal's record is there (`Busy::RemovalPending`).
+    RemovalPending,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -249,6 +251,10 @@ pub fn check<A: Copy + Eq>(
     ids: &mut dyn FnMut() -> u64,
     now: Instant,
 ) -> Result<Checked, CheckError> {
+    // An unfinished removal's record: an error, as `Leases::take`'s is for a clear, and nothing is offered.
+    if crate::removal_store::gate::anything_there(asked.root) {
+        return Err(CheckError::RemovalPending);
+    }
     let looked = match look(asked.root, asked.document, asked.stamp, world) {
         Ok(looked) => looked,
         Err(LookError::Changed) => return Err(CheckError::Changed),

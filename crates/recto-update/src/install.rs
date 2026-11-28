@@ -15,6 +15,7 @@ mod retirement;
 
 use crate::plan::{Files, Outcome, OutcomeKind, Plan, log, new_app_in, previous_app_in};
 use crate::process::tool;
+use crate::removal_record::GoingBack;
 use crate::{APP_BUNDLE, APP_EXECUTABLE, RELEASE_BUILD, TEAM_ID};
 use recto_platform::local;
 use std::path::{Path, PathBuf};
@@ -216,8 +217,24 @@ impl Run<'_> {
     fn absence_unproven(&self, why: &str, detail: &str) -> Ended {
         self.say(&format!("installer: app absence isn't established ({why}: {detail}), so nothing was replaced"));
         self.finish_with(OutcomeKind::NotInstalled, why);
-        let _ = std::fs::remove_dir_all(self.files.before());
+        // Not while an unfinished removal's record is there: the copy may be the one a going back needs, and the removal decides what becomes of it.
+        if !crate::removal_record::anything_there(&self.plan.root) {
+            let _ = std::fs::remove_dir_all(self.files.before());
+        }
         Ended::NotInstalled
+    }
+
+    /// An unfinished removal's record (`docs/design/removal.md` §6): copying the record would make a second copy of the very history being purged, in
+    /// `update/before`, and the new build would be one the removal may not have been told of. Nothing's replaced, and `update/before` (an older copy, which
+    /// a going back may still need) is not removed.
+    fn refuse_while_a_removal_is_pending(&self) -> Option<Ended> {
+        if !crate::removal_record::anything_there(&self.plan.root) {
+            return None;
+        }
+        self.say("installer: an unfinished removal is pending, so nothing was replaced");
+        self.finish_with(OutcomeKind::NotInstalled, "removal_pending");
+        let _ = self.open_app();
+        Some(Ended::NotInstalled)
     }
 
     /// The swap failed: nothing's replaced, and the old app is opened again.
@@ -256,11 +273,22 @@ impl Run<'_> {
             Err(error) => return self.rollback_unproven(&error),
         };
         self.step("new_app_stopped");
-        if !self.plan.keep_record {
-            restore_record(&self.files.before(), &self.files.session());
+        let old = self.old_app();
+        // An unfinished removal's record (`docs/design/removal.md` §6): the kept build must read it, or it would restore everything at its start; and the
+        // kept copy of the session (`update/before`) may hold the very history being purged, so it is not put back over what the removal is leaving as it is.
+        let removal_there = crate::removal_record::anything_there(&self.plan.root);
+        let kept_reads_it = removal_there && old.as_deref().is_some_and(crate::removal_record::reads_the_record);
+        match crate::removal_record::going_back(removal_there, kept_reads_it, self.plan.keep_record) {
+            GoingBack::Refuse => {
+                self.say("installer: an unfinished removal is pending, and the kept version doesn't read it, so nothing was put back");
+                self.finish_with(OutcomeKind::CouldntGoBack, "removal_pending");
+                return Ended::Stuck;
+            }
+            GoingBack::Restore => restore_record(&self.files.before(), &self.files.session()),
+            GoingBack::LeaveRecord => {}
         }
         self.step("record_restored");
-        let Some(old) = self.old_app() else {
+        let Some(old) = old else {
             self.say("installer: there's no earlier version to go back to");
             self.finish_with(OutcomeKind::CouldntGoBack, "nothing_to_go_back_to");
             return Ended::Stuck;
@@ -418,6 +446,9 @@ pub fn run(plan: &Plan) -> Ended {
         run.finish_with(OutcomeKind::NotInstalled, "new_app_missing");
         let _ = run.open_app();
         return Ended::NotInstalled;
+    }
+    if let Some(ended) = run.refuse_while_a_removal_is_pending() {
+        return ended;
     }
     let _ = std::fs::remove_file(files.launch_ok());
     let _ = std::fs::remove_file(files.launch_failed());
@@ -705,6 +736,15 @@ pub fn copy_record(session: &Path, before: &Path, after_each: &mut dyn FnMut(&st
 
 /// Puts the copy back, one file at a time, each by a rename so none's ever half there, and takes away what's been added since. A copy that isn't whole is left alone. Stopped partway, it's the copy that still says what to do, and it's only cleared once a version's come up.
 pub fn restore_record(before: &Path, session: &Path) {
+    // The belt: only the installer's own copy (`<state>/update/before`) is ever put back, and never while an unfinished removal's record is there, whatever the
+    // caller decided: it may hold the very history being purged (`docs/design/removal.md` §6).
+    let state = before
+        .parent()
+        .filter(|update| update.file_name().is_some_and(|name| name == "update") && before.file_name().is_some_and(|name| name == "before"))
+        .and_then(Path::parent);
+    if state.is_none_or(crate::removal_record::anything_there) {
+        return;
+    }
     restore_record_with(before, session, &mut |step| die_if_told(step));
 }
 
@@ -816,7 +856,8 @@ mod tests {
     #[test]
     fn a_record_comes_back_as_it_was() {
         let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-install-record-");
-        let (session, before) = (dir.join("session"), dir.join("before"));
+        // Where the installer keeps it, which is the only place `restore_record` puts a copy back from.
+        let (session, before) = (dir.join("session"), dir.join("update").join("before"));
         std::fs::create_dir_all(session.join("journals")).unwrap();
         std::fs::write(session.join("record.a.json"), "good a").unwrap();
         std::fs::write(session.join("journals/journal-1.log"), "good journal").unwrap();

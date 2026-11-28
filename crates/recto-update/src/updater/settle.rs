@@ -1,7 +1,8 @@
 //! **What the last install left, settled at a launch that keeps the record:** the installer's outcome or its plan read, said and tidied away. Moved here
 //! unchanged from `updater.rs`, for its size.
 
-use super::{Notice, QUITS_FOR_NOTHING, Settled, Status, Updater, builds, clean_code, helper_alive, installer_reopened, went_back_words, why_not_installed};
+use super::outcome_words::{installer_reopened, went_back_words, why_not_installed};
+use super::{Notice, QUITS_FOR_NOTHING, Settled, Status, Updater, builds, clean_code, helper_alive};
 use crate::APP_NAME;
 use crate::plan::{Files, Outcome, OutcomeKind, Plan, beside_app};
 use crate::saved::Saved;
@@ -29,7 +30,9 @@ impl Updater {
             let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
             if kept_ending {
                 settled.fall_back = self.files.before().join(".whole").exists().then(|| self.files.before());
-            } else if outcome.kind != OutcomeKind::CouldntGoBack {
+            } else if outcome.kind != OutcomeKind::CouldntGoBack && !crate::removal_record::anything_there(&self.files.root) {
+                // Not while an unfinished removal's record is there, whatever the reason: the copy may be the only one a going back can use, and the removal
+                // decides what happens to it.
                 let _ = std::fs::remove_dir_all(self.files.before());
             }
             settled.reopened = match outcome.kind {
@@ -57,6 +60,8 @@ impl Updater {
                     saved.note_failed_version(&outcome.to);
                     let why = if exit_unproven {
                         "the new app may still be running, so the earlier version was not put back"
+                    } else if outcome.why == "removal_pending" {
+                        "a removal of data from a document was left unfinished, so the earlier version was not put back"
                     } else {
                         "it didn't come up, and there was no earlier version to go back to"
                     };

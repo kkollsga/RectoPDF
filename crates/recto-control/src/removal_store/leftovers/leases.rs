@@ -47,6 +47,9 @@ pub enum Busy {
     Starting,
     /// A newer app's record is beside this one: the clear is that version's.
     BesideNewer,
+    /// An unfinished removal's record is in the state folder (or something is where it would be that can't be read): a clear's own steps would move and delete
+    /// files the removal's plan has pinned, and the one thing that may do that is the removal finishing (`docs/design/removal.md` §6).
+    RemovalPending,
 }
 
 /// The leases, held until this is dropped.
@@ -101,6 +104,10 @@ impl Leases {
             Ok(None) | Err(_) => return Err(Busy::Windowless),
         };
         let installer = installer_lease(root)?;
+        // After the locks, so what is found is found with nothing else moving: a record that appears now is the removal's own, and still stops this.
+        if crate::removal_store::gate::anything_there(root) {
+            return Err(Busy::RemovalPending);
+        }
         Ok(Self {
             root: root.to_path_buf(),
             installer,
@@ -189,6 +196,21 @@ mod tests {
         std::fs::create_dir(root.join("update")).unwrap();
         let _installer = try_lock(&root.join("update").join("installer.lock")).unwrap().expect("the installer's lock");
         assert_eq!(leases.look_again().unwrap_err(), Busy::Installer);
+    }
+
+    /// Failure (D3b): a clear's own moves and deletes run while an unfinished removal's record is in the state folder, in whatever shape (one that can't be
+    /// read as much as a good one), against files the removal's plan has pinned. No lease is given, and a state folder with none gives it as before.
+    #[test]
+    fn an_unfinished_removal_stops_the_clear() {
+        use crate::removal_store::barrier::fixture::{Kind, seed};
+        for kind in [Kind::Pending(1), Kind::Garbage, Kind::TooNew, Kind::FolderIsFile] {
+            let root = root();
+            seed(root.path(), kind);
+            assert_eq!(Leases::take(&root, READY).unwrap_err(), Busy::RemovalPending, "{kind:?}");
+        }
+        let root = root();
+        seed(root.path(), Kind::LedgerOnly);
+        assert!(Leases::take(&root, READY).is_ok(), "the ledger alone is no record");
     }
 
     /// Failure: a clear runs while the app is still starting, beside a newer record, or without keeping its own.

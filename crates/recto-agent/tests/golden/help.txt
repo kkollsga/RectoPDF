@@ -188,7 +188,7 @@ Testing the app:
   qa owner-edit        Makes an edit as the owner: `rotate:PAGE` (a quarter turn), `delete:PAGE`, `undo` or `redo`, as `qa as-person` runs the person's `page rotate`, `page delete`, `undo` or `redo`, under the same rules.
   qa note-input        Says the user just touched the app, by what the event monitor calls.
   qa removal-hold      Holds the next `removal clear` before the act of a step of its plan until it's released, so what answers a check or a second clear meanwhile can be seen.
-  qa removal-state     Says what Clear leftovers holds: how many plans wait for a yes, whether a clear is running, whether it is held, which sheet the window has over it (`none`, `offer`, `looked` or `told`, never the plan) and whether a clear may begin (`ready`).
+  qa removal-state     Says what Clear leftovers holds: how many plans wait for a yes, whether a clear is running, whether it is held, which sheet the window has over it (`none`, `offer`, `looked` or `told`, never the plan), whether a clear may begin (`ready`), what an unfinished removal's record is (`record`: `nothing`, `pending` with how far it got, `damaged`, `too_new` or `not_ours`) and what the session's files are left as they are because of it (`withheld`).
   qa hold-reads        Holds files being read for opening where they are until it's told otherwise, as a slow disk would, for what's waiting on them to be seen.
   qa hand-off-quit     Asks to quit for an update, by what the updater calls.
   qa sheet             Says a sheet or panel opened or closed over the window, by what opening one does.

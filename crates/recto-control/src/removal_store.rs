@@ -13,6 +13,7 @@ mod copy_fixtures;
 mod coverage_tests;
 #[cfg(test)]
 mod destinations_tests;
+pub mod gate;
 mod journals;
 pub mod ledger;
 pub mod leftovers;

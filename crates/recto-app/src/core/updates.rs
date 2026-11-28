@@ -428,7 +428,8 @@ static ASKED_TO_OPEN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 pub fn note_tabs_read(loaded: &Loaded) {
     let tabs = match loaded {
         Loaded::Restored(restored) => restored.record.tabs.len() as u64,
-        Loaded::OtherInstance => return,
+        // Not read, for the lock or for an unfinished removal: neither says this version misread anything.
+        Loaded::OtherInstance | Loaded::Withheld(_) => return,
         _ => 0,
     };
     TABS_READ.store(tabs.min(NOT_READ - 1), Ordering::SeqCst);
@@ -455,6 +456,9 @@ pub fn fall_back_if_unreadable(updates: &recto_update::updater::Updater, store: 
         Loaded::Restored(restored) if restored.notice == Some(recto_session::record::notices::DAMAGED) => store.main_folder(),
         // A newer kind is never written over: this version's own folder beside it is where it reads.
         Loaded::Newer => store.own_folder(),
+        // An unfinished removal's record: `update/before` may hold the very history being purged, so it is never put back (`docs/design/removal.md` §6). The
+        // copy to fall back on lives in memory and is set once by the settling at launch, so it is not offered again, and no later launch sees it.
+        withheld @ Loaded::Withheld(_) => return withheld,
         other => return other,
     };
     recto_update::install::restore_record(&before, &into);
@@ -799,6 +803,16 @@ pub fn timer_for(next_wake: Option<u64>, now_ms: u64) -> Option<UpdateTimer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (D3b): a launch that read nothing because an unfinished removal's record withheld the session is counted as having read no tabs, so the
+    /// installer takes the new version for one that misread the record and goes back over a removal. It's "not read", as for the lock.
+    #[test]
+    fn a_withheld_load_is_not_a_read_of_no_tabs() {
+        note_tabs_read(&Loaded::Withheld(recto_control::removal_store::gate::Withheld::Pending));
+        assert_eq!(TABS_READ.load(Ordering::SeqCst), NOT_READ);
+        note_tabs_read(&Loaded::Nothing);
+        assert_eq!(TABS_READ.load(Ordering::SeqCst), 0, "an empty record is read, with no tabs");
+    }
 
     /// Failure: a silent update puts a window over what the user's doing, or moves them to another Space by going into full screen. **Only as far as it can be tested with no screen:** that Rust says behind and not yet, for an update arriving in the background and nothing else. What AppKit then does stays unproven until a signed release on a real desktop.
     #[test]

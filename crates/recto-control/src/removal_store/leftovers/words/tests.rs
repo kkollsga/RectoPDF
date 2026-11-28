@@ -68,7 +68,7 @@ fn a_refusal_says_nothing_was_cleared_and_a_stop_after_an_act_never_does() {
     ] {
         assert!(confirm_refusal(why).ends_with("Nothing was cleared."), "{why:?}");
     }
-    for why in [Busy::Installer, Busy::Windowless, Busy::Starting, Busy::BesideNewer] {
+    for why in [Busy::Installer, Busy::Windowless, Busy::Starting, Busy::BesideNewer, Busy::RemovalPending] {
         assert!(busy(why).ends_with("Nothing was cleared."), "{why:?}");
     }
     assert!(refusal(Refusal::TooLarge, false).ends_with("nothing was cleared."));
