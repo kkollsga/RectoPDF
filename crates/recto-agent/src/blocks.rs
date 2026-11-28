@@ -61,6 +61,12 @@ fn stored(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<StoredBlock
     stored_pair(find_key, root, key).map(|(_, found)| found)
 }
 
+/// The stored blocks of this file as it is now, if there are some. **Never asks for them:** a read that only uses them where they are (`get` of a hit) starts nothing.
+pub(crate) fn stored_now<A: SessionAccess>(access: &A, key: CorpusKey) -> Option<StoredBlocks> {
+    let indexing = access.indexing()?;
+    stored(indexing.find_key()?, indexing.root(), key)
+}
+
 /// Asks for blocks if nobody has, and says where they stand.
 fn ask(blocking: &dyn Blocking, find_key: &FindKey, root: &Path, path: &Path, key: CorpusKey) -> GenState {
     let state = blocking.state(key);

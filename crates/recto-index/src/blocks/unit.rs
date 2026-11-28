@@ -192,6 +192,16 @@ pub fn build<P: Pages>(pages: &mut P, ask: &Ask<'_>) -> Result<Outcome, Fault> {
     }
 }
 
+/// The headings above `place`: the entries whose sections hold it, outermost first, at most [`MAX_HEADINGS_ABOVE`] (the innermost are kept).
+#[must_use]
+pub fn headings_above(sections: &Sections, place: Place) -> Vec<usize> {
+    let mut chain = sections.headings_above(place);
+    if chain.len() > MAX_HEADINGS_ABOVE {
+        chain.drain(..chain.len() - MAX_HEADINGS_ABOVE);
+    }
+    chain
+}
+
 /// The blocks' first characters, one for each block that is first in character order at or after each of `starts` (ascending): the index of the first block whose place is at or after it, or
 /// `places.len()` for none. One pass over both, so the cost is theirs added and not multiplied. The second number is the steps it took.
 #[must_use]
@@ -623,11 +633,7 @@ impl<'a, P: Pages> Walk<'a, P> {
     }
 
     fn headings_above(sections: Option<&Sections>, place: Place) -> Vec<usize> {
-        let mut chain = sections.map_or_else(Vec::new, |sections| sections.headings_above(place));
-        if chain.len() > MAX_HEADINGS_ABOVE {
-            chain.drain(..chain.len() - MAX_HEADINGS_ABOVE);
-        }
-        chain
+        sections.map_or_else(Vec::new, |sections| headings_above(sections, place))
     }
 
     fn paragraph(&mut self, ask: &Ask<'_>) -> Result<Outcome, Fault> {

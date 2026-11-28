@@ -214,6 +214,19 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         let prev = page_ref(&mut referrer, here.checked_sub(1).and_then(|before| file.file_page_at(before)));
         json!({ "self": up, "next": next, "prev": prev, "more": more, "more_entry": null, "up": null, "up_grain": null })
     };
+    // The headings above it, from the contents a section is cut by, none where there are none (and never made here).
+    let (headings, headings_at) = match read.key.or_else(|| CorpusKey::of_file(file.path()).ok()) {
+        Some(key) => {
+            let hit = (kind == "hit").then_some((from, total));
+            let anchor = blocks::Anchor {
+                file_page: found.file_page,
+                hit,
+                opened: &opened,
+            };
+            blocks::headings_of_page(access, &file, key, &anchor)
+        }
+        None => (Vec::new(), blocks::HeadingsAt::PageEnd),
+    };
     drop(opened);
 
     // The same version of the file, and of the index it was read from, to the end.
@@ -232,7 +245,8 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         "ref": found.told(),
         "unit": { "kind": kind, "pages": 1, "chars": unit.len() },
         "widened": widened,
-        "headings_above": [],
+        "headings_above": headings,
+        "headings_at": headings_at.word(),
         "refs": refs,
         "truncated": given < unit.len(),
         "counts": counts,
