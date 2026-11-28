@@ -186,15 +186,22 @@ fn a_slow_page_scrolled_away_from_is_cancelled() {
     ];
     let file = TempPdf::new("slow.pdf", &pages(&list));
     let (engine, _events) = started(&file, 3);
-    // Let the sizes arrive, and the slow draw begin.
+    // Scroll only once the slow page's draw is running in the worker: `jobs` counts finished jobs, so 3 of them is the sizes, and on a slow runner
+    // the scroll came before the draw was dispatched, which the engine rightly never starts, and nothing was cancelled (CI, 2026-11-28).
     let begun = Instant::now();
-    while begun.elapsed() < Duration::from_secs(2) {
+    loop {
         engine.drain();
         engine.applied();
-        if engine.report().0["counts"]["jobs"].as_u64().unwrap_or(0) >= 3 {
+        let running = engine.report().0["running"].clone();
+        if running["draw"] == true && running["page"] == 1 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            begun.elapsed() < Duration::from_secs(40),
+            "the slow page's draw never began, so there was nothing to cancel: {}",
+            engine.report().0
+        );
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
     let height = engine.report().0["document_height"].as_f64().unwrap();
     let away = height - 900.0;
