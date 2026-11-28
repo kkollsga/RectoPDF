@@ -474,7 +474,10 @@ mod tests {
     /// person's, so the counter tells the two apart (the person's own ask is counted too, so a counter that never counts fails).
     #[test]
     fn an_agents_contents_show_asks_as_an_agent_never_the_person() {
-        let file = recto_testpdf::TempPdf::new("ask.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))]));
+        let file = recto_testpdf::TempPdf::new(
+            "ask.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))]),
+        );
         // A tab already waiting for them isn't asked for again, so each actor gets a session of its own.
         let asked_by = |actor: Actor| {
             let access = Counting {
