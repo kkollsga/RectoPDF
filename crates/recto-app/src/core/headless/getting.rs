@@ -278,3 +278,68 @@ fn a_page_the_index_did_not_check_for_hidden_text_is_read_live_and_marked() {
         "no hidden line is shown as plain text: {body}"
     );
 }
+
+/// A page of about 70,000 characters: 700 lines of 100 letters, drawn one point high so they fit the page.
+fn long_page() -> Vec<u8> {
+    let mut content = String::from("BT /F1 1 Tf 1 TL 5 785 Td\n");
+    for line in 0..700 {
+        content.push_str(&format!("({}) Tj T*\n", format!("{:04}", line).repeat(25)));
+    }
+    recto_testpdf::pages(&[recto_testpdf::Page::new(content.into_bytes())])
+}
+
+/// Failure (S2's review): a page over 65,536 characters can't be read to its end, as `refs.more` is missing; or the cut is in another place for Markdown than for text, so a `more` reference means
+/// two things. A page of about 70,000 characters at the most an answer holds: two calls, the second with `--from-here` on the first's `refs.more`, give the whole page once. At a small cap text and Markdown
+/// give the same `refs.more` and `counts.chars_given`.
+#[test]
+fn a_page_over_65536_characters_is_read_to_its_end() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("long.pdf", &long_page());
+    app.open(&file);
+    let whole = app.recto(Level::ReadOnly, &["text", "--page", "1"]).expect("its text")["untrusted"]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let total = whole.chars().count();
+    assert!(total > 65_536, "the fixture is a page over the most an answer holds: {total}");
+    let token = reference(&app, 1);
+    let first = get(&app, Level::ReadOnly, &token, json!({ "grain": "page", "max_chars": 65_536 })).expect("the first part");
+    // Cut at the last line end inside the cap, so a little under it.
+    let given = first["counts"]["chars_given"].as_u64().unwrap_or(0);
+    assert!((60_000..=65_536).contains(&given) && first["truncated"] == true, "{first}");
+    let more = first["refs"]["more"].as_str().expect("a way on").to_owned();
+    let second = get(&app, Level::ReadOnly, &more, json!({ "grain": "page", "max_chars": 65_536, "from_here": true })).expect("the rest");
+    assert_eq!(second["truncated"], false, "{second}");
+    let joined = format!(
+        "{}{}",
+        first["untrusted"]["text"].as_str().unwrap_or_default(),
+        second["untrusted"]["text"].as_str().unwrap_or_default()
+    );
+    assert_eq!(joined.chars().count(), total, "the whole page once: nothing lost, nothing twice");
+    assert_eq!(joined.trim(), whole.trim());
+
+    let small = |form: &str| get(&app, Level::ReadOnly, &token, json!({ "grain": "page", "max_chars": 10, "as": form })).expect("a small cap");
+    let (text, markdown) = (small("text"), small("markdown"));
+    assert_eq!(text["refs"]["more"], markdown["refs"]["more"], "one cut whatever the form: {text} {markdown}");
+    assert_eq!(text["counts"]["chars_given"], markdown["counts"]["chars_given"]);
+    assert!(text["refs"]["more"].is_string());
+}
+
+/// Failure: `get --grain section` reads the contents and the pages of a tab whose own pages are withheld (its file replaced under unsaved edits), which `contents` refuses, so an agent gets a
+/// section of a file the edits' page numbers aren't about. The refusal is `contents`'s, in the same code.
+#[test]
+fn a_section_on_a_tab_whose_pages_are_withheld_is_refused_as_contents_is() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    app.open(&file);
+    let token = reference(&app, 2);
+    app.recto(Level::Control, &["page", "rotate", "9", "--by", "90"]).expect("rotated");
+    app.settle();
+    replace(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    let contents = app.recto(Level::ReadOnly, &["contents"]).expect_err("contents refuses");
+    for grain in ["section", "chapter", "paragraph"] {
+        let said = get(&app, Level::ReadOnly, &token, json!({ "grain": grain })).expect_err("the pages are withheld");
+        assert_eq!(said.code, contents.code, "{grain}: {said:?}");
+    }
+}

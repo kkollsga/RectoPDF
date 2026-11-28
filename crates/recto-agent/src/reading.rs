@@ -48,6 +48,11 @@ impl TabFile {
         self.pages
     }
 
+    /// The pages whose entries' places mean something in the view the reader has.
+    pub(crate) fn placed(&self) -> &recto_session::Placed {
+        &self.placed
+    }
+
     pub(crate) fn renderer_only(&self) -> bool {
         self.renderer_only
     }

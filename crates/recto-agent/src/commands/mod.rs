@@ -590,6 +590,7 @@ const COMBINATIONS: &[(&str, &str)] = &[
     ("compare", compare::READING_ALONE),
     ("find", finding::ONE_THING),
     ("find", finding::JUMP_WITH_A_STEP),
+    ("get", getting::FROM_HERE_NEEDS_A_GRAIN),
     ("highlight_remove", highlight::ID_ALONE),
     ("text", locating::TEXT_BOTH),
     ("render", locating::RENDER_BOTH),

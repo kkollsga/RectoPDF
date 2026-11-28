@@ -1753,11 +1753,11 @@
 {"cmd":"get"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"}
-    ok get Get { reference: Locator { .. }, tab: "active", grain: Hit, form: Text, max_chars: 16000 }
+    ok get Get { reference: Locator { .. }, tab: "active", grain: Hit, form: Text, max_chars: 16000, from_here: false }
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","tab":"#2","grain":"page","as":"markdown","max_chars":4000}
-    ok get Get { reference: Locator { .. }, tab: "#2", grain: Page, form: Markdown, max_chars: 4000 }
+    ok get Get { reference: Locator { .. }, tab: "#2", grain: Page, form: Markdown, max_chars: 4000, from_here: false }
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":"paragraph"}
-    ok get Get { reference: Locator { .. }, tab: "active", grain: Paragraph, form: Text, max_chars: 16000 }
+    ok get Get { reference: Locator { .. }, tab: "active", grain: Paragraph, form: Text, max_chars: 16000, from_here: false }
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":"nonsense"}
     refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--grain` is `hit`, `paragraph`, `section`, `page` or `chapter`.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","as":"pdf"}
@@ -1779,7 +1779,7 @@
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","grain":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","as":null}
-    ok get Get { reference: Locator { .. }, tab: "active", grain: Hit, form: Text, max_chars: 16000 }
+    ok get Get { reference: Locator { .. }, tab: "active", grain: Hit, form: Text, max_chars: 16000, from_here: false }
 {"cmd":"get","ref":"r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","max_chars":"many"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"get","ref":"not-a-reference-secret-123"}
@@ -1787,7 +1787,7 @@
 ["get"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["get","r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000","#2"]
-    ok get Get { reference: Locator { .. }, tab: "#2", grain: Hit, form: Text, max_chars: 16000 }
+    ok get Get { reference: Locator { .. }, tab: "#2", grain: Hit, form: Text, max_chars: 16000, from_here: false }
 {"cmd":"Get"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"highlight"}

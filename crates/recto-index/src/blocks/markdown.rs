@@ -33,7 +33,7 @@ pub fn spans_within(block: &Block, page_spans: &[(u32, u32)]) -> Vec<(u32, u32)>
         .iter()
         .filter_map(|&(start, end)| {
             let (from, to) = (start.max(block.start), end.min(block.end));
-            (from < to).then_some((from - block.start, to - block.start))
+            (from < to).then(|| (from - block.start, to - block.start))
         })
         .collect()
 }
