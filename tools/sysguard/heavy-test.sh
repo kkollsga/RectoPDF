@@ -38,7 +38,7 @@ for n in a b c d; do
   bash "$HEAVY" bash -c "mkdir '$X/run.$n'; ls -d '$X'/run.* | wc -l | tr -d ' ' >> '$X/peak'; sleep 2; rmdir '$X/run.$n'" 2>>"$X/err" &
 done
 wait
-check "never more than the slots" "2" "$(sort -n "$X/peak" | tail -1)"
+check "never more than the slots" "2" "$(sort -n "$X/peak" | tail -1 | tr -d " ")"
 rm -f "$X/peak"
 
 # Failure: a cargo job spawning more compilers per slot as slots rise, past what the Mac can take.
@@ -75,6 +75,48 @@ job n1 3 & pause 0.8
 job n2 1 &
 wait
 check "solo waits for all, and runs before later jobs" "n1 solo n2" "$(order)"
+
+# Failure: a slot or ticket whose process is alive but can't be signalled (kill -0 says "Operation not permitted", as from a sandboxed session) was cleared
+# as stale, so one agent's cleanup deleted another's running solo job's slots and a waiting solo's ticket: two solo jobs ran at once, and a waiting one starved.
+# Process 1 is alive and not ours to signal.
+bash "$HEAVY" --slots 2 >/dev/null
+mkdir -p "$X/lock.queue" "$X/lock.3"
+echo "1 00:00:00 someone else's job" > "$X/lock.3/owner"
+echo "someone else's waiting solo" > "$X/lock.queue/2-$(date +%s)-solo-1"
+bash "$HEAVY" --status >/dev/null
+check "a live process we may not signal keeps its slot" "yes" "$([ -d "$X/lock.3" ] && echo yes || echo no)"
+check "and its ticket" "yes" "$(ls "$X/lock.queue" | grep -q -- '-solo-1$' && echo yes || echo no)"
+rm -rf "$X/lock.3" "$X/lock.queue"/*
+
+# Failure: a solo job and a normal job that arrive in the same second each wait for the other (a process id sorts before "solo"), and neither ever starts.
+bash "$HEAVY" --slots 2 >/dev/null
+job hold 4 & pause 0.8
+perl -e 'use Time::HiRes qw(time usleep); my $t = time; usleep((1 - ($t - int($t))) * 1e6 + 50000)'
+( HEAVY_SOLO=1 job solo 0 ) &
+job same-second 0 &
+for _ in $(seq 1 30); do [ "$(wc -l < "$X/log" | tr -d ' ')" -ge 3 ] && break; pause 0.5; done
+check "solo and a normal job from the same second don't wait for each other" "hold solo same-second" "$(order)"
+pkill -f "$X/log" 2>/dev/null
+wait
+
+# Failure: two solo jobs at once. Each is the only one running in its own view, so each checks the whole machine and runs.
+bash "$HEAVY" --slots 3 >/dev/null
+rm -f "$X/peak"
+for n in a b c; do
+  ( HEAVY_SOLO=1 bash "$HEAVY" bash -c "mkdir '$X/solo.$n'; ls -d '$X'/solo.* | wc -l >> '$X/peak'; sleep 1; rmdir '$X/solo.$n'" 2>>"$X/err" ) &
+  pause 0.3
+done
+wait
+check "two solo jobs never run at once" "1" "$(sort -n "$X/peak" | tail -1 | tr -d " ")"
+rm -f "$X/peak"
+
+# Failure: a normal job that arrives after a solo that is next in line goes ahead of it.
+bash "$HEAVY" --slots 2 >/dev/null
+job run 3 & pause 0.8
+( HEAVY_SOLO=1 job solo 0 ) & pause 0.8
+job later 0 &
+wait
+check "a normal job that comes after a solo that is next in line waits for it" "run solo later" "$(order)"
 
 # Waits for this many lines in the log, then ends whatever's still there, so a job stuck for ever fails its check and doesn't hang this.
 settle() {

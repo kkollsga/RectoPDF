@@ -60,6 +60,15 @@ slot_path() { if [ "$1" = 1 ]; then echo "$LOCK"; else echo "$LOCK.$1"; fi; }
 now() { date +%s; }
 hash_of() { shasum | cut -d' ' -f1; }
 
+# Whether a process exists. kill -0 also fails with "Operation not permitted" for a live process this one may not signal, as in a sandboxed
+# session or another user's: that is alive, and treating it as gone made one agent's cleanup delete another's slots and tickets, so two solo
+# jobs ran at once and a waiting solo's ticket vanished from the queue (2026-11-28).
+pid_alive() {
+  local err
+  err=$(kill -0 "$1" 2>&1) && return 0
+  case "$err" in *[Nn]ot\ permitted* | *EPERM*) return 0 ;; esac
+  return 1
+}
 # A slot or ticket left by a process that no longer exists is stale.
 clear_stale() {
   local i path owner pid ticket
@@ -68,12 +77,12 @@ clear_stale() {
     [ -d "$path" ] || continue
     owner=$(cat "$path/owner" 2>/dev/null)
     pid=${owner%% *}
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$path"; fi
+    if [ -n "$pid" ] && ! pid_alive "$pid"; then rm -rf "$path"; fi
   done
   for ticket in "$QUEUE"/*; do
     [ -f "$ticket" ] || continue
     pid=${ticket##*-}
-    kill -0 "$pid" 2>/dev/null || rm -f "$ticket"
+    pid_alive "$pid" || rm -f "$ticket"
   done
 }
 slots_in_use() {
@@ -128,7 +137,7 @@ case "${1:-}" in
       printf '  %3d. waited %5ss  %s\n' "$position" "$(($(now) - started))" "$(cut -c1-100 "$ticket")"
     done
     watcher=$(cat "$LOCK.watch" 2>/dev/null)
-    if [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null; then echo "Watchdog: running, process $watcher."; else echo "Watchdog: NOT RUNNING. Start it with: tools/sysguard/heavy.sh --watch"; fi
+    if [ -n "$watcher" ] && pid_alive "$watcher"; then echo "Watchdog: running, process $watcher."; else echo "Watchdog: NOT RUNNING. Start it with: tools/sysguard/heavy.sh --watch"; fi
     if pgrep -f "sysguard/sysguard.sh" >/dev/null 2>&1; then echo "Memory guard: running."; else echo "Memory guard: NOT RUNNING. Start it with: tools/sysguard/sysguard.sh"; fi
     exit 0
     ;;
@@ -375,7 +384,8 @@ queue_key() {
       fi
       ;;
   esac
-  echo "$rank-$time-$name"
+  # At the same second a solo job goes first: by name a process id would sort before "solo", and the two would each wait for the other.
+  case "$name" in *-solo-*) echo "$rank-$time-0-$name" ;; *) echo "$rank-$time-1-$name" ;; esac
 }
 # How many are ahead of this job, and whether a solo job is what it must wait for.
 ahead_of_me() {
