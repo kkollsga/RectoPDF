@@ -71,7 +71,7 @@ fn from_index<A: SessionAccess>(access: &A, path: &std::path::Path, file_page: u
     let indexing = access.indexing()?;
     let find_key = indexing.find_key()?;
     let key = CorpusKey::of_file(path).ok()?;
-    let corpus = std::sync::Arc::new(ReadyCorpus::open(find_key, indexing.root(), key).ok()??);
+    let corpus = std::sync::Arc::new(ReadyCorpus::open(&find_key, indexing.root(), key).ok()??);
     let mut buffer = Vec::new();
     let stored = corpus.page(file_page, &mut buffer).ok()?;
     let mut read = (stored.kind == PageKind::Text && index_is_enough(stored.hidden_checked, stored.spans_dropped)).then(|| PageRead {

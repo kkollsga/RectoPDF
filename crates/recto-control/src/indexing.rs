@@ -4,7 +4,7 @@
 
 use crate::find_keys::{self, Loaded, Plan};
 use recto_agent::Event;
-use recto_agent::index::{Indexing, JobState};
+use recto_agent::index::{Indexing, JobState, KeyUse};
 use recto_index::corpus::{self, BuildLimits, CorpusKey};
 use recto_platform::find_key::FindKey;
 use recto_platform::helper::{Priority, Spawned};
@@ -131,15 +131,15 @@ impl Indexer {
     }
 
     /// The Find key, taken the first time a thread that may wait asks for it: never the UI thread ([`Shared::find_key`]).
-    pub fn find_key(&self) -> Option<&FindKey> {
-        self.0.find_key()
+    pub fn find_key(&self) -> Option<KeyUse<'_>> {
+        self.0.find_key().map(KeyUse::plain)
     }
 
     /// **The key if it's in hand, never waiting for it:** for Find, which a person's search must never wait on the key for (the second review's item 5, 2026-11-15). Taking it checks this copy's whole bundle against its signature before the Keychain is asked: by `what_the_release_check_costs`, 578–652 ms in five runs on a 143 MB build of the app (2026-11-15, warm cache, the machine under load), as the review measured 0.62–0.71 s on the 141 MB release. The first ask while it isn't in hand starts its taking on its own thread and goes on without it, so that search reads its pages live and touches no corpus, and a later one has the key. Starts nothing on the UI thread.
-    pub fn find_key_in_hand(&self) -> Option<&FindKey> {
+    pub fn find_key_in_hand(&self) -> Option<KeyUse<'_>> {
         use std::sync::atomic::Ordering;
         if let Some(loaded) = self.0.key.get() {
-            return loaded.key.as_ref();
+            return loaded.key.as_ref().map(KeyUse::plain);
         }
         if !recto_platform::thread::is_main_thread() && !self.0.key_asked.swap(true, Ordering::SeqCst) {
             let shared = Arc::clone(&self.0);
@@ -332,8 +332,8 @@ impl Indexing for Indexer {
         &self.0.root
     }
 
-    fn find_key(&self) -> Option<&FindKey> {
-        self.0.find_key()
+    fn find_key(&self) -> Option<KeyUse<'_>> {
+        Indexer::find_key(self)
     }
 
     fn find_key_report(&self) -> Value {

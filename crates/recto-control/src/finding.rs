@@ -164,7 +164,7 @@ impl Indexing for KeyInHand<'_> {
     fn root(&self) -> &std::path::Path {
         Indexing::root(self.0)
     }
-    fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
+    fn find_key(&self) -> Option<recto_agent::index::KeyUse<'_>> {
         self.0.find_key_in_hand()
     }
     fn made_agent_folder(&self, key: recto_index::corpus::CorpusKey) {

@@ -47,7 +47,7 @@ pub(crate) fn stop(blocking: &dyn Blocking, paths: Option<&[PathBuf]>) {
 /// What a corpus has of blocks, for a file whose index is ready: the stored ones made against this corpus as it stands now (its pages and its retries), if they open. A set that doesn't add up is
 /// thrown away.
 fn stored_pair(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<(ReadyCorpus, StoredBlocks)> {
-    let ready = ReadyCorpus::open(find_key, root, key).ok()??;
+    let ready = ReadyCorpus::open(&find_key, root, key).ok()??;
     match StoredBlocks::open_matching(find_key, root, key, &ready.summary) {
         Ok(found) => found.map(|found| (ready, found)),
         Err(_) => {
@@ -58,13 +58,14 @@ fn stored_pair(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<(Ready
 }
 
 fn stored(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<StoredBlocks> {
-    stored_pair(find_key, root, key).map(|(_, found)| found)
+    stored_pair(&find_key, root, key).map(|(_, found)| found)
 }
 
 /// The stored blocks of this file as it is now, if there are some. **Never asks for them:** a read that only uses them where they are (`get` of a hit) starts nothing.
 pub(crate) fn stored_now<A: SessionAccess>(access: &A, key: CorpusKey) -> Option<StoredBlocks> {
     let indexing = access.indexing()?;
-    stored(indexing.find_key()?, indexing.root(), key)
+    let find_key = indexing.find_key()?;
+    stored(&find_key, indexing.root(), key)
 }
 
 /// Asks for blocks if nobody has, and says where they stand.
@@ -103,13 +104,13 @@ pub(crate) fn readable<A: SessionAccess>(access: &A, path: &Path) -> Readable {
     };
     let Some(find_key) = indexing.find_key() else { return not_made };
     let Ok(key) = CorpusKey::of_file(path) else { return not_made };
-    if !matches!(corpus::disk_state(find_key, indexing.root(), key), DiskState::Ready(_)) {
+    if !matches!(corpus::disk_state(&find_key, indexing.root(), key), DiskState::Ready(_)) {
         return not_made;
     }
-    if let Some(pair) = stored_pair(find_key, indexing.root(), key) {
+    if let Some(pair) = stored_pair(&find_key, indexing.root(), key) {
         return Readable::Ready(Box::new(pair));
     }
-    match ask(blocking, find_key, indexing.root(), path, key) {
+    match ask(blocking, &find_key, indexing.root(), path, key) {
         GenState::Queued | GenState::Running => Readable::Widen { why: BUILDING, note: None },
         GenState::Refused(code) | GenState::Failed(code) => Readable::Widen {
             why: NOT_MADE,
@@ -220,10 +221,10 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState
         Err(error) if error.code == Code::NO_SUCH_TAB && error.exit != exit::AMBIGUOUS => return ConditionState::Waiting,
         Err(error) => return ConditionState::Failed(error),
     };
-    if let Some(found) = stored(find_key, indexing.root(), keyed.key) {
+    if let Some(found) = stored(&find_key, indexing.root(), keyed.key) {
         return ConditionState::Met(ready_json(file.id(), found.made()));
     }
-    match ask(blocking, find_key, indexing.root(), &keyed.path, keyed.key) {
+    match ask(blocking, &find_key, indexing.root(), &keyed.path, keyed.key) {
         GenState::Refused(code) => ConditionState::Failed(AgentError::new(
             Code::BLOCKS_REFUSED,
             format!("This file won't have blocks: {}.", reason_words(&code)),

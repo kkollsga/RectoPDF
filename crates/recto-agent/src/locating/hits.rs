@@ -93,7 +93,7 @@ fn open_held(path: &Path, stamp: FileStamp, corpus: Option<CorpusKey>, indexing:
     if let Some((key, indexing)) = corpus.zip(indexing).filter(|_| caps.page == page_id::Caps::STANDARD)
         && let Some(find_key) = indexing.find_key()
     {
-        match Identities::open(find_key, indexing.root(), key) {
+        match Identities::open(&find_key, indexing.root(), key) {
             Ok(Some(stored)) => return Some(Held::Stored(stored, key)),
             // None to use: an older index, or one made under other rules. Nothing is wrong with it.
             Ok(None) => {}
