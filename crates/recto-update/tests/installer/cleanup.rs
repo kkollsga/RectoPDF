@@ -139,7 +139,11 @@ impl Scan for Mac {
         let size = size_of::<libc::proc_bsdinfo>() as i32;
         let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
         if got != size {
-            return Err(if got <= 0 { io::Error::last_os_error() } else { io::Error::other("short process info") });
+            return Err(if got <= 0 {
+                io::Error::last_os_error()
+            } else {
+                io::Error::other("short process info")
+            });
         }
         Ok(info.pbi_comm.iter().map(|byte| *byte as u8).take_while(|byte| *byte != 0).collect())
     }
@@ -170,7 +174,12 @@ fn observe(root: &Path, programs: &[&[u8]], scan: &mut impl Scan) -> io::Result<
             Err(error) if error.raw_os_error() == Some(libc::ENOENT) => match scan.start_name(pid) {
                 Err(error) if process_vanished(&error) => continue,
                 Ok(name) if !name.is_empty() && !programs.iter().any(|program| program.starts_with(&name)) => continue,
-                _ => return Err(io::Error::new(error.kind(), format!("process path query for PID {pid} while observing {}: {error}", root.display()))),
+                _ => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("process path query for PID {pid} while observing {}: {error}", root.display()),
+                    ));
+                }
             },
             Err(error) => {
                 return Err(io::Error::new(
@@ -404,11 +413,21 @@ fn a_foreign_deleted_program_is_ignored_but_a_fixtures_own_is_not() {
         }
     }
     let root = Path::new("/private/tmp/fixture");
-    let mut fake = Fake { path_error: Some(libc::ENOENT), name: Some(b"browser_crashpad"), path: b"" };
-    assert!(!observe(root, &FIXTURE_PROGRAMS, &mut fake).unwrap(), "another program, deleted: not the fixture's");
+    let mut fake = Fake {
+        path_error: Some(libc::ENOENT),
+        name: Some(b"browser_crashpad"),
+        path: b"",
+    };
+    assert!(
+        !observe(root, &FIXTURE_PROGRAMS, &mut fake).unwrap(),
+        "another program, deleted: not the fixture's"
+    );
     for own in [&b"RectoPDF"[..], b"recto-updater"] {
         fake.name = Some(own);
-        assert!(observe(root, &FIXTURE_PROGRAMS, &mut fake).is_err(), "the fixture's own program that lost its file stays unknown");
+        assert!(
+            observe(root, &FIXTURE_PROGRAMS, &mut fake).is_err(),
+            "the fixture's own program that lost its file stays unknown"
+        );
     }
     fake.name = None;
     assert!(observe(root, &FIXTURE_PROGRAMS, &mut fake).is_err(), "an unreadable start name stays unknown");
