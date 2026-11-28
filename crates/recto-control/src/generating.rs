@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::blocking;
 use crate::indexing::Notifier;
 use crate::structure::headings::{self, HeadingsAnswer};
-use crate::structure::{Ended, Structure};
+use crate::structure::{Ended, Pick, numbers_of};
 use recto_agent::blocks::BlocksAsk;
 
 mod ink;
@@ -57,11 +57,31 @@ pub trait Runner: Send + Sync {
     fn run(&self, job: &GenJob, stop: &AtomicBool) -> (Outcome, Value);
 }
 
-/// Which job a queue entry is. Generated contents and blocks share the one queue, the one helper, and [`MAX_WAITING`]; what's remembered of a file is remembered for each.
+/// Which job a queue entry is. Generated contents and blocks share the one queue, the one helper, and [`MAX_WAITING`]; what's remembered of a file is remembered for each kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum What {
     Contents,
     Blocks,
+}
+
+impl What {
+    /// Whether this kind's code is a limit of the version's own doing, which isn't run again for it (a refusal isn't either): a hostile file could otherwise take half a gigabyte every minute.
+    fn is_limit(self, code: &str) -> bool {
+        match self {
+            Self::Contents => CONTENTS_LIMITS.contains(&code),
+            Self::Blocks => blocking::is_limit(code),
+        }
+    }
+}
+
+/// The codes of a limit a generated-contents job can end at.
+const CONTENTS_LIMITS: &[&str] = &["over_memory", "out_of_time"];
+
+/// Whose ask a job is. A person's waiting ask is never given way for an agent's, and goes first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum By {
+    Person,
+    Agent,
 }
 
 /// A job on the queue.
@@ -93,12 +113,19 @@ impl Job {
     }
 }
 
+/// A job waiting its turn, and whose ask it is.
+struct Waiting {
+    by: By,
+    job: Job,
+}
+
 /// The job running now: what it is, whose, how to stop it, and its file.
 type Running = (What, CorpusKey, Arc<AtomicBool>, PathBuf);
 
 #[derive(Default)]
 struct Inner {
-    waiting: VecDeque<Job>,
+    /// The people's asks first, newest first, then the agents', newest first.
+    waiting: VecDeque<Waiting>,
     running: Option<Running>,
     failures: VecDeque<(What, CorpusKey, String, Instant)>,
     refused: VecDeque<(What, CorpusKey, String)>,
@@ -173,8 +200,9 @@ impl Generator {
         }
     }
 
-    /// Someone wants this job done. Nothing happens if it's on its way, refused, or failed within the pause; the newest ask goes to the front, and the oldest gives way past [`MAX_WAITING`].
-    pub(crate) fn want_job(&self, job: Job) {
+    /// Someone wants this job done. Nothing happens if it's on its way, refused, or failed within the pause. The newest ask of a kind of asker goes first of theirs; a person's asks go before the agents', and
+    /// past [`MAX_WAITING`] the agents' oldest gives way, a person's only when no agent's waits (and an agent's own ask is then the one that isn't kept).
+    pub(crate) fn want_job(&self, by: By, job: Job) {
         let mut inner = self.0.lock();
         let (what, key) = (job.what(), job.key());
         if inner.stopped
@@ -187,9 +215,19 @@ impl Generator {
         {
             return;
         }
-        inner.waiting.retain(|waiting| (waiting.what(), waiting.key()) != (what, key));
-        inner.waiting.push_front(job);
-        inner.waiting.truncate(MAX_WAITING);
+        // A person's ask for what an agent has waiting for becomes theirs; an agent's for what a person has waiting changes nothing.
+        let same = |waiting: &Waiting| (waiting.job.what(), waiting.job.key()) == (what, key);
+        if by == By::Agent && inner.waiting.iter().any(|waiting| same(waiting) && waiting.by == By::Person) {
+            return;
+        }
+        inner.waiting.retain(|waiting| !same(waiting));
+        let people = inner.waiting.iter().take_while(|waiting| waiting.by == By::Person).count();
+        let at = if by == By::Person { 0 } else { people };
+        inner.waiting.insert(at, Waiting { by, job });
+        if inner.waiting.len() > MAX_WAITING {
+            // The agents' oldest is at the back; with none, it's a person's oldest, which is the back too.
+            inner.waiting.pop_back();
+        }
         self.start_working(&mut inner);
     }
 
@@ -201,7 +239,7 @@ impl Generator {
             .is_some_and(|(running, key_running, ..)| (*running, *key_running) == (what, key))
         {
             GenState::Running
-        } else if inner.waiting.iter().any(|job| (job.what(), job.key()) == (what, key)) {
+        } else if inner.waiting.iter().any(|waiting| (waiting.job.what(), waiting.job.key()) == (what, key)) {
             GenState::Queued
         } else if let Some((.., code)) = inner.refused.iter().find(|(kind, refused, _)| (*kind, *refused) == (what, key)) {
             GenState::Refused(code.clone())
@@ -215,7 +253,9 @@ impl Generator {
     /// Stops one kind of job for one file, or for all, whatever's waiting and what's running. The other kind isn't touched.
     pub(crate) fn cancel_key(&self, what: What, key: Option<CorpusKey>) {
         let mut inner = self.0.lock();
-        inner.waiting.retain(|job| job.what() != what || key.is_some_and(|key| key != job.key()));
+        inner
+            .waiting
+            .retain(|waiting| waiting.job.what() != what || key.is_some_and(|key| key != waiting.job.key()));
         if let Some((running, key_running, stop, _)) = &inner.running
             && *running == what
             && key.is_none_or(|key| key == *key_running)
@@ -230,7 +270,9 @@ impl Generator {
             None => self.cancel_key(what, None),
             Some(paths) => {
                 let mut inner = self.0.lock();
-                inner.waiting.retain(|job| job.what() != what || !paths.iter().any(|path| path == job.path()));
+                inner
+                    .waiting
+                    .retain(|waiting| waiting.job.what() != what || !paths.iter().any(|path| path == waiting.job.path()));
                 if let Some((running, _, stop, file)) = &inner.running
                     && *running == what
                     && paths.contains(file)
@@ -260,20 +302,11 @@ impl Generator {
 }
 
 /// What a finished job comes to, for what's remembered of its file.
-enum Verdict<'a> {
+pub(crate) enum Verdict<'a> {
     Done,
     Refused(&'a str),
     Changed,
     Failed(&'a str),
-}
-
-/// The codes of a limit every job has, and the ones blocks add (the store's size and a page count that can't be made to agree).
-const LIMITS: &[&str] = &["over_memory", "out_of_time"];
-const BLOCKS_LIMITS: &[&str] = &["too_large", "pages_differ"];
-
-/// A limit is the version's own doing, so it isn't run again for it, as a refusal isn't: a hostile file could otherwise take a gigabyte every minute.
-fn is_limit(what: What, code: &str) -> bool {
-    LIMITS.contains(&code) || (what == What::Blocks && BLOCKS_LIMITS.contains(&code))
 }
 
 /// Remembers how a job ended and says the state word for the news of it.
@@ -282,17 +315,17 @@ fn settle(inner: &mut Inner, (what, key): (What, CorpusKey), cancelled: bool, ve
         _ if cancelled => "cancelled",
         Verdict::Done => "ready",
         Verdict::Refused(code) => {
-            remember(&mut inner.refused, (what, key, (*code).to_string()));
+            remember(&mut inner.refused, |kept| kept.0, (what, key, (*code).to_string()));
             "refused"
         }
         Verdict::Changed => "changed",
-        Verdict::Failed(code) if is_limit(what, code) => {
-            remember(&mut inner.refused, (what, key, (*code).to_string()));
+        Verdict::Failed(code) if what.is_limit(code) => {
+            remember(&mut inner.refused, |kept| kept.0, (what, key, (*code).to_string()));
             "failed"
         }
         Verdict::Failed(code) => {
             inner.failures.retain(|(kind, failed, ..)| (*kind, *failed) != (what, key));
-            remember(&mut inner.failures, (what, key, (*code).to_string(), Instant::now()));
+            remember(&mut inner.failures, |kept| kept.0, (what, key, (*code).to_string(), Instant::now()));
             "failed"
         }
     }
@@ -314,7 +347,7 @@ impl Shared {
             let (job, stop) = {
                 let mut inner = self.lock();
                 let next = if inner.stopped { None } else { inner.waiting.pop_front() };
-                let Some(job) = next else {
+                let Some(Waiting { job, .. }) = next else {
                     inner.working = false;
                     return;
                 };
@@ -377,47 +410,31 @@ impl Shared {
         });
     }
 
-    /// One blocks job: nothing of it is kept here, as the store has it on disk.
+    /// One blocks job. Nothing of it is kept here, as the store has it on disk, and **nothing is announced for a job that changed nothing** (blocks already made): the runner says when it begins, and its end is told only if it did.
     fn run_blocks(&self, ask: &BlocksAsk, stop: &AtomicBool) {
-        self.tell(Event::BlocksBuilding {
-            path: ask.path.clone(),
-            file: ask.key.short(),
-        });
-        let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.blocks.run(ask, stop)))
+        let begun = || self.tell(blocking::building(ask));
+        let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.blocks.run(ask, stop, &begun)))
             .unwrap_or_else(|_| (blocking::Outcome::Failed("helper_stopped".into()), Value::Null));
         recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
         let cancelled = stop.load(Ordering::SeqCst);
         let state = {
             let mut inner = self.lock();
             inner.running = None;
-            let verdict = match &outcome {
-                blocking::Outcome::Ready(_) | blocking::Outcome::AlreadyMade(_) => Verdict::Done,
-                blocking::Outcome::Refused(code) => Verdict::Refused(code),
-                blocking::Outcome::Changed => Verdict::Changed,
-                blocking::Outcome::Failed(code) => Verdict::Failed(code),
-            };
-            settle(&mut inner, (What::Blocks, ask.key), cancelled, &verdict)
+            settle(&mut inner, (What::Blocks, ask.key), cancelled, &outcome.verdict())
         };
-        self.tell(Event::BlocksBuilt {
-            path: ask.path.clone(),
-            file: ask.key.short(),
-            state,
-            code: outcome.code().map(str::to_string),
-            elapsed_ms: report["elapsed_ms"].clone(),
-            helper_peak_bytes: report["helper_peak_watched_bytes"].clone(),
-            walled: report["walled"].clone(),
-            pages: report["pages"].clone(),
-            stored: report["stored"].clone(),
-            dropped: report["dropped"].clone(),
-            bytes: report["bytes"].clone(),
-            map_ms: report["map_ms"].clone(),
-        });
+        if let Some(built) = blocking::built(ask, state, &outcome, &report) {
+            self.tell(built);
+        }
     }
 }
 
-fn remember<T>(list: &mut VecDeque<T>, item: T) {
-    if list.len() >= MAX_REMEMBERED {
-        list.pop_front();
+/// Remembers one more of a kind, and past [`MAX_REMEMBERED`] of that kind lets its oldest go: a flood of one kind's refusals can't make the queue forget another's (a hostile file would then be run again, at half a gigabyte each time).
+fn remember<T>(list: &mut VecDeque<T>, kind: impl Fn(&T) -> What, item: T) {
+    let what = kind(&item);
+    if list.iter().filter(|kept| kind(kept) == what).count() >= MAX_REMEMBERED
+        && let Some(oldest) = list.iter().position(|kept| kind(kept) == what)
+    {
+        list.remove(oldest);
     }
     list.push_back(item);
 }
@@ -437,11 +454,25 @@ impl Generating for Generator {
     }
 
     fn want(&self, path: &Path, key: CorpusKey, pages: u32) {
-        self.want_job(Job::Contents(GenJob {
-            path: path.to_path_buf(),
-            key,
-            pages,
-        }));
+        self.want_job(
+            By::Agent,
+            Job::Contents(GenJob {
+                path: path.to_path_buf(),
+                key,
+                pages,
+            }),
+        );
+    }
+
+    fn want_as_person(&self, path: &Path, key: CorpusKey, pages: u32) {
+        self.want_job(
+            By::Person,
+            Job::Contents(GenJob {
+                path: path.to_path_buf(),
+                key,
+                pages,
+            }),
+        );
     }
 
     fn state(&self, key: CorpusKey) -> GenState {
@@ -476,45 +507,24 @@ fn failure(inner: &mut Inner, what: What, key: CorpusKey) -> Option<String> {
 
 /// The real thing: the walled structure helper, then the check for hidden text here.
 #[derive(Clone, Debug)]
-pub struct Walled {
-    /// [`crate::helpers::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
-    pub priority: Priority,
-    /// A helper to use in place of the installed one: the one laid out in `target/Helpers`, in a test.
-    #[cfg(any(test, feature = "test-seams"))]
-    exe: Option<PathBuf>,
-}
+pub struct Walled(Pick);
 
 impl Walled {
     pub fn new(priority: Priority) -> Self {
-        Self {
-            priority,
-            #[cfg(any(test, feature = "test-seams"))]
-            exe: None,
-        }
+        Self(Pick::new(priority))
     }
 
     /// For a test: the helper at `exe`, at this process's own level.
     #[cfg(any(test, feature = "test-seams"))]
     pub fn at(exe: PathBuf) -> Self {
-        Self {
-            priority: Priority::Inherited,
-            exe: Some(exe),
-        }
-    }
-
-    fn structure(&self) -> Option<Structure> {
-        #[cfg(any(test, feature = "test-seams"))]
-        if let Some(exe) = &self.exe {
-            return Some(Structure::at(exe.clone(), self.priority));
-        }
-        Structure::installed(self.priority)
+        Self(Pick::at(exe))
     }
 }
 
 impl Runner for Walled {
     fn run(&self, job: &GenJob, stop: &AtomicBool) -> (Outcome, Value) {
         let deadline = Instant::now() + time_limit(job.pages);
-        let Some(structure) = self.structure() else {
+        let Some(structure) = self.0.structure() else {
             return (Outcome::Failed("helper_missing".into()), Value::Null);
         };
         let (ended, mut report) = structure.run(
@@ -547,17 +557,13 @@ fn check_what_was_found(job: &GenJob, answer: HeadingsAnswer, deadline: Instant,
     let mut ink = ink::Ink::new(job.path.clone(), deadline, stop);
     let made = keep_visible(found, &mut ink);
     let stats = ink.stats();
-    if !report.is_object() {
-        *report = json!({});
-    }
-    if let Some(numbers) = report.as_object_mut() {
-        numbers.insert("found".into(), json!(count));
-        numbers.insert("kept".into(), json!(made.entries.len()));
-        numbers.insert("ink_ms".into(), json!(started.elapsed().as_millis() as u64));
-        numbers.insert("worker_peak_bytes".into(), json!(stats.peak_footprint_bytes));
-        numbers.insert("worker_spawns".into(), json!(stats.spawns));
-        numbers.insert("worker_unavailable".into(), json!(ink.unavailable));
-    }
+    let numbers = numbers_of(report);
+    numbers.insert("found".into(), json!(count));
+    numbers.insert("kept".into(), json!(made.entries.len()));
+    numbers.insert("ink_ms".into(), json!(started.elapsed().as_millis() as u64));
+    numbers.insert("worker_peak_bytes".into(), json!(stats.peak_footprint_bytes));
+    numbers.insert("worker_spawns".into(), json!(stats.spawns));
+    numbers.insert("worker_unavailable".into(), json!(ink.unavailable));
     if let Some(code) = ink.stopped_for {
         return Outcome::Failed(code.into());
     }
@@ -633,7 +639,8 @@ mod tests {
     struct BlocksRuns(Arc<Stand>);
 
     impl blocking::Runner for BlocksRuns {
-        fn run(&self, job: &BlocksAsk, stop: &AtomicBool) -> (blocking::Outcome, Value) {
+        fn run(&self, job: &BlocksAsk, stop: &AtomicBool, begun: &dyn Fn()) -> (blocking::Outcome, Value) {
+            begun();
             self.0.hold(What::Blocks, job.key, stop);
             (blocking::Outcome::AlreadyMade(Default::default()), json!({}))
         }
@@ -872,7 +879,7 @@ mod tests {
     fn a_blocks_refusal_or_limit_is_remembered_for_that_version() {
         struct Says(blocking::Outcome, Arc<AtomicU32>);
         impl blocking::Runner for Says {
-            fn run(&self, _job: &BlocksAsk, _stop: &AtomicBool) -> (blocking::Outcome, Value) {
+            fn run(&self, _job: &BlocksAsk, _stop: &AtomicBool, _begun: &dyn Fn()) -> (blocking::Outcome, Value) {
                 self.1.fetch_add(1, Ordering::SeqCst);
                 let outcome = match &self.0 {
                     blocking::Outcome::Refused(code) => blocking::Outcome::Refused(code.clone()),
@@ -913,6 +920,125 @@ mod tests {
             assert_eq!(blocks::Blocking::state(&generator, key(2)), GenState::Idle, "another version");
             assert_eq!(Generating::state(&generator, key(1)), GenState::Idle, "its contents aren't blocks");
         }
+    }
+
+    /// Events a generator tells, kept.
+    fn listening(generator: &Generator) -> Arc<Mutex<Vec<Event>>> {
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&told);
+        generator.attach(Arc::new(move |events| kept.lock().unwrap().extend(events)));
+        told
+    }
+
+    /// Failure: blocks that were already made are announced as made (`blocks_built` "ready" with no numbers) and as started: a watcher is told something changed when nothing did. Told only when the runner did the work: its
+    /// start, then its end with the numbers; and nothing for blocks it found made.
+    #[test]
+    fn nothing_is_announced_for_blocks_that_were_already_made() {
+        struct Works(bool);
+        impl blocking::Runner for Works {
+            fn run(&self, _job: &BlocksAsk, _stop: &AtomicBool, begun: &dyn Fn()) -> (blocking::Outcome, Value) {
+                if self.0 {
+                    begun();
+                    (blocking::Outcome::Ready(Default::default()), json!({ "pages": 3 }))
+                } else {
+                    (blocking::Outcome::AlreadyMade(Default::default()), Value::Null)
+                }
+            }
+        }
+        for (works, names) in [(false, vec![]), (true, vec!["blocks_building", "blocks_built"])] {
+            let generator = Generator::with_runners(Path::new("/nowhere"), Box::new(Runs(Arc::default())), Box::new(Works(works)));
+            let told = listening(&generator);
+            blocks::Blocking::want(&generator, ask("/nowhere/a.pdf", 1));
+            settle(&generator);
+            let told: Vec<&str> = told.lock().unwrap().iter().map(Event::name).collect::<Vec<_>>().into_iter().collect();
+            assert_eq!(told, names, "work done: {works}");
+        }
+    }
+
+    /// Failure: a flood of blocks refusals pushes a contents limit out of what's remembered (one list, 32 of any kind), so a hostile file's contents run again at half a gigabyte each time. Each kind keeps its own 32:
+    /// one more than that of blocks refusals forgets only the oldest blocks one.
+    #[test]
+    fn a_flood_of_blocks_refusals_doesnt_make_contents_forget_its_limit() {
+        struct Limit;
+        impl Runner for Limit {
+            fn run(&self, _job: &GenJob, _stop: &AtomicBool) -> (Outcome, Value) {
+                (Outcome::Failed("over_memory".into()), Value::Null)
+            }
+        }
+        struct Refuses;
+        impl blocking::Runner for Refuses {
+            fn run(&self, _job: &BlocksAsk, _stop: &AtomicBool, _begun: &dyn Fn()) -> (blocking::Outcome, Value) {
+                (blocking::Outcome::Refused("couldnt_read".into()), Value::Null)
+            }
+        }
+        let generator = Generator::with_runners(Path::new("/nowhere"), Box::new(Limit), Box::new(Refuses));
+        generator.want(Path::new("/nowhere/a.pdf"), key(200), 10);
+        settle(&generator);
+        assert_eq!(generator.state_of(What::Contents, key(200)), GenState::Refused("over_memory".into()));
+        for number in 0..=MAX_REMEMBERED as u8 {
+            blocks::Blocking::want(&generator, ask("/nowhere/b.pdf", number));
+            settle(&generator);
+        }
+        assert_eq!(
+            generator.state_of(What::Contents, key(200)),
+            GenState::Refused("over_memory".into()),
+            "the contents limit is still remembered"
+        );
+        assert_eq!(generator.state_of(What::Blocks, key(0)), GenState::Idle, "the oldest blocks refusal gave way");
+        assert_eq!(generator.state_of(What::Blocks, key(1)), GenState::Refused("couldnt_read".into()));
+    }
+
+    /// Failure: eight agents' blocks asks push a person's waiting Generate-contents ask off the queue (newest first, one cap of eight), so the button does nothing; or it waits behind the agents' asks. A person's waiting ask stays and goes first;
+    /// past the cap the agents' oldest gives way, and an agent's ask when only people's wait is the one that isn't kept.
+    #[test]
+    fn a_persons_waiting_ask_is_never_given_way_for_an_agents() {
+        let stand = Arc::new(Stand::default());
+        let generator = both(&stand);
+        generator.want(Path::new("/nowhere/a.pdf"), key(1), 10);
+        running(&generator, What::Contents, 1);
+        generator.want_as_person(Path::new("/nowhere/p.pdf"), key(2), 10);
+        for number in 10..20u8 {
+            blocks::Blocking::want(&generator, ask("/nowhere/b.pdf", number));
+        }
+        assert_eq!(generator.state_of(What::Contents, key(2)), GenState::Queued, "the person's ask stays");
+        assert_eq!(generator.state_of(What::Blocks, key(10)), GenState::Idle, "the agents' oldest gave way");
+        assert_eq!(generator.state_of(What::Blocks, key(12)), GenState::Idle);
+        assert_eq!(generator.state_of(What::Blocks, key(19)), GenState::Queued);
+        *stand.gate.lock().unwrap() = 1000;
+        stand.moved.notify_all();
+        settle(&generator);
+        let started = stand.started.lock().unwrap().clone();
+        assert_eq!(
+            started[..2],
+            [(What::Contents, 1), (What::Contents, 2)],
+            "the person's ask runs before the agents' waiting: {started:?}"
+        );
+
+        // Only people's asks waiting: another person's ask gives way the oldest person's, an agent's isn't kept.
+        let stand = Arc::new(Stand::default());
+        let generator = both(&stand);
+        generator.want(Path::new("/nowhere/a.pdf"), key(1), 10);
+        running(&generator, What::Contents, 1);
+        for number in 20..20 + MAX_WAITING as u8 {
+            generator.want_as_person(Path::new("/nowhere/p.pdf"), key(number), 10);
+        }
+        blocks::Blocking::want(&generator, ask("/nowhere/b.pdf", 90));
+        assert_eq!(
+            generator.state_of(What::Blocks, key(90)),
+            GenState::Idle,
+            "an agent's ask doesn't push a person's off"
+        );
+        assert_eq!(generator.state_of(What::Contents, key(20)), GenState::Queued);
+        generator.want_as_person(Path::new("/nowhere/p.pdf"), key(60), 10);
+        assert_eq!(generator.state_of(What::Contents, key(60)), GenState::Queued);
+        assert_eq!(
+            generator.state_of(What::Contents, key(20)),
+            GenState::Idle,
+            "a person's own oldest gave way to their newest"
+        );
+        *stand.gate.lock().unwrap() = 1000;
+        stand.moved.notify_all();
+        settle(&generator);
     }
 
     /// Failure: the time a job gets doesn't grow with the document, so a long one is always killed, or has no ceiling.

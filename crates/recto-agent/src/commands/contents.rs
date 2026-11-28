@@ -182,7 +182,7 @@ impl Cmd for ContentsShow {
         json!({ "tab": super::log_tab(&self.tab), "which": self.which.word() })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        show(cx.access, &self.tab, self.which)
+        show(cx.access, cx.actor, &self.tab, self.which)
     }
     fn human(data: &Value) -> String {
         match (data["shown"].as_str(), data["state"].as_str()) {
@@ -208,7 +208,7 @@ fn view_word(view: Option<&GeneratedView>) -> &'static str {
 
 /// `contents show`, the note's Show and Generate: the file's own chosen, or generated ones, looked for with the session free if they aren't shown yet and
 /// asked for if they aren't made, as the note's Generate always did.
-fn show<A: SessionAccess>(access: &A, tab: &TabRef, which: Which) -> Result<Value, AgentError> {
+fn show<A: SessionAccess>(access: &A, actor: crate::Actor, tab: &TabRef, which: Which) -> Result<Value, AgentError> {
     let generated = which == Which::Generated;
     let generating = if generated {
         Some(access.generating().ok_or_else(generated::no_generating)?)
@@ -225,7 +225,7 @@ fn show<A: SessionAccess>(access: &A, tab: &TabRef, which: Which) -> Result<Valu
         Ok::<_, AgentError>((id, look))
     })?;
     if let (Some(generating), Some((path, pages, version))) = (generating, look)
-        && let Some(view) = generated::where_they_stand(generating, &path, pages, true)
+        && let Some(view) = generated::where_they_stand(generating, &path, pages, Some(generated::Asker::of(actor)))
     {
         access.with(|s| s.set_generated_view_for(id, view, version));
     }

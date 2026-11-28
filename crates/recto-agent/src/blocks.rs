@@ -11,7 +11,6 @@ use recto_index::corpus::{self, CorpusKey, DiskState, StoredBlocks};
 use recto_platform::find_key::FindKey;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 /// What `get` says of a blocks grain it can't give: nothing is made for this file yet.
 pub(crate) const NOT_MADE: &str = "blocks_not_made";
@@ -38,17 +37,11 @@ pub trait Blocking: Send + Sync {
     fn making(&self, paths: Option<&[PathBuf]>) -> bool;
 }
 
-/// How long a clear gives a running build to stop. It ends as soon as it's told, and a stopped one writes nothing.
-const STOP_WAIT: Duration = Duration::from_secs(3);
-
 /// **`recto index clear` stops blocks first:** a running build holds the corpus's `build.lock`, so without this the folder survives as being built. What's queued is taken off, a
 /// running one is told to stop and waited for a moment.
 pub(crate) fn stop(blocking: &dyn Blocking, paths: Option<&[PathBuf]>) {
     blocking.cancel_files(paths);
-    let started = Instant::now();
-    while started.elapsed() < STOP_WAIT && blocking.making(paths) {
-        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
-    }
+    crate::index::wait_while(|| blocking.making(paths));
 }
 
 /// What a corpus has of blocks, for a file whose index is ready: the stored ones, if they open. A set that doesn't add up is thrown away.

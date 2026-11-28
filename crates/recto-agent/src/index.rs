@@ -452,12 +452,17 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState
 /// How long a clear gives a build to stop. Its helper ends as soon as its stdin closes, and this runs on a job's thread.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Waits for a build that's been asked to stop, a moment at most. If it hasn't, what's clearing says so.
-fn wait_until_stopped(indexing: &dyn Indexing, key: Option<CorpusKey>) {
+/// Waits while `still` holds, a moment at most ([`STOP_WAIT`]): for a job that's been asked to stop to end. If it hasn't, what's clearing says so. The one wait every kind of job's stop goes by.
+pub(crate) fn wait_while(still: impl Fn() -> bool) {
     let started = std::time::Instant::now();
-    while started.elapsed() < STOP_WAIT && key.map_or_else(|| indexing.load().0 > 0, |key| indexing.job(key) == JobState::Building) {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    while started.elapsed() < STOP_WAIT && still() {
+        std::thread::sleep(std::time::Duration::from_millis(5)); // ratchet: poll
     }
+}
+
+/// Waits for a build that's been asked to stop.
+fn wait_until_stopped(indexing: &dyn Indexing, key: Option<CorpusKey>) {
+    wait_while(|| key.map_or_else(|| indexing.load().0 > 0, |key| indexing.job(key) == JobState::Building));
 }
 
 /// `recto index clear`: this tab's files, or everything, and whatever's on its way for them.
