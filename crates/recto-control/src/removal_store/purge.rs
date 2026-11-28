@@ -288,13 +288,11 @@ fn open_places(store: Store, roots: &HistoryRoots<'_>) -> Result<Vec<Place>, Pur
 /// Every entry of the folder that is one of `store`'s, with its key: capped at the survey's 8,192 entries (one more is `TooLarge`).
 fn list(store: Store, place: &Place, mut each: impl FnMut(ArtifactKey, Entry)) -> Result<(), PurgeStop> {
     let entries = place.folder.entries().map_err(|_| PurgeStop::Listing)?;
-    let mut seen = 0usize;
-    for entry in entries {
+    for (seen, entry) in entries.enumerate() {
         let entry = entry.map_err(|_| PurgeStop::Listing)?;
         if seen >= MAX_ENTRIES {
             return Err(PurgeStop::TooLarge);
         }
-        seen += 1;
         let key = if store == Store::Backup {
             backups::backup_key(entry.name.as_encoded_bytes())
         } else if journals::entry_store(&entry.name) == store {
