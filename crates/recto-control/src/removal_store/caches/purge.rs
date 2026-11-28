@@ -341,24 +341,36 @@ fn take_folder(
     if let Some(stop) = differs_folder(&entry, pin, volume) {
         return Err(stop);
     }
-    let folder = match parent.open_in(name) {
-        Opened::Missing => return Ok(Taken::Gone),
-        Opened::Other => return Err(PurgeStop::NotThePinned),
-        Opened::Folder(folder) => folder,
+    // The folder's descriptor, and the held lock, live in this block only: the walk below opens each level itself. The lock is held until the folder is gone,
+    // so it is kept past the block in `_held`.
+    let (_held, tree) = {
+        let folder = match parent.open_in(name) {
+            Opened::Missing => return Ok(Taken::Gone),
+            Opened::Other => return Err(PurgeStop::NotThePinned),
+            Opened::Folder(folder) => folder,
+        };
+        if folder.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
+            return Err(PurgeStop::NotThePinned);
+        }
+        let held = locks.take(&folder)?;
+        (held, plain_tree(&folder, seams)?)
     };
-    if folder.identity().map_err(|_| PurgeStop::Listing)? != entry.identity() {
-        return Err(PurgeStop::NotThePinned);
-    }
-    // Held until this function returns: until the folder is gone.
-    let _held = locks.take(&folder)?;
-    let tree = match plain_tree_in(&folder, seams.tree_cap(), &|entry| seams.uid(entry)) {
-        Ok(Some(tree)) => tree,
-        Ok(None) => return Err(PurgeStop::NotThePinned),
-        Err(Refusal::TooLarge) => return Err(PurgeStop::TooLarge),
-        Err(_) => return Err(PurgeStop::Listing),
-    };
-    drop(folder);
     walk_away(parent, name, &tree, seams, touched).map(|_| Taken::Removed)
+}
+
+/// The tree of an open folder under the survey's rule, as a purge's refusal.
+/// Closes a folder now (a named step, so the descriptor bound is read in the code).
+fn drop_folder(folder: Folder) {
+    let _ = folder;
+}
+
+fn plain_tree(folder: &Folder, seams: &CacheSeams) -> Result<recto_platform::folder::Tree, PurgeStop> {
+    match plain_tree_in(folder, seams.tree_cap(), &|entry| seams.uid(entry)) {
+        Ok(Some(tree)) => Ok(tree),
+        Ok(None) => Err(PurgeStop::NotThePinned),
+        Err(Refusal::TooLarge) => Err(PurgeStop::TooLarge),
+        Err(_) => Err(PurgeStop::Listing),
+    }
 }
 
 /// `remove_tree_in` with the caches' order (what makes a corpus usable first, made durable) and the seams, its failures as a purge's.
@@ -512,13 +524,8 @@ fn take_old(parent: &Folder, pin: &Pin, volume: VolumeNow, seams: &CacheSeams, a
                 if inner.identity().map_err(|_| PurgeStop::Listing)? != child.identity() || !is_plain_cache_entry(&child, seams.uid(&child)) {
                     return Err(PurgeStop::NotThePinned);
                 }
-                let tree = match plain_tree_in(&inner, seams.tree_cap(), &|entry| seams.uid(entry)) {
-                    Ok(Some(tree)) => tree,
-                    Ok(None) => return Err(PurgeStop::NotThePinned),
-                    Err(Refusal::TooLarge) => return Err(PurgeStop::TooLarge),
-                    Err(_) => return Err(PurgeStop::Listing),
-                };
-                drop(inner);
+                let tree = plain_tree(&inner, seams)?;
+                drop_folder(inner);
                 if let Some(touched) = act {
                     walk_away(&old, &child.name, &tree, seams, touched)?;
                 }
