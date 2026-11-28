@@ -1,15 +1,19 @@
 //! Links and page labels, read from real bytes.
 
-use recto_core::nav::{LinkTarget, MAX_LABEL_RANGES, MAX_PAGE_LINKS, Refused, page_links, page_links_bytes};
+use recto_core::nav::{LinkTarget, MAX_LABEL_RANGES, MAX_PAGE_LINKS, Refused, page_links, page_links_bytes, page_links_within};
 use recto_core::{inspect, inspect_bytes};
 use recto_testpdf::{LINKS_ON_PAGE_ONE, Object, TempPdf, build, linked_document};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Time room for tests of what is read, so a busy machine can't make them tests of the clock.
+const ROOM: Duration = Duration::from_secs(120);
 
 /// Failure: a link goes to the wrong page or the wrong depth, a named destination isn't found, or a script, a launch or a `file:` address comes back as something to open.
 #[test]
 fn each_kind_of_link_is_judged_as_it_should_be() {
     let file = TempPdf::new("links.pdf", &linked_document());
-    let read = page_links(&file.0, &[0, 3]).unwrap();
+    let read = page_links_within(&file.0, &[0, 3], ROOM).unwrap();
     assert_eq!(read.len(), 2);
     let (page, links) = &read[0];
     assert_eq!(*page, 0);
@@ -123,10 +127,21 @@ fn links_through_an_open_file_are_that_files() {
     std::fs::write(&other, document(1, "", "", Vec::new())).unwrap();
     std::fs::rename(&other, &file.0).unwrap();
     assert!(page_links(&file.0, &[0]).unwrap()[0].1.links.is_empty(), "the path is the new file");
-    let read = recto_core::nav::page_links_in(held, None, &[0]).unwrap();
+    let read = recto_core::nav::page_links_in_within(held, None, &[0], ROOM).unwrap();
     assert_eq!(
         read[0].1.links.len(),
         LINKS_ON_PAGE_ONE.len(),
         "the open file is the old one, whose pages are showing"
     );
+}
+
+/// Failure: the time limit on a read of links isn't kept, so a hostile page of links holds its reader's thread as long as the walk takes. Set to nothing, the walk stops before any link and says it isn't whole; given room, the same file is read whole.
+#[test]
+fn the_time_limit_cuts_a_walk_short() {
+    let file = TempPdf::new("links.pdf", &linked_document());
+    let cut = page_links_within(&file.0, &[0], Duration::ZERO).unwrap();
+    assert!(cut[0].1.links.is_empty() && cut[0].1.truncated, "{:?}", cut[0].1);
+    let whole = page_links_within(&file.0, &[0], ROOM).unwrap();
+    assert!(!whole[0].1.truncated);
+    assert_eq!(whole[0].1.links.len(), LINKS_ON_PAGE_ONE.len());
 }
