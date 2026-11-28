@@ -95,7 +95,7 @@ fn turn_and_save(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Va
 
 /// As [`turn_and_save`], and says how many files the backups folder holds after it.
 fn turn_and_save_counting(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Value, recto_agent::AgentError>, bool, usize) {
-    let backups = recto_control::host::backups_folder(&disk.paths());
+    let backups = recto_control::host::backups_folder(disk.paths());
     let c = disk.pdf("c.pdf", 2);
     let app = disk.start();
     app.settle();
