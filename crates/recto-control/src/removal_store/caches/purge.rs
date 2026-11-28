@@ -53,6 +53,10 @@ pub struct CacheRoots<'a> {
     pub contents: &'a Path,
 }
 
+/// A test's gate on a walk's entries.
+#[cfg(test)]
+pub(in crate::removal_store) type Gate = std::sync::Arc<dyn Fn(&OsStr) -> bool + Send + Sync>;
+
 /// A test's way to change a folder under the purge, to stop a walk, to say who owns a name, and to make a sync fail.
 #[derive(Default)]
 pub(in crate::removal_store) struct CacheSeams {
@@ -60,7 +64,7 @@ pub(in crate::removal_store) struct CacheSeams {
     pub files: Seams,
     /// Called with the name of each entry or folder of a tree just before it is unlinked; `false` stops the walk there.
     #[cfg(test)]
-    pub gate: Option<std::sync::Arc<dyn Fn(&OsStr) -> bool + Send + Sync>>,
+    pub gate: Option<Gate>,
     /// Called after each entry or folder of a tree was really unlinked.
     #[cfg(test)]
     pub unlinked: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
