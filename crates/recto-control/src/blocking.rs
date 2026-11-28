@@ -154,7 +154,8 @@ impl Runner for Walled {
 }
 
 /// What the end of a job comes to, and the only place its blocks are made whole: **only a believed answer to its end, of the file that was asked for, not stopped since, gets its header.**
-/// `unchanged` looks at the file by its path (a rename swap the helper's descriptor can't show). Anything else drops the build, which leaves nothing on disk.
+/// `unchanged` looks at the file by its path: defence in depth, as [`Structure::run`] already finds a rename swap by the descriptor's own key (the unlink changes the old file's ctime, which the key holds, measured
+/// with `a_file_rewritten_while_blocks_are_made_gets_none`), and this covers a swap after that look. Anything else drops the build, which leaves nothing on disk.
 pub(crate) fn outcome_of(ended: Ended<BlocksAnswer<Store>>, unchanged: impl FnOnce() -> bool, stop: &AtomicBool, report: &mut Value) -> Outcome {
     match ended {
         Ended::Answered(answer) => {

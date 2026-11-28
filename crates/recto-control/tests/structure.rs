@@ -370,7 +370,7 @@ fn blocks_cancelled_part_way_nothing_is_written() {
     let generator = blocks_generator(&root);
     agent_blocks::Blocking::want(&generator, blocks_ask(&pdf, key, &root, &find_key));
     helper_running(&generator, key);
-    agent_blocks::Blocking::cancel_files(&generator, Some(&[pdf.0.clone()]));
+    agent_blocks::Blocking::cancel_files(&generator, Some(std::slice::from_ref(&pdf.0)));
     let until = Instant::now() + Duration::from_secs(30);
     while agent_blocks::Blocking::making(&generator, None) {
         assert!(Instant::now() < until, "it didn't stop when cancelled");

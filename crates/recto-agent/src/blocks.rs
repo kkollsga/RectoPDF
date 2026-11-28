@@ -47,7 +47,7 @@ pub(crate) fn stop(blocking: &dyn Blocking, paths: Option<&[PathBuf]>) {
     blocking.cancel_files(paths);
     let started = Instant::now();
     while started.elapsed() < STOP_WAIT && blocking.making(paths) {
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
 }
 

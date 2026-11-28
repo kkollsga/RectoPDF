@@ -816,7 +816,7 @@ mod tests {
             Generating::making(&generator, None) && !blocks::Blocking::making(&generator, None),
             "contents run, blocks don't"
         );
-        blocks::Blocking::cancel_files(&generator, Some(&[a.clone()]));
+        blocks::Blocking::cancel_files(&generator, Some(std::slice::from_ref(&a)));
         blocks::Blocking::cancel_files(&generator, None);
         assert_eq!(
             generator.state_of(What::Contents, key(1)),
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(generator.state_of(What::Contents, key(3)), GenState::Queued);
         assert_eq!(generator.state_of(What::Blocks, key(2)), GenState::Idle, "and takes blocks off the queue");
         blocks::Blocking::want(&generator, ask("/nowhere/b.pdf", 2));
-        Generating::cancel_files(&generator, Some(&[b.clone()]));
+        Generating::cancel_files(&generator, Some(std::slice::from_ref(&b)));
         Generating::cancel(&generator, None);
         assert_eq!(
             generator.state_of(What::Blocks, key(2)),
