@@ -305,7 +305,8 @@ fn the_characters_a_reference_names_are_never_left_out() {
 }
 
 /// Failure: offsets are taken from the given text instead of the page's, so `more` repeats or skips text, or names a running head. A section over pages 2 to 4, and a paragraph joined over pages 2 and 3, each
-/// with a small cap, followed by `more` to the end: the pieces are the pages' body characters exactly (all that isn't white space, in order), and no head or number is in them.
+/// with a small cap, and page 3 at the page grain with a cap under its body (the cut `more` goes on from is made by `Heads::take`), each followed by `more` to the end: the pieces are the pages' body
+/// characters exactly (all that isn't white space, in order), and no head or number is in them.
 #[test]
 fn going_on_after_a_cut_gives_every_body_character_once_with_heads_left_out() {
     let report = built(Made { edges: true, joined: false });
@@ -314,6 +315,10 @@ fn going_on_after_a_cut_gives_every_body_character_once_with_heads_left_out() {
     let texts = report.all_of(first, Grain::Section, 40);
     let all = texts.concat();
     assert_eq!(without_space(&all), without_space(&format!("{}{}{}", body(2), body(3), body(4))), "{texts:?}");
+    let first = report.get(3, None, Grain::Page, 40, false);
+    assert!(first["truncated"] == true, "{first}");
+    let texts = report.all_of(first, Grain::Page, 40);
+    assert_eq!(without_space(&texts.concat()), without_space(&body(3)), "{texts:?}");
     let joined = built(Made { edges: true, joined: true });
     let first = joined.get(2, None, Grain::Paragraph, 40, false);
     assert!(first["truncated"] == true, "{first}");
