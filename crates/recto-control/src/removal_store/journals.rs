@@ -17,6 +17,7 @@ mod names;
 
 use super::backups::{self, Finder};
 use super::placing::Maps;
+use super::purge::HistoryPins;
 use names::Kind;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Sides, Store, Survey, TargetMode};
 use recto_platform::folder::{Entry, Folder, Opened};
@@ -25,6 +26,8 @@ use recto_session::record::{MARKED_JOURNAL_VERSION, journal_header};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read as _;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -34,9 +37,9 @@ use std::sync::Arc;
 /// The most of a journal's start read for its header line, in bytes. Also what the ledger's adoption reads.
 pub(super) const HEADER_BYTES: usize = 8 * 1024;
 /// The most entries looked at in one folder. Design limit, not a measurement.
-const MAX_ENTRIES: usize = 8_192;
+pub(super) const MAX_ENTRIES: usize = 8_192;
 /// The two sessions' folders.
-const FLAVORS: [&str; 2] = ["session", "session-windowless"];
+pub(super) const FLAVORS: [&str; 2] = ["session", "session-windowless"];
 
 #[cfg(test)]
 use super::testing::Hook;
@@ -77,23 +80,82 @@ pub fn survey_journals(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, sur
     survey_journals_with(root, lineage, mode, survey, &Caps::default())
 }
 
+/// `survey_journals`, and the identity (device, inode, kind) of every artifact added as the target's noted in `pins`, for the purge by pin (`purge`).
+pub fn survey_journals_pinned(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut HistoryPins) -> Result<(), Refusal> {
+    survey_journals_run(root, lineage, mode, survey, &Caps::default(), Some(pins))
+}
+
+/// A flavor's `journals` folder under the state root, opened once by descriptor with no link followed at any step and only if it is this user's. The
+/// survey and the purge both open it by this, so they can't disagree on which folder it is.
+pub(super) fn open_journals(root: &Path, flavor: &str) -> Opened {
+    match Folder::open(&root.join(flavor)) {
+        Opened::Folder(session) => session.open_in(OsStr::new("journals")),
+        other => other,
+    }
+}
+
+/// What every key of a flavor's `journals` folder starts with: the flavor and `/journals/`.
+pub(super) fn flavor_prefix(flavor: &str) -> Vec<u8> {
+    let mut prefix = flavor.as_bytes().to_vec();
+    prefix.extend_from_slice(b"/journals/");
+    prefix
+}
+
+/// Why a folder wasn't listed.
+pub(super) enum ListFailed {
+    /// It, or an entry of it, couldn't be read.
+    Unreadable,
+    /// It holds more entries than the cap.
+    TooLarge,
+}
+
+/// A folder's entries, at most `cap`; one more is `TooLarge`. The survey's listing and the purge's, so they stop at the same place.
+pub(super) fn list_capped(folder: &Folder, cap: usize) -> Result<Vec<Entry>, ListFailed> {
+    let entries = folder.entries().map_err(|_| ListFailed::Unreadable)?;
+    let mut listed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| ListFailed::Unreadable)?;
+        if listed.len() >= cap {
+            return Err(ListFailed::TooLarge);
+        }
+        listed.push(entry);
+    }
+    Ok(listed)
+}
+
+/// The store a name in a `journals` folder is in, as the survey says.
+pub(super) fn entry_store(name: &OsStr) -> Store {
+    store_of(names::kind_of(name))
+}
+
+/// The key of a name in a `journals` folder: the folder's place and the name, in `store`. The survey's key, and the purge's.
+pub(super) fn journal_key(store: Store, prefix: &[u8], name: &OsStr) -> ArtifactKey {
+    let mut bytes = prefix.to_vec();
+    bytes.extend_from_slice(name.as_encoded_bytes());
+    ArtifactKey::of(store, &bytes)
+}
+
 pub(crate) fn survey_journals_with(root: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, caps: &Caps) -> Result<(), Refusal> {
+    survey_journals_run(root, lineage, mode, survey, caps, None)
+}
+
+fn survey_journals_run(
+    root: &Path,
+    lineage: &Lineage<'_>,
+    mode: TargetMode,
+    survey: &mut Survey,
+    caps: &Caps,
+    mut pins: Option<&mut HistoryPins>,
+) -> Result<(), Refusal> {
     let maps = Maps::of(lineage);
     for flavor in FLAVORS {
-        let session_path = root.join(flavor);
-        let session = match Folder::open(&session_path) {
+        let folder = match open_journals(root, flavor) {
             Opened::Missing => continue,
             Opened::Other => return Ok(()),
             Opened::Folder(folder) => folder,
         };
-        let folder = match session.open_in(OsStr::new("journals")) {
-            Opened::Missing => continue,
-            Opened::Other => return Ok(()),
-            Opened::Folder(folder) => folder,
-        };
-        let mut prefix = flavor.as_bytes().to_vec();
-        prefix.extend_from_slice(b"/journals/");
-        if !survey_journals_folder(&folder, &prefix, None, &session_path.join("journals"), &maps, mode, caps, survey)? {
+        let at = root.join(flavor).join("journals");
+        if !survey_journals_pinned_folder(&folder, &flavor_prefix(flavor), None, &at, &maps, mode, caps, survey, pins.as_deref_mut())? {
             return Ok(());
         }
     }
@@ -119,6 +181,22 @@ pub(super) fn survey_journals_folder(
     caps: &Caps,
     survey: &mut Survey,
 ) -> Result<bool, Refusal> {
+    survey_journals_pinned_folder(folder, prefix, store, at, maps, mode, caps, survey, None)
+}
+
+/// `survey_journals_folder`, noting the target's artifacts in `pins`.
+#[allow(clippy::too_many_arguments)]
+fn survey_journals_pinned_folder(
+    folder: &Folder,
+    prefix: &[u8],
+    store: Option<Store>,
+    at: &Path,
+    maps: &Maps,
+    mode: TargetMode,
+    caps: &Caps,
+    survey: &mut Survey,
+    pins: Option<&mut HistoryPins>,
+) -> Result<bool, Refusal> {
     #[cfg(not(test))]
     let _ = at;
     let run = Run {
@@ -131,7 +209,7 @@ pub(super) fn survey_journals_folder(
         mode,
         caps,
     };
-    run.survey(survey, &mut Vec::new())
+    run.survey(survey, &mut Vec::new(), pins)
 }
 
 /// One folder's survey.
@@ -169,7 +247,7 @@ struct Gone;
 
 impl Run<'_> {
     /// Whether the folder was listed and every entry added; `false` leaves the stores unmarked.
-    fn survey(&self, survey: &mut Survey, buffer: &mut Vec<u8>) -> Result<bool, Refusal> {
+    fn survey(&self, survey: &mut Survey, buffer: &mut Vec<u8>, mut pins: Option<&mut HistoryPins>) -> Result<bool, Refusal> {
         let Some(listed) = self.list()? else { return Ok(false) };
         // Journals first: a sidecar takes its journal's owner.
         let mut journals: HashMap<String, Option<Sides>> = HashMap::new();
@@ -185,7 +263,7 @@ impl Run<'_> {
                     continue;
                 }
                 let placed = if entry.is_file {
-                    match self.place(name, kind, &journals, buffer) {
+                    match self.place(entry, name, kind, &journals, buffer) {
                         Ok(placed) => placed,
                         Err(Gone) => return Ok(false),
                     }
@@ -204,12 +282,24 @@ impl Run<'_> {
                     Some(sides) => sides.owner(self.mode),
                 };
                 let format = if owner == Owner::Unknown { placed.format } else { Format::Current };
+                let key = self.key(entry);
                 survey.add(Found {
                     store: self.store_of(kind),
-                    key: self.key(entry),
+                    key,
                     owner,
                     format,
                 })?;
+                // Only the target's: a file placed by its bytes was proved the listed one (its descriptor's device, inode and one link, `read`), and one placed by
+                // its name alone is pinned from the listing.
+                if owner == Owner::Target
+                    && let Some(pins) = pins.as_deref_mut()
+                {
+                    // Placed by its name alone (sleep, kept): pinned only if this user's, which the open of a journal or a sidecar has proved of its own.
+                    match kind {
+                        Kind::SleepFile | Kind::KeptPages => pins.note_named(key, entry.identity(), self.folder, entry)?,
+                        _ => pins.note(key, entry.identity())?,
+                    }
+                }
             }
         }
         Ok(true)
@@ -221,40 +311,33 @@ impl Run<'_> {
         if let Some(hook) = &self.caps.before_list {
             hook(&self.path);
         }
-        let Ok(entries) = self.folder.entries() else { return Ok(None) };
-        let mut listed = Vec::new();
-        for entry in entries {
-            let Ok(entry) = entry else { return Ok(None) };
-            if listed.len() >= self.caps.entries {
-                return Err(Refusal::TooLarge);
-            }
-            listed.push(entry);
+        match list_capped(self.folder, self.caps.entries) {
+            Ok(listed) => Ok(Some(listed)),
+            Err(ListFailed::Unreadable) => Ok(None),
+            Err(ListFailed::TooLarge) => Err(Refusal::TooLarge),
         }
-        Ok(Some(listed))
     }
 
     /// Root-relative, with the folder's place: the same name in two folders is two artifacts.
     fn key(&self, entry: &Entry) -> ArtifactKey {
-        let mut name = self.prefix.to_vec();
-        name.extend_from_slice(entry.name.as_encoded_bytes());
-        ArtifactKey::of(self.store_of(names::kind_of(&entry.name)), &name)
+        journal_key(self.store_of(names::kind_of(&entry.name)), self.prefix, &entry.name)
     }
 
     fn store_of(&self, kind: Kind) -> Store {
         self.store.unwrap_or_else(|| store_of(kind))
     }
 
-    fn place(&self, name: Option<&str>, kind: Kind, journals: &HashMap<String, Option<Sides>>, buffer: &mut Vec<u8>) -> Result<Placed, Gone> {
+    fn place(&self, entry: &Entry, name: Option<&str>, kind: Kind, journals: &HashMap<String, Option<Sides>>, buffer: &mut Vec<u8>) -> Result<Placed, Gone> {
         let Some(name) = name else { return Ok(Placed::unknown()) };
         match kind {
             Kind::Journal | Kind::Variant => {
-                let Some(bytes) = self.read(name, self.caps.header_bytes, buffer)? else {
+                let Some(bytes) = self.read(entry, name, self.caps.header_bytes, buffer)? else {
                     return Ok(Placed::unknown());
                 };
                 Ok(self.journal(bytes))
             }
             Kind::PageIds => {
-                let Some(bytes) = self.read(name, sidecar::HEADER_BYTES, buffer)? else {
+                let Some(bytes) = self.read(entry, name, sidecar::HEADER_BYTES, buffer)? else {
                     return Ok(Placed::unknown());
                 };
                 Ok(Placed {
@@ -273,9 +356,10 @@ impl Run<'_> {
         }
     }
 
-    /// The first `cap` bytes of a private plain file. `None` if it can't be trusted (a link, a pipe, another user's, group-writable, unreadable);
-    /// `Gone` if it isn't there any more.
-    fn read<'b>(&self, name: &str, cap: usize, buffer: &'b mut Vec<u8>) -> Result<Option<&'b [u8]>, Gone> {
+    /// The first `cap` bytes of a private plain file. `None` if it can't be trusted (a link, a pipe, another user's, group-writable, unreadable, or
+    /// not the file that was listed: its device, inode or link count, from the opened descriptor, differ from `entry`'s, which a pin and the `Shared`
+    /// rule use, so its bytes would place one file while those describe another); `Gone` if it isn't there any more.
+    fn read<'b>(&self, entry: &Entry, name: &str, cap: usize, buffer: &'b mut Vec<u8>) -> Result<Option<&'b [u8]>, Gone> {
         #[cfg(test)]
         if let Some(hook) = &self.caps.before_open {
             hook(&self.path.join(name));
@@ -285,6 +369,9 @@ impl Run<'_> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Gone),
             Err(_) => return Ok(None),
         };
+        if !is_the_listed(&file, entry) {
+            return Ok(None);
+        }
         buffer.clear();
         if file.take(cap as u64).read_to_end(buffer).is_err() {
             return Ok(None);
@@ -330,6 +417,19 @@ impl Run<'_> {
     }
 }
 
+/// Whether an opened file is the one that was listed: its device and inode are the entry's and it has one link. Where there is no device and inode to
+/// compare (the stand-in off the Mac) nothing is trusted, and the artifact is `Unknown`.
+#[cfg(unix)]
+fn is_the_listed(file: &std::fs::File, entry: &Entry) -> bool {
+    file.metadata()
+        .is_ok_and(|opened| opened.dev() == entry.dev && opened.ino() == entry.ino && opened.nlink() == 1)
+}
+
+#[cfg(not(unix))]
+fn is_the_listed(_file: &std::fs::File, _entry: &Entry) -> bool {
+    false
+}
+
 #[derive(PartialEq)]
 enum Pass {
     Journals,
@@ -347,4 +447,4 @@ fn store_of(kind: Kind) -> Store {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

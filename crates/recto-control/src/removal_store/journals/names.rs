@@ -13,7 +13,7 @@ pub(super) enum Kind {
     PageIds,
     /// `sleep-K.bin`, or its temp `sleep-K.tmp<digits>`: placed by name.
     SleepFile,
-    /// `kept-K[-n].keptpages`, or an older `.pdf`: placed by name.
+    /// `kept-K[-n].keptpages`, or an older `.pdf`, or the temp a copy is written under (`kept-K[-n].tmp<digits>`): placed by name.
     KeptPages,
     /// What a crashed `lopdf::rewrite_atomically` leaves beside a kept copy: `.append-<16 hex>-<pid>-<n>.tmp` or `….d`. A partial PDF, never placed.
     KeptTemp,
@@ -45,7 +45,7 @@ pub(super) fn kind(name: &str) -> Kind {
         Kind::PageIds
     } else if stem(name, "sleep-", ".bin").is_some() {
         Kind::SleepFile
-    } else if is_kept_name(name) {
+    } else if is_kept_name(name) || stem(name, "kept-", ".keptpages").is_some() {
         Kind::KeptPages
     } else if name.starts_with(".append-") && (name.ends_with(".tmp") || name.ends_with(".d")) {
         Kind::KeptTemp
@@ -89,6 +89,9 @@ mod tests {
             (format!("sleep-{k}.tmp77"), Kind::SleepFile),
             (format!("kept-{k}.keptpages"), Kind::KeptPages),
             (format!("kept-{k}-1.pdf"), Kind::KeptPages),
+            (format!("kept-{k}.tmp4242"), Kind::KeptPages),
+            (format!("kept-{k}-2.tmp4242"), Kind::KeptPages),
+            (format!("kept-{k}.tmp"), Kind::Other),
             (format!(".append-{k}-12-0.tmp"), Kind::KeptTemp),
             (format!(".append-{k}-12-0.d"), Kind::KeptTemp),
             ("notes.txt".into(), Kind::Other),

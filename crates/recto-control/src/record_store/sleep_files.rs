@@ -66,14 +66,20 @@ impl RecordStore {
         {
             return 0;
         }
+        // Under the progress lock from here to the end, where a removal's hold is looked at again (`hold`).
+        let mut progress = self.progress();
+        if progress.withholds() {
+            return 0;
+        }
         // With no flush: losing one to a crash costs only the quick way, and a torn one's caught by its checksum, so it isn't worth the drive's time or wear.
         let temp = file.with_extension(format!("tmp{}", std::process::id()));
         if bytes.len() > MAX_SLEEP_FILE_BYTES || local::write_private_file_unsynced(&temp, &bytes).is_err() || std::fs::rename(&temp, &file).is_err() {
             let _ = std::fs::remove_file(&temp);
             return 0;
         }
-        self.progress().wrote_bytes += bytes.len() as u64;
-        prune_sleep_files(&folder);
+        progress.wrote_bytes += bytes.len() as u64;
+        drop(progress);
+        self.prune_unless_held(&folder);
         bytes.len() as u64
     }
 
@@ -82,7 +88,7 @@ impl RecordStore {
         if self.gate().is_some() {
             return;
         }
-        let _ = std::fs::remove_file(self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path)));
+        self.remove_unless_held(&self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path)));
     }
 
     /// A tab's sleep file, if there's one for this version of this file. The name goes by the stamp, so what's asked for is what's known of the file, and nothing here looks at the PDF, which may be on a disk that's gone away. Whoever's waking the tab looks at that on a thread of its own. **One that doesn't read is removed:** it can always be rebuilt.
@@ -97,7 +103,7 @@ impl RecordStore {
             Ok(bytes) => bytes?,
             // Past what a file of facts can be (an older format's, with pictures), or not a plain private file: it goes, as one that doesn't read does.
             Err(()) => {
-                let _ = std::fs::remove_file(&file);
+                self.remove_unless_held(&file);
                 return None;
             }
         };
@@ -106,7 +112,7 @@ impl RecordStore {
             // A newer app's, which isn't this one's to touch.
             Err(RecordError::Newer(_)) => None,
             _ => {
-                let _ = std::fs::remove_file(&file);
+                self.remove_unless_held(&file);
                 None
             }
         }
@@ -132,7 +138,8 @@ impl RecordStore {
         if self.refuses_writes().is_some() {
             return done;
         }
-        sweep_older(&self.dir().join(JOURNALS), cap, &mut done);
+        // A removal's hold is looked at again under the progress lock before each file goes (`hold`), never across the loop: a save's write waits for one file.
+        sweep_older(self, &self.dir().join(JOURNALS), cap, &mut done);
         // The update's copy, only by real folders all the way down from the state folder: a link there could lead anywhere.
         let real_folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir());
         let mut copy = self.root.clone();
@@ -144,19 +151,19 @@ impl RecordStore {
         }
         // It holds the edit history, which stays out of Time Machine (PRIVACY.md); 0.1.0's installer made it without the mark the installer gives it now
         // (`recto_update::install::copy_record`), so it's given here, by the same function. A failure costs only that.
-        if !local::is_excluded_from_backups(&copy) {
+        if !local::is_excluded_from_backups(&copy) && !self.progress().withholds() {
             let _ = local::exclude_from_backups(&copy);
         }
         copy.push(JOURNALS);
         if real_folder(&copy) {
-            sweep_older(&copy, cap, &mut done);
+            sweep_older(self, &copy, cap, &mut done);
         }
         done
     }
 }
 
 /// [`RecordStore::remove_older_sleep_files`] in one folder, counting into `done` and stopping at `cap` in all.
-fn sweep_older(folder: &Path, cap: usize, done: &mut OlderSleepFiles) {
+fn sweep_older(store: &RecordStore, folder: &Path, cap: usize, done: &mut OlderSleepFiles) {
     let Ok(entries) = std::fs::read_dir(folder) else { return };
     let mut prefix = Vec::with_capacity(FORMAT_PREFIX_BYTES);
     for entry in entries.flatten() {
@@ -177,14 +184,43 @@ fn sweep_older(folder: &Path, cap: usize, done: &mut OlderSleepFiles) {
             continue;
         }
         done.bytes_read += prefix.len() as u64;
-        if sleep_format_of(&prefix).is_none_or(|format| format < SLEEP_FORMAT) && std::fs::remove_file(&path).is_ok() {
-            done.removed += 1;
+        if sleep_format_of(&prefix).is_none_or(|format| format < SLEEP_FORMAT) {
+            super::hold::parked(&store.root, "sweep");
+            let progress = store.progress();
+            // A hold that came in: nothing more goes.
+            if progress.withholds() {
+                return;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                done.removed += 1;
+            }
         }
     }
 }
 
 /// Sleep files are held to [`MAX_SLEEP_BYTES`] in all, oldest first, and 30 days: each can be rebuilt. A look at their sizes each time one's written, which is once for a tab going dormant.
 pub(super) fn prune_sleep_files(folder: &Path) {
+    for path in sleep_files_to_prune(folder) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+impl RecordStore {
+    /// [`prune_sleep_files`] after a write: each file is removed under the progress lock after a look at a removal's hold (`hold`), never the whole loop under it.
+    fn prune_unless_held(&self, folder: &Path) {
+        for path in sleep_files_to_prune(folder) {
+            super::hold::parked(&self.root, "sweep");
+            let progress = self.progress();
+            if progress.withholds() {
+                return;
+            }
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// The sleep files over their limits: older than 30 days, or past the total size once the newer ones are counted.
+fn sleep_files_to_prune(folder: &Path) -> Vec<PathBuf> {
     let now = std::time::SystemTime::now();
     let mut files: Vec<(u64, PathBuf, u64)> = std::fs::read_dir(folder)
         .into_iter()
@@ -203,10 +239,12 @@ pub(super) fn prune_sleep_files(folder: &Path) {
         .collect();
     files.sort_unstable_by_key(|(age, ..)| *age);
     let mut total = 0u64;
+    let mut over = Vec::new();
     for (age, path, bytes) in files {
         total += bytes;
         if age > CLOSED_JOURNAL_DAYS * 86_400 || total > MAX_SLEEP_BYTES {
-            let _ = std::fs::remove_file(path);
+            over.push(path);
         }
     }
+    over
 }

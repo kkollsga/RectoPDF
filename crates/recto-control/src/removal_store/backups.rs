@@ -1,5 +1,6 @@
 //! The original-backup folder (`Store::Backup`): which of its files are the target's, by name only. A backup is never opened or read.
 
+use super::purge::HistoryPins;
 use recto_core::removal::{ArtifactKey, Format, Found, Lineage, Owner, Refusal, Sides, Store, Survey, TargetMode};
 use recto_core::save::backup_name;
 use recto_platform::folder::{Folder, Opened};
@@ -18,6 +19,21 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
     survey_backups_with(folder, lineage, mode, survey, &|_| {})
 }
 
+/// `survey_backups`, and the identity (device, inode, kind) of every artifact added as the target's noted in `pins`, for the purge by pin (`purge`).
+pub fn survey_backups_pinned(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, survey: &mut Survey, pins: &mut HistoryPins) -> Result<(), Refusal> {
+    survey_backups_run(folder, lineage, mode, survey, &|_| {}, Some(pins))
+}
+
+/// The backup folder opened once by descriptor, no link followed and only if it is this user's: the survey's opening, and the purge's.
+pub(super) fn open_backups(folder: &Path) -> Opened {
+    Folder::open(folder)
+}
+
+/// The key of a name in the backup folder.
+pub(super) fn backup_key(name: &[u8]) -> ArtifactKey {
+    ArtifactKey::of(Store::Backup, name)
+}
+
 /// `survey_backups`, calling `before_list` with the folder's path once the folder is checked and before it is listed: a test's way to change the
 /// path under the survey.
 pub(crate) fn survey_backups_with(
@@ -27,8 +43,19 @@ pub(crate) fn survey_backups_with(
     survey: &mut Survey,
     before_list: &dyn Fn(&Path),
 ) -> Result<(), Refusal> {
+    survey_backups_run(folder, lineage, mode, survey, before_list, None)
+}
+
+fn survey_backups_run(
+    folder: &Path,
+    lineage: &Lineage<'_>,
+    mode: TargetMode,
+    survey: &mut Survey,
+    before_list: &dyn Fn(&Path),
+    mut pins: Option<&mut HistoryPins>,
+) -> Result<(), Refusal> {
     let folder_path = folder;
-    let folder = match Folder::open(folder_path) {
+    let folder = match open_backups(folder_path) {
         Opened::Folder(folder) => folder,
         Opened::Missing => {
             if lineage.complete() {
@@ -62,12 +89,19 @@ pub(crate) fn survey_backups_with(
             Some(_) if entry.links != 1 => Owner::Shared,
             Some(sides) => sides.owner(mode),
         };
+        let key = backup_key(name);
         survey.add(Found {
             store: Store::Backup,
-            key: ArtifactKey::of(Store::Backup, name),
+            key,
             owner,
             format: Format::Current,
         })?;
+        // Only the target's, from the listing: a backup is placed by its name and never opened.
+        if owner == Owner::Target
+            && let Some(pins) = pins.as_deref_mut()
+        {
+            pins.note_named(key, entry.identity(), &folder, &entry)?;
+        }
     }
     if lineage.complete() {
         survey.mark_complete(Store::Backup);

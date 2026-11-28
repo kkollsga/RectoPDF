@@ -10,9 +10,9 @@ use recto_testpdf::TempDir;
 use recto_testpdf::returns_in_time;
 use std::path::PathBuf;
 
-const MINE: &str = "/pdfs/mine.pdf";
-const THEIRS: &str = "/pdfs/theirs.pdf";
-const FIVE: [Store; 5] = [Store::Journal, Store::JournalVariant, Store::PageIds, Store::SleepFile, Store::KeptPages];
+pub(in crate::removal_store) const MINE: &str = "/pdfs/mine.pdf";
+pub(in crate::removal_store) const THEIRS: &str = "/pdfs/theirs.pdf";
+pub(in crate::removal_store) const FIVE: [Store; 5] = [Store::Journal, Store::JournalVariant, Store::PageIds, Store::SleepFile, Store::KeptPages];
 
 fn stamp(inode: u64) -> FileStamp {
     FileStamp {
@@ -24,12 +24,12 @@ fn stamp(inode: u64) -> FileStamp {
 }
 
 /// The 16 digits the names of version `inode` carry.
-fn k(inode: u64) -> String {
+pub(in crate::removal_store) fn k(inode: u64) -> String {
     key_of(inode, 10, 1)
 }
 
 /// This document at `MINE` (inode 7), and another at `THEIRS` (inode 8), from the beginning of time.
-fn ledger() -> Ledger {
+pub(in crate::removal_store) fn ledger() -> Ledger {
     let at = |inode, path: &str| Link::At {
         version: version(inode),
         path: PathBuf::from(path),
@@ -48,7 +48,7 @@ fn ledger() -> Ledger {
 }
 
 /// A root with both sessions' journals folders.
-fn root() -> TempDir {
+pub(in crate::removal_store) fn root() -> TempDir {
     let dir = TempDir::new("recto-journals-");
     for flavor in FLAVORS {
         std::fs::create_dir_all(dir.join(flavor).join("journals")).unwrap();
@@ -56,11 +56,11 @@ fn root() -> TempDir {
     dir
 }
 
-fn folder(root: &Path) -> PathBuf {
+pub(in crate::removal_store) fn folder(root: &Path) -> PathBuf {
     root.join("session").join("journals")
 }
 
-fn windowless(root: &Path) -> PathBuf {
+pub(in crate::removal_store) fn windowless(root: &Path) -> PathBuf {
     root.join("session-windowless").join("journals")
 }
 
@@ -102,7 +102,7 @@ fn purged(p: &Plan, store: Store) -> usize {
 }
 
 /// A journal's bytes: its first line, for a tab with this file and path.
-fn journal(path: &str, inode: u64) -> Vec<u8> {
+pub(in crate::removal_store) fn journal(path: &str, inode: u64) -> Vec<u8> {
     journal_start(&JournalHeader::new(1, Path::new(path), Some(stamp(inode)), 3, 0), None)
 }
 
@@ -198,6 +198,53 @@ fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
             assert_eq!(refused, Refusal::Incomplete(store), "{file} swapped for a {swapped}");
         }
     }
+}
+
+/// Failure: a file swapped between the listing and its opening is placed by the other file's header while the listing's device, inode and link count
+/// (what a pin and the `Shared` rule use) describe the file that was listed, so a pin and a placing name two different files. The listed name holds another
+/// document's journal; before the opening, a journal this lineage places as the target's is renamed over it. The artifact is `Unknown`, not the target's.
+#[test]
+fn a_journal_swapped_between_listing_and_open_is_unknown() {
+    let dir = root();
+    let name = format!("journal-{}.log", k(7));
+    put(&folder(&dir), &name, &journal(THEIRS, 8));
+    // Listed second (the windowless folder follows the app's), so it is there at the first listing's opening and gone from the second's.
+    put(&windowless(&dir), &name, &journal(MINE, 7));
+    let plain = survey_with(&dir, &ledger(), version(7), TargetMode::Save, 64, &Caps::default()).unwrap();
+    assert_eq!(
+        purged(&plan_of(&plain, TargetMode::Save).unwrap(), Store::Journal),
+        1,
+        "only the windowless one is the target's before the swap"
+    );
+    let hook: Hook = {
+        let (from, over) = (windowless(&dir).join(&name), folder(&dir).join(&name));
+        Arc::new(move |path| {
+            if path == over {
+                std::fs::rename(&from, &over).unwrap();
+            }
+        })
+    };
+    let caps = Caps {
+        before_open: Some(hook),
+        ..Caps::default()
+    };
+    let s = survey_with(&dir, &ledger(), version(7), TargetMode::Save, 64, &caps).unwrap();
+    assert_eq!(
+        plan_of(&s, TargetMode::Save).unwrap_err(),
+        Refusal::Incomplete(Store::Journal),
+        "the swapped file is not placed by the other's bytes"
+    );
+}
+
+/// Failure: a kept copy's temporary (what a kill mid-copy leaves, until the next launch's sweep) is a name nobody can place, so every removal refuses
+/// until it is gone. It is placed by the version in its name, as the kept copy is: the target's, purged with it.
+#[test]
+fn a_kept_copys_temp_is_placed_by_its_version() {
+    let dir = root();
+    put(&folder(&dir), &format!("kept-{}.tmp4242", k(7)), b"%PDF-1.4");
+    put(&folder(&dir), &format!("kept-{}.tmp4242", k(8)), b"%PDF-1.4");
+    let p = plan(&dir, TargetMode::Save).unwrap();
+    assert_eq!(purged(&p, Store::KeptPages), 1, "the target's temp is the target's; another document's is left");
 }
 
 /// Failure: another document's history is purged with this one's, or the target's own is left behind; a Save As deletes the source's history.
@@ -377,7 +424,7 @@ fn variants_are_placed_by_their_header_and_anything_unrecognised_refuses() {
 }
 
 /// A sidecar's bytes for `journal`, about version `inode`.
-fn sidecar_of(journal: &str, inode: u64) -> Vec<u8> {
+pub(in crate::removal_store) fn sidecar_of(journal: &str, inode: u64) -> Vec<u8> {
     sidecar::Header::new(journal, stamp(inode), 3).encode().unwrap()
 }
 
