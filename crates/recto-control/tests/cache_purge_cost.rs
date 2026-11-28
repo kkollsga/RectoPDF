@@ -199,6 +199,11 @@ fn steps(s: &Surveyed, pins: &Pins) -> Vec<(Store, Vec<(recto_core::removal::Art
 
 /// Purges every step. Returns the number of steps.
 fn purge_all(f: &Fixture, steps: &[(Store, Vec<(recto_core::removal::ArtifactKey, Pin)>)]) -> usize {
+    purge_steps(f, steps).len()
+}
+
+/// Purges each step in order and gives what each did.
+fn purge_steps(f: &Fixture, steps: &[(Store, Vec<(recto_core::removal::ArtifactKey, Pin)>)]) -> Vec<recto_control::removal_store::Purged> {
     let roots_corpus = f.corpus();
     let roots_contents = f.contents();
     let roots = CacheRoots {
@@ -210,11 +215,14 @@ fn purge_all(f: &Fixture, steps: &[(Store, Vec<(recto_core::removal::ArtifactKey
         dev: std::fs::metadata(f.dir.path()).unwrap().dev(),
     };
     let quiet = CachesQuiet::assumed_for_tests();
-    for (store, wanted) in steps {
-        let result = purge_caches(*store, wanted, &roots, volume, &quiet);
-        assert!(result.is_ok(), "{store:?}: {result:?}");
-    }
-    steps.len()
+    steps
+        .iter()
+        .map(|(store, wanted)| {
+            let result = purge_caches(*store, wanted, &roots, volume, &quiet);
+            assert!(result.is_ok(), "{store:?}: {result:?}");
+            result.unwrap()
+        })
+        .collect()
 }
 
 /// The most live bytes above what was held before, over one run of `work`.
@@ -246,6 +254,58 @@ fn purge_holds_one_tree_at_a_time() {
         (large - small) / 180
     );
     assert!((large - small) / 180 < 1024, "{small} against {large}");
+}
+
+/// The most descriptors the process held over its baseline, seen by a sampler thread (so a floor), while `work` ran.
+fn descriptors_over_baseline<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    let (stop, high) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+    let baseline = std::fs::read_dir("/dev/fd").unwrap().count();
+    let sampler = {
+        let (stop, high) = (stop.clone(), high.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                high.fetch_max(std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0), Ordering::Relaxed);
+                std::thread::sleep(Duration::from_micros(50)); // ratchet: poll
+            }
+        })
+    };
+    let out = work();
+    stop.store(true, Ordering::Relaxed);
+    sampler.join().unwrap();
+    (out, high.load(Ordering::Relaxed).saturating_sub(baseline))
+}
+
+/// Failure: the agent-pages step, or the older build's `corpus` taken child by child, holds more descriptors than the bound of 8 (a listing, a lock or a
+/// folder kept open past its use), as the corpus path was held to. The agent step runs first on 40 corpora (the fixture gives an agent folder of 50 pages to
+/// every fifth, so 8 are taken), then the corpus step with an older `corpus` of 10 children beside the root. Each step really takes its folders (none already
+/// gone) and is within 8 descriptors of its baseline. A sampler sees them, so the number is a floor.
+#[test]
+fn the_agent_pages_and_older_corpus_paths_hold_at_most_eight_descriptors() {
+    let f = fixture(40, 50, 0, 0, 0);
+    let old = f.dir.join("corpus");
+    for child in 0..10 {
+        let folder = old.join(format!("child{child}"));
+        std::fs::create_dir_all(folder.join("sub")).unwrap();
+        std::fs::write(folder.join("sub").join("file"), b"x").unwrap();
+        std::fs::write(old.join(format!("loose{child}")), b"x").unwrap();
+    }
+    let (s, pins) = survey_to_clear(&f);
+    let steps = steps(&s, &pins);
+    drop((s, pins));
+    let of = |store| steps.iter().filter(|(s, _)| *s == store).cloned().collect::<Vec<_>>();
+    let (agents, corpora) = (of(Store::CorpusAgentPages), of(Store::CorpusText));
+    let (taken, agent_descriptors) = descriptors_over_baseline(|| purge_steps(&f, &agents));
+    assert_eq!(
+        taken.iter().map(|p| (p.removed, p.already_gone)).collect::<Vec<_>>(),
+        vec![(8, 0)],
+        "the agent folders were really taken"
+    );
+    let (taken, corpus_descriptors) = descriptors_over_baseline(|| purge_steps(&f, &corpora));
+    assert_eq!(taken.iter().map(|p| p.already_gone).sum::<u32>(), 0);
+    assert!(!old.exists(), "the older corpus went with the step");
+    println!("PURGE_COST descriptors over baseline: agent pages {agent_descriptors}, corpora with the older corpus {corpus_descriptors}");
+    assert!(agent_descriptors <= 8, "agent pages: {agent_descriptors} more than before");
+    assert!(corpus_descriptors <= 8, "corpora and the older corpus: {corpus_descriptors} more than before");
 }
 
 /// The measurement behind the report. Median of five runs of each, on fixtures of 100 and 1,000 corpora (a fifth with an agent folder of 50 pages), 3,000 notes and
