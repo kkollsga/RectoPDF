@@ -617,10 +617,36 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
         let (was, now) = (before["app"]["pages"][field].as_f64().unwrap(), after["app"]["pages"][field].as_f64().unwrap());
         assert!((was - now).abs() < 0.25, "{field}: {was} then {now}");
     }
-    // The first frame was the right one: the place, with something on it, which since deep sleep can be the tab's sleep file's picture before a page is drawn. That's the gap the user sees. It isn't what counts as having come up: that's a page of the app's own drawn through the real renderer, which `a_new_app_that_cant_draw_preserves_recovery_while_live` holds to with a renderer that can't.
+    // The first frame was the right one: the place, and not blank. No picture of a page comes from a sleep file (owner, 2026-11-15), so whether a page is drawn
+    // by the time the window goes up is the machine's speed; the rule (`showing::decide`) is the hand-off's, as `restore.rs`'s sleep-file test holds it: up as
+    // its page is drawn (`ready`, with tiles on it), or at the cap only while the page in view is being drawn, its pages on their paper from the sleep file's
+    // facts all the same. The first frame is pane 0's, which here isn't the tab read: it comes up from a sleep file of its own, written at the hand-off as every
+    // tab side by side's is (2026-11-28: it had none, and was up blank at the cap). That gap is what the user sees; what counts as having come up is a page of
+    // the app's own drawn through the real renderer, which `a_new_app_that_cant_draw_preserves_recovery_while_live` holds to with a renderer that can't.
     let shown = &after["record"]["first_shown"];
     assert_eq!(shown["home"], false, "{shown}");
-    assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something's on it: {shown}");
+    let decided = &shown["asks"]["last"];
+    match (shown["why"].as_str(), decided["said"].as_str()) {
+        (Some("ready"), _) => assert!(shown["tile_layers"].as_u64().unwrap() > 0, "up as ready with nothing on it: {shown}"),
+        (Some("cap" | "patience"), Some("cap")) => {
+            assert!(shown["page_layers"].as_u64().unwrap() > 0, "up at the cap with no page on its paper: {shown}");
+            assert_eq!(
+                decided["held_by"],
+                json!(["page_not_ready"]),
+                "held to the cap by something but its page: {shown}"
+            );
+            assert!(
+                ["drawing", "ops_waiting", "unapplied"].contains(&decided["checks"]["not_showable"].as_str().unwrap_or("")),
+                "held to the cap by a page not being drawn: {shown}"
+            );
+        }
+        _ => panic!("shown before Rust's cap said so: {shown}"),
+    }
+    assert_eq!(
+        after["reader"]["last_wake"]["from_sleep"], true,
+        "pane 0's tab came up with nothing from a sleep file: {} {}",
+        after["reader"]["last_wake"], after["record"]["sleep"]
+    );
     assert_eq!(shown["page"], before["reader"]["page"]);
     assert!(
         (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25,
