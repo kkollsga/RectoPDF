@@ -8,6 +8,7 @@ use crate::removal_store::coverage_tests::plan_of;
 use crate::removal_store::purge::Pins;
 use recto_core::removal::{ArtifactId, Effect, Surveyed};
 use recto_index::corpus::{self, CorpusKey};
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, symlink};
 use std::sync::Arc;
@@ -349,6 +350,171 @@ fn every_way_out_syncs_what_lost_a_name_and_a_repeated_step_succeeds() {
     );
     let failing = seams_with(|s| s.files.fail_sync = true);
     assert!(!purge(&w, Store::CorpusText, &corpora, &failing).unwrap().durable);
+}
+
+/// A corpus's retired agent folder (`v4/agent-…`).
+fn agent_dir(w: &World, key: CorpusKey) -> PathBuf {
+    fs::read_dir(w.corpus.join(key.hex()).join("v4"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.file_name().is_some_and(names::is_agent_folder))
+        .unwrap()
+}
+
+/// Moves the folder at `dir` aside and puts a new one at its name: the name no longer leads to the folder that was pinned.
+fn swap_for_a_new_folder(dir: &Path) {
+    fs::rename(dir, dir.with_file_name("aside-of-the-pinned")).unwrap();
+    fs::create_dir(dir).unwrap();
+}
+
+/// Failure: a corpora step that stops in pass 1 (a folder that is no longer the pinned one) leaves the root unsynced though a wanted name was already gone,
+/// which a run killed before its sync may have taken. One wanted corpus is removed and another replaced by a new folder at its name: the step stops
+/// `NotThePinned`, the third is untouched, and the root is synced on the way out.
+#[test]
+fn a_corpora_stop_in_pass_one_still_syncs_the_root_when_a_wanted_name_was_already_gone() {
+    let w = World::new();
+    let keys = three_corpora(&w);
+    let corpora = step_of(&plan_steps(&w), Store::CorpusText);
+    fs::remove_dir_all(w.corpus.join(keys[0].hex())).unwrap();
+    swap_for_a_new_folder(&w.corpus.join(keys[1].hex()));
+    let seams = CacheSeams::default();
+    assert_eq!(purge(&w, Store::CorpusText, &corpora, &seams), Err(PurgeStop::NotThePinned));
+    assert!(w.corpus.join(keys[2].hex()).exists(), "nothing was unlinked");
+    assert!(syncs(&seams) >= 1, "the root is synced when a name was already gone");
+}
+
+/// Failure: an agent-pages step that stops in pass 1 leaves the root unsynced though a wanted agent folder was already gone. One is removed and another replaced
+/// by a new folder at its name: the step stops `NotThePinned`, the replaced one is untouched, and the root is synced on the way out.
+#[test]
+fn an_agent_pages_stop_in_pass_one_still_syncs_the_root_when_a_wanted_name_was_already_gone() {
+    let w = World::new();
+    let keys = three_corpora(&w);
+    for key in &keys {
+        let claim = corpus::claim_agent_folder(&w.corpus, *key).unwrap();
+        corpus::retire_agent_folder(&w.corpus, *key, claim);
+    }
+    let agents = step_of(&plan_steps(&w), Store::CorpusAgentPages);
+    assert_eq!(agents.len(), 3);
+    fs::remove_dir_all(agent_dir(&w, keys[0])).unwrap();
+    let swapped = agent_dir(&w, keys[1]);
+    swap_for_a_new_folder(&swapped);
+    let seams = CacheSeams::default();
+    assert_eq!(purge(&w, Store::CorpusAgentPages, &agents, &seams), Err(PurgeStop::NotThePinned));
+    assert!(swapped.exists());
+    assert!(syncs(&seams) >= 1, "the root is synced when a name was already gone");
+}
+
+/// One corpus with a retired agent folder, and the agent-pages step for it.
+fn one_agent(w: &World) -> (CorpusKey, Vec<(ArtifactKey, Pin)>) {
+    let key = w.index(&w.mine);
+    let claim = corpus::claim_agent_folder(&w.corpus, key).unwrap();
+    corpus::retire_agent_folder(&w.corpus, key, claim);
+    let agents = step_of(&plan_steps(w), Store::CorpusAgentPages);
+    assert_eq!(agents.len(), 1);
+    (key, agents)
+}
+
+/// Failure: an agent folder found gone in pass 2 (taken between the passes, as a run killed before its sync leaves it) leaves its format folder unsynced, so
+/// a power cut brings the name back. The agent folder is removed between the passes: the result is `Ok`, one already gone, and the format folder and the root
+/// were both synced (two syncs; the root alone is one). With the format folder removed too, its corpus folder is synced in its place.
+#[test]
+fn an_agent_folder_found_gone_in_pass_two_has_its_format_folder_synced() {
+    for remove_format in [false, true] {
+        let w = World::new();
+        let (key, agents) = one_agent(&w);
+        let agent = agent_dir(&w, key);
+        let seams = seams_with(|s| {
+            s.between_passes = Some(Arc::new(move |_| {
+                fs::remove_dir_all(if remove_format { agent.parent().unwrap() } else { &agent }).unwrap();
+            }));
+        });
+        let purged = purge(&w, Store::CorpusAgentPages, &agents, &seams).unwrap();
+        assert_eq!(
+            (purged.removed, purged.already_gone, purged.durable),
+            (0, 1, true),
+            "format removed: {remove_format}"
+        );
+        assert_eq!(syncs(&seams), 2, "the folder the name was in, then the root (format removed: {remove_format})");
+    }
+}
+
+/// Failure: a format folder's sync that fails after its agent folder went turns a done step into `Err(Listing)`, which the walk acknowledges as failed though
+/// the folder is gone (every other sync failure is `durable: false`). The sync fails: `Ok`, one removed, not durable, the folder gone.
+#[test]
+fn a_failed_format_folder_sync_is_not_durable_and_not_an_error() {
+    let w = World::new();
+    let (key, agents) = one_agent(&w);
+    let agent = agent_dir(&w, key);
+    let seams = seams_with(|s| s.files.fail_sync = true);
+    let purged = purge(&w, Store::CorpusAgentPages, &agents, &seams).expect("a failed sync is not a stop");
+    assert_eq!((purged.removed, purged.already_gone, purged.durable), (1, 0, false));
+    assert!(!agent.exists());
+}
+
+/// Every name under `dir` (files and folders, recursively) and `dir`'s own, as the walk's gate sees them.
+fn names_under(dir: &Path) -> Vec<OsString> {
+    let mut found = vec![dir.file_name().unwrap().to_os_string()];
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(names_under(&path))
+        } else {
+            found.push(path.file_name().unwrap().to_os_string())
+        }
+    }
+    found
+}
+
+/// Failure: a corpus walk that stops part way after taking its agent folder but not `app` leaves text and a ready mark that a search reads, though the purge
+/// began (the ready marks and the manifest went first only among `app`'s own entries, and `agent` sorts before `app`). A corpus with `v4/app` (built by the
+/// indexer) and `v4/agent`, the walk's gate recording the order: the ready marks and manifest are unlinked before any other file of `app`, and every `app` name
+/// before any `agent` name.
+#[test]
+fn app_goes_before_the_agent_folders_in_a_corpus() {
+    let w = World::new();
+    let key = w.index(&w.mine);
+    drop(corpus::claim_agent_folder(&w.corpus, key).unwrap());
+    let version = w.corpus.join(key.hex()).join("v4");
+    let (app, agent) = (names_under(&version.join("app")), names_under(&version.join("agent")));
+    let (only_app, only_agent): (Vec<_>, Vec<_>) = (
+        app.iter().filter(|name| !agent.contains(name)).cloned().collect(),
+        agent.iter().filter(|name| !app.contains(name)).cloned().collect(),
+    );
+    assert!(
+        only_app.len() > 2 && !only_agent.is_empty(),
+        "the corpus has something under both: {only_app:?} {only_agent:?}"
+    );
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<OsString>::new()));
+    let recorded = seen.clone();
+    let seams = seams_with(|s| {
+        s.gate = Some(Arc::new(move |name: &OsStr| {
+            recorded.lock().unwrap().push(name.to_os_string());
+            true
+        }));
+    });
+    let corpora = step_of(&plan_steps(&w), Store::CorpusText);
+    purge(&w, Store::CorpusText, &corpora, &seams).unwrap();
+    let order = seen.lock().unwrap().clone();
+    let at = |name: &OsString| {
+        order
+            .iter()
+            .position(|seen| seen == name)
+            .unwrap_or_else(|| panic!("{name:?} was never unlinked: {order:?}"))
+    };
+    let last_app = only_app.iter().map(at).max().unwrap();
+    let first_agent = only_agent.iter().map(at).min().unwrap();
+    assert!(last_app < first_agent, "every app name before any agent name: {order:?}");
+    let marks: Vec<_> = only_app.iter().filter(|name| names::is_first_to_go(name)).map(at).collect();
+    let first_other_app = only_app
+        .iter()
+        .filter(|name| !names::is_first_to_go(name) && *name != names::APP_FOLDER)
+        .map(at)
+        .min()
+        .unwrap();
+    assert!(
+        !marks.is_empty() && marks.iter().all(|mark| *mark < first_other_app),
+        "the ready marks and the manifest first: {order:?}"
+    );
 }
 
 /// Failure: a step runs with a pin that isn't its store's kind, a pin on another volume, a key twice, a batch over the limit, or for a store that isn't a cache,
