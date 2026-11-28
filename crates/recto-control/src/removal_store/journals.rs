@@ -26,6 +26,7 @@ use recto_session::record::{MARKED_JOURNAL_VERSION, journal_header};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read as _;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 #[cfg(test)]
@@ -347,8 +348,7 @@ impl Run<'_> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Gone),
             Err(_) => return Ok(None),
         };
-        let Ok(opened) = file.metadata() else { return Ok(None) };
-        if opened.dev() != entry.dev || opened.ino() != entry.ino || opened.nlink() != 1 {
+        if !is_the_listed(&file, entry) {
             return Ok(None);
         }
         buffer.clear();
@@ -394,6 +394,19 @@ impl Run<'_> {
         let owner = (*journals.get(&journal)?)?;
         Some(self.maps.version(header.inode, header.size, header.mtime_ns).map_or(owner, |v| owner.union(v)))
     }
+}
+
+/// Whether an opened file is the one that was listed: its device and inode are the entry's and it has one link. Where there is no device and inode to
+/// compare (the stand-in off the Mac) nothing is trusted, and the artifact is `Unknown`.
+#[cfg(unix)]
+fn is_the_listed(file: &std::fs::File, entry: &Entry) -> bool {
+    file.metadata()
+        .is_ok_and(|opened| opened.dev() == entry.dev && opened.ino() == entry.ino && opened.nlink() == 1)
+}
+
+#[cfg(not(unix))]
+fn is_the_listed(_file: &std::fs::File, _entry: &Entry) -> bool {
+    false
 }
 
 #[derive(PartialEq)]
