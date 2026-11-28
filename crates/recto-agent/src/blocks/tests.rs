@@ -58,7 +58,7 @@ impl Blocking for Host {
         self.making.load(Ordering::SeqCst)
             || self
                 .still_stopping
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
                 .is_ok()
     }
 }
