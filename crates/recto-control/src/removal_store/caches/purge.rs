@@ -635,15 +635,27 @@ fn find_agents(root: &Folder, want: &BTreeMap<ArtifactKey, Pin>) -> Result<Vec<A
     Ok(found)
 }
 
-/// Opens an agent's corpus and format folder, by the root's descriptor.
-fn open_chain(root: &Folder, agent: &Agent) -> Result<Option<(Folder, Folder)>, PurgeStop> {
+/// How far an agent's corpus and format folder open, by the root's descriptor.
+enum Chain {
+    Whole {
+        corpus: Folder,
+        format: Folder,
+    },
+    /// The corpus is there and the format folder isn't.
+    FormatGone {
+        corpus: Folder,
+    },
+    CorpusGone,
+}
+
+fn open_chain(root: &Folder, agent: &Agent) -> Result<Chain, PurgeStop> {
     let Some(corpus) = open_in_ours(root, &agent.corpus).or_else(not_there)? else {
-        return Ok(None);
+        return Ok(Chain::CorpusGone);
     };
     let Some(format) = open_in_ours(&corpus, &agent.format).or_else(not_there)? else {
-        return Ok(None);
+        return Ok(Chain::FormatGone { corpus });
     };
-    Ok(Some((corpus, format)))
+    Ok(Chain::Whole { corpus, format })
 }
 
 /// Pass 1 of an agent step: each is the folder that was pinned and no session or build holds it.
@@ -652,7 +664,9 @@ fn agents_pass_one(root: &Folder, agents: &[Agent], volume: VolumeNow) -> Result
         if let Some(stop) = differs_folder(&agent.entry, &agent.pin, volume) {
             return Err(stop);
         }
-        let Some((corpus, format)) = open_chain(root, agent)? else { continue };
+        let Chain::Whole { corpus, format } = open_chain(root, agent)? else {
+            continue;
+        };
         let Some(folder) = open_in_ours(&format, &agent.entry.name)? else { continue };
         if folder.identity().map_err(|_| PurgeStop::Listing)? != agent.entry.identity() {
             return Err(PurgeStop::NotThePinned);
@@ -680,12 +694,17 @@ fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>
         seams.between_passes(roots.corpus);
     }
     // Pass 2.
+    let mut durable = true;
     for agent in agents.iter().filter(|_| stop.is_none()) {
         seams.folder_looked_at(|| roots.corpus.join(&agent.corpus).join(&agent.format).join(&agent.entry.name));
         let (corpus, format) = match open_chain(&root, agent) {
-            Ok(Some(chain)) => chain,
-            Ok(None) => {
+            Ok(Chain::Whole { corpus, format }) => (corpus, format),
+            Ok(gone) => {
                 already_gone += 1;
+                // The format folder (or its corpus) that lost the name may have been taken by a run killed before its sync.
+                if let Chain::FormatGone { corpus } = &gone {
+                    durable &= synced(corpus, &seams.files);
+                }
                 continue;
             }
             Err(failed) => {
@@ -703,13 +722,13 @@ fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>
             seams,
             &touched,
         );
-        // What lost a name is synced on every way out, a stop inside the tree included.
+        // What lost a name is synced on every way out, a stop inside the tree included; so is the format folder of one found already gone (a killed run's).
+        // A sync that fails is `durable: false` and the step goes on.
         if touched.get() {
             touched_root.set(true);
-            if !synced(&format, &seams.files) && taken.is_ok() {
-                stop = Some(PurgeStop::Listing);
-                break;
-            }
+        }
+        if touched.get() || matches!(taken, Ok(Taken::Gone)) {
+            durable &= synced(&format, &seams.files);
         }
         match taken {
             Ok(Taken::Removed) => removed += 1,
@@ -720,7 +739,6 @@ fn purge_agent_folders(want: &BTreeMap<ArtifactKey, Pin>, roots: &CacheRoots<'_>
             }
         }
     }
-    let mut durable = true;
     if (touched_root.get() || already_gone > 0) && !synced(&root, &seams.files) {
         durable = false;
     }
