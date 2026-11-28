@@ -8,7 +8,7 @@
 //!   page with no stored blocks at all is given whole (more text, never lost text) and counted.
 //! - **One sweep a page.** A page's entries are found by one search ([`Sections::starting_on`]) and their cut blocks by one merge with the page's blocks: no walk of every entry for a block.
 //! - **The cut** is at the end of the last whole piece that fits; a first piece over the cap alone is cut at its last line end within the cap, else at the cap.
-//! - **Bounded:** at most [`MAX_PAGES_READ`] pages are read for an answer (the ones looked at for its neighbours too), and one page more only to name where it goes on (65 reads at most), live reads stop when [`Pages::over`] says their time is spent, and one page's text
+//! - **Bounded:** at most [`MAX_PAGES_READ`] pages are read for an answer (the ones looked at for its neighbours too), and one page more only to name where it goes on (65 reads at most; pages the index says are blank are passed over without a read, at most 8), live reads stop when [`Pages::over`] says their time is spent, and one page's text
 //!   is held at a time with what's given (at most the caller's cap, 65,536 characters).
 
 use super::markdown::Piece;
@@ -25,6 +25,8 @@ pub const REF_CHARS: u32 = 32;
 pub const MAX_HEADINGS_ABOVE: usize = 32;
 /// Pages read only to name where an answer goes on, past [`MAX_PAGES_READ`]: exactly one at most, never more. Its text is not given; the reference to it needs its characters' check.
 const NAMING_READS: u32 = 1;
+/// Blank pages (the index says no text) passed over, at most, while naming where an answer goes on past the page cap: 8. They cost no read.
+const BLANK_PAGES_PASSED: u32 = 8;
 /// A page's buffers are given back past this many characters.
 const BIG_PAGE: usize = 1 << 20;
 
@@ -58,6 +60,10 @@ pub trait Pages {
     fn shown(&self, page: u32) -> bool;
     /// Whether the time given to reading pages live is spent.
     fn over(&mut self) -> bool;
+    /// Whether the page is known to have text, without reading it (the index's own record of it). Used to pass over blank pages when naming where an answer goes on. True when it can't be told.
+    fn has_text(&mut self, _page: u32) -> bool {
+        true
+    }
 }
 
 /// What is asked.
@@ -387,8 +393,19 @@ impl<'a, P: Pages> Walk<'a, P> {
     fn mark_from(&mut self, page: u32, start: u32, last: u32, naming: bool) -> Result<Option<Mark>, Fault> {
         let mut page = page;
         let mut start = start;
+        let mut blank = 0;
         while page <= last && page < self.pages.pages() {
             if self.pages.shown(page) {
+                // Naming where to go on: a page the index says has no text isn't read to find that out. At most [`BLANK_PAGES_PASSED`] are passed.
+                if naming && self.loaded != Some(page) && !self.pages.has_text(page) {
+                    blank += 1;
+                    if blank > BLANK_PAGES_PASSED {
+                        return Ok(None);
+                    }
+                    page += 1;
+                    start = 0;
+                    continue;
+                }
                 let ready = if naming { self.load_to_name(page)? } else { self.can_read_then_load(page)? };
                 if ready && start < self.len() {
                     return Ok(self.mark_from_here(start));
@@ -427,15 +444,21 @@ impl<'a, P: Pages> Walk<'a, P> {
         self.blocks.get(self.first_at_or_after(place)).map_or_else(|| self.len(), |block| block.start)
     }
 
-    /// The place of the reference's first character: its block's, else the nearest block before it in character order, else the nearest after it, else the middle of the page.
-    fn anchor_place(&self, page: u32, start: Option<u32>) -> Place {
-        let Some(first) = start else {
-            return Place { page, top: 0 };
-        };
-        let holding = self.blocks.iter().position(|block| block.start <= first && first < block.end);
-        let before = self.blocks.iter().rposition(|block| block.start <= first);
-        let after = self.blocks.iter().position(|block| block.start > first);
-        holding.or(before).or(after).map_or(Place::middle(page), |index| self.places[index])
+    /// The place the reference's first character is in, for choosing its section. **Sections are cut by character order**, so on the reference's page it is the start of the last entry whose cut is at
+    /// or before the character (a block can sit higher on the page than its entry, in another column, and its own place would pick the section before). With none, the top of the page.
+    fn anchor_place(&self, sections: &Sections, page: u32, start: Option<u32>) -> Place {
+        let top = Place { page, top: 0 };
+        let Some(first) = start else { return top };
+        let entries = sections.starting_on(page);
+        let starts: Vec<Place> = entries.iter().map(|(place, _)| *place).collect();
+        let (cuts, _) = sweep(&self.places, &starts);
+        let at = |cut: usize| self.blocks.get(cut).map_or_else(|| self.len(), |block| block.start);
+        entries
+            .iter()
+            .zip(cuts)
+            .take_while(|(_, cut)| at(*cut) <= first)
+            .last()
+            .map_or(top, |((place, _), _)| *place)
     }
 
     /// The loaded page's pieces over characters `[from, to)`: blocks, and the text between them as paragraphs.
@@ -525,9 +548,9 @@ impl<'a, P: Pages> Walk<'a, P> {
                 text: self.chars[spec.start as usize..end as usize].to_vec(),
                 hidden: clip_spans(&self.hidden, spec.start, end),
             });
-            taken.chars_given += take as u32;
+            taken.chars_given = taken.chars_given.saturating_add(take as u32);
             if kind_outside {
-                self.counts.chars_outside_blocks += take as u32;
+                self.counts.chars_outside_blocks = self.counts.chars_outside_blocks.saturating_add(take as u32);
             } else {
                 self.counts.blocks += 1;
             }
@@ -642,7 +665,7 @@ impl<'a, P: Pages> Walk<'a, P> {
         if !self.load(ask.page)? {
             return Ok(Outcome::Page(Why::NoBlockHere));
         }
-        let place = self.anchor_place(ask.page, ask.start);
+        let place = self.anchor_place(sections, ask.page, ask.start);
         let entry = if ask.grain == Grain::Chapter {
             sections.chapter_of(place)
         } else {
@@ -697,7 +720,7 @@ impl<'a, P: Pages> Walk<'a, P> {
                 from = first.min(len);
             }
             to = to.max(from);
-            unit_chars += to - from;
+            unit_chars = unit_chars.saturating_add(to - from);
             let depths = self.heading_depths(Some(sections), page);
             let specs = self.specs(from, to);
             self.give(&mut taken, &specs, &depths, ask.max_chars as usize);

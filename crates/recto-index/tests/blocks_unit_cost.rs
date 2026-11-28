@@ -57,16 +57,21 @@ impl Pages for Big {
         true
     }
     fn blocks(&mut self, page: u32, _: u32) -> Result<Vec<Block>, Fault> {
-        let at = |start: u32, end: u32| Block {
+        let at = |start: u32, end: u32, bbox: [i16; 4]| Block {
             kind: Kind::Paragraph,
             level: 0,
             page,
             start,
             end,
-            bbox: [0, 100, 100, 200],
+            bbox,
             continues: false,
         };
-        Ok(if page == 0 || page == PAGES - 1 { vec![at(0, 100)] } else { Vec::new() })
+        // The first page has a block at its start and one at its tail (low on the page, at about 917 thousandths); the last has one at its start.
+        Ok(match page {
+            0 => vec![at(0, 100, [0, 100, 100, 200]), at(CHARS as u32 - 100, CHARS as u32, [0, 60, 100, 70])],
+            p if p == PAGES - 1 => vec![at(0, 100, [0, 100, 100, 200])],
+            _ => Vec::new(),
+        })
     }
     fn frame(&mut self, _: u32) -> Option<Frame> {
         Some(Frame {
@@ -96,6 +101,7 @@ fn peak_of(step: impl FnOnce()) -> usize {
 /// pages one at a time: the peak is about one page's characters (8 MB) and what's given, whatever the pages read. The bound is stated beside the number measured (`MEASURED`).
 #[test]
 fn one_answer_holds_one_page_and_what_it_gives() {
+    // One chapter, whose entry is low on the first page (900 thousandths): it begins at that page's tail and goes on over the next page, which is 2,000,000 characters.
     let toc = Toc::from_lines(
         &[TocLine {
             title: "t",
@@ -104,7 +110,8 @@ fn one_answer_holds_one_page_and_what_it_gives() {
             depth: 0,
         }],
         false,
-    );
+    )
+    .with_tops(&[900]);
     let sections = Sections::new(toc.entries());
     let one_page = CHARS * std::mem::size_of::<char>();
     let mut section_peak = 0;
@@ -114,15 +121,19 @@ fn one_answer_holds_one_page_and_what_it_gives() {
         let ask = Ask {
             grain: Grain::Chapter,
             page: 0,
-            start: None,
+            start: Some(CHARS as u32 - 50),
             from_here: false,
             max_chars: 65_536,
             sections: Some(&sections),
         };
-        let Ok(Outcome::Unit(unit)) = build(&mut Big, &ask) else { panic!("a unit") };
-        assert_eq!(unit.chars_given, 100, "the block, and the page's rest doesn't fit whole");
+        let built = build(&mut Big, &ask);
+        let Ok(Outcome::Unit(unit)) = built else { panic!("a unit, not {built:?}") };
+        assert_eq!(unit.chars_given, 100, "the tail block; the next page doesn't fit whole");
+        assert!(unit.counts.pages_read >= 2, "the unit crosses onto the next page: {:?}", unit.counts);
+        let more = unit.refs.more.expect("a way on");
         let again = Ask {
-            start: Some(100),
+            page: more.page,
+            start: Some(more.range.offsets().0),
             from_here: true,
             ..ask
         };
@@ -133,7 +144,7 @@ fn one_answer_holds_one_page_and_what_it_gives() {
         let ask = Ask {
             grain: Grain::Paragraph,
             page: 0,
-            start: None,
+            start: Some(CHARS as u32 - 50),
             from_here: false,
             max_chars: 65_536,
             sections: None,

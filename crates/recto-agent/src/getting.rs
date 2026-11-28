@@ -107,25 +107,6 @@ fn page_ref(referrer: &mut Referrer<'_>, file_page: Option<u32>) -> Value {
         .map_or(Value::Null, |made| json!(locator::encode(&made)))
 }
 
-/// Where the text is cut: at the last line end inside the cap, and at the cap if there is none.
-fn cut_at(chars: &[char], max: usize) -> usize {
-    if chars.len() <= max {
-        return chars.len();
-    }
-    chars[..max].iter().rposition(|c| *c == '\n').filter(|at| *at > 0).unwrap_or(max)
-}
-
-/// The hidden stretches that fall inside `[from, to)`, counted from `from`.
-fn spans_in(spans: &[(u32, u32)], from: u32, to: u32) -> Vec<(u32, u32)> {
-    spans
-        .iter()
-        .filter_map(|&(start, end)| {
-            let (start, end) = (start.max(from), end.min(to));
-            (start < end).then(|| (start - from, end - from))
-        })
-        .collect()
-}
-
 /// `recto get`: the unit the reference points at, as text or Markdown, with refs to go on from.
 pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: &Asked<'_>) -> Result<Value, AgentError> {
     let Where { found, id, position, .. } = PageOrRef::Ref(*asked.reference).locate(access, asked.tab, crate::locating::CharsChecked::AgainstItsText)?;
@@ -141,22 +122,30 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
 
     // A blocks grain is read from the stored blocks when there are some, else the page is answered and `widened` says why.
     let mut widen_to: Option<(&'static str, Option<&'static str>)> = None;
+    let mut preread: Option<PageRead> = None;
     if matches!(asked.grain, Grain::Paragraph | Grain::Section | Grain::Chapter) {
         match blocks::answer(access, events, asked, &found, (id, &file))? {
             blocks::Reached::Answer(data) => return Ok(*data),
-            blocks::Reached::Widen { why, note } => widen_to = Some((why, note)),
+            blocks::Reached::Widen { why, note, read } => {
+                widen_to = Some((why, note));
+                preread = read;
+            }
         }
     }
-    let read = match from_index(access, file.path(), found.file_page) {
+    let read = match preread {
+        // Read once already for the blocks grain that widened to this page: not read, or drawn, twice.
         Some(read) => read,
-        None => {
-            let read = read_live(file.path(), found.file_page);
-            // A draw made (the hidden-text check) or failed is told to the host, as `text` does, even if what follows refuses the answer.
-            if read.as_ref().map_or(true, |read| read.checked) {
-                crate::note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
+        None => match from_index(access, file.path(), found.file_page) {
+            Some(read) => read,
+            None => {
+                let read = read_live(file.path(), found.file_page);
+                // A draw made (the hidden-text check) or failed is told to the host, as `text` does, even if what follows refuses the answer.
+                if read.as_ref().map_or(true, |read| read.checked) {
+                    crate::note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
+                }
+                read?
             }
-            read?
-        }
+        },
     };
     // The reference's characters are checked against the text the answer is made from.
     found.held_in(&read.text)?;
@@ -178,9 +167,9 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         }
     };
     let unit = &page_chars[from as usize..to as usize];
-    let given = cut_at(unit, asked.max_chars as usize);
+    let given = unit::cut_at(unit, asked.max_chars as usize);
     let shown = &unit[..given];
-    let hidden = spans_in(&read.hidden, from, from + given as u32);
+    let hidden = unit::clip_spans(&read.hidden, from, from + given as u32);
 
     let counts = json!({ "chars_in_unit": unit.len(), "chars_given": given, "hidden_spans": hidden.len() });
     let mut untrusted = json!({ "link": locator::link_of(file.path(), found.file_page + 1).ok() });
@@ -217,7 +206,7 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
             blocks::token(&mut referrer, Some(unit::Mark { page: found.file_page, range }))
         });
     let refs = if kind == "hit" {
-        json!({ "self": locator::encode(asked.reference), "next": null, "prev": null, "more": more, "up": up, "up_grain": "page" })
+        json!({ "self": locator::encode(asked.reference), "next": null, "prev": null, "more": null, "up": up, "up_grain": "page" })
     } else {
         let next = page_ref(&mut referrer, file.file_page_at(here + 1));
         let prev = page_ref(&mut referrer, here.checked_sub(1).and_then(|before| file.file_page_at(before)));

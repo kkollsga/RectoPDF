@@ -319,11 +319,12 @@ pub struct StoredBlocks {
 }
 
 impl StoredBlocks {
-    /// Opens a corpus's blocks. `Ok(None)` when there are none to use: none made, or made under other rules. `Err` when there are and they don't add up, which is for the caller to throw away ([`remove_blocks`]).
+    /// **For a test:** [`Self::open_matching`] without the match, so it can look at what is stored whatever the corpus says. Opens a corpus's blocks. `Ok(None)` when there are none to use: none made, or made under other rules. `Err` when there are and they don't add up, which is for the caller to throw away ([`remove_blocks`]).
     ///
     /// # Errors
     ///
     /// [`Damaged`].
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn open(find_key: &FindKey, root: &Path, key: CorpusKey) -> Result<Option<Self>, Damaged> {
         Self::open_for(find_key, root, key, None)
     }

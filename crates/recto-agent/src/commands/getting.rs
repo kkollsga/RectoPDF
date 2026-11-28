@@ -132,9 +132,7 @@ impl TryFrom<line::Get> for Get {
             Some(_) => return Err(usage("`--max-chars` is a whole number from 1 to 65536.")),
         };
         if from_here && grain == Grain::Hit {
-            return Err(usage(
-                "`--from-here` goes on from a `more` reference, with `--grain paragraph`, `section`, `page` or `chapter`.",
-            ));
+            return Err(usage(FROM_HERE_NEEDS_A_GRAIN));
         }
         Ok(Self {
             reference,

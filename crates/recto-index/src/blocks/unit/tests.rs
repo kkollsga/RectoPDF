@@ -91,6 +91,9 @@ impl Pages for Doc {
     fn over(&mut self) -> bool {
         self.over_after.is_some_and(|after| self.reads.len() >= after)
     }
+    fn has_text(&mut self, page: u32) -> bool {
+        self.pages[page as usize].readable
+    }
 }
 
 fn toc(lines: &[(u32, u8, u16)]) -> Toc {
@@ -418,4 +421,66 @@ fn hidden_stretches_follow_the_text_into_the_pieces_and_the_joined_text() {
     };
     let (text, hidden) = as_text(&[given(0, "ab", vec![(1, 2)]), given(1, "cd", vec![(0, 1)])]);
     assert_eq!((text.as_str(), hidden), ("ab\ncd", vec![(1, 2), (3, 4)]));
+}
+
+/// Failure (review B1): a section is chosen by place but cut by character order, so on a page whose columns run against it a `more` that lands in a block sitting higher than its entry picks the
+/// section before, and the rest of the section is lost. Four blocks whose places are 100, 700, 500 and 200 in character order, entries at 100 and 500: following `more` from any cap stays in the
+/// second section, every round, and gives it whole once.
+#[test]
+fn a_more_in_a_block_above_its_entry_stays_in_its_section() {
+    let text = "AAA\nBBBB\nCCC\nDDDD";
+    let blocks = || {
+        vec![
+            block(Kind::Heading, 0, (0, 3), 100),
+            block(Kind::Paragraph, 0, (4, 8), 700),
+            block(Kind::Heading, 0, (9, 12), 500),
+            block(Kind::Paragraph, 0, (13, 17), 200),
+        ]
+    };
+    let sections = Sections::new(toc(&[(0, 0, 100), (0, 0, 500)]).entries());
+    let mut whole = String::new();
+    for max in 1..=14u32 {
+        let mut doc = Doc::new(vec![(text, blocks())]);
+        let mut got = String::new();
+        let mut place = (4u32, false);
+        for round in 0..40 {
+            let mut one = ask(Grain::Section, 0, Some(place.0), Some(&sections), max);
+            one.from_here = place.1;
+            let answer = unit(build(&mut doc, &one));
+            assert_eq!(answer.entry, Some(1), "cap {max}, round {round}: the section stayed the second");
+            got.extend(answer.given.iter().flat_map(|piece| piece.text.iter()));
+            if !answer.truncated {
+                break;
+            }
+            place = (answer.refs.more.expect("a way on").range.offsets().0, true);
+        }
+        if whole.is_empty() {
+            whole = got.clone();
+        }
+        assert_eq!(got, whole, "cap {max}");
+    }
+    assert_eq!(whole, "BBBB\nCCC\nDDDD");
+}
+
+/// Failure (review B2): a blank page right after the cap gives `truncated` with no `more`, as the one naming read is spent on a page with nothing to name. A page the index says has no text isn't a read:
+/// it is skipped (at most 8), and `more` is where the next page with text begins.
+#[test]
+fn a_blank_page_after_the_cap_still_gives_a_more() {
+    let texts: Vec<String> = (0..70u32).map(|page| format!("page {page} words")).collect();
+    let mut doc = Doc::new(
+        texts
+            .iter()
+            .enumerate()
+            .map(|(page, text)| (text.as_str(), vec![block(Kind::Paragraph, page as u32, (0, 12), 100)]))
+            .collect(),
+    );
+    doc.pages[64].readable = false;
+    let sections = Sections::new(toc(&[(0, 0, 0)]).entries());
+    let answer = unit(build(&mut doc, &ask(Grain::Chapter, 0, None, Some(&sections), 65_536)));
+    assert!(answer.truncated);
+    assert_eq!(answer.refs.more.map(|more| more.page), Some(65), "the blank page 65 is passed over");
+    assert!(
+        doc.reads.iter().filter(|page| **page == 64).count() == 0,
+        "a page known blank isn't read to be named"
+    );
 }

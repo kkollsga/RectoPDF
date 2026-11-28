@@ -338,7 +338,7 @@ fn a_section_on_a_tab_whose_pages_are_withheld_is_refused_as_contents_is() {
     replace(&file, &pdf_bytes("Theirs", 5));
     look(&app);
     let contents = app.recto(Level::ReadOnly, &["contents"]).expect_err("contents refuses");
-    for grain in ["section", "chapter", "paragraph"] {
+    for grain in ["section", "chapter", "paragraph", "page", "hit"] {
         let said = get(&app, Level::ReadOnly, &token, json!({ "grain": grain })).expect_err("the pages are withheld");
         assert_eq!(said.code, contents.code, "{grain}: {said:?}");
     }

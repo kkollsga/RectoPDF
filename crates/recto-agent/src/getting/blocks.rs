@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 /// Time given to reading pages live for one answer. Past it reading stops, the answer is cut and says where it goes on.
 const LIVE_BUDGET: Duration = Duration::from_secs(5);
+/// The sealed page's buffer is given back past this many bytes.
+const BIG_BUFFER: usize = 1 << 20;
 
 /// What a blocks grain comes to.
 pub(super) enum Reached {
@@ -30,13 +32,15 @@ pub(super) enum Reached {
     Widen {
         why: &'static str,
         note: Option<&'static str>,
+        /// The reference's page as it was read for the builder, when it was: the page answer is made from it, and nothing is read or drawn twice.
+        read: Option<PageRead>,
     },
 }
 
 const NO_CONTENTS_NOTE: &str = "The file has no usable contents of its own, and none were made from its headings yet: `recto contents --generated` makes them.";
 
-fn widen(why: &'static str) -> Result<Reached, AgentError> {
-    Ok(Reached::Widen { why, note: None })
+fn widen(why: &'static str, read: Option<PageRead>) -> Result<Reached, AgentError> {
+    Ok(Reached::Widen { why, note: None, read })
 }
 
 /// The contents sections are cut by, and which they are: the file's own if they are good, else generated ones that have been made.
@@ -56,9 +60,6 @@ fn contents_for<A: SessionAccess>(access: &A, file: &TabFile, key: CorpusKey) ->
     (!made.entries.is_empty()).then(|| (made.toc(), "generated"))
 }
 
-/// A page's characters and hidden stretches, read ahead.
-type Held = (u32, Vec<char>, Vec<(u32, u32)>);
-
 /// The pages of one tab's file, as the builder reads them.
 struct Source<'a, A: SessionAccess> {
     access: &'a A,
@@ -69,8 +70,9 @@ struct Source<'a, A: SessionAccess> {
     stored: StoredBlocks,
     opened: &'a Opened,
     live_spent: Duration,
-    /// The reference's page, read before the builder starts to check the reference against it.
-    held: Option<Held>,
+    /// The reference's page, read before the builder starts to check the reference against it, kept for the builder and for a page answer.
+    anchor: Option<(u32, PageRead)>,
+    key: CorpusKey,
     /// What was read, in all: checked for hidden text everywhere, some stretch not marked, some page read from the file.
     checked: bool,
     partial: bool,
@@ -79,21 +81,30 @@ struct Source<'a, A: SessionAccess> {
 }
 
 impl<A: SessionAccess> Source<'_, A> {
-    /// One page's text: from the index when it was checked for hidden text and nothing was dropped, else live.
+    /// The sealed page's buffer is overwritten after each page, and given back past a page's worth: what is read lives only in what is given.
+    fn wipe(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.buffer);
+        if self.buffer.capacity() > BIG_BUFFER {
+            self.buffer = Vec::new();
+        }
+    }
+
+    /// One page's text: from the index when it was checked for hidden text and nothing was dropped, else live. `None` for a page the index says has no text.
     fn fetch(&mut self, page: u32) -> Result<Option<PageRead>, AgentError> {
-        if let Ok(stored) = self.corpus.page(page, &mut self.buffer) {
-            if stored.kind != PageKind::Text {
-                return Ok(None);
-            }
-            if index_is_enough(stored.hidden_checked, stored.spans_dropped) {
-                return Ok(Some(PageRead {
-                    text: stored.text.to_owned(),
-                    hidden: stored.hidden_spans(),
-                    key: None,
-                    checked: true,
-                    partial: false,
-                }));
-            }
+        let indexed = match self.corpus.page(page, &mut self.buffer) {
+            Ok(stored) if stored.kind != PageKind::Text => Some(None),
+            Ok(stored) if index_is_enough(stored.hidden_checked, stored.spans_dropped) => Some(Some(PageRead {
+                text: stored.text.to_owned(),
+                hidden: stored.hidden_spans(),
+                key: Some(self.key),
+                checked: true,
+                partial: false,
+            })),
+            _ => None,
+        };
+        self.wipe();
+        if let Some(read) = indexed {
+            return Ok(read);
         }
         let started = Instant::now();
         let read = read_live(self.file.path(), page);
@@ -113,14 +124,13 @@ impl<A: SessionAccess> Source<'_, A> {
         read.map(Some)
     }
 
-    /// Reads the reference's page ahead of the builder, so a failure to read it is the answer and a live read isn't made twice.
-    fn hold(&mut self, page: u32) -> Result<String, AgentError> {
+    /// Reads the reference's page ahead of the builder, so a failure to read it is the answer and a live read isn't made twice. Gives the text for the reference's check.
+    fn hold(&mut self, page: u32) -> Result<&str, AgentError> {
         let read = self
             .fetch(page)?
             .ok_or_else(|| AgentError::new(Code::PAGE_UNREADABLE, NO_PAGE_TEXT, exit::FAILED))?;
         self.take_in(&read);
-        self.held = Some((page, read.text.chars().collect(), read.hidden));
-        Ok(read.text)
+        Ok(&self.anchor.insert((page, read)).1.text)
     }
 
     fn take_in(&mut self, read: &PageRead) {
@@ -137,10 +147,9 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
     fn read(&mut self, page: u32, chars: &mut Vec<char>, hidden: &mut Vec<(u32, u32)>) -> bool {
         chars.clear();
         hidden.clear();
-        if let Some((held, text, spans)) = self.held.take_if(|(held, ..)| *held == page) {
-            let _ = held;
-            *chars = text;
-            *hidden = spans;
+        if let Some((_, read)) = self.anchor.as_ref().filter(|(held, _)| *held == page) {
+            chars.extend(read.text.chars());
+            hidden.extend_from_slice(&read.hidden);
             return true;
         }
         match self.fetch(page) {
@@ -212,7 +221,7 @@ pub(super) fn answer<A: SessionAccess>(
     let key = CorpusKey::of_file(file.path()).map_err(|_| changed())?;
     let (corpus, stored) = match crate::blocks::readable(access, file.path()) {
         crate::blocks::Readable::Ready(pair) => *pair,
-        crate::blocks::Readable::Widen { why, note } => return Ok(Reached::Widen { why, note }),
+        crate::blocks::Readable::Widen { why, note } => return Ok(Reached::Widen { why, note, read: None }),
     };
     let needs_contents = asked.grain != AskedGrain::Paragraph;
     let contents = contents_for(access, file, key);
@@ -220,6 +229,7 @@ pub(super) fn answer<A: SessionAccess>(
         return Ok(Reached::Widen {
             why: "no_contents",
             note: Some(NO_CONTENTS_NOTE),
+            read: None,
         });
     }
     let sections = contents
@@ -235,14 +245,15 @@ pub(super) fn answer<A: SessionAccess>(
         stored,
         opened: &opened,
         live_spent: Duration::ZERO,
-        held: None,
+        anchor: None,
+        key,
         checked: true,
         partial: false,
         live: false,
         buffer: Vec::new(),
     };
     // The reference's characters are checked against the text the answer is made from.
-    found.held_in(&source.hold(found.file_page)?)?;
+    found.held_in(source.hold(found.file_page)?)?;
     let start = found.characters().map(|(start, _)| start);
     let one = Ask {
         grain: unit_grain(asked.grain),
@@ -254,11 +265,15 @@ pub(super) fn answer<A: SessionAccess>(
     };
     let built = match unit::build(&mut source, &one) {
         Ok(Outcome::Unit(built)) => built,
-        Ok(Outcome::Page(Why::NoBlockHere)) => return widen("no_block_here"),
-        Ok(Outcome::Page(Why::NoSection)) => return widen("no_section_here"),
+        Ok(Outcome::Page(Why::NoBlockHere)) => return widen("no_block_here", source.anchor.take().map(|(_, read)| read)),
+        Ok(Outcome::Page(Why::NoSection)) => return widen("no_section_here", source.anchor.take().map(|(_, read)| read)),
         Err(unit::Fault) => {
             let (why, note) = crate::blocks::throw_away_and_ask(access, file.path());
-            return Ok(Reached::Widen { why, note });
+            return Ok(Reached::Widen {
+                why,
+                note,
+                read: source.anchor.take().map(|(_, read)| read),
+            });
         }
     };
     let (checked, partial, live) = (source.checked, source.partial, source.live);

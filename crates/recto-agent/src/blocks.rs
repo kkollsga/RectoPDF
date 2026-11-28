@@ -120,7 +120,11 @@ pub(crate) fn throw_away_and_ask<A: SessionAccess>(access: &A, path: &Path) -> (
     }
     match readable(access, path) {
         Readable::Widen { why, note } => (why, note),
-        Readable::Ready(_) => (BUILDING, None),
+        // They read after all (the removal was skipped, as a build holds the folder): they are on their way if that build is queued or running, and otherwise not made.
+        Readable::Ready(_) => match (access.blocking(), CorpusKey::of_file(path)) {
+            (Some(blocking), Ok(key)) if matches!(blocking.state(key), GenState::Queued | GenState::Running) => (BUILDING, None),
+            _ => (NOT_MADE, None),
+        },
     }
 }
 
