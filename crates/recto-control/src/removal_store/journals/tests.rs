@@ -200,6 +200,42 @@ fn a_file_swapped_for_a_pipe_or_a_link_before_it_is_opened_is_unknown() {
     }
 }
 
+/// Failure: a file swapped between the listing and its opening is placed by the other file's header while the listing's device, inode and link count
+/// (what a pin and the `Shared` rule use) describe the file that was listed, so a pin and a placing name two different files. The listed name holds another
+/// document's journal; before the opening, a journal this lineage places as the target's is renamed over it. The artifact is `Unknown`, not the target's.
+#[test]
+fn a_journal_swapped_between_listing_and_open_is_unknown() {
+    let dir = root();
+    let name = format!("journal-{}.log", k(7));
+    put(&folder(&dir), &name, &journal(THEIRS, 8));
+    // Listed second (the windowless folder follows the app's), so it is there at the first listing's opening and gone from the second's.
+    put(&windowless(&dir), &name, &journal(MINE, 7));
+    let plain = survey_with(&dir, &ledger(), version(7), TargetMode::Save, 64, &Caps::default()).unwrap();
+    assert_eq!(
+        purged(&plan_of(&plain, TargetMode::Save).unwrap(), Store::Journal),
+        1,
+        "only the windowless one is the target's before the swap"
+    );
+    let hook: Hook = {
+        let (from, over) = (windowless(&dir).join(&name), folder(&dir).join(&name));
+        Arc::new(move |path| {
+            if path == over {
+                std::fs::rename(&from, &over).unwrap();
+            }
+        })
+    };
+    let caps = Caps {
+        before_open: Some(hook),
+        ..Caps::default()
+    };
+    let s = survey_with(&dir, &ledger(), version(7), TargetMode::Save, 64, &caps).unwrap();
+    assert_eq!(
+        plan_of(&s, TargetMode::Save).unwrap_err(),
+        Refusal::Incomplete(Store::Journal),
+        "the swapped file is not placed by the other's bytes"
+    );
+}
+
 /// Failure: another document's history is purged with this one's, or the target's own is left behind; a Save As deletes the source's history.
 #[test]
 fn the_targets_journal_is_purged_anothers_left_and_a_save_as_source_kept() {

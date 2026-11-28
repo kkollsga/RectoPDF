@@ -25,6 +25,7 @@ use recto_session::record::{MARKED_JOURNAL_VERSION, journal_header};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -185,7 +186,7 @@ impl Run<'_> {
                     continue;
                 }
                 let placed = if entry.is_file {
-                    match self.place(name, kind, &journals, buffer) {
+                    match self.place(entry, name, kind, &journals, buffer) {
                         Ok(placed) => placed,
                         Err(Gone) => return Ok(false),
                     }
@@ -244,17 +245,17 @@ impl Run<'_> {
         self.store.unwrap_or_else(|| store_of(kind))
     }
 
-    fn place(&self, name: Option<&str>, kind: Kind, journals: &HashMap<String, Option<Sides>>, buffer: &mut Vec<u8>) -> Result<Placed, Gone> {
+    fn place(&self, entry: &Entry, name: Option<&str>, kind: Kind, journals: &HashMap<String, Option<Sides>>, buffer: &mut Vec<u8>) -> Result<Placed, Gone> {
         let Some(name) = name else { return Ok(Placed::unknown()) };
         match kind {
             Kind::Journal | Kind::Variant => {
-                let Some(bytes) = self.read(name, self.caps.header_bytes, buffer)? else {
+                let Some(bytes) = self.read(entry, name, self.caps.header_bytes, buffer)? else {
                     return Ok(Placed::unknown());
                 };
                 Ok(self.journal(bytes))
             }
             Kind::PageIds => {
-                let Some(bytes) = self.read(name, sidecar::HEADER_BYTES, buffer)? else {
+                let Some(bytes) = self.read(entry, name, sidecar::HEADER_BYTES, buffer)? else {
                     return Ok(Placed::unknown());
                 };
                 Ok(Placed {
@@ -273,9 +274,10 @@ impl Run<'_> {
         }
     }
 
-    /// The first `cap` bytes of a private plain file. `None` if it can't be trusted (a link, a pipe, another user's, group-writable, unreadable);
-    /// `Gone` if it isn't there any more.
-    fn read<'b>(&self, name: &str, cap: usize, buffer: &'b mut Vec<u8>) -> Result<Option<&'b [u8]>, Gone> {
+    /// The first `cap` bytes of a private plain file. `None` if it can't be trusted (a link, a pipe, another user's, group-writable, unreadable, or
+    /// not the file that was listed: its device, inode or link count, from the opened descriptor, differ from `entry`'s, which a pin and the `Shared`
+    /// rule use, so its bytes would place one file while those describe another); `Gone` if it isn't there any more.
+    fn read<'b>(&self, entry: &Entry, name: &str, cap: usize, buffer: &'b mut Vec<u8>) -> Result<Option<&'b [u8]>, Gone> {
         #[cfg(test)]
         if let Some(hook) = &self.caps.before_open {
             hook(&self.path.join(name));
@@ -285,6 +287,10 @@ impl Run<'_> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Gone),
             Err(_) => return Ok(None),
         };
+        let Ok(opened) = file.metadata() else { return Ok(None) };
+        if opened.dev() != entry.dev || opened.ino() != entry.ino || opened.nlink() != 1 {
+            return Ok(None);
+        }
         buffer.clear();
         if file.take(cap as u64).read_to_end(buffer).is_err() {
             return Ok(None);
