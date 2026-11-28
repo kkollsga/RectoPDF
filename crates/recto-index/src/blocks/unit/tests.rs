@@ -888,3 +888,24 @@ fn a_cut_before_a_piece_that_begins_with_a_head_is_at_the_heads_end() {
     assert_eq!(one.refs.more.map(|more| more.range.offsets().0), Some(8), "{:?}", one.refs);
     assert_eq!(one.counts.chrome_chars_left_out, 4);
 }
+
+/// Failure: a piece that is all chrome is given as an empty piece, or skipped without counting its characters, so the answer's `chrome_chars_left_out` and `chrome_pages` say nothing was left out on a page whose
+/// only block is a running head. A section over two pages whose second has one block, wholly inside a chrome span: nothing is given from it, its four characters are counted as left out, and it is a page with
+/// something left out.
+#[test]
+fn a_piece_that_is_all_chrome_gives_nothing_and_is_counted_as_left_out() {
+    let mut doc = Doc::new(vec![
+        ("aaaa", vec![block(Kind::Paragraph, 0, (0, 4), 100)]),
+        ("HEAD", vec![block(Kind::Paragraph, 1, (0, 4), 100)]),
+    ]);
+    doc.pages[1].chrome = Some(vec![(0, 4)]);
+    let sections = Sections::new(toc(&[(0, 0, 0)]).entries());
+    let one = unit(build(&mut doc, &ask(Grain::Section, 0, None, Some(&sections), 1000)));
+    assert_eq!(joined(&one), "aaaa", "{one:?}");
+    assert_eq!(
+        (one.counts.chrome_chars_left_out, one.counts.chrome_pages, one.truncated),
+        (4, 1, false),
+        "{:?}",
+        one.counts
+    );
+}
