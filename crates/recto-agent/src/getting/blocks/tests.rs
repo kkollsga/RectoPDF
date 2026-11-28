@@ -98,11 +98,13 @@ fn a_blank_page_after_the_cap_is_passed_over_by_the_real_source() {
     let corpus = ReadyCorpus::open(&find_key, &root, key).unwrap().unwrap();
     let stored = StoredBlocks::open_matching(&find_key, &root, key, &corpus.summary).unwrap().unwrap();
     let mut events = Vec::new();
+    let corpus = Arc::new(corpus);
     let mut source = Source {
         access: &world,
         events: &mut events,
         id: TabId(tab.id()),
         file: &tab,
+        chrome: Chrome::new(&corpus),
         corpus,
         stored,
         opened: &opened,
@@ -135,6 +137,7 @@ fn a_blank_page_after_the_cap_is_passed_over_by_the_real_source() {
         entry: None,
         max_chars: 65_536,
         sections: Some(&sections),
+        chrome: unit::heads::Rule::default(),
     };
     let Ok(Outcome::Unit(answer)) = unit::build(&mut source, &ask) else {
         panic!("a unit")

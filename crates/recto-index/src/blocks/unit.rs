@@ -11,6 +11,9 @@
 //! - **Bounded:** at most [`MAX_PAGES_READ`] pages are read for an answer (the ones looked at for its neighbours too), and one page more only to name where it goes on (65 reads at most; pages the index says are blank are passed over without a read, at most 8), live reads stop when [`Pages::over`] says their time is spent, and one page's text
 //!   is held at a time with what's given (at most the caller's cap, 65,536 characters).
 
+pub mod heads;
+
+use self::heads::{Heads, Rule, State};
 use super::markdown::Piece;
 use super::sections::{Place, Sections};
 use super::{Block, Kind};
@@ -64,6 +67,10 @@ pub trait Pages {
     fn has_text(&mut self, _page: u32) -> bool {
         true
     }
+    /// What the page leaves out as chrome (running heads, footers, page numbers), as `[start, end)` in the page's text of `chars` characters, or `None` when it isn't known (then the page is given whole and counted). Called after the page is read.
+    fn chrome(&mut self, _page: u32, _chars: u32) -> Option<Vec<(u32, u32)>> {
+        None
+    }
 }
 
 /// What is asked.
@@ -82,6 +89,8 @@ pub struct Ask<'a> {
     pub entry: Option<u32>,
     /// The contents the sections come from. A section or a chapter needs them; a paragraph names the headings above it by them if it has them.
     pub sections: Option<&'a Sections>,
+    /// What the reference names and the cap on what is left out as chrome ([`Rule::default`] for neither).
+    pub chrome: Rule,
 }
 
 /// Why the page is answered, not the unit.
@@ -140,6 +149,14 @@ pub struct Counts {
     pub whole_edge_pages: u32,
     /// Pages whose blocks were placed in the middle for want of a frame.
     pub pages_without_frame: u32,
+    /// Characters of running heads, footers and page numbers left out of what is given (between the pieces of a joined paragraph too, which are then not in `chars_outside_blocks`).
+    pub chrome_chars_left_out: u32,
+    /// Pages with something left out.
+    pub chrome_pages: u32,
+    /// Pages given whole because their chrome isn't known (an index made before edges were kept, a page that failed).
+    pub chrome_unknown_pages: u32,
+    /// Pages given whole because their chrome is over [`heads::MAX_CHROME_CHARS_LEFT_OUT`] characters.
+    pub chrome_over_cap_pages: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -186,6 +203,8 @@ pub(crate) fn count_step() {
 /// [`Fault`] when a page's blocks don't open as it: they are stale or damaged.
 pub fn build<P: Pages>(pages: &mut P, ask: &Ask<'_>) -> Result<Outcome, Fault> {
     let mut walk = Walk::new(pages);
+    walk.rule = ask.chrome;
+    walk.ask_page = ask.page;
     match ask.grain {
         Grain::Paragraph => walk.paragraph(ask),
         Grain::Section | Grain::Chapter => walk.section(ask),
@@ -355,8 +374,16 @@ struct Tail {
     page: u32,
     next: Option<Mark>,
     has_next: bool,
-    /// The characters of `page` after the last piece given from it: running heads, footers, page numbers.
+    /// The characters of `page` after the last piece given from it that are not chrome (a table's words, a dropped paragraph), and the ones that are: running heads, footers, page numbers.
     rest: u32,
+    rest_chrome: u32,
+}
+
+/// The pages a count has been made for, so a page that gives pieces twice is counted once.
+#[derive(Default)]
+struct Tally {
+    seen: Vec<u32>,
+    left: Vec<u32>,
 }
 
 /// What a paragraph's walk has taken in so far.
@@ -394,6 +421,11 @@ struct Walk<'a, P: Pages> {
     places: Vec<Place>,
     counts: Counts,
     naming_reads: u32,
+    /// The loaded page's chrome, and the rule it was made by.
+    heads: Heads,
+    rule: Rule,
+    ask_page: u32,
+    tally: Tally,
 }
 
 impl<'a, P: Pages> Walk<'a, P> {
@@ -407,6 +439,10 @@ impl<'a, P: Pages> Walk<'a, P> {
             places: Vec::new(),
             counts: Counts::default(),
             naming_reads: 0,
+            heads: Heads::default(),
+            rule: Rule::default(),
+            ask_page: 0,
+            tally: Tally::default(),
         }
     }
 
@@ -418,6 +454,7 @@ impl<'a, P: Pages> Walk<'a, P> {
         self.loaded = None;
         self.blocks.clear();
         self.places.clear();
+        self.heads = Heads::default();
         if self.chars.capacity() > BIG_PAGE {
             self.chars = Vec::new();
         }
@@ -427,6 +464,8 @@ impl<'a, P: Pages> Walk<'a, P> {
             return Ok(false);
         }
         let length = u32::try_from(self.chars.len()).unwrap_or(u32::MAX);
+        let raw = self.pages.chrome(page, length);
+        self.heads = Heads::of(raw.as_deref(), length, self.rule.named.filter(|_| page == self.ask_page), self.rule.cap);
         let blocks = in_reading_order(self.pages.blocks(page, length)?, length);
         let frame = self.pages.frame(page);
         if frame.is_none() && !blocks.is_empty() {
@@ -618,24 +657,57 @@ impl<'a, P: Pages> Walk<'a, P> {
         depths
     }
 
-    /// Takes in a page's pieces until the cap is reached. Records where it was cut.
+    /// Counts the page once, for what isn't known of its chrome.
+    fn page_seen(&mut self, page: u32) {
+        if self.tally.seen.contains(&page) {
+            return;
+        }
+        self.tally.seen.push(page);
+        match self.heads.state {
+            State::Unknown => self.counts.chrome_unknown_pages += 1,
+            State::OverCap => self.counts.chrome_over_cap_pages += 1,
+            State::Known => {}
+        }
+    }
+
+    /// Counts `chars` characters of `page` as left out, and the page once.
+    fn left_out(&mut self, page: u32, chars: u32) {
+        if chars == 0 {
+            return;
+        }
+        self.counts.chrome_chars_left_out = self.counts.chrome_chars_left_out.saturating_add(chars);
+        if !self.tally.left.contains(&page) {
+            self.tally.left.push(page);
+            self.counts.chrome_pages += 1;
+        }
+    }
+
+    /// Takes in a page's pieces until the cap is reached. Records where it was cut. **What the page leaves out as chrome is not given, takes no room, and is never where a cut falls.**
     fn give(&mut self, taken: &mut Taken, specs: &[Spec], depths: &[Option<u8>], max: usize) {
         let page = self.loaded.unwrap_or(0);
         for spec in specs {
-            let len = (spec.end - spec.start) as usize;
+            let len = self.heads.kept_len(spec.start, spec.end) as usize;
+            if len == 0 {
+                // All chrome: nothing to give.
+                self.page_seen(page);
+                let left = self.heads.left_in(spec.start, spec.end);
+                self.left_out(page, left);
+                continue;
+            }
             let room = max - taken.chars_given as usize;
             let first = taken.given.is_empty();
-            let take = if len <= room {
-                len
-            } else if first {
-                cut_at(&self.chars[spec.start as usize..spec.end as usize], max)
-            } else {
-                taken.cut = Some((page, spec.start));
+            if len > room && !first {
+                let cut = self.heads.next_kept(spec.start);
+                let left = self.heads.left_in(spec.start, cut);
+                self.left_out(page, left);
+                taken.cut = Some((page, cut));
                 return;
-            };
-            let end = spec.start + take as u32;
+            }
+            self.page_seen(page);
+            let one = self.heads.take(&self.chars, &self.hidden, spec.start, spec.end, room);
+            let take = one.text.len();
             if taken.first.is_none() {
-                taken.first = self.mark_from_here(spec.start);
+                taken.first = self.mark_from_here(self.heads.next_kept(spec.start));
             }
             let kind_outside = spec.block.is_none();
             let depth = spec.block.and_then(|index| depths[index]);
@@ -644,18 +716,19 @@ impl<'a, P: Pages> Walk<'a, P> {
                 kind: spec.kind,
                 level: spec.level,
                 depth,
-                text: self.chars[spec.start as usize..end as usize].to_vec(),
-                hidden: clip_spans(&self.hidden, spec.start, end),
+                text: one.text,
+                hidden: one.hidden,
                 joins: false,
             });
             taken.chars_given = taken.chars_given.saturating_add(take as u32);
+            self.left_out(page, one.left_out);
             if kind_outside {
                 self.counts.chars_outside_blocks = self.counts.chars_outside_blocks.saturating_add(take as u32);
             } else {
                 self.counts.blocks += 1;
             }
             if take < len {
-                taken.cut = Some((page, end));
+                taken.cut = Some((page, one.cut));
                 return;
             }
         }
@@ -699,14 +772,16 @@ impl<'a, P: Pages> Walk<'a, P> {
         let before = index.checked_sub(1).map(|at| self.blocks[at]);
         let after = self.blocks.get(index + 1).copied();
         refs.prev = before.and_then(|prev| self.mark(prev.start, prev.end));
+        let rest_chrome = self.heads.left_in(block.end, self.len());
         let mut tail = Tail {
             page: ask.page,
             next: after.and_then(|next| self.mark(next.start, next.end)),
             has_next: after.is_some(),
-            rest: self.len() - block.end,
+            rest: self.len() - block.end - rest_chrome,
+            rest_chrome,
         };
         let mut walked = Walked {
-            chars: block.end - from,
+            chars: self.heads.kept_len(from, block.end),
             pages: 1,
             continues: block.continues,
             truncated: taken.cut.is_some(),
@@ -799,16 +874,22 @@ impl<'a, P: Pages> Walk<'a, P> {
             if let Some(joined) = taken.given.get_mut(before) {
                 joined.joins = true;
             }
-            self.counts.chars_outside_blocks = self.counts.chars_outside_blocks.saturating_add(tail.rest).saturating_add(first.start);
+            // The text between the pieces: what is chrome is counted as left out, and the rest as outside blocks, so no character is counted twice.
+            let before = self.heads.left_in(0, first.start);
+            self.counts.chars_outside_blocks = self.counts.chars_outside_blocks.saturating_add(tail.rest).saturating_add(first.start - before);
+            self.left_out(tail.page, tail.rest_chrome);
+            self.left_out(at, before);
             let alone = self.blocks.len() == 1;
+            let rest_chrome = self.heads.left_in(first.end, self.len());
             *tail = Tail {
                 page: at,
                 next: self.blocks.get(1).and_then(|next| self.mark(next.start, next.end)),
                 has_next: !alone,
-                rest: self.len() - first.end,
+                rest: self.len() - first.end - rest_chrome,
+                rest_chrome,
             };
             walked.pages = at - ask.page + 1;
-            walked.chars = walked.chars.saturating_add(first.end - first.start);
+            walked.chars = walked.chars.saturating_add(self.heads.kept_len(first.start, first.end));
             walked.continues = first.continues;
             if let Some((_, cut)) = taken.cut {
                 walked.truncated = true;
@@ -968,7 +1049,7 @@ impl<'a, P: Pages> Walk<'a, P> {
                 from = first.min(len);
             }
             to = to.max(from);
-            unit_chars = unit_chars.saturating_add(to - from);
+            unit_chars = unit_chars.saturating_add(self.heads.kept_len(from, to));
             let depths = self.heading_depths(Some(sections), page);
             let specs = self.specs(from, to);
             self.give(&mut taken, &specs, &depths, ask.max_chars as usize);

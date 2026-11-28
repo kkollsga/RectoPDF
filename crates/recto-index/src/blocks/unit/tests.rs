@@ -34,6 +34,8 @@ struct FakePage {
     blocks: Vec<Block>,
     shown: bool,
     readable: bool,
+    /// What the page leaves out as chrome, or `None` for not known.
+    chrome: Option<Vec<(u32, u32)>>,
 }
 
 struct Doc {
@@ -55,6 +57,7 @@ impl Doc {
                     blocks,
                     shown: true,
                     readable: true,
+                    chrome: None,
                 })
                 .collect(),
             reads: Vec::new(),
@@ -94,6 +97,9 @@ impl Pages for Doc {
     fn has_text(&mut self, page: u32) -> bool {
         self.pages[page as usize].readable
     }
+    fn chrome(&mut self, page: u32, _: u32) -> Option<Vec<(u32, u32)>> {
+        self.pages[page as usize].chrome.clone()
+    }
 }
 
 fn toc(lines: &[(u32, u8, u16)]) -> Toc {
@@ -119,6 +125,7 @@ fn ask<'a>(grain: Grain, page: u32, start: Option<u32>, sections: Option<&'a Sec
         max_chars,
         entry: None,
         sections,
+        chrome: heads::Rule::default(),
     }
 }
 
@@ -785,4 +792,120 @@ fn a_paragraph_is_not_joined_with_a_block_of_another_kind() {
     let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
     assert_eq!((joined(&one).as_str(), one.pages, one.continues), ("words that stop", 1, false));
     assert_eq!(one.refs.next.map(|next| next.page), Some(1));
+}
+
+/// Failure (S5c-2 part B): the text between a joined paragraph's pieces is counted twice, once as chrome left out and once as outside blocks, or the chrome in it is counted as outside blocks only. Page 0 ends
+/// with a footer after the paragraph and page 1 begins with a running head, both chrome, with a newline each that is not: the footer's and the head's characters are in `chrome_chars_left_out`, only the
+/// two newlines are in `chars_outside_blocks`, and both pages are pages with something left out.
+#[test]
+fn between_a_joined_paragraphs_pieces_chrome_is_left_out_and_not_counted_as_outside_blocks() {
+    let mut doc = Doc::new(vec![
+        (
+            "the quay\nfooter 1",
+            vec![Block {
+                continues: true,
+                ..block(Kind::Paragraph, 0, (0, 8), 100)
+            }],
+        ),
+        ("HEAD\nwas measured", vec![block(Kind::Paragraph, 1, (5, 17), 100)]),
+    ]);
+    doc.pages[0].chrome = Some(vec![(9, 17)]);
+    doc.pages[1].chrome = Some(vec![(0, 4)]);
+    let one = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 1000)));
+    assert_eq!(joined(&one), "the quay\nwas measured");
+    let counts = one.counts;
+    assert_eq!(
+        (
+            counts.chars_outside_blocks,
+            counts.chrome_chars_left_out,
+            counts.chrome_pages,
+            counts.chrome_unknown_pages
+        ),
+        (2, 12, 2, 0),
+        "{counts:?}"
+    );
+}
+
+/// Failure: a cut falls inside a left-out stretch, so `more` names the running head and going on gives it back, or the cut text and the rest don't add up to the page's body. One block with a running head in
+/// the middle, cut after ten given characters: the cut is at the head's end, the rest from there is the other half, and together they are the page's text without the head, each character once.
+#[test]
+fn a_cut_never_falls_inside_what_is_left_out_and_going_on_gives_the_rest() {
+    let mut doc = Doc::new(vec![("aaaa bbbb HEAD cccc dddd", vec![block(Kind::Paragraph, 0, (0, 24), 100)])]);
+    doc.pages[0].chrome = Some(vec![(10, 14)]);
+    let first = unit(build(&mut doc, &ask(Grain::Paragraph, 0, None, None, 10)));
+    assert_eq!(joined(&first), "aaaa bbbb ");
+    let more = first.refs.more.expect("it was cut").range.offsets().0;
+    assert_eq!(more, 14, "the cut is at the end of the stretch left out");
+    assert_eq!(first.counts.chrome_chars_left_out, 4);
+    let mut again = ask(Grain::Paragraph, 0, Some(more), None, 1000);
+    again.from_here = true;
+    let rest = unit(build(&mut doc, &again));
+    assert_eq!(format!("{}{}", joined(&first), joined(&rest)), "aaaa bbbb  cccc dddd");
+}
+
+/// Failure: a page whose chrome is over the cap has it dropped anyway, so a hostile page makes `get` drop its edge rows wholesale; or one whose chrome isn't known has it dropped as if it were none. Over the
+/// cap by one the page is given whole and counted; at the cap it is left out; unknown it is given whole and counted as unknown.
+#[test]
+fn a_page_over_the_chrome_cap_is_given_whole() {
+    let page = || Doc::new(vec![("HEAD body", vec![block(Kind::Paragraph, 0, (0, 9), 100)])]);
+    let with = |chrome: Option<Vec<(u32, u32)>>, cap: u32| {
+        let mut doc = page();
+        doc.pages[0].chrome = chrome;
+        let mut one = ask(Grain::Paragraph, 0, None, None, 1000);
+        one.chrome.cap = cap;
+        unit(build(&mut doc, &one))
+    };
+    let at = with(Some(vec![(0, 4)]), 4);
+    assert_eq!(
+        (joined(&at).as_str(), at.counts.chrome_chars_left_out, at.counts.chrome_over_cap_pages),
+        (" body", 4, 0)
+    );
+    let over = with(Some(vec![(0, 4)]), 3);
+    assert_eq!(
+        (joined(&over).as_str(), over.counts.chrome_chars_left_out, over.counts.chrome_over_cap_pages),
+        ("HEAD body", 0, 1)
+    );
+    let unknown = with(None, 1024);
+    assert_eq!(
+        (
+            joined(&unknown).as_str(),
+            unknown.counts.chrome_unknown_pages,
+            unknown.counts.chrome_over_cap_pages
+        ),
+        ("HEAD body", 1, 0)
+    );
+}
+
+/// Failure: a cut before a piece that begins with a running head falls at the head's first character, so `more` names the head (and a reference that starts in chrome names it, so going on gives it back). A
+/// section whose second piece is the text between blocks, which begins with the head, over a cap that holds only the first piece: the cut is at the head's end.
+#[test]
+fn a_cut_before_a_piece_that_begins_with_a_head_is_at_the_heads_end() {
+    let mut doc = Doc::new(vec![("aaaaHEADbbbbbbbb", vec![block(Kind::Paragraph, 0, (0, 4), 100)])]);
+    doc.pages[0].chrome = Some(vec![(4, 8)]);
+    let sections = Sections::new(toc(&[(0, 0, 0)]).entries());
+    let one = unit(build(&mut doc, &ask(Grain::Section, 0, None, Some(&sections), 6)));
+    assert_eq!((joined(&one).as_str(), one.truncated), ("aaaa", true));
+    assert_eq!(one.refs.more.map(|more| more.range.offsets().0), Some(8), "{:?}", one.refs);
+    assert_eq!(one.counts.chrome_chars_left_out, 4);
+}
+
+/// Failure: a piece that is all chrome is given as an empty piece, or skipped without counting its characters, so the answer's `chrome_chars_left_out` and `chrome_pages` say nothing was left out on a page whose
+/// only block is a running head. A section over two pages whose second has one block, wholly inside a chrome span: nothing is given from it, its four characters are counted as left out, and it is a page with
+/// something left out.
+#[test]
+fn a_piece_that_is_all_chrome_gives_nothing_and_is_counted_as_left_out() {
+    let mut doc = Doc::new(vec![
+        ("aaaa", vec![block(Kind::Paragraph, 0, (0, 4), 100)]),
+        ("HEAD", vec![block(Kind::Paragraph, 1, (0, 4), 100)]),
+    ]);
+    doc.pages[1].chrome = Some(vec![(0, 4)]);
+    let sections = Sections::new(toc(&[(0, 0, 0)]).entries());
+    let one = unit(build(&mut doc, &ask(Grain::Section, 0, None, Some(&sections), 1000)));
+    assert_eq!(joined(&one), "aaaa", "{one:?}");
+    assert_eq!(
+        (one.counts.chrome_chars_left_out, one.counts.chrome_pages, one.truncated),
+        (4, 1, false),
+        "{:?}",
+        one.counts
+    );
 }

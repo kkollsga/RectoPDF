@@ -126,6 +126,7 @@ fn one_answer_holds_one_page_and_what_it_gives() {
             entry: None,
             max_chars: 65_536,
             sections: Some(&sections),
+            chrome: recto_index::blocks::unit::heads::Rule::default(),
         };
         let built = build(&mut Big, &ask);
         let Ok(Outcome::Unit(unit)) = built else { panic!("a unit, not {built:?}") };
@@ -150,6 +151,7 @@ fn one_answer_holds_one_page_and_what_it_gives() {
             entry: None,
             max_chars: 65_536,
             sections: None,
+            chrome: recto_index::blocks::unit::heads::Rule::default(),
         };
         let Ok(Outcome::Unit(unit)) = build(&mut Big, &ask) else { panic!("a unit") };
         pages_read = unit.counts.pages_read;
