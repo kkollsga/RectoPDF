@@ -47,7 +47,7 @@ pub(crate) fn stop(blocking: &dyn Blocking, paths: Option<&[PathBuf]>) {
 /// What a corpus has of blocks, for a file whose index is ready: the stored ones made against this corpus as it stands now (its pages and its retries), if they open. A set that doesn't add up is
 /// thrown away.
 fn stored_pair(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<(ReadyCorpus, StoredBlocks)> {
-    let ready = ReadyCorpus::open(&find_key, root, key).ok()??;
+    let ready = ReadyCorpus::open(find_key, root, key).ok()??;
     match StoredBlocks::open_matching(find_key, root, key, &ready.summary) {
         Ok(found) => found.map(|found| (ready, found)),
         Err(_) => {
@@ -58,7 +58,7 @@ fn stored_pair(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<(Ready
 }
 
 fn stored(find_key: &FindKey, root: &Path, key: CorpusKey) -> Option<StoredBlocks> {
-    stored_pair(&find_key, root, key).map(|(_, found)| found)
+    stored_pair(find_key, root, key).map(|(_, found)| found)
 }
 
 /// The stored blocks of this file as it is now, if there are some. **Never asks for them:** a read that only uses them where they are (`get` of a hit) starts nothing.
