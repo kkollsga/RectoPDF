@@ -242,8 +242,8 @@ fn purge_holds_one_tree_at_a_time() {
     };
     let (small, large) = (peak_for(20), peak_for(200));
     println!(
-        "PURGE_COST peak live bytes: 40 corpora {small}, 400 corpora {large}, {} per extra corpus",
-        (large - small) / 360
+        "PURGE_COST peak live bytes: 20 corpora {small}, 200 corpora {large}, {} per extra corpus",
+        (large - small) / 180
     );
     assert!((large - small) / 180 < 1024, "{small} against {large}");
 }

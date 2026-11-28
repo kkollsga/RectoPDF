@@ -420,6 +420,7 @@ fn the_purge_holds_at_most_eight_descriptors() {
         dir(&agent);
         fs::write(agent.join("0001.md"), b"p").unwrap();
         fs::write(w.corpus.join(&key).join("v4").join("app").join("ready.sealed"), b"r").unwrap();
+        fs::write(w.corpus.join(&key).join("v4").join("app").join("build.lock"), b"").unwrap();
     }
     let peak = Arc::new(AtomicU32::new(0));
     let steps = plan_steps(&w);
