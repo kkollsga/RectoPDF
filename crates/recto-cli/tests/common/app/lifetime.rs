@@ -1,4 +1,4 @@
-//! A launched app is an owned Child; an attached app is only its original control connection.
+//! A launched app is an owned Child; an attached app is only its pid, checked over its socket on every lifecycle command and never signalled.
 use recto_control::{StatePaths, client::Client};
 use serde_json::Value;
 use std::process::Child;
@@ -20,7 +20,8 @@ const WAIT: Duration = Duration::from_secs(5);
 
 pub enum Lifetime {
     Owned(Child),
-    Borrowed(Option<Client>),
+    /// The pid the app at the state folder's socket said it was when attached, or `None` when it couldn't be checked then. Not a kept connection: the session closes one that sits a minute with nothing asked (`Limits::idle_deadline`), and a test can be away that long on a loaded machine (2026-11-28: a Quit sent over one went nowhere).
+    Borrowed(Option<u32>),
 }
 
 #[derive(Debug)]
@@ -79,7 +80,7 @@ fn matching(paths: &StatePaths, pid: u32) -> Result<Client, String> {
 impl Lifetime {
     pub fn attached(paths: &StatePaths, pid: u32) -> Self {
         match matching(paths, pid) {
-            Ok(client) => Self::Borrowed(Some(client)),
+            Ok(_) => Self::Borrowed(Some(pid)),
             Err(error) => {
                 eprintln!("couldn't retain attached quiet app {pid}: {error}; its existing owner/state lifetime remains in force");
                 Self::Borrowed(None)
@@ -87,7 +88,7 @@ impl Lifetime {
         }
     }
 
-    /// Lifecycle commands use the retained attached connection, or a connection checked against the owned unreaped Child.
+    /// Lifecycle commands go over a new connection, checked against the owned unreaped Child or the attached pid.
     pub fn request(&mut self, paths: &StatePaths, args: &[&str]) -> Result<Value, String> {
         let words: Vec<String> = args.iter().map(|word| (*word).to_owned()).collect();
         let invocation = recto_agent::table::parse_cli(&words).map_err(|error| format!("{error:?}"))?;
@@ -116,9 +117,12 @@ impl Lifetime {
                 let mut client = matching(paths, child.id()).map_err(RequestError::Other)?;
                 call_typed(&mut client, line, wait)
             }
-            Self::Borrowed(Some(client)) => call_typed(client, line, wait),
+            Self::Borrowed(Some(pid)) => {
+                let mut client = matching(paths, *pid).map_err(RequestError::Other)?;
+                call_typed(&mut client, line, wait)
+            }
             Self::Borrowed(None) => Err(RequestError::Other(
-                "the original attached connection is unavailable; no reconnect or PID signal was attempted".into(),
+                "the attached app couldn't be checked when it was attached; no reconnect or PID signal was attempted".into(),
             )),
         }
     }

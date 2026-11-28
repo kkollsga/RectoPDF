@@ -107,7 +107,7 @@ impl Client {
         }
     }
 
-    /// The connection ended with no answer. Whether the session ended too is asked of its socket: one that's gone takes no connection, and one that closed only this connection still does. Out of descriptors it drops a client as it arrives, and it lets go of the oldest of too many, and neither has lost anything.
+    /// The connection ended with no answer. Whether the session ended too is asked of its socket: one that's gone takes no connection, and one that closed only this connection still does. Out of descriptors it drops a client as it arrives, it lets go of the oldest of too many, and it closes one that has sat with nothing asked for longer than [`Limits::idle_deadline`](crate::server::Limits::idle_deadline), and none of them has lost anything.
     fn ended(&self) -> AgentError {
         if self.socket.as_deref().is_some_and(|socket| Stream::connect(socket).is_ok()) {
             dropped()
@@ -136,8 +136,10 @@ fn ended() -> AgentError {
 }
 
 fn dropped() -> AgentError {
-    AgentError::new(Code::CONNECTION_DROPPED, "The session closed this connection without an answer. It's still running.", exit::BUSY)
-        .then("It does that when it's out of descriptors or has too many clients, and takes connections again as others close. Check whether the command took effect before trying it again.")
+    let idle = crate::server::Limits::default().idle_deadline.as_secs();
+    AgentError::new(Code::CONNECTION_DROPPED, "The session closed this connection without an answer. It's still running.", exit::BUSY).then(format!(
+        "It does that when it's out of descriptors, when it has too many clients, and to a connection that has gone {idle} s with nothing asked, and it takes connections again as others close. Check whether the command took effect before trying it again."
+    ))
 }
 
 fn no_answer(wait: Duration) -> AgentError {
