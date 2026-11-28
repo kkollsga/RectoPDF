@@ -285,7 +285,7 @@ fn costs() {
                 std::thread::spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
                         high.fetch_max(std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0), Ordering::Relaxed);
-                        std::thread::sleep(Duration::from_micros(50));
+                        std::thread::sleep(Duration::from_micros(50)); // ratchet: poll
                     }
                 })
             };
