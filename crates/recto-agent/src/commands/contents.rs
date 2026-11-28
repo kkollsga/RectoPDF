@@ -422,4 +422,74 @@ mod tests {
         let wrong = run(&session, Actor::Person, r#"{"cmd":"contents_show","which":"theirs"}"#).expect_err("no such list");
         assert_eq!(wrong.code, "usage");
     }
+
+    /// Counts which way generated contents were asked for.
+    #[derive(Default)]
+    struct Asked {
+        as_agent: Mutex<u32>,
+        as_person: Mutex<u32>,
+    }
+
+    impl crate::generated::Generating for Asked {
+        fn root(&self) -> &Path {
+            Path::new("/nonexistent/recto-generated")
+        }
+        fn want(&self, _: &Path, _: recto_index::corpus::CorpusKey, _: u32) {
+            *self.as_agent.lock().unwrap() += 1;
+        }
+        fn want_as_person(&self, _: &Path, _: recto_index::corpus::CorpusKey, _: u32) {
+            *self.as_person.lock().unwrap() += 1;
+        }
+        fn state(&self, _: recto_index::corpus::CorpusKey) -> crate::generated::GenState {
+            crate::generated::GenState::Idle
+        }
+        fn held(&self, _: recto_index::corpus::CorpusKey) -> Option<std::sync::Arc<recto_index::generated::Generated>> {
+            None
+        }
+        fn cancel(&self, _: Option<recto_index::corpus::CorpusKey>) {}
+        fn cancel_files(&self, _: Option<&[PathBuf]>) {}
+        fn making(&self, _: Option<&[PathBuf]>) -> bool {
+            false
+        }
+    }
+
+    /// A session of one real file, with a generator that counts who asked.
+    struct Counting {
+        session: Mutex<Session<crate::DrawableLoader>>,
+        asked: Asked,
+    }
+
+    impl crate::SessionAccess for Counting {
+        type Loader = crate::DrawableLoader;
+        fn with<R>(&self, step: impl FnOnce(&mut Session<crate::DrawableLoader>) -> R) -> R {
+            step(&mut self.session.lock().unwrap())
+        }
+        fn generating(&self) -> Option<&dyn crate::generated::Generating> {
+            Some(&self.asked)
+        }
+    }
+
+    /// Failure (R2.3, S4's review): an agent's `contents show generated`, by whatever route its command arrives (the actor is what the route passes in), is asked for as the person: its ask is
+    /// put ahead of the person's own waiting ask, which a person's is never given way for (`want_as_person`). Every level that may send it asks with `want`; the person's own ask is the only one that is the
+    /// person's, so the counter tells the two apart (the person's own ask is counted too, so a counter that never counts fails).
+    #[test]
+    fn an_agents_contents_show_asks_as_an_agent_never_the_person() {
+        let file = recto_testpdf::TempPdf::new("ask.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Mine"]))]));
+        // A tab already waiting for them isn't asked for again, so each actor gets a session of its own.
+        let asked_by = |actor: Actor| {
+            let access = Counting {
+                session: Mutex::new(Session::new(crate::DrawableLoader)),
+                asked: Asked::default(),
+            };
+            access.session.lock().unwrap().open(&file.0).expect("opened");
+            let command = parse(r#"{"cmd":"contents_show","which":"generated"}"#).expect("parsed");
+            execute(&access, actor, &command, &mut Vec::new()).expect("a show");
+            let counts = (*access.asked.as_agent.lock().unwrap(), *access.asked.as_person.lock().unwrap());
+            counts
+        };
+        for level in [Level::Control, Level::Full] {
+            assert_eq!(asked_by(Actor::Agent(level)), (1, 0), "an agent at {level:?} asks as an agent");
+        }
+        assert_eq!(asked_by(Actor::Person), (0, 1), "and the person's own is the one that goes first");
+    }
 }
