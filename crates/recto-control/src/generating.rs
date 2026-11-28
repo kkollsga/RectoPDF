@@ -309,6 +309,20 @@ pub(crate) enum Verdict<'a> {
     Failed(&'a str),
 }
 
+/// What every kind's outcome says to the queue, written once: how it's remembered, and the code a refusal or failure is told by. Each kind's policy (what it keeps, what it announces) stays in its own file.
+pub(crate) trait Ending {
+    /// How the queue remembers it.
+    fn verdict(&self) -> Verdict<'_>;
+
+    /// The code of a refusal or a failure.
+    fn code(&self) -> Option<&str> {
+        match self.verdict() {
+            Verdict::Refused(code) | Verdict::Failed(code) => Some(code),
+            Verdict::Done | Verdict::Changed => None,
+        }
+    }
+}
+
 /// Remembers how a job ended and says the state word for the news of it.
 fn settle(inner: &mut Inner, (what, key): (What, CorpusKey), cancelled: bool, verdict: &Verdict) -> &'static str {
     match verdict {
@@ -362,16 +376,21 @@ impl Shared {
         }
     }
 
+    /// Frees the running slot and remembers how the job ended, with `keep` run on the queue's state under the same lock (what a kind keeps in memory); the state word for the news of it.
+    fn settled(&self, of: (What, CorpusKey), cancelled: bool, outcome: &impl Ending, keep: impl FnOnce(&mut Inner)) -> &'static str {
+        let mut inner = self.lock();
+        inner.running = None;
+        keep(&mut inner);
+        settle(&mut inner, of, cancelled, &outcome.verdict())
+    }
+
     /// One generated-contents job, from the news that it's started to the news of how it ended.
     fn run_contents(&self, job: &GenJob, stop: &AtomicBool) {
         self.tell(Event::ContentsGenerating {
             path: job.path.clone(),
             file: job.key.short(),
         });
-        let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.runner.run(job, stop)))
-            .unwrap_or_else(|_| (Outcome::Failed("helper_stopped".into()), Value::Null));
-        recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
-        let cancelled = stop.load(Ordering::SeqCst);
+        let (outcome, report, cancelled) = guarded(stop, Outcome::Failed("helper_stopped".into()), || self.runner.run(job, stop));
         // Kept on disk where its key can be believed. Held here for this session where it can't be, or where it couldn't be written.
         let held = match &outcome {
             Outcome::Ready(made) if !cancelled => {
@@ -380,9 +399,7 @@ impl Shared {
             }
             _ => None,
         };
-        let state = {
-            let mut inner = self.lock();
-            inner.running = None;
+        let state = self.settled((What::Contents, job.key), cancelled, &outcome, |inner| {
             if let Some(made) = held {
                 if inner.held.len() >= MAX_HELD {
                     inner.held.pop_front();
@@ -390,14 +407,7 @@ impl Shared {
                 inner.held.retain(|(key, _)| *key != job.key);
                 inner.held.push_back((job.key, made));
             }
-            let verdict = match &outcome {
-                Outcome::Ready(_) => Verdict::Done,
-                Outcome::Refused(code) => Verdict::Refused(code),
-                Outcome::Changed => Verdict::Changed,
-                Outcome::Failed(code) => Verdict::Failed(code),
-            };
-            settle(&mut inner, (What::Contents, job.key), cancelled, &verdict)
-        };
+        });
         // What it took, for whoever's watching: numbers only.
         self.tell(Event::ContentsGenerated {
             path: job.path.clone(),
@@ -413,19 +423,19 @@ impl Shared {
     /// One blocks job. Nothing of it is kept here, as the store has it on disk, and **nothing is announced for a job that changed nothing** (blocks already made): the runner says when it begins, and its end is told only if it did.
     fn run_blocks(&self, ask: &BlocksAsk, stop: &AtomicBool) {
         let begun = || self.tell(blocking::building(ask));
-        let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.blocks.run(ask, stop, &begun)))
-            .unwrap_or_else(|_| (blocking::Outcome::Failed("helper_stopped".into()), Value::Null));
-        recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
-        let cancelled = stop.load(Ordering::SeqCst);
-        let state = {
-            let mut inner = self.lock();
-            inner.running = None;
-            settle(&mut inner, (What::Blocks, ask.key), cancelled, &outcome.verdict())
-        };
+        let (outcome, report, cancelled) = guarded(stop, blocking::Outcome::Failed("helper_stopped".into()), || self.blocks.run(ask, stop, &begun));
+        let state = self.settled((What::Blocks, ask.key), cancelled, &outcome, |_| {});
         if let Some(built) = blocking::built(ask, state, &outcome, &report) {
             self.tell(built);
         }
     }
+}
+
+/// Runs one job's work so that a panic in it is a failure (`if_it_panics`) and not the end of the queue's thread, then lets a test hold the moment after it ends, and says whether it was cancelled meanwhile. The one skeleton of every kind's run.
+fn guarded<O>(stop: &AtomicBool, if_it_panics: O, run: impl FnOnce() -> (O, Value)) -> (O, Value, bool) {
+    let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or((if_it_panics, Value::Null));
+    recto_platform::slow::pause(recto_platform::slow::Seam::Headings);
+    (outcome, report, stop.load(Ordering::SeqCst))
 }
 
 /// Remembers one more of a kind, and past [`MAX_REMEMBERED`] of that kind lets its oldest go: a flood of one kind's refusals can't make the queue forget another's (a hostile file would then be run again, at half a gigabyte each time).
@@ -439,11 +449,13 @@ fn remember<T>(list: &mut VecDeque<T>, kind: impl Fn(&T) -> What, item: T) {
     list.push_back(item);
 }
 
-impl Outcome {
-    fn code(&self) -> Option<&str> {
+impl Ending for Outcome {
+    fn verdict(&self) -> Verdict<'_> {
         match self {
-            Self::Refused(code) | Self::Failed(code) => Some(code),
-            _ => None,
+            Self::Ready(_) => Verdict::Done,
+            Self::Refused(code) => Verdict::Refused(code),
+            Self::Changed => Verdict::Changed,
+            Self::Failed(code) => Verdict::Failed(code),
         }
     }
 }

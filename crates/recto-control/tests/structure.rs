@@ -200,7 +200,7 @@ fn cancelled_part_way_nothing_is_written() {
         .to_string()
     };
     while children().is_empty() {
-        assert!(Instant::now() < until, "the helper never started");
+        assert!(Instant::now() < until, "the helper never started (R3 needs the debug helper in target/Helpers)");
         std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
     generator.cancel(Some(key));
@@ -237,7 +237,7 @@ fn change_while_it_runs(pdf: &TempPdf, how: impl FnOnce(&std::path::Path)) -> En
         .status
         .success()
     {
-        assert!(Instant::now() < until, "the helper never started");
+        assert!(Instant::now() < until, "the helper never started (R3 needs the debug helper in target/Helpers)");
         std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
     how(&pdf.0);
@@ -355,7 +355,7 @@ fn children() -> String {
 fn helper_running(generator: &Generator, key: CorpusKey) {
     let until = Instant::now() + Duration::from_secs(30);
     while agent_blocks::Blocking::state(generator, key) != GenState::Running || children().is_empty() {
-        assert!(Instant::now() < until, "the helper never started");
+        assert!(Instant::now() < until, "the helper never started (R3 needs the debug helper in target/Helpers)");
         std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
     }
 }

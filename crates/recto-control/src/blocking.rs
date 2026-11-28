@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::generating::{By, Generator, Job, Verdict, What};
+use crate::generating::{By, Ending, Generator, Job, Verdict, What};
 use recto_agent::Event;
 
 /// How a blocks job ended.
@@ -34,16 +34,8 @@ pub enum Outcome {
     Failed(String),
 }
 
-impl Outcome {
-    pub(crate) fn code(&self) -> Option<&str> {
-        match self {
-            Self::Refused(code) | Self::Failed(code) => Some(code),
-            _ => None,
-        }
-    }
-
-    /// How the queue remembers it.
-    pub(crate) fn verdict(&self) -> Verdict<'_> {
+impl Ending for Outcome {
+    fn verdict(&self) -> Verdict<'_> {
         match self {
             Self::Ready(_) | Self::AlreadyMade(_) => Verdict::Done,
             Self::Refused(code) => Verdict::Refused(code),
