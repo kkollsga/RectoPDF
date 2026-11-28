@@ -98,6 +98,23 @@ impl Drop for RemovalHold {
     }
 }
 
+/// What a journal write returns when it wrote nothing: every name it was to retire is still to be retired, and why it wrote nothing.
+pub(super) fn refused_journals(work: &JournalWork, error: StoreError) -> (JournalOutcome, Option<StoreError>) {
+    let outcome = JournalOutcome {
+        not_retired: work.retired.clone(),
+        ..JournalOutcome::default()
+    };
+    (outcome, Some(error))
+}
+
+/// Where a test may stop a write (`park`): between a journal write's first check and its lock (`kept` false), or a kept copy and its rename.
+pub(super) fn parked(root: &Path, kept: bool) {
+    #[cfg(test)]
+    park::here(root, kept);
+    #[cfg(not(test))]
+    let _ = (root, kept);
+}
+
 /// A test's way to stop a write at a named place, by the store's folder: between a journal write's first check and its lock, or between a kept copy and its
 /// rename.
 #[cfg(test)]
