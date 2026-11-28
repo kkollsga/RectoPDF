@@ -101,7 +101,9 @@ fn stored_region(take: &mut Take<'_>) {
         let mut region = Vec::new();
         let mut lines = lines_of(take);
         // A page number is at most five digits, so the writer is never given one that reads as none.
-        lines.iter_mut().for_each(|line| line.number = line.number.filter(|number| *number != NO_NUMBER));
+        lines
+            .iter_mut()
+            .for_each(|line| line.number = line.number.filter(|number| *number != NO_NUMBER));
         chrome::stored::write(&lines, &mut region);
         let (at, byte) = (usize::from(take.u8()) | usize::from(take.u8()) << 8, take.u8());
         if !region.is_empty() && byte & 1 == 0 {
@@ -390,7 +392,11 @@ fn whole_pages(take: &mut Take<'_>) {
         assert!(edges.len() <= MAX_EDGE_LINES, "{} edge pieces", edges.len());
         // What the index would store: nothing a reader refuses, and what it does store reads back as it was.
         if let Some(region) = chrome::stored::kept(edges, text.len()) {
-            assert_eq!(chrome::stored::read(&region, text.len()).as_deref(), Some(edges), "a stored region reads back as written");
+            assert_eq!(
+                chrome::stored::read(&region, text.len()).as_deref(),
+                Some(edges),
+                "a stored region reads back as written"
+            );
         }
         assert!(
             edges.iter().all(|line| line.start <= line.end && line.end <= text.len()),

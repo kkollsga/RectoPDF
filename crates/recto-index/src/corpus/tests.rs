@@ -2438,11 +2438,25 @@ impl PageFeed for PlacedPage {
 /// Failure: a hostile file whose edge lines overflow made every Find rebuild the index. A glyph and a frame near the largest finite float give an edge piece with an infinite size or place; the writer stored it, the reader refused it, and the page read as damaged on every open, so `throw_away_corpus` dropped and rebuilt the index each time. The writer stores no region a reader refuses: the page reads whole, and its edges are unknown (not "known, none").
 #[test]
 fn edge_lines_that_overflow_are_not_stored_and_the_page_is_not_damaged() {
-    let frame = |right: f32, top: f32| recto_proto::PageFrame { turns: 0, left: 0.0, bottom: 0.0, right, top };
+    let frame = |right: f32, top: f32| recto_proto::PageFrame {
+        turns: 0,
+        left: 0.0,
+        bottom: 0.0,
+        right,
+        top,
+    };
     // A line of plain text, then a page number whose box is `number`.
     let cases = [
-        ("a box far to the left, so the distance from the right edge overflows", [-3.3e38, 20.0, 5.0, 30.0], frame(f32::MAX, 792.0)),
-        ("a box far to the right, so its middle overflows", [3.3e38, 20.0, 3.39e38, 30.0], frame(f32::MAX, 792.0)),
+        (
+            "a box far to the left, so the distance from the right edge overflows",
+            [-3.3e38, 20.0, 5.0, 30.0],
+            frame(f32::MAX, 792.0),
+        ),
+        (
+            "a box far to the right, so its middle overflows",
+            [3.3e38, 20.0, 3.39e38, 30.0],
+            frame(f32::MAX, 792.0),
+        ),
     ];
     for (what, number, frame) in cases {
         let temp = Temp::new();
