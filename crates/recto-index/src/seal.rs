@@ -47,6 +47,8 @@ pub enum Purpose {
     Identities,
     /// One page's stored blocks (`blocks`), so a record can't answer for another page.
     Blocks(u32),
+    /// The header of a corpus's stored blocks.
+    BlocksHeader,
 }
 
 impl Purpose {
@@ -59,6 +61,7 @@ impl Purpose {
             Self::Identity(page) => (5, page),
             Self::Identities => (6, 0),
             Self::Blocks(page) => (7, page),
+            Self::BlocksHeader => (8, 0),
         };
         let mut out = [kind, 0, 0, 0, 0];
         out[1..].copy_from_slice(&number.to_le_bytes());

@@ -28,7 +28,6 @@ sleep app/qa/shots.sh 5
 sleep crates/recto-agent/examples/clip_memory.rs 1
 sleep crates/recto-agent/src/agreement.rs 1
 sleep crates/recto-agent/src/generated.rs 1
-sleep crates/recto-agent/src/index.rs 1
 sleep crates/recto-agent/src/render.rs 1
 sleep crates/recto-app/src/core/qa/mod.rs 5
 sleep crates/recto-app/src/core/session.rs 2

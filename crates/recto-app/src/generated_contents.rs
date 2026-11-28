@@ -56,7 +56,7 @@ fn look(session: &SessionHost<DrawableLoader>, push: &impl Push, id: TabId, ask:
         .name("recto-contents-look".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            if let Some(view) = generated::where_they_stand(&generator, &path, pages, ask) {
+            if let Some(view) = generated::where_they_stand(&generator, &path, pages, ask.then_some(generated::Asker::Person)) {
                 answer(id, view, version);
             }
         });

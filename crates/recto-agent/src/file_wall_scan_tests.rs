@@ -180,6 +180,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the index's own `.session` file in an agent's folder under the app's index folder, read to see whether a live session holds it",
     ),
     (
+        "recto-index/src/corpus/blocks.rs",
+        1,
+        "the index's own `blocks.bin` under the app's index folder, opened to read by `open_private_file` in `parse` (no link followed, no wait on a pipe, only a plain file of this user's that no one else can write): its length checked against the header, and the descriptor held to read a stored page's record. Not counted: the build's append to a new `blocks.bin` (`append_private_file`, mode 0600, no link, no wait, after the old one is removed in a folder checked private), the header `blocks.sealed` read by `read_private_file`, and `build.lock` by `append_private_file`",
+    ),
+    (
         "recto-index/src/corpus/identities.rs",
         2,
         "the index's own `ids.bin` under the app's index folder, through the private-file opens (no link, no pipe, an owner's plain file): read back to check \

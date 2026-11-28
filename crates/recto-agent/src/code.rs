@@ -170,6 +170,8 @@ codes! {
     BAD_STRATEGY = "bad_strategy", Next::ByExit;
     BAD_TEXT_MODE = "bad_text_mode", Next::Says("Use `--text both`, `paths` or `selectable`.");
     BAD_VIEWPORT = "bad_viewport", Next::ByExit;
+    BLOCKS_FAILED = "blocks_failed", Next::ByExit;
+    BLOCKS_REFUSED = "blocks_refused", Next::ByExit;
     BREAKS_CERTIFICATION = "breaks_certification", Next::ByExit;
     BUDGET_WRONG_TABS = "budget_wrong_tabs", Next::ByExit;
     BUSY = "busy", Next::Says("Try again in a moment.");

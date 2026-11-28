@@ -4,7 +4,7 @@
 //! sleep file counted against agents' share of the hour, by whatever route the command came (AGENTS: "An agent's action is an agent's by whatever route it
 //! arrives").
 
-use crate::{Actor, SessionAccess, commands, find, generated, index, later, saving};
+use crate::{Actor, SessionAccess, blocks, commands, find, generated, index, later, saving};
 use recto_session::{Author, DocLoader, Session};
 
 /// A host's way to the session, with each look said to be `by`'s.
@@ -53,6 +53,9 @@ impl<A: SessionAccess> SessionAccess for Acting<'_, A> {
     }
     fn generating(&self) -> Option<&dyn generated::Generating> {
         self.access.generating()
+    }
+    fn blocking(&self) -> Option<&dyn blocks::Blocking> {
+        self.access.blocking()
     }
     fn finding(&self) -> Option<&dyn find::Finding> {
         self.access.finding()

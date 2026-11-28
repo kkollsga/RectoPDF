@@ -31,6 +31,10 @@ pub trait Generating: Send + Sync {
     fn root(&self) -> &Path;
     /// Someone wants them for this file. Nothing happens if they're on their way, refused, or failed within the pause.
     fn want(&self, path: &Path, key: CorpusKey, pages: u32);
+    /// The same, from the person's own window (the sidebar): a person's waiting ask is never given way for an agent's, and goes first. A host with one queue of asks says it as `want`.
+    fn want_as_person(&self, path: &Path, key: CorpusKey, pages: u32) {
+        self.want(path, key, pages);
+    }
     fn state(&self, key: CorpusKey) -> GenState;
     /// Ones made for a file whose key can't be trusted on disk, held for this session only.
     fn held(&self, key: CorpusKey) -> Option<Arc<Generated>>;
@@ -172,10 +176,25 @@ pub(crate) fn not_ready(generating: &dyn Generating, keyed: &Keyed, pages: u32, 
     })
 }
 
+/// Who asks for generated contents to be made: the person at the window, whose ask is never given way for an agent's, or an agent, by whatever route its command came.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Asker {
+    Person,
+    Agent,
+}
+
+impl Asker {
+    /// Who a command's actor is, for what they ask to be made.
+    #[must_use]
+    pub fn of(actor: crate::Actor) -> Self {
+        if actor.at_the_window() { Self::Person } else { Self::Agent }
+    }
+}
+
 /// **What the sidebar's note shows for a file's generated contents now,** and asked for if `ask`, or `None` if it's still what it was: made (or made with no
 /// headings to list), on their way, refused or failed, or not kept. It looks at the file, for its key, and at the folder they're kept in, so it's called with
 /// the session free, and never on the window's session thread or the UI's: a file on a dead volume can hold a look as long as it likes.
-pub fn where_they_stand(generating: &dyn Generating, path: &Path, pages: u32, ask: bool) -> Option<GeneratedView> {
+pub fn where_they_stand(generating: &dyn Generating, path: &Path, pages: u32, ask: Option<Asker>) -> Option<GeneratedView> {
     let Ok(key) = CorpusKey::of_file(path) else {
         return Some(GeneratedView::Failed("The file can't be looked at just now."));
     };
@@ -186,13 +205,16 @@ pub fn where_they_stand(generating: &dyn Generating, path: &Path, pages: u32, as
         }
         return Some(GeneratedView::Ready(Arc::new(made.toc())));
     }
-    if ask {
-        generating.want(path, key, pages);
+    match ask {
+        Some(Asker::Person) => generating.want_as_person(path, key, pages),
+        Some(Asker::Agent) => generating.want(path, key, pages),
+        None => {}
     }
+    let asked = ask.is_some();
     match generating.state(key) {
-        GenState::Queued | GenState::Running => ask.then_some(GeneratedView::Making),
+        GenState::Queued | GenState::Running => asked.then_some(GeneratedView::Making),
         GenState::Refused(code) | GenState::Failed(code) => Some(GeneratedView::Failed(failure_words(&code))),
-        GenState::Idle => Some(if ask { GeneratedView::Making } else { GeneratedView::NotKept }),
+        GenState::Idle => Some(if asked { GeneratedView::Making } else { GeneratedView::NotKept }),
     }
 }
 

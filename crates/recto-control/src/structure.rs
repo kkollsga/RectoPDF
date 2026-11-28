@@ -169,6 +169,52 @@ impl Structure {
     }
 }
 
+/// **Which helper a job of the structure helper runs on, and at what level:** the installed one at `priority`, or in a test the one at `exe`. One constructor for every job's runner, so a job can't find another's way to a helper.
+#[derive(Clone, Debug)]
+pub struct Pick {
+    /// [`crate::helpers::HELPER_PRIORITY`]. Anything else only to measure the work apart from the waiting.
+    pub priority: Priority,
+    /// A helper to use in place of the installed one: the one laid out in `target/Helpers`, in a test.
+    #[cfg(any(test, feature = "test-seams"))]
+    exe: Option<std::path::PathBuf>,
+}
+
+impl Pick {
+    pub fn new(priority: Priority) -> Self {
+        Self {
+            priority,
+            #[cfg(any(test, feature = "test-seams"))]
+            exe: None,
+        }
+    }
+
+    /// For a test: the helper at `exe`, at this process's own level.
+    #[cfg(any(test, feature = "test-seams"))]
+    pub fn at(exe: std::path::PathBuf) -> Self {
+        Self {
+            priority: Priority::Inherited,
+            exe: Some(exe),
+        }
+    }
+
+    /// The helper to run, if there is one.
+    pub fn structure(&self) -> Option<Structure> {
+        #[cfg(any(test, feature = "test-seams"))]
+        if let Some(exe) = &self.exe {
+            return Some(Structure::at(exe.clone(), self.priority));
+        }
+        Structure::installed(self.priority)
+    }
+}
+
+/// A job's report as an object to put the session's own numbers in, made one if the helper said none.
+pub(crate) fn numbers_of(report: &mut Value) -> &mut serde_json::Map<String, Value> {
+    if !report.is_object() {
+        *report = json!({});
+    }
+    report.as_object_mut().expect("just made an object")
+}
+
 /// Starts the helper with `document` on its descriptor 3, at `priority` and with [`HELPER_ENV`].
 pub(crate) fn spawn(exe: &Path, priority: Priority, document: &std::fs::File) -> std::io::Result<Spawned> {
     let env: Vec<(&str, &OsStr)> = HELPER_ENV.iter().map(|(name, value)| (*name, OsStr::new(value))).collect();
