@@ -2208,8 +2208,11 @@ fn report_page(page: u32) -> Vec<(String, f32, f32)> {
     ]
 }
 
+/// A page's lines, `(text, x, y)`, and whether its feed gives the frame.
+type LaidPage = (Vec<(String, f32, f32)>, bool);
+
 /// Pages fed with boxes, each with its frame or without it.
-struct Laid(Vec<(Vec<(String, f32, f32)>, bool)>);
+struct Laid(Vec<LaidPage>);
 
 impl PageFeed for Laid {
     fn page_count(&mut self) -> Result<u32, FeedError> {
@@ -2233,7 +2236,7 @@ impl PageFeed for Laid {
     }
 }
 
-fn built_from(temp: &Temp, pages: Vec<(Vec<(String, f32, f32)>, bool)>) -> (PathBuf, CorpusKey) {
+fn built_from(temp: &Temp, pages: Vec<LaidPage>) -> (PathBuf, CorpusKey) {
     let key = key_of(temp, b"a file");
     let root = temp.0.join("corpus");
     let outcome = build(tk(), &root, key, &mut Laid(pages), &DocMeta::default(), &BuildLimits::default()).unwrap();

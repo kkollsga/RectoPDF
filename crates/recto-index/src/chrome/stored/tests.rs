@@ -19,8 +19,8 @@ fn piece(at: u32) -> EdgeLine {
         words: at & 2 != 0,
         digits_only: at & 4 != 0,
         isolated: at & 8 != 0,
-        dated: at % 3 == 0,
-        substantial: at % 5 == 0,
+        dated: at.is_multiple_of(3),
+        substantial: at.is_multiple_of(5),
         from_left: base + 3.5,
         from_right: base + 4.5,
         place: InRow {
