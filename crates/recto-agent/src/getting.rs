@@ -18,9 +18,7 @@ use crate::commands::getting::{Form, Grain};
 use crate::commands::locating::{PageOrRef, Where};
 use crate::{AgentError, Code, Event, SessionAccess, TabRef, exit};
 use recto_core::locator::{self, Locator, Referrer, ScanCaps};
-use recto_index::blocks::markdown::{self, Piece};
-use recto_index::blocks::unit::heads::{Heads, MAX_CHROME_CHARS_LEFT_OUT, State};
-use recto_index::blocks::{Kind, unit};
+use recto_index::blocks::unit;
 use recto_index::corpus::{CorpusKey, PageKind, ReadyCorpus};
 use serde_json::{Value, json};
 
@@ -182,44 +180,18 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
         }
     };
     // What the page leaves out as chrome is not given and takes no room. A hit is the characters it names: nothing of it is left out.
-    let apply = !(asked.grain == Grain::Hit && found.characters().is_some());
-    let heads = if apply {
-        Heads::of(read.chrome.as_deref(), total, found.characters(), MAX_CHROME_CHARS_LEFT_OUT)
-    } else {
-        Heads::default()
-    };
-    let in_unit = heads.kept_len(from, to) as usize;
-    let max = asked.max_chars as usize;
-    let given = unit::cut_at(&heads.copy(&page_chars, from, to, max + 1).0, max);
-    let (shown, end) = heads.copy(&page_chars, from, to, given);
-    let cut = if given < in_unit { heads.next_kept(end) } else { to };
-    let left_out = heads.left_in(from, cut);
-    let hidden = heads.remap(&read.hidden, from, end);
-
-    let counts = json!({
-        "chars_in_unit": in_unit, "chars_given": given, "hidden_spans": hidden.len(),
-        "chrome_chars_left_out": left_out, "chrome_pages": u32::from(left_out > 0),
-        "chrome_unknown_pages": u32::from(apply && heads.state == State::Unknown),
-        "chrome_over_cap_pages": u32::from(heads.state == State::OverCap),
-    });
+    let slice = heads::slice(
+        &read,
+        &page_chars,
+        found.characters(),
+        asked.grain == Grain::Hit,
+        (from, to),
+        asked.max_chars as usize,
+    );
+    let (given, in_unit, cut) = (slice.given, slice.in_unit, slice.cut);
+    let counts = slice.counts();
     let mut untrusted = json!({ "link": locator::link_of(file.path(), found.file_page + 1).ok() });
-    let mut data_hidden = Value::Null;
-    match asked.form {
-        Form::Text => {
-            untrusted["text"] = json!(shown.iter().collect::<String>());
-            data_hidden = json!(hidden.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>());
-        }
-        Form::Markdown => {
-            let piece = Piece {
-                kind: Kind::Paragraph,
-                level: 0,
-                depth: None,
-                text: &shown,
-                hidden: &hidden,
-            };
-            untrusted["markdown"] = json!(markdown::render(&[piece]));
-        }
-    }
+    let data_hidden = slice.write(asked.form, &mut untrusted);
 
     // Refs: the unit's own, the page it is on, and (for a page) its neighbours in the tab as it stands.
     let opened = recto_session::identify::Opened::open(file.path(), found.stamp).ok_or_else(changed)?;

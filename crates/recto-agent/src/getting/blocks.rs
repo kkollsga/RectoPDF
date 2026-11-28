@@ -4,7 +4,7 @@
 //!
 //! Sections come from the tab's contents: the file's own when `verdict::judge` says `Fine`, else generated ones **if they are already made** (an ask does one thing: `get` never starts them).
 
-use super::heads::{self, Ring};
+use super::heads::Chrome;
 use super::{Asked, NO_PAGE_TEXT, PageRead, changed, index_is_enough, read_live};
 use crate::commands::getting::{Form, Grain as AskedGrain};
 use crate::locating::Located;
@@ -154,9 +154,7 @@ struct Source<'a, A: SessionAccess> {
     id: TabId,
     file: &'a TabFile,
     corpus: Arc<ReadyCorpus>,
-    /// What a page read last leaves out as chrome, kept for the builder's next question about it.
-    read_chrome: Option<(u32, Option<Vec<(u32, u32)>>)>,
-    ring: Ring,
+    chrome: Chrome,
     stored: StoredBlocks,
     opened: &'a Opened,
     live_spent: Duration,
@@ -196,7 +194,7 @@ impl<A: SessionAccess> Source<'_, A> {
         self.wipe();
         if let Some(mut read) = indexed {
             if let Some(read) = read.as_mut() {
-                read.chrome = self.ring.spans(page);
+                read.chrome = self.chrome.spans(page);
             }
             return Ok(read);
         }
@@ -244,14 +242,14 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
         if let Some((_, read)) = self.anchor.as_ref().filter(|(held, _)| *held == page) {
             chars.extend(read.text.chars());
             hidden.extend_from_slice(&read.hidden);
-            self.read_chrome = Some((page, read.chrome.clone()));
+            self.chrome.keep(page, read.chrome.clone());
             return true;
         }
         match self.fetch(page) {
             Ok(Some(read)) => {
                 self.take_in(&read);
                 chars.extend(read.text.chars());
-                self.read_chrome = Some((page, read.chrome));
+                self.chrome.keep(page, read.chrome);
                 *hidden = read.hidden;
                 true
             }
@@ -276,7 +274,7 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
     }
 
     fn chrome(&mut self, page: u32, _chars: u32) -> Option<Vec<(u32, u32)>> {
-        self.read_chrome.take().filter(|(read, _)| *read == page).and_then(|(_, spans)| spans)
+        self.chrome.take(page)
     }
 
     /// False only for a page the index recorded as having no characters at all. A page that failed to index, or whose record doesn't open, is still read: nothing is passed over for not having been looked at.
@@ -352,8 +350,7 @@ pub(super) fn answer<A: SessionAccess>(
         events,
         id,
         file,
-        ring: heads::ring(&corpus),
-        read_chrome: None,
+        chrome: Chrome::new(&corpus),
         corpus,
         stored,
         opened: &opened,
