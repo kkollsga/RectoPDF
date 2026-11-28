@@ -915,3 +915,24 @@ fn a_planted_note_can_only_add_to_what_is_cleared() {
         "named for the target's path, it is the app's own rule"
     );
 }
+
+/// Failure: a note that was linked a second time between the listing and its opening is placed by the bytes of the file opened but classed by the facts of the
+/// file listed (one link), so a name the person keeps is called the target's and a later purge by its pin would unlink it. The opened file must be the listed one.
+#[test]
+fn a_note_linked_between_list_and_open_is_not_the_targets() {
+    let (w, _mine, _theirs) = two_documents();
+    let name = names::path_alias(w.mine.as_os_str().as_encoded_bytes());
+    let note = w.corpus.join(names::VERSIONS).join(&name);
+    let other = w.dir.join("persons-link");
+    let hook: Hook = {
+        let (note, other) = (note.clone(), other.clone());
+        Arc::new(move |at: &Path| {
+            if at == note && !other.exists() {
+                fs::hard_link(&note, &other).unwrap();
+            }
+        })
+    };
+    let seen = Seen::of(&w.survey(TargetMode::Save, &small(|c| c.before_open = Some(hook)), 4096).unwrap());
+    assert!(other.exists(), "the hook ran");
+    assert_eq!(seen.owner(Store::CorpusAliases, &format!("by-file/{name}")), Owner::Unknown);
+}

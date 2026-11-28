@@ -179,6 +179,20 @@ struct Run<'a> {
     survey: &'a mut Survey,
 }
 
+/// Whether an opened file is the one that was listed: the entry's device and inode, and the link count the entry had (a name made since the listing is a
+/// change; a note that already had two names is `Shared`, and stays one).
+#[cfg(unix)]
+fn is_the_listed(file: &std::fs::File, entry: &Entry) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    file.metadata()
+        .is_ok_and(|opened| opened.dev() == entry.dev && opened.ino() == entry.ino && opened.nlink() == entry.links)
+}
+
+#[cfg(not(unix))]
+fn is_the_listed(_file: &std::fs::File, _entry: &Entry) -> bool {
+    false
+}
+
 /// A file that went away between the listing and the opening: the folder changed under the survey.
 struct Gone;
 
@@ -335,6 +349,10 @@ impl Run<'_> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Gone),
             Err(_) => return Ok(false),
         };
+        // Not the file that was listed (linked or swapped between the listing and the opening): its bytes would place one file and `entry`'s facts describe another.
+        if !is_the_listed(&file, entry) {
+            return Ok(false);
+        }
         buffer.clear();
         // One byte more than the most a note may be, so a note over the cap is told from one at it.
         Ok(file.take(names::ALIAS_BYTES as u64 + 1).read_to_end(buffer).is_ok())
