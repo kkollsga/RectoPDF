@@ -38,6 +38,8 @@ pub(crate) struct Asked<'a> {
     pub max_chars: u32,
     /// Go on from the reference's first character, not from the start of the unit.
     pub from_here: bool,
+    /// The entry a section's `more` named, for `from_here`.
+    pub entry: Option<u32>,
 }
 
 /// A page's text as of record, and where it came from.
@@ -206,11 +208,11 @@ pub(crate) fn get<A: SessionAccess>(access: &A, events: &mut Vec<Event>, asked: 
             blocks::token(&mut referrer, Some(unit::Mark { page: found.file_page, range }))
         });
     let refs = if kind == "hit" {
-        json!({ "self": locator::encode(asked.reference), "next": null, "prev": null, "more": null, "up": up, "up_grain": "page" })
+        json!({ "self": locator::encode(asked.reference), "next": null, "prev": null, "more": null, "more_entry": null, "up": up, "up_grain": "page" })
     } else {
         let next = page_ref(&mut referrer, file.file_page_at(here + 1));
         let prev = page_ref(&mut referrer, here.checked_sub(1).and_then(|before| file.file_page_at(before)));
-        json!({ "self": up, "next": next, "prev": prev, "more": more, "up": null, "up_grain": null })
+        json!({ "self": up, "next": next, "prev": prev, "more": more, "more_entry": null, "up": null, "up_grain": null })
     };
     drop(opened);
 

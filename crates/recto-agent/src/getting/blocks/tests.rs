@@ -132,6 +132,7 @@ fn a_blank_page_after_the_cap_is_passed_over_by_the_real_source() {
         page: 0,
         start: None,
         from_here: false,
+        entry: None,
         max_chars: 65_536,
         sections: Some(&sections),
     };

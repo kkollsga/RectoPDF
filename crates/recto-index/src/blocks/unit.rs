@@ -77,6 +77,9 @@ pub struct Ask<'a> {
     /// Start at the reference's first character, not the unit's.
     pub from_here: bool,
     pub max_chars: u32,
+    /// The entry the `more` being followed came from (`--from-here` at section grain): used when it still holds the reference's page, so going on continues the unit it came from and not the innermost
+    /// section the character is in. A number from outside: it must be an entry of these contents whose range reaches the reference's page, or it's ignored.
+    pub entry: Option<u32>,
     /// The contents the sections come from. A section or a chapter needs them; a paragraph names the headings above it by them if it has them.
     pub sections: Option<&'a Sections>,
 }
@@ -678,11 +681,23 @@ impl<'a, P: Pages> Walk<'a, P> {
         if !self.load(ask.page)? {
             return Ok(Outcome::Page(Why::NoBlockHere));
         }
-        let place = self.anchor_place(sections, ask.page, ask.start);
-        let entry = if ask.grain == Grain::Chapter {
-            sections.chapter_of(place)
-        } else {
-            sections.section_of(place)
+        let named = ask
+            .entry
+            .filter(|_| ask.from_here && ask.grain == Grain::Section)
+            .map(|entry| entry as usize)
+            .filter(|entry| {
+                sections
+                    .range(*entry)
+                    .is_some_and(|(start, end)| start.page <= ask.page && end.is_none_or(|end| ask.page <= end.page))
+            });
+        let place = match named.and_then(|entry| sections.range(entry)) {
+            Some((start, _)) => start,
+            None => self.anchor_place(sections, ask.page, ask.start),
+        };
+        let entry = match (named, ask.grain) {
+            (Some(entry), _) => Some(entry),
+            (None, Grain::Chapter) => sections.chapter_of(place),
+            (None, _) => sections.section_of(place),
         };
         let Some(entry) = entry else { return Ok(Outcome::Page(Why::NoSection)) };
         let Some((start, end)) = sections.range(entry) else {

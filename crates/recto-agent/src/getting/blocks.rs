@@ -270,6 +270,7 @@ pub(super) fn answer<A: SessionAccess>(
         page: found.file_page,
         start,
         from_here: asked.from_here,
+        entry: asked.entry,
         max_chars: asked.max_chars,
         sections: sections.as_ref(),
     };
@@ -292,6 +293,11 @@ pub(super) fn answer<A: SessionAccess>(
     let caps = ScanCaps::STANDARD;
     let mut referrer = Referrer::new(opened.reader(), opened.map(), &caps);
     let refs = &built.refs;
+    // The entry a section's `more` is of, for going on; a Rust number, which `--entry` checks again against the contents.
+    let more_entry = match (asked.grain, built.entry, refs.more) {
+        (AskedGrain::Section, Some(entry), Some(_)) => json!(entry),
+        _ => Value::Null,
+    };
     let up_grain = match asked.grain {
         AskedGrain::Paragraph => json!("section"),
         AskedGrain::Section => json!("chapter"),
@@ -299,7 +305,7 @@ pub(super) fn answer<A: SessionAccess>(
     };
     let refs = json!({
         "self": token(&mut referrer, refs.this), "next": token(&mut referrer, refs.next), "prev": token(&mut referrer, refs.prev),
-        "more": token(&mut referrer, refs.more), "up": token(&mut referrer, refs.up), "up_grain": up_grain,
+        "more": token(&mut referrer, refs.more), "more_entry": more_entry, "up": token(&mut referrer, refs.up), "up_grain": up_grain,
     });
     drop(opened);
 

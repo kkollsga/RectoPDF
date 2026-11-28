@@ -117,6 +117,7 @@ fn ask<'a>(grain: Grain, page: u32, start: Option<u32>, sections: Option<&'a Sec
         start,
         from_here: false,
         max_chars,
+        entry: None,
         sections,
     }
 }
@@ -222,19 +223,18 @@ fn following_more_gives_the_whole_unit_once() {
         let (mut doc, _) = book();
         let mut got = String::new();
         let mut place = (0u32, 40u32, false);
+        let mut entry = None;
         for round in 0..200 {
             let mut one = ask(Grain::Section, place.0, Some(place.1), Some(&sections), max);
             one.from_here = place.2;
+            one.entry = entry;
             let answer = unit(build(&mut doc, &one));
             assert!(answer.chars_given <= max, "cap {max}: {} given", answer.chars_given);
-            // Until the answer goes on into the nested section's page, where the reference's own section is the nested one (see the hand-back: a `more` inside a nested entry is that entry's section).
-            if place.0 == 0 {
-                assert_eq!(
-                    answer.entry,
-                    Some(1),
-                    "cap {max}: the same section while the reference is before the nested entry"
-                );
-            }
+            assert_eq!(
+                answer.entry,
+                Some(1),
+                "cap {max}, round {round}: every round is the section the first answer was of"
+            );
             let text: String = answer.given.iter().flat_map(|piece| piece.text.iter()).collect();
             got.push_str(&text);
             if !answer.truncated {
@@ -242,6 +242,7 @@ fn following_more_gives_the_whole_unit_once() {
             }
             let more = answer.refs.more.expect("a cut answer says where it goes on");
             place = (more.page, more.range.offsets().0, true);
+            entry = answer.entry.map(|entry| entry as u32);
             assert!(round < 199, "cap {max}: never ends");
         }
         assert_eq!(got, whole, "cap {max}");
@@ -509,4 +510,66 @@ fn a_character_before_the_first_cut_on_its_page_is_in_the_section_before() {
     assert_eq!(answer.entry, Some(0), "the stray text before the heading belongs to the first section");
     let answer = unit(build(&mut doc, &ask(Grain::Section, 1, Some(11), Some(&sections), 10_000)));
     assert_eq!(answer.entry, Some(1));
+}
+
+/// Failure (review round 2): following `more` into a nested entry's page asks for that nested section, so the rest of the section the `more` came from, after the nested one, is lost. Beta holds a
+/// nested Sub, then goes on with Tail, then Gamma: following Beta's `more` at every cap gives all of Beta, once, as Beta, every round. A number that isn't an entry of these contents, or one whose range
+/// doesn't reach the reference's page, is ignored, never believed.
+#[test]
+fn going_on_continues_the_section_the_more_came_from_through_its_nested_ones() {
+    let doc = || {
+        Doc::new(vec![
+            (
+                "Alpha heading\nalpha body\nBeta heading\nbeta body",
+                vec![
+                    block(Kind::Heading, 0, (0, 13), 100),
+                    block(Kind::Paragraph, 0, (14, 24), 200),
+                    block(Kind::Heading, 0, (25, 37), 500),
+                    block(Kind::Paragraph, 0, (38, 47), 600),
+                ],
+            ),
+            (
+                "Sub heading\nsub body",
+                vec![block(Kind::Heading, 1, (0, 11), 100), block(Kind::Paragraph, 1, (12, 20), 200)],
+            ),
+            (
+                "Tail heading\ntail body",
+                vec![block(Kind::Heading, 2, (0, 12), 100), block(Kind::Paragraph, 2, (13, 22), 200)],
+            ),
+            ("Gamma heading", vec![block(Kind::Heading, 3, (0, 13), 100)]),
+        ])
+    };
+    // Alpha, Beta; Beta's Sub on page 1 and Tail on page 2 (both depth 1); Gamma, a chapter, on page 3.
+    let sections = Sections::new(toc(&[(0, 0, 100), (0, 0, 500), (1, 1, 100), (2, 1, 100), (3, 0, 100)]).entries());
+    let mut whole_doc = doc();
+    let whole: String = unit(build(&mut whole_doc, &ask(Grain::Section, 0, Some(40), Some(&sections), 10_000)))
+        .given
+        .iter()
+        .flat_map(|piece| piece.text.iter())
+        .collect();
+    assert!(whole.ends_with("tail body"), "Beta runs through Sub and Tail: {whole:?}");
+    for max in 1..=whole.chars().count() as u32 + 1 {
+        let mut doc = doc();
+        let (mut got, mut place, mut entry) = (String::new(), (0u32, 40u32, false), None);
+        for round in 0..300 {
+            let mut one = ask(Grain::Section, place.0, Some(place.1), Some(&sections), max);
+            (one.from_here, one.entry) = (place.2, entry);
+            let answer = unit(build(&mut doc, &one));
+            assert_eq!(answer.entry, Some(1), "cap {max}, round {round}");
+            got.extend(answer.given.iter().flat_map(|piece| piece.text.iter()));
+            if !answer.truncated {
+                break;
+            }
+            let more = answer.refs.more.expect("a way on");
+            (place, entry) = ((more.page, more.range.offsets().0, true), answer.entry.map(|entry| entry as u32));
+        }
+        assert_eq!(got, whole, "cap {max}");
+    }
+    // Not an entry, or an entry that doesn't reach the page: the anchor decides, as with no number.
+    let mut doc = doc();
+    for bad in [99u32, 4, u32::MAX] {
+        let mut one = ask(Grain::Section, 1, Some(14), Some(&sections), 10_000);
+        (one.from_here, one.entry) = (true, Some(bad));
+        assert_eq!(unit(build(&mut doc, &one)).entry, Some(2), "{bad}: ignored");
+    }
 }

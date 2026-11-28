@@ -123,6 +123,7 @@ fn one_answer_holds_one_page_and_what_it_gives() {
             page: 0,
             start: Some(CHARS as u32 - 50),
             from_here: false,
+            entry: None,
             max_chars: 65_536,
             sections: Some(&sections),
         };
@@ -146,6 +147,7 @@ fn one_answer_holds_one_page_and_what_it_gives() {
             page: 0,
             start: Some(CHARS as u32 - 50),
             from_here: false,
+            entry: None,
             max_chars: 65_536,
             sections: None,
         };
