@@ -26,6 +26,7 @@ fn seen(busy: bool, since_input_ms: u64, build_allowed: bool, gone: bool) -> See
         since_input_ms,
         build_allowed,
         gone,
+        removal_pending: false,
     }
 }
 
@@ -297,6 +298,43 @@ fn whatever_happens_at_any_point_a_frozen_app_is_given_back_or_quits() {
                     if beside == Beside::Dropped && development_build && at == 0 {
                         assert!(matches!(end, End::Failed { was_frozen: false, .. }), "a build went in below Full: {case}");
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Failure (D3b's gates): with an unfinished removal's record there, a look that is ready for the hand-off hands off anyway (the app freezes and quits for an
+/// installer that will refuse), or a failure is said for an install the app isn't going to make (a quit under way, the app ended). Whoever asked, whatever
+/// is in flight, it fails before any hand-off, and it fails the same for a release as for a build.
+#[test]
+fn waiting_with_a_record_fails_before_hand_off() {
+    for development_build in [false, true] {
+        for asked in ASKED {
+            for since in SINCE {
+                for busy in [false, true] {
+                    let to = going(development_build);
+                    let mut look = seen(busy, since, true, false);
+                    look.removal_pending = true;
+                    let phase = Phase::Waiting {
+                        began_ms: 1_000,
+                        busy_at_hand_off: false,
+                    };
+                    let step = next(&to, phase, &look, asked, false, 1_000);
+                    assert!(
+                        matches!(&step, Step::Failed { why, .. } if why.contains("left unfinished")),
+                        "build {development_build}, {asked:?}, since {since}, busy {busy}: {step:?}"
+                    );
+                    assert_eq!(
+                        next(&to, phase, &look, asked, true, 1_000),
+                        Step::BackOnOffer {
+                            look_again_in_ms: None,
+                            give_back: false
+                        },
+                        "a quit under way wins"
+                    );
+                    look.gone = true;
+                    assert_eq!(next(&to, phase, &look, asked, false, 1_000), Step::Gone, "an app that ended wins");
                 }
             }
         }

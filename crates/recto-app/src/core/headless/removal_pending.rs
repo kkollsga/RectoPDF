@@ -77,8 +77,25 @@ fn a_launch_with_an_unfinished_removal_starts_empty_and_leaves_the_session_as_it
     assert!(answer.go, "with nothing edited the quit isn't asked about: {answer:?}");
 }
 
+/// Every file under `dir`, at any depth: what the backups folder holds.
+fn files_under(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .map(|entry| if entry.path().is_dir() { files_under(&entry.path()) } else { 1 })
+            .sum()
+    })
+}
+
 /// Opens a PDF, turns a page and saves it as an agent at Full does, in an app started on `disk`; says what the save answered and whether the file changed.
 fn turn_and_save(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Value, recto_agent::AgentError>, bool) {
+    let (saved, changed, _) = turn_and_save_counting(disk);
+    (saved, changed)
+}
+
+/// As [`turn_and_save`], and says how many files the backups folder holds after it.
+fn turn_and_save_counting(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Value, recto_agent::AgentError>, bool, usize) {
+    let backups = recto_control::host::backups_folder(&disk.paths());
     let c = disk.pdf("c.pdf", 2);
     let app = disk.start();
     app.settle();
@@ -89,13 +106,31 @@ fn turn_and_save(disk: crate::testkit::headless::Disk) -> (Result<serde_json::Va
     let saved = app.agent(Level::Full, r##"{"cmd":"save","tab":"#1"}"##);
     app.settle();
     let changed = std::fs::read(&c).unwrap() != was;
+    let kept = files_under(&backups);
     drop(app.quit_anyway());
-    (saved, changed)
+    (saved, changed, kept)
+}
+
+/// Failure (D3b's gates, `removal.md` §10): a save made while a removal is unfinished keeps a new backup of the original, a copy of the file the removal's
+/// plan didn't pin, which a restore or a going back would then bring back after the purge. The save still goes through and the file is written, and no
+/// backup is made. The same save with no record there does make one (so the test can see what it stops).
+#[test]
+fn a_save_while_a_record_is_there_keeps_no_backup() {
+    let (saved, changed, kept) = turn_and_save_counting(crate::testkit::headless::Disk::new());
+    assert!(
+        saved.is_ok() && changed && kept > 0,
+        "with no record: {saved:?}, changed {changed}, backup files {kept}"
+    );
+    let disk = crate::testkit::headless::Disk::new();
+    pending_at(&disk.paths().root, 1);
+    let (saved, changed, kept) = turn_and_save_counting(disk);
+    assert!(saved.is_ok() && changed, "{saved:?}, file changed: {changed}");
+    assert_eq!(kept, 0, "a backup was made while a record was there");
 }
 
 /// Failure (D3b review, a blocker): in a window whose session is withheld the store keeps no journal, but the session still names one in memory for the
 /// tab, and a save looks for its note on disk, doesn't find it and fails ("the save's note didn't reach the journal"): a person can't save a PDF they edit
-/// in that window. The save goes through and the file is written; no journal or record is written (a backup of the original may be: gating backups is the command slice's).
+/// in that window. The save goes through and the file is written; no journal, record or backup is written (`a_save_while_a_record_is_there_keeps_no_backup`).
 #[test]
 fn a_pdf_edited_in_a_withheld_window_can_be_saved() {
     let disk = crate::testkit::headless::Disk::new();
@@ -130,4 +165,32 @@ fn a_removal_check_while_a_removal_is_pending_is_refused_as_busy() {
         assert_eq!(refused.code, "removal_busy", "{level:?}: {refused:?}");
         assert!(refused.message.contains("left unfinished"), "{refused:?}");
     }
+}
+
+/// Failure (D3b's gates, `removal.md` §10): a launch while a removal is unfinished prunes the old backups, which the plan pinned, outside the plan. The same
+/// launch with no record does prune (so the test sees what it stops).
+#[test]
+fn a_launch_with_a_record_keeps_old_backups() {
+    for pending in [false, true] {
+        let disk = crate::testkit::headless::Disk::new();
+        let root = disk.paths().root.clone();
+        if pending {
+            pending_at(&root, 1);
+        }
+        let folder = root.join("backups.noindex");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("original-aaaaaaaa.pdf");
+        std::fs::write(&file, b"%PDF-1.4 an original").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+        let app = disk.start();
+        app.settle();
+        assert_eq!(file.exists(), pending, "pending {pending}: an old backup after a launch");
+        drop(app.quit_anyway());
+    }
+}
+
+/// Seeds an unfinished removal's record in `disk`'s state folder, for a test in another file.
+pub(super) fn pending_at_root(disk: &crate::testkit::headless::Disk) {
+    pending_at(&disk.paths().root, 1);
 }

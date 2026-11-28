@@ -253,3 +253,50 @@ fn only_the_gate_looks_at_the_record_and_only_a_few_ask_the_gate() {
         "who asks the gate"
     );
 }
+
+/// Failure: a damaged, too-new or not-ours record lets a backup be made or pruned (only a readable pending one is looked at), or a record's ledger-only folder
+/// withholds them. For every shape of `removal/`, backups may change exactly when the gate says nothing is there.
+#[test]
+fn backups_may_not_change_while_any_record_shape_is_there() {
+    for kind in Kind::ALL {
+        let dir = temp();
+        let _put_back = (kind == Kind::ReadOnly).then(|| Restore(dir.join("removal").join("pending.v1")));
+        seed(dir.path(), kind);
+        let paths = paths(&dir);
+        assert_eq!(backups_may_change(&paths.root), kind.answer() == "nothing", "{kind:?}");
+    }
+}
+
+/// A backup file made old enough for the prune to take it.
+fn old_backup(root: &Path) -> std::path::PathBuf {
+    let folder = root.join("backups.noindex");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("original-aaaaaaaa.pdf");
+    std::fs::write(&file, b"%PDF-1.4 an original").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+    file
+}
+
+/// Failure: a session that starts while a removal is unfinished prunes the old backups (a file the removal's plan pinned goes outside it), or, with no record
+/// there, no longer prunes at all. A host (`recto serve`, `recto session`) makes no backup for a save while a record is there either, and makes one with none.
+#[test]
+fn old_backups_stay_while_a_record_is_there() {
+    use crate::host::{BackupsOnly, SessionHost};
+    use recto_agent::saving::SaveSupport as _;
+    for pending in [false, true] {
+        let dir = temp();
+        let paths = paths(&dir);
+        if pending {
+            pending_at(&paths.root, 1);
+        }
+        let file = old_backup(&paths.root);
+        let _host = SessionHost::new(recto_agent::DrawableLoader).with_backups(&paths);
+        assert_eq!(file.exists(), pending, "pending {pending}: an old backup after the host started");
+        let support = BackupsOnly {
+            folder: crate::host::backups_folder(&paths),
+            root: paths.root.clone(),
+        };
+        assert_eq!(support.backups().is_some(), !pending, "pending {pending}: a save's backup folder");
+    }
+}

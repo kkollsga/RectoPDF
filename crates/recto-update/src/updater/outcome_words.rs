@@ -35,7 +35,7 @@ pub(super) fn why_not_installed(code: &str) -> (&'static str, bool) {
         "old_app_stayed" => ("the old app didn't quit in time", false),
         "app_reopened" => ("the app was opened again while it was going", false),
         "another_installer" => ("another update was still at work", false),
-        "removal_pending" => ("a removal of data from a document was left unfinished, and is finished first", false),
+        "removal_pending" => ("a removal of data from a document was left unfinished", false),
         _ => ("it couldn't be put in place", false),
     }
 }

@@ -43,6 +43,11 @@ pub(super) struct Seen {
     /// The app this updater was part of has ended, as only a test's headless app does with its process still there ([`super::Host::gone`]). Looked at by the
     /// phases that look again: never so in a real app, whose updater ends with its process.
     pub gone: bool,
+    /// An unfinished removal's record is in the state folder, or something unreadable at its name ([`crate::removal_record::anything_there`]). The installer
+    /// refuses to replace the app while it is there, so the app isn't handed off and quit for an install that will come to nothing. Looked at once, before the
+    /// hand-off: a record that appears after it is still refused by the installer, as before, and that costs one quit and reopening (bounded by
+    /// `QUITS_FOR_NOTHING`), so there's no second look.
+    pub removal_pending: bool,
 }
 
 /// Where the install is, and what came of the last thing it did.
@@ -108,6 +113,13 @@ pub(super) fn next(going: &Going<'_>, phase: Phase<'_>, look: &Seen, asked: Aske
             if going.development_build && !look.build_allowed {
                 return Step::Failed {
                     why: "agent access isn't Full any more, and a development build is installed only at Full".to_owned(),
+                    waiting_for: None,
+                };
+            }
+            // An installer that will refuse is never started, and so the app never quits for it: the words are the installer's own for this reason.
+            if look.removal_pending {
+                return Step::Failed {
+                    why: super::outcome_words::why_not_installed("removal_pending").0.to_owned(),
                     waiting_for: None,
                 };
             }

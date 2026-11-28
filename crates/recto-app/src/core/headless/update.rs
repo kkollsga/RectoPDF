@@ -446,6 +446,46 @@ fn coming_back_to_a_record_it_cant_read_takes_the_one_from_before() {
     assert!(log.contains("record from before the update was put back"), "{log}");
 }
 
+/// Failure (D3b's gates, `removal.md` section 10): the one-time fall back to the record from before the update, taken at a launch that read nothing because an
+/// unfinished removal's record withheld the session, copies `update/before` (which may hold the very history being purged) over the session's slots. The same
+/// setup as the test above with a record there: the copy from before is left as it was, the damaged slots are not written over, no tab comes back, and the
+/// person isn't told that the session from before the update was put back.
+#[test]
+fn fall_back_leaves_a_withheld_load_alone() {
+    let (app, bed) = running_with_a_document(12);
+    full(&app, r#"{"cmd":"session_save"}"#);
+    app.settle();
+    bed.releases.offer(NEW);
+    full(&app, r#"{"cmd":"update_check"}"#);
+    full(&app, r#"{"cmd":"update_install"}"#);
+    let (plan, disk) = app.handed_off(&bed);
+    disk.install(&plan, Installed::Swapped);
+    let damaged = "damaged by the version that kept ending";
+    let session = disk.update_files().session();
+    for slot in ["record.a.json", "record.b.json"] {
+        std::fs::write(session.join(slot), damaged).expect("damaged");
+    }
+    let back = recto_update::plan::Plan { keep_record: true, ..plan };
+    disk.went_back(&back, "kept_ending");
+    let before = disk.update_files().before();
+    let copy_before = recto_control::removal_store::barrier::fixture::tree(&before);
+    assert!(!copy_before.is_empty(), "the copy to fall back on is there");
+    super::removal_pending::pending_at_root(&disk);
+    let app = disk.builder().update(&bed).start();
+    app.settle();
+    assert!(app.tabs().is_empty(), "no tab came back: {:?}", app.tabs());
+    for slot in ["record.a.json", "record.b.json"] {
+        assert_eq!(std::fs::read_to_string(session.join(slot)).unwrap(), damaged, "{slot} was written over");
+    }
+    assert_eq!(
+        recto_control::removal_store::barrier::fixture::tree(&before),
+        copy_before,
+        "update/before was read or moved"
+    );
+    let notice = app.core().updates.notice().map(|notice| notice.text).unwrap_or_default();
+    assert!(!notice.contains("from before the update"), "{notice:?}");
+}
+
 /// Failure (owner, 2026-11-12: "I dont see the update now button in settings"): with a development build waiting for its five idle minutes, Settings shows no way
 /// to install it, the plain command installs it against the owner's rule, or the button does something the menu and `--now` don't. The build handed over by
 /// `recto`'s own hand-over, the copy gone once it's read; Settings and the menu in Rust's words; the plain command only says what it waits for; the button goes at

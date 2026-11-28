@@ -92,15 +92,19 @@ pub type Effects = Arc<dyn Fn(recto_agent::Effect) + Send + Sync>;
 pub type Places = Arc<dyn Fn() + Send + Sync>;
 
 /// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
-pub struct BackupsOnly(pub PathBuf);
+pub struct BackupsOnly {
+    pub folder: PathBuf,
+    /// The state folder, where an unfinished removal's record would be: no backup is made while it is there.
+    pub root: PathBuf,
+}
 
 impl SaveSupport for BackupsOnly {
     fn backups(&self) -> Option<PathBuf> {
-        Some(self.0.clone())
+        crate::removal_store::gate::backups_may_change(&self.root).then(|| self.folder.clone())
     }
 
     fn provenance(&self, note: &recto_agent::saving::SaveNote<'_>) {
-        crate::removal_store::ledger::note_save(&self.0, note);
+        crate::removal_store::ledger::note_save(&self.folder, note);
     }
 }
 
@@ -287,8 +291,13 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     #[must_use]
     pub fn with_backups(self, paths: &StatePaths) -> Self {
         let folder = backups_folder(paths);
-        recto_core::save::prune_backups(&folder, std::time::SystemTime::now());
-        self.set_saving(Arc::new(BackupsOnly(folder)));
+        if crate::removal_store::gate::backups_may_change(&paths.root) {
+            recto_core::save::prune_backups(&folder, std::time::SystemTime::now());
+        }
+        self.set_saving(Arc::new(BackupsOnly {
+            folder,
+            root: paths.root.clone(),
+        }));
         self
     }
 

@@ -438,7 +438,8 @@ impl Updater {
             st.facts = Some(facts);
             st.second_copy = second_copy;
             st.status = status;
-            st.notice = settled.notice;
+            // What a refused going back said, if it did, stays unless the settling has something of its own to say.
+            st.notice = settled.notice.or_else(|| st.notice.take());
             st.reopened_by_update = !second_copy && (settled.arrived.is_some() || settled.reopened);
             st.fall_back = settled.fall_back;
             st.arrived = settled.arrived;
@@ -482,6 +483,10 @@ impl Updater {
 
     /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time.
     fn drop_an_old_record_copy(&self, now_ms: u64, offered_to_fall_back_on: bool) {
+        // While an unfinished removal's record is there the copy is something its plan pinned: it is left as it is.
+        if crate::removal_record::anything_there(&self.files.root) {
+            return;
+        }
         let whole = self.files.before().join(".whole");
         let made_ms = std::fs::metadata(&whole)
             .ok()
@@ -664,6 +669,11 @@ impl Updater {
             self.log(&format!(
                 "{current} keeps failing, and an unfinished removal is pending that the kept {previous} doesn't read"
             ));
+            lock(&self.st).notice = Some(Notice {
+                text: words::going_back_withheld(current, &previous),
+                fades: false,
+            });
+            self.host.changed();
             return false;
         }
         let plan = Plan {
