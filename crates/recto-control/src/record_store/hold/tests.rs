@@ -425,7 +425,7 @@ fn a_hold_that_comes_in_during_a_sweep_stops_it_partway() {
     // The sweep also meets the rig's own older sleep file, so what it took is counted from the six.
     let done = w.store.remove_older_sleep_files(100);
     let left = old.iter().filter(|path| path.exists()).count();
-    assert!(left >= 4 && left < 6, "stopped partway: {left} of 6 left, {done:?}");
+    assert!((4..6).contains(&left), "stopped partway: {left} of 6 left, {done:?}");
     park::clear(&w.store.root);
     drop(held.lock().unwrap().take());
 
@@ -464,7 +464,7 @@ fn a_hold_that_comes_in_during_a_sweep_stops_it_partway() {
     );
     assert!(w.store.write_sleep(&w.file, &sleep_of(w.stamp, 3)) > 0);
     let left = aged.iter().filter(|path| path.exists()).count();
-    assert!(left >= 2 && left < 5, "stopped partway: {left} of 5 left");
+    assert!((2..5).contains(&left), "stopped partway: {left} of 5 left");
     park::clear(&w.store.root);
     drop(held.lock().unwrap().take());
 }
