@@ -4,10 +4,7 @@
 use crate::commands::getting::Form;
 use recto_index::blocks::Kind;
 use recto_index::blocks::markdown::{self, Piece};
-use recto_index::blocks::unit::{
-    self,
-    heads::{Heads, MAX_CHROME_CHARS_LEFT_OUT, State},
-};
+use recto_index::blocks::unit::heads::{Heads, MAX_CHROME_CHARS_LEFT_OUT, State};
 use recto_index::chrome::EdgeLine;
 use recto_index::chrome::stored::StoredChrome;
 use recto_index::corpus::ReadyCorpus;
@@ -77,18 +74,16 @@ pub(super) fn slice(read: &super::PageRead, chars: &[char], named: Option<(u32, 
         Heads::of(read.chrome.as_deref(), total, named, MAX_CHROME_CHARS_LEFT_OUT)
     };
     let in_unit = heads.kept_len(from, to) as usize;
-    let given = unit::cut_at(&heads.copy(chars, from, to, max + 1).0, max);
-    let (shown, end) = heads.copy(chars, from, to, given);
-    let cut = if given < in_unit { heads.next_kept(end) } else { to };
+    let cut = heads.take(chars, &read.hidden, from, to, max);
     Slice {
         in_unit,
-        given,
-        cut,
-        hidden: heads.remap(&read.hidden, from, end),
-        left_out: heads.left_in(from, cut),
+        given: cut.text.len(),
+        cut: cut.cut,
+        hidden: cut.hidden,
+        left_out: cut.left_out,
         unknown: !whole && heads.state == State::Unknown,
         over_cap: heads.state == State::OverCap,
-        shown,
+        shown: cut.text,
     }
 }
 

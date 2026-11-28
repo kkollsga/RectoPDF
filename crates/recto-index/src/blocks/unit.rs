@@ -696,46 +696,39 @@ impl<'a, P: Pages> Walk<'a, P> {
             }
             let room = max - taken.chars_given as usize;
             let first = taken.given.is_empty();
-            let take = if len <= room {
-                len
-            } else if first {
-                cut_at(&self.heads.copy(&self.chars, spec.start, spec.end, max + 1).0, max)
-            } else {
+            if len > room && !first {
                 let cut = self.heads.next_kept(spec.start);
                 let left = self.heads.left_in(spec.start, cut);
                 self.left_out(page, left);
                 taken.cut = Some((page, cut));
                 return;
-            };
+            }
             self.page_seen(page);
-            let (text, end) = self.heads.copy(&self.chars, spec.start, spec.end, take);
-            let end = if take < len { end } else { spec.end };
-            let cut = if take < len { self.heads.next_kept(end) } else { end };
+            let one = self.heads.take(&self.chars, &self.hidden, spec.start, spec.end, room);
+            let take = one.text.len();
             if taken.first.is_none() {
                 taken.first = self.mark_from_here(self.heads.next_kept(spec.start));
             }
             let kind_outside = spec.block.is_none();
             let depth = spec.block.and_then(|index| depths[index]);
-            let hidden = self.heads.remap(&self.hidden, spec.start, end);
             taken.given.push(Given {
                 page,
                 kind: spec.kind,
                 level: spec.level,
                 depth,
-                text,
-                hidden,
+                text: one.text,
+                hidden: one.hidden,
                 joins: false,
             });
             taken.chars_given = taken.chars_given.saturating_add(take as u32);
-            let left = self.heads.left_in(spec.start, cut);
-            self.left_out(page, left);
+            self.left_out(page, one.left_out);
             if kind_outside {
                 self.counts.chars_outside_blocks = self.counts.chars_outside_blocks.saturating_add(take as u32);
             } else {
                 self.counts.blocks += 1;
             }
             if take < len {
-                taken.cut = Some((page, cut));
+                taken.cut = Some((page, one.cut));
                 return;
             }
         }

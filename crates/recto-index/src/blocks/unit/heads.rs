@@ -145,5 +145,38 @@ impl Heads {
     }
 }
 
+/// One cut of a kept range: what [`Heads::take`] gives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cut {
+    /// The characters given, none of them left out.
+    pub text: Vec<char>,
+    /// The hidden stretches inside what was copied, in characters of `text`.
+    pub hidden: Vec<(u32, u32)>,
+    /// The page's offset just after the last character given (`to` when all were).
+    pub end: u32,
+    /// Where it goes on: `to` when all were given, else `end` moved past any stretch left out.
+    pub cut: u32,
+    /// The characters of `[from, cut)` that were left out.
+    pub left_out: u32,
+}
+
+impl Heads {
+    /// The one cut of `[from, to)`: the first `max` characters that are given, taken back to a line end when the range is over `max` ([`super::cut_at`]). `chars` is the page's text and `hidden` its hidden stretches. `get`'s page and hit slice and the paragraph walk both cut by this, so they cut alike.
+    #[must_use]
+    pub fn take(&self, chars: &[char], hidden: &[(u32, u32)], from: u32, to: u32, max: usize) -> Cut {
+        let kept = self.kept_len(from, to) as usize;
+        let given = super::cut_at(&self.copy(chars, from, to, max + 1).0, max).min(kept);
+        let (text, end) = self.copy(chars, from, to, given);
+        let (end, cut) = if given < kept { (end, self.next_kept(end)) } else { (to, to) };
+        Cut {
+            hidden: self.remap(hidden, from, end),
+            left_out: self.left_in(from, cut),
+            text,
+            end,
+            cut,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
