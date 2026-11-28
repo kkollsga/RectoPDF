@@ -4,7 +4,7 @@
 
 use crate::find_keys::{self, Loaded, Plan};
 use recto_agent::Event;
-use recto_agent::index::{Indexing, JobState, KeyUse};
+use recto_agent::index::{CacheUse, Indexing, JobState, KeyUse};
 use recto_index::corpus::{self, BuildLimits, CorpusKey};
 use recto_platform::find_key::FindKey;
 use recto_platform::helper::{Priority, Spawned};
@@ -63,7 +63,7 @@ struct Inner {
     unreadable_swept: bool,
     /// A removal holds the indexer: every starter refuses, and nothing is built. Cleared when the hold is dropped or refused.
     on_hold: bool,
-    /// Uses of the Find key handed out and not yet ended ([`KeyUse`]). Each one is an open of a corpus, which writes `app/used`, or an export that writes pages.
+    /// Uses handed out and not yet ended: of the Find key ([`KeyUse`]), each an open of a corpus, which writes `app/used`, or an export that writes pages, or of the caches by something that only deletes ([`CacheUse`]).
     uses: u32,
     /// For a test: how many times the queue's thread was started, so a starter that shouldn't start it is seen at once, not by a late look at `working`.
     #[cfg(test)]
@@ -362,6 +362,11 @@ impl Indexing for Indexer {
 
     fn find_key(&self) -> Option<KeyUse<'_>> {
         Indexer::find_key(self)
+    }
+
+    fn cache_use(&self) -> Option<CacheUse<'_>> {
+        self.0.begin_use()?;
+        Some(CacheUse::counted(&*self.0))
     }
 
     fn find_key_report(&self) -> Value {

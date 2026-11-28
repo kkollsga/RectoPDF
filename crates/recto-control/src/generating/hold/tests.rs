@@ -16,7 +16,7 @@ fn wait_for(what: impl Fn() -> bool, saw: impl Fn() -> String) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !what() {
         assert!(Instant::now() < deadline, "{}", saw());
-        std::thread::yield_now();
+        std::thread::park_timeout(Duration::from_millis(1));
     }
 }
 

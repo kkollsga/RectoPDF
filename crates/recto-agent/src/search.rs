@@ -1899,6 +1899,9 @@ mod tests {
         fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
             Some(crate::index::KeyUse::plain(&self.1))
         }
+        fn cache_use(&self) -> Option<crate::index::CacheUse<'_>> {
+            Some(crate::index::CacheUse::plain())
+        }
         fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
         fn job(&self, _key: CorpusKey) -> crate::index::JobState {
             crate::index::JobState::Failed("couldnt_read".to_string())
@@ -1921,6 +1924,9 @@ mod tests {
         }
         fn find_key(&self) -> Option<crate::index::KeyUse<'_>> {
             (self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0).then(|| crate::index::KeyUse::plain(&self.key))
+        }
+        fn cache_use(&self) -> Option<crate::index::CacheUse<'_>> {
+            Some(crate::index::CacheUse::plain())
         }
         fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
         fn job(&self, _key: CorpusKey) -> crate::index::JobState {

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 mod key_use;
-pub use key_use::{KeyUse, UseEnded};
+pub use key_use::{CacheUse, KeyUse, UseEnded};
 
 /// What's being done about one file's corpus, as far as whoever builds them knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub trait Indexing: Send + Sync {
     fn root(&self) -> &Path;
     /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built. **Hold the use for as long as what's opened with it can write:** a removal waits for every use to end.
     fn find_key(&self) -> Option<KeyUse<'_>>;
+    /// A use of the caches for something that only deletes. It takes no key. `None` at once while a removal holds the caches. Hold it until the last delete.
+    fn cache_use(&self) -> Option<CacheUse<'_>>;
     /// An agent's folder is being made for this file's corpus, which lives only for this session: it's kept from the sweep, and set aside when the session ends.
     fn made_agent_folder(&self, _key: CorpusKey) {}
     /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
@@ -60,6 +62,9 @@ impl Indexing for ReadOnlyCorpus {
     }
     fn find_key(&self) -> Option<KeyUse<'_>> {
         self.1.as_ref().map(KeyUse::plain)
+    }
+    fn cache_use(&self) -> Option<CacheUse<'_>> {
+        Some(CacheUse::plain())
     }
     fn want(&self, _path: &Path, _key: CorpusKey) {}
     fn job(&self, _key: CorpusKey) -> JobState {
