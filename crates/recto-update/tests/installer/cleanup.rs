@@ -106,41 +106,83 @@ impl Drop for OwnedChild {
     }
 }
 
-#[allow(unsafe_code)] // Test-local libproc boundary, with fixed ABI/buffers below.
-unsafe extern "C" {
-    fn geteuid() -> u32;
-    fn proc_listpids(kind: u32, uid: u32, buffer: *mut std::ffi::c_void, size: i32) -> i32;
-    fn proc_pidpath(pid: i32, buffer: *mut std::ffi::c_void, size: u32) -> i32;
+const MAX_PIDS: usize = 8192;
+const MAX_PATH: usize = 4096;
+/// The start names of the programs a fixture runs: its two copies of the helper (`bundle_at`). A program whose file
+/// is gone and that was started under one of these may be the fixture's own, so it stays unknown.
+pub const FIXTURE_PROGRAMS: [&[u8]; 2] = [b"RectoPDF", b"recto-updater"];
+
+trait Scan {
+    fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize>;
+    fn path(&mut self, pid: i32, buffer: &mut [u8]) -> io::Result<usize>;
+    /// The name the process was started under (`pbi_comm`, which only exec writes), cut by the kernel at 15 bytes.
+    fn start_name(&mut self, pid: i32) -> io::Result<Vec<u8>>;
 }
 
-/// Own-UID scan with fixed caps. An unreadable process is unknown, never absence.
-#[allow(unsafe_code)] // Only the bounded libproc observations below.
+struct Mac;
+
+#[allow(unsafe_code)] // Test-local libproc boundary, with fixed ABI/buffers.
+impl Scan for Mac {
+    fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize> {
+        // SAFETY: PROC_UID_ONLY is 4; a live fixed buffer with its exact byte count.
+        let bytes = unsafe { libc::proc_listpids(4, libc::geteuid(), buffer.as_mut_ptr().cast(), size_of_val(buffer) as i32) };
+        usize::try_from(bytes).map_err(|_| io::Error::last_os_error())
+    }
+    fn path(&mut self, pid: i32, buffer: &mut [u8]) -> io::Result<usize> {
+        // SAFETY: a live fixed buffer and its size; this only observes a process.
+        let count = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+        if count <= 0 { Err(io::Error::last_os_error()) } else { Ok(count as usize) }
+    }
+    fn start_name(&mut self, pid: i32) -> io::Result<Vec<u8>> {
+        // SAFETY: observation only; a zeroed plain struct and its exact size.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<libc::proc_bsdinfo>() as i32;
+        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+        if got != size {
+            return Err(if got <= 0 { io::Error::last_os_error() } else { io::Error::other("short process info") });
+        }
+        Ok(info.pbi_comm.iter().map(|byte| *byte as u8).take_while(|byte| *byte != 0).collect())
+    }
+}
+
+/// Own-UID scan with fixed caps. An unreadable process of the fixture's is unknown, never absence.
 fn present(root: &Path) -> io::Result<bool> {
-    let mut pids = [0i32; 8192];
-    // SAFETY: a live fixed buffer with its exact byte count; PROC_UID_ONLY is 4.
-    let bytes = unsafe { proc_listpids(4, geteuid(), pids.as_mut_ptr().cast(), size_of_val(&pids) as i32) };
-    if bytes <= 0 || bytes as usize >= size_of_val(&pids) || !(bytes as usize).is_multiple_of(size_of::<i32>()) {
+    observe(root, &FIXTURE_PROGRAMS, &mut Mac)
+}
+
+fn observe(root: &Path, programs: &[&[u8]], scan: &mut impl Scan) -> io::Result<bool> {
+    let mut pids = [0i32; MAX_PIDS];
+    let bytes = scan.list(&mut pids)?;
+    if bytes == 0 || bytes >= size_of_val(&pids) || !bytes.is_multiple_of(size_of::<i32>()) {
         return Err(io::Error::other("fixture process scan failed or reached its cap"));
     }
     let mut live = false;
-    for pid in pids[..bytes as usize / size_of::<i32>()].iter().copied().filter(|pid| *pid > 1) {
-        let mut path = [0u8; 4096];
-        // SAFETY: a live fixed buffer and its size; this only observes a process.
-        let count = unsafe { proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
-        if count <= 0 {
-            let error = io::Error::last_os_error();
-            if process_vanished(&error) {
-                continue;
+    let mut path = [0u8; MAX_PATH];
+    for pid in pids[..bytes / size_of::<i32>()].iter().copied().filter(|pid| *pid > 1) {
+        path.fill(0);
+        let count = match scan.path(pid, &mut path) {
+            Ok(count) => count,
+            Err(error) if process_vanished(&error) => continue,
+            // ENOENT is a live program whose file was deleted or replaced (another app updated under a long-running
+            // process of this user). The product's scan (`update_processes::started_as`) skips it when the name it was
+            // started under can't be the app's: the same rule, with the fixture's program names. Its own, or one whose
+            // name can't be read, stays unknown.
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => match scan.start_name(pid) {
+                Err(error) if process_vanished(&error) => continue,
+                Ok(name) if !name.is_empty() && !programs.iter().any(|program| program.starts_with(&name)) => continue,
+                _ => return Err(io::Error::new(error.kind(), format!("process path query for PID {pid} while observing {}: {error}", root.display()))),
+            },
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("process path query for PID {pid} while observing {}: {error}", root.display()),
+                ));
             }
-            return Err(io::Error::new(
-                error.kind(),
-                format!("process path query for PID {pid} while observing {}: {error}", root.display()),
-            ));
-        }
-        if count as usize >= path.len() {
+        };
+        if count >= path.len() {
             return Err(io::Error::other("fixture process path reached its cap"));
         }
-        let end = path.iter().position(|byte| *byte == 0).unwrap_or(count as usize);
+        let end = path.iter().position(|byte| *byte == 0).unwrap_or(count);
         let path = Path::new(std::ffi::OsStr::from_bytes(&path[..end]));
         if !path.is_absolute() {
             return Err(io::Error::other("fixture process path was not absolute"));
@@ -151,7 +193,7 @@ fn present(root: &Path) -> io::Result<bool> {
 }
 
 fn process_vanished(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(3) // Darwin ESRCH; ENOENT can be a live unlinked image.
+    error.raw_os_error() == Some(libc::ESRCH)
 }
 
 pub fn wait_for_exit(root: &Path, limit: Duration) -> io::Result<()> {
@@ -333,4 +375,48 @@ fn a_post_kill_ownership_error_is_latched_without_another_probe() {
     drop(fixture);
     assert!(path.exists());
     std::fs::remove_dir_all(path).unwrap();
+}
+
+/// Failure: a long-lived program of the person's own whose file was replaced (ENOENT on its path, as the ChatGPT
+/// crashpad handler was on 2026-11-28) fails every installer test's teardown, or the fixture's own program that
+/// lost its file is taken for another and the fixture is deleted under it.
+#[test]
+fn a_foreign_deleted_program_is_ignored_but_a_fixtures_own_is_not() {
+    struct Fake {
+        path_error: Option<i32>,
+        name: Option<&'static [u8]>,
+        path: &'static [u8],
+    }
+    impl Scan for Fake {
+        fn list(&mut self, buffer: &mut [i32]) -> io::Result<usize> {
+            buffer[0] = 42;
+            Ok(4)
+        }
+        fn path(&mut self, _: i32, buffer: &mut [u8]) -> io::Result<usize> {
+            if let Some(code) = self.path_error {
+                return Err(io::Error::from_raw_os_error(code));
+            }
+            buffer[..self.path.len()].copy_from_slice(self.path);
+            Ok(self.path.len())
+        }
+        fn start_name(&mut self, _: i32) -> io::Result<Vec<u8>> {
+            self.name.map(<[u8]>::to_vec).ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))
+        }
+    }
+    let root = Path::new("/private/tmp/fixture");
+    let mut fake = Fake { path_error: Some(libc::ENOENT), name: Some(b"browser_crashpad"), path: b"" };
+    assert!(!observe(root, &FIXTURE_PROGRAMS, &mut fake).unwrap(), "another program, deleted: not the fixture's");
+    for own in [&b"RectoPDF"[..], b"recto-updater"] {
+        fake.name = Some(own);
+        assert!(observe(root, &FIXTURE_PROGRAMS, &mut fake).is_err(), "the fixture's own program that lost its file stays unknown");
+    }
+    fake.name = None;
+    assert!(observe(root, &FIXTURE_PROGRAMS, &mut fake).is_err(), "an unreadable start name stays unknown");
+    fake.name = Some(b"");
+    assert!(observe(root, &FIXTURE_PROGRAMS, &mut fake).is_err(), "an empty start name stays unknown");
+    fake.path_error = None;
+    fake.path = b"/private/tmp/fixture/Contents/MacOS/RectoPDF\0";
+    assert!(observe(root, &FIXTURE_PROGRAMS, &mut fake).unwrap(), "a live program at the root is seen");
+    fake.path = b"/usr/bin/sleep\0";
+    assert!(!observe(root, &FIXTURE_PROGRAMS, &mut fake).unwrap());
 }
