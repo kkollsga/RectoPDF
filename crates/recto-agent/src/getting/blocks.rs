@@ -4,6 +4,7 @@
 //!
 //! Sections come from the tab's contents: the file's own when `verdict::judge` says `Fine`, else generated ones **if they are already made** (an ask does one thing: `get` never starts them).
 
+use super::heads::{self, Ring};
 use super::{Asked, NO_PAGE_TEXT, PageRead, changed, index_is_enough, read_live};
 use crate::commands::getting::{Form, Grain as AskedGrain};
 use crate::locating::Located;
@@ -152,7 +153,10 @@ struct Source<'a, A: SessionAccess> {
     events: &'a mut Vec<Event>,
     id: TabId,
     file: &'a TabFile,
-    corpus: ReadyCorpus,
+    corpus: Arc<ReadyCorpus>,
+    /// What a page read last leaves out as chrome, kept for the builder's next question about it.
+    read_chrome: Option<(u32, Option<Vec<(u32, u32)>>)>,
+    ring: Ring,
     stored: StoredBlocks,
     opened: &'a Opened,
     live_spent: Duration,
@@ -185,11 +189,15 @@ impl<A: SessionAccess> Source<'_, A> {
                 key: Some(self.key),
                 checked: true,
                 partial: false,
+                chrome: None,
             })),
             _ => None,
         };
         self.wipe();
-        if let Some(read) = indexed {
+        if let Some(mut read) = indexed {
+            if let Some(read) = read.as_mut() {
+                read.chrome = self.ring.spans(page);
+            }
             return Ok(read);
         }
         let started = Instant::now();
@@ -236,12 +244,14 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
         if let Some((_, read)) = self.anchor.as_ref().filter(|(held, _)| *held == page) {
             chars.extend(read.text.chars());
             hidden.extend_from_slice(&read.hidden);
+            self.read_chrome = Some((page, read.chrome.clone()));
             return true;
         }
         match self.fetch(page) {
             Ok(Some(read)) => {
                 self.take_in(&read);
                 chars.extend(read.text.chars());
+                self.read_chrome = Some((page, read.chrome));
                 *hidden = read.hidden;
                 true
             }
@@ -263,6 +273,10 @@ impl<A: SessionAccess> Pages for Source<'_, A> {
 
     fn over(&mut self) -> bool {
         self.live_spent >= LIVE_BUDGET
+    }
+
+    fn chrome(&mut self, page: u32, _chars: u32) -> Option<Vec<(u32, u32)>> {
+        self.read_chrome.take().filter(|(read, _)| *read == page).and_then(|(_, spans)| spans)
     }
 
     /// False only for a page the index recorded as having no characters at all. A page that failed to index, or whose record doesn't open, is still read: nothing is passed over for not having been looked at.
@@ -332,11 +346,14 @@ pub(super) fn answer<A: SessionAccess>(
         .as_ref()
         .map(|(toc, _)| Sections::with_tops(toc.entries(), |entry| recto_session::entry_place(entry, file.placed())));
     let opened = Opened::open(file.path(), found.stamp).ok_or_else(changed)?;
+    let corpus = Arc::new(corpus);
     let mut source = Source {
         access,
         events,
         id,
         file,
+        ring: heads::ring(&corpus),
+        read_chrome: None,
         corpus,
         stored,
         opened: &opened,
@@ -359,6 +376,10 @@ pub(super) fn answer<A: SessionAccess>(
         entry: asked.entry,
         max_chars: asked.max_chars,
         sections: sections.as_ref(),
+        chrome: unit::heads::Rule {
+            named: found.characters(),
+            ..unit::heads::Rule::default()
+        },
     };
     let built = match unit::build(&mut source, &one) {
         Ok(Outcome::Unit(built)) => built,
@@ -431,6 +452,8 @@ pub(super) fn answer<A: SessionAccess>(
             "chars_in_unit": built.chars, "chars_given": built.chars_given, "hidden_spans": spans_given, "blocks": counts.blocks,
             "chars_outside_blocks": counts.chars_outside_blocks, "pages_read": counts.pages_read, "pages_left_out": counts.pages_left_out,
             "whole_edge_pages": counts.whole_edge_pages, "pages_without_frame": counts.pages_without_frame,
+            "chrome_chars_left_out": counts.chrome_chars_left_out, "chrome_pages": counts.chrome_pages,
+            "chrome_unknown_pages": counts.chrome_unknown_pages, "chrome_over_cap_pages": counts.chrome_over_cap_pages,
         },
         "hidden_text": { "checked": checked, "partial": partial },
         "read_from": if live { "file" } else { "index" },
