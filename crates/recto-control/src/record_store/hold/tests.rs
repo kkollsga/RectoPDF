@@ -111,9 +111,7 @@ impl World {
         store.write_record(&empty_record(), &PlaceDelta::default(), false).unwrap();
         // A long journal (so a compaction is worth it), and a closed one for the file, to be opened again.
         let journal = record::journal_file_name(None, Path::new("/d/1.pdf"), None);
-        for through in 1..=60 {
-            assert!(store.write_journals(&append(&journal, vec![rotation()], through, false), false).1.is_none());
-        }
+        assert!(store.write_journals(&append(&journal, vec![rotation(); 60], 60, false), false).1.is_none());
         let closed_for = record::journal_file_name(Some(stamp), &file, None);
         let (list, _) = PageEdits::replay(5, None, &[rotation()]).unwrap();
         let header = JournalHeader::new(1, &file, Some(stamp), 5, 0);
